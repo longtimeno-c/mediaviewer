@@ -1399,7 +1399,12 @@ TEST_CASE("driftwire cli session: /tunnel turns the Tunnel on and off and says i
   type_line(ann, "/tunnel vpn");
   REQUIRE(ann.shows("All traffic (VPN): not here"));
   type_line(ann, "/tunnel https");
+#if defined(MV_DRIFTWIRE_TLS)
   REQUIRE(ann.shows("Look like a web site (port 443): off"));
+#else
+  // A build without BoringSSL (tls_none.cpp) says so instead (the release's Intel Mac, 2026-11-14).
+  REQUIRE(ann.screen_shows("This driftwire has no TLS"));
+#endif
   type_line(ann, "/tunnel off");
   REQUIRE(ann.shows("Off: Tunnel"));
   CHECK_FALSE(has(ann.text(), ro.key));  // the key is never said

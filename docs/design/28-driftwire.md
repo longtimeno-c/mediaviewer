@@ -1810,16 +1810,23 @@ only the laptop there is no such machine. Plan and later slices:
   own and takes answers only from that host; `--forward-udp-ports`, 53 by default, so QUIC falls
   back to TCP). DNS: the interface's resolver is `198.18.0.2` inside the tunnel, answered by the
   relay's own resolver (`dns.driftwire`, `--dns`, else the server's first), so the Wi-Fi's DNS sees
-  no name. The interface's address is `198.18.0.1/30` (RFC 2544's range, never a real network);
-  routes send everything through it except the relay's own address and the local networks (the
-  tunnel never carries itself; the printer still works). **Block when the tunnel is down**
+  no name. The interface's addresses are `198.18.0.1/30` (RFC 2544's range, never a real network)
+  and `fd5d:7269:6674::1/64` (a unique local /64 of Driftwire's own); routes send everything of
+  **both families** through it except the relay's own addresses (every one its name resolves to,
+  IPv4 and IPv6) and the local networks (the tunnel never carries itself; the printer still
+  works). One builder makes both OSes' routes (`vpn::plan_routes`). IPv6 goes through the relay as
+  IPv4 does (the relay connects out over IPv6); with a unique local source address the OS tries a
+  site's IPv4 first (RFC 6724), so IPv6 is used mostly where a site has nothing else. Until
+  2026-11-14 only IPv4 was routed, and with the kill switch off an app's IPv6 went around the
+  tunnel (found by `docs/plans/phone-vpn.md` S5). **Block when the tunnel is down**
   (`tunnel_block`, off by default) keeps traffic in the tunnel while it is down. The interface is
   the OS's, behind `vpn::os_port` (D9): on the Mac a Network Extension packet tunnel, a thin pump in
   the app's bundle that hands packets to the add-on over loopback after a token, with
   `includeAllNetworks` as the kill switch (`vpn_mac.mm`, `mac_tunnel/`; Apple's entitlement owed,
   [12](12-decision-log.md#driftwire)); on Windows Wintun, routes `0.0.0.0/1` and `128.0.0.0/1`,
-  the relay's own route kept, DNS on the adapter, and the kill switch as WFP filters in a sublayer of
-  Driftwire's own (only the tunnel, the relay, loopback, the local networks and DHCP out; not a
+  `::/1` and `8000::/1` (IPv4 only where the machine has IPv6 off), the relay's own routes kept
+  (both families), DNS on the adapter, and the kill switch as WFP filters in a sublayer of
+  Driftwire's own (only the tunnel, the relay, loopback, the local networks and DHCP and DHCPv6 out; not a
   dynamic session, so they outlive a crash, and go at stop, the next start or a reboot)
   (`vpn_win.cpp`; the DLL's licence and running elevated owed); none on Linux yet. The Mac provider
   builds and embeds with `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON` (`cmake/darwin-tunnel.cmake`; `macpack.py`

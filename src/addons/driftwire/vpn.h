@@ -17,9 +17,9 @@
 //                DNS through IP Helper.
 //   vpn_none.cpp Linux (until its host reaches Driftwire) and the tests.
 // What the OS side sets (settings): an address and a DNS server inside the
-// tunnel, the default route through it, the relay's own address and the
-// local networks left out (the tunnel never carries itself, and the printer
-// still works), and with the kill switch, nothing but the tunnel while it is
+// tunnel, the default route through it for IPv4 and IPv6 both (plan_routes),
+// the relay's own addresses and the local networks left out (the tunnel
+// never carries itself, and the printer still works), and with the kill switch, nothing but the tunnel while it is
 // down (Block when the tunnel is down, off by default).
 #pragma once
 
@@ -61,12 +61,38 @@ struct settings {
   std::string address4 = "198.18.0.1";  // the interface's (RFC 2544 benchmarking: never a real network)
   int prefix4 = 30;
   std::string dns4 = "198.18.0.2";      // answered through the relay's resolver (kDnsHost)
+  // IPv6 too, or an app's IPv6 would go around the tunnel: an address
+  // in a unique local /64 of Driftwire's own (RFC 4193; never routed on the
+  // internet). A unique local source makes the OS try a site's IPv4 first
+  // (RFC 6724 rule 5), so IPv6 goes through the relay mostly where a site
+  // has nothing else, and the relay connects out over IPv6 (splice.h).
+  std::string address6 = "fd5d:7269:6674::1";
+  int prefix6 = 64;
   std::uint16_t mtu = static_cast<std::uint16_t>(kMtu);
-  std::vector<net::address> exclude;     // the relay server's own addresses
-  std::vector<net::subnet> exclude_nets;  // the local networks
+  std::vector<net::address> exclude;     // the relay server's own addresses, IPv4 and IPv6
+  std::vector<net::subnet> exclude_nets;  // the local networks, IPv4 and IPv6
   bool kill_switch = false;
   std::string relay_name;                // shown by the OS ("Driftwire through <relay>")
 };
+
+// The routes both OS halves set, from `settings` (pure; tested): every
+// address of both families through the tunnel, and around it the relay's own
+// addresses (/32, /128) and the local networks (each its network address).
+// Left out of the exclusions: what would take everything (a prefix of 0), an
+// IPv6 network wider than a /48 (kMinLocalPrefix6),
+// what is not an address of its family, duplicates, and a network holding
+// the tunnel's own address (a stale interface of ours). An exclusion is by
+// the route it had before; the OS keeps a more specific one first.
+inline constexpr int kMinLocalPrefix6 = 48;  // an IPv6 network wider is never left out
+struct route_plan {
+  std::vector<net::subnet> include4, include6;
+  std::vector<net::subnet> exclude4, exclude6;
+};
+enum class route_style {
+  default_route,  // 0.0.0.0/0 and ::/0 (Network Extension: NEIPv4Route.default())
+  halves,         // 0.0.0.0/1 + 128.0.0.0/1, ::/1 + 8000::/1: beside the default route, never replacing it (Windows)
+};
+[[nodiscard]] route_plan plan_routes(const settings& s, route_style style);
 
 class os_port {
  public:

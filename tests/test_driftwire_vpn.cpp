@@ -9,6 +9,7 @@
 // approval and are not run here.
 #include "driftwire_fixture.h"
 
+#include <algorithm>
 #include <cctype>
 #include <deque>
 
@@ -22,6 +23,18 @@ namespace relay = mv::driftwire::relay;
 namespace {
 
 constexpr const char* kKey = "TEST-RELAY-KEY-0123456789";
+
+vpn::flow v6_flow(const char* src, std::uint16_t sport, const char* dst, std::uint16_t dport,
+                  std::uint8_t proto = vpn::kTcp) {
+  vpn::flow f;
+  f.v6 = true;
+  f.proto = proto;
+  f.src = *sp::net::parse_address(src);
+  f.dst = *sp::net::parse_address(dst);
+  f.sport = sport;
+  f.dport = dport;
+  return f;
+}
 
 vpn::flow v4_flow(const char* src, std::uint16_t sport, const char* dst, std::uint16_t dport,
                   std::uint8_t proto = vpn::kTcp) {
@@ -96,14 +109,15 @@ std::optional<seen> next_tcp(wire& w, int ms = 3000) {
   return seen{r->tcp, std::string(r->payload.begin(), r->payload.end())};
 }
 
-// A TCP server on loopback that answers each connection's bytes upper-cased.
+// A TCP server on loopback that answers each connection's bytes upper-cased
+// (`both`: IPv6's loopback too, on a dual-stack listener).
 struct tcp_echo {
   std::unique_ptr<sp::net::listener> l;
   std::thread t;
   std::atomic<bool> stop{false};
   std::vector<std::thread> conns;
-  tcp_echo() {
-    auto x = sp::net::listen(true);
+  explicit tcp_echo(bool both = false) {
+    auto x = both ? sp::net::listen_internet(0, false) : sp::net::listen(true);
     REQUIRE(x);
     l = std::move(*x);
     t = std::thread([this] {
@@ -142,8 +156,8 @@ struct udp_echo {
   std::unique_ptr<sp::net::udp_socket> s;
   std::thread t;
   std::atomic<bool> stop{false};
-  udp_echo() {
-    auto x = sp::net::open_udp(false, 1, true);
+  explicit udp_echo(bool v6 = false) {
+    auto x = sp::net::open_udp(v6, 1, true);
     REQUIRE(x);
     s = std::move(*x);
     t = std::thread([this] {
@@ -502,6 +516,7 @@ TEST_CASE("driftwire vpn: All traffic (VPN) runs instead of the proxy, from the 
   // What the OS side was told: the relay left out, and the local networks.
   REQUIRE_FALSE(last->exclude.empty());
   CHECK(sp::net::address_text(last->exclude[0]) == "127.0.0.1");
+  CHECK(sp::net::parse_address(last->address6).has_value());  // IPv6 claimed too
   CHECK_FALSE(last->kill_switch);
   v = eng.snapshot();
   const auto tree = sp::build_tree(v);
@@ -517,4 +532,165 @@ TEST_CASE("driftwire vpn: All traffic (VPN) runs instead of the proxy, from the 
   CHECK(*stops >= 2);
   eng.on_event("tunnel", 2, "false");
   REQUIRE(eventually([&] { return eng.snapshot().tunnel_address.empty(); }));
+}
+
+// ---- IPv6 (the leak with the kill switch off) -----------------------------------------------
+
+namespace {
+
+std::string text(const sp::net::subnet& n) { return sp::net::address_text(n.base) + "/" + std::to_string(n.prefix); }
+std::vector<std::string> texts(const std::vector<sp::net::subnet>& all) {
+  std::vector<std::string> out;
+  for (const auto& n : all) out.push_back(text(n));
+  return out;
+}
+
+vpn::settings leaky_machine() {
+  vpn::settings s;  // the kill switch off, as by default
+  s.exclude = {*sp::net::parse_address("203.0.113.7"), *sp::net::parse_address("2001:db8:7::7"),
+               *sp::net::parse_address("203.0.113.7")};  // a name's A, AAAA, and the A again
+  const auto net = [](const char* a, int p) { return sp::net::subnet{*sp::net::parse_address(a), p}; };
+  s.exclude_nets = {
+      net("192.168.1.23", 24),        // the LAN, as an interface's address
+      net("2001:db8:aa:1::23", 64),   // its IPv6 network
+      net("fe80::1c2b:3a4d", 64),     // link-local
+      net("0.0.0.0", 0),              // a default route's "network": never left out
+      net("::", 0),
+      net("198.18.0.1", 30),          // a stale interface of ours
+      net("fd5d:7269:6674::1", 64),
+      net("10.1.2.203", 30),          // off a byte boundary: 10.1.2.200/30
+      net("10.1.2.201", 30),          // the same network again
+      net("2001:db8:bb:ff::9", 60),   // a delegated /60: 2001:db8:bb:f0::/60
+      net("2002::", 16),              // 6to4: never a local network
+      net("2001::", 32),              // Teredo
+      net("10.0.0.1", 33),            // not a prefix of its family
+  };
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire vpn: routes on a Mac claim IPv6 too, the relay and the local networks left out",
+          "[driftwire][driftwire-vpn]") {
+  const auto s = leaky_machine();
+  CHECK_FALSE(s.kill_switch);
+  CHECK(sp::net::parse_address(s.address6)->v6);
+  CHECK_FALSE(sp::net::is_public(*sp::net::parse_address(s.address6)));  // unique local: never on the internet
+  const auto p = vpn::plan_routes(s, vpn::route_style::default_route);
+  // Network Extension: NEIPv4Route.default() and NEIPv6Route.default() (prefix 0).
+  CHECK(texts(p.include4) == std::vector<std::string>{"0.0.0.0/0"});
+  CHECK(texts(p.include6) == std::vector<std::string>{"::/0"});
+  CHECK(texts(p.exclude4) == std::vector<std::string>{"203.0.113.7/32", "192.168.1.0/24", "10.1.2.200/30"});
+  CHECK(texts(p.exclude6) ==
+        std::vector<std::string>{"2001:db8:7::7/128", "2001:db8:aa:1::/64", "fe80::/64", "2001:db8:bb:f0::/60"});
+}
+
+TEST_CASE("driftwire vpn: routes on Windows claim IPv6 in two halves, the relay and the local networks left out",
+          "[driftwire][driftwire-vpn]") {
+  const auto s = leaky_machine();
+  const auto p = vpn::plan_routes(s, vpn::route_style::halves);
+  CHECK(texts(p.include4) == std::vector<std::string>{"0.0.0.0/1", "128.0.0.0/1"});
+  CHECK(texts(p.include6) == std::vector<std::string>{"::/1", "8000::/1"});
+  // Together the halves are every address of their family.
+  const auto holds = [](const sp::net::subnet& n, const sp::net::address& a) {
+    for (int bit = 0; bit < n.prefix; ++bit) {
+      const auto i = static_cast<std::size_t>(bit / 8);
+      const int m = 0x80 >> (bit % 8);
+      if ((a.bytes[i] & m) != (n.base.bytes[i] & m)) return false;
+    }
+    return true;
+  };
+  for (const char* a : {"2606:4700::1111", "::ffff:1.2.3.4", "fe00::1", "8000::", "7fff:ffff::1", "ff02::1"}) {
+    const auto addr = *sp::net::parse_address(a);
+    CHECK(std::count_if(p.include6.begin(), p.include6.end(), [&](const auto& n) { return holds(n, addr); }) == 1);
+  }
+  CHECK(texts(p.exclude4) == texts(vpn::plan_routes(s, vpn::route_style::default_route).exclude4));
+  CHECK(texts(p.exclude6) ==
+        std::vector<std::string>{"2001:db8:7::7/128", "2001:db8:aa:1::/64", "fe80::/64", "2001:db8:bb:f0::/60"});
+  // The kill switch changes what is blocked, never the routes.
+  auto blocked = s;
+  blocked.kill_switch = true;
+  CHECK(texts(vpn::plan_routes(blocked, vpn::route_style::halves).exclude6) == texts(p.exclude6));
+}
+
+TEST_CASE("driftwire vpn: an app's IPv6 goes through the relay, and is never passed on untouched",
+          "[driftwire][driftwire-vpn]") {
+  tcp_echo te(true);
+  udp_echo ue6(true);
+  // A machine without IPv6 loopback (some CI containers) cannot run this.
+  if (!sp::net::connect({"::1", te.port()}, 2000)) SKIP("no IPv6 loopback here");
+  auto server = relay::server::start(relay_options(te.port(), ue6.port()));
+  REQUIRE(server);
+  auto [ours, os_side] = loopback_pair();
+  auto os = vpn::framed_device(std::move(os_side));
+  vpn::runner::options o;
+  o.dial.relay = "127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey;
+  o.dev = vpn::framed_device(std::move(ours));
+  auto r = vpn::runner::start(std::move(o));
+  REQUIRE(r);
+  std::vector<std::uint8_t> buf(65536);
+  std::vector<std::uint8_t> keep;
+  const auto next_from_vpn = [&](std::uint8_t proto) -> std::optional<vpn::parsed> {
+    for (int i = 0; i < 50; ++i) {
+      auto n = os->read(buf, 5000);
+      if (!n) return std::nullopt;
+      keep.assign(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+      auto p = vpn::parse(keep);
+      if (p && p->f.proto == proto) return p;
+    }
+    return std::nullopt;
+  };
+  const char* me = "fd5d:7269:6674::1";  // the tunnel's IPv6 address (vpn.h settings)
+  // A TCP SYN to an IPv6 address: answered by the stack, carried by the relay.
+  app_tcp a{v6_flow(me, 40200, "::1", te.port())};
+  REQUIRE(os->write(a.packet(vpn::kSyn)));
+  auto synack = next_from_vpn(vpn::kTcp);
+  REQUIRE(synack);
+  CHECK(synack->f.v6);
+  CHECK(synack->f == reversed(a.f));
+  CHECK(synack->tcp.flags == (vpn::kSyn | vpn::kAck));
+  a.seq = 1001;
+  a.ack = synack->tcp.seq + 1;
+  REQUIRE(os->write(a.packet(vpn::kAck)));
+  REQUIRE(os->write(a.packet(vpn::kAck | vpn::kPsh, "over ipv6")));
+  std::string got;
+  for (int i = 0; i < 20 && got.size() < 9; ++i) {
+    auto p = next_from_vpn(vpn::kTcp);
+    REQUIRE(p);
+    CHECK(p->f.v6);
+    got.append(p->payload.begin(), p->payload.end());
+  }
+  CHECK(got == "OVER IPV6");
+  CHECK(eventually([&] { return r->get()->state().tcp_made == 1; }));
+  // A UDP datagram to an IPv6 address: a datagram flow at the relay.
+  const auto d = v6_flow(me, 5400, "::1", ue6.port(), vpn::kUdp);
+  REQUIRE(os->write(vpn::make_udp(reversed(d), bytes("datagram over ipv6"))));
+  auto back = next_from_vpn(vpn::kUdp);
+  REQUIRE(back);
+  CHECK(back->f == reversed(d));
+  CHECK(std::string(back->payload.begin(), back->payload.end()) == "DATAGRAM OVER IPV6");
+  const auto forwarded = (*server)->snapshot().forwarded;
+  CHECK(forwarded >= 2);
+  // Somewhere the relay will not go (a port it does not forward): the app's
+  // connection is reset, and nothing reaches the address but by the relay.
+  app_tcp refused{v6_flow(me, 40201, "::1", static_cast<std::uint16_t>(te.port() == 9 ? 10 : 9))};
+  REQUIRE(os->write(refused.packet(vpn::kSyn)));
+  bool reset = false;
+  for (int i = 0; i < 10 && !reset; ++i) {
+    auto p = next_from_vpn(vpn::kTcp);
+    REQUIRE(p);
+    if (p->f.sport != refused.f.dport || p->f.dport != refused.f.sport) continue;
+    if (p->tcp.flags & vpn::kSyn) {  // accepted first: the stack answers before the relay does
+      refused.seq = 1001;
+      refused.ack = p->tcp.seq + 1;
+      REQUIRE(os->write(refused.packet(vpn::kAck)));
+      continue;
+    }
+    reset = (p->tcp.flags & (vpn::kRst | vpn::kFin)) != 0;
+  }
+  CHECK(reset);
+  CHECK(eventually([&] { return r->get()->state().failed >= 1; }));
+  CHECK((*server)->snapshot().forwarded == forwarded);  // refused there, not carried around it
+  CHECK((*server)->snapshot().forward_refused >= 1);
+  r->reset();
 }

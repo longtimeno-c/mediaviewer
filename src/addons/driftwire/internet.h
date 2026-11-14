@@ -205,6 +205,10 @@ class way_in {
 // "<address>:<port>", or "<name>:<port>" resolved (the relay server only:
 // the person typed it). nullopt: neither.
 [[nodiscard]] std::optional<net::endpoint> relay_endpoint(const std::string& text);
+// Every address "<address or name>:<port>" stands for, IPv4 and IPv6 (a
+// name resolved once, here): what the VPN leaves out of its routes, since the
+// dialer may reach the relay at any of them. Empty: neither.
+[[nodiscard]] std::vector<net::address> relay_addresses(const std::string& text);
 // The relay field, "<address or name>:<port>#<key>", split (not resolved);
 // nullopt with `why` (the window's words) when it is not one.
 struct relay_server_field {

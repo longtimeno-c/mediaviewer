@@ -143,13 +143,28 @@ class mac_port final : public os_port {
     for (const auto& n : s.exclude_nets) {
       [nets addObject:@{@"base" : @(net::address_text(n.base).c_str()), @"prefix" : @(n.prefix)}];
     }
+    // The routes, both families (plan_routes): the provider sets these as
+    // they are. "exclude" and "excludeNets" stay for a provider from before
+    // IPv6, which reads only those.
+    const route_plan plan = plan_routes(s, route_style::default_route);
+    const auto routes = [](const std::vector<net::subnet>& all) {
+      NSMutableArray* out = [NSMutableArray array];
+      for (const auto& n : all) [out addObject:@{@"base" : @(net::address_text(n.base).c_str()), @"prefix" : @(n.prefix)}];
+      return out;
+    };
     NSDictionary* config = @{
       @"port" : @((*listener)->port()),
       @"token" : @(token.c_str()),
       @"address4" : @(s.address4.c_str()),
       @"prefix4" : @(s.prefix4),
       @"dns4" : @(s.dns4.c_str()),
+      @"address6" : @(s.address6.c_str()),
+      @"prefix6" : @(s.prefix6),
       @"mtu" : @(s.mtu),
+      @"include4" : routes(plan.include4),
+      @"include6" : routes(plan.include6),
+      @"exclude4" : routes(plan.exclude4),
+      @"exclude6" : routes(plan.exclude6),
       @"exclude" : exclude,
       @"excludeNets" : nets,
     };

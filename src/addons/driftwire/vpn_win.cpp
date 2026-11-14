@@ -13,16 +13,20 @@
 // app runs as the person. Until an elevated helper exists (owed), start()
 // works only when MediaViewer runs elevated, and says so otherwise.
 //
-// Routes: 0.0.0.0/1 and 128.0.0.0/1 through the adapter (they win over the
-// default route without touching it), and the relay's own address through
-// the route it had before. The local networks keep their own, more specific,
-// routes. DNS: the adapter's resolver is the tunnel's (198.18.0.2), with the
-// lowest interface metric.
+// Routes (plan_routes, route_style::halves): 0.0.0.0/1 and 128.0.0.0/1, and
+// ::/1 and 8000::/1, through the adapter (they win over the default routes
+// without touching them; without the IPv6 pair an app's IPv6 went around the
+// tunnel), and the relay's own addresses, both families, through the route
+// each had before. The local networks keep their own, more specific, routes.
+// The adapter has an IPv6 address of the tunnel's (vpn.h settings); where
+// IPv6 is off on this machine, it has none to leak, and only IPv4 is set.
+// DNS: the adapter's resolver is the tunnel's (198.18.0.2), with the lowest
+// interface metric for both families.
 //
 // Block when the tunnel is down: WFP filters in a sublayer of Driftwire's
 // own (kSublayer) let out only the tunnel's adapter, the relay's own
-// address, loopback, the local networks and DHCP, and block everything
-// else, IPv4 and IPv6. Not a dynamic session: the filters outlive a crash
+// addresses, loopback, the local networks and DHCP (v4 and v6), and block
+// everything else, IPv4 and IPv6. Not a dynamic session: the filters outlive a crash
 // (a kill switch that vanished with the process would leak), and are taken
 // away by stop(), by the next start, or by a reboot (they are not persistent).
 #include <winsock2.h>
@@ -163,7 +167,7 @@ struct wfp {
     return ::FwpmFilterAdd0(engine, &f, nullptr, &id) == ERROR_SUCCESS;
   }
   // Only the tunnel, the relay, loopback, the local networks and DHCP out.
-  bool block(const NET_LUID& tunnel, const settings& s) {
+  bool block(const NET_LUID& tunnel, const route_plan& plan) {
     clear();
     if (!open()) return false;
     if (::FwpmTransactionBegin0(engine, 0) != ERROR_SUCCESS) return false;
@@ -189,39 +193,34 @@ struct wfp {
       lo.conditionValue.type = FWP_UINT32;
       lo.conditionValue.uint32 = FWP_CONDITION_FLAG_IS_LOOPBACK;
       ok = ok && add(layer, FWP_ACTION_PERMIT, 14, &lo, 1);
-      if (v4) {
-        // The relay's own address, the local networks, DHCP's broadcast.
-        for (const auto& a : s.exclude) {
-          if (a.v6) continue;
-          FWPM_FILTER_CONDITION0 r{};
-          r.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
-          r.matchType = FWP_MATCH_EQUAL;
-          r.conditionValue.type = FWP_UINT32;
-          r.conditionValue.uint32 = static_cast<UINT32>(a.bytes[0]) << 24 | static_cast<UINT32>(a.bytes[1]) << 16 |
-                                    static_cast<UINT32>(a.bytes[2]) << 8 | a.bytes[3];
-          ok = ok && add(layer, FWP_ACTION_PERMIT, 13, &r, 1);
-        }
-        for (const auto& n : s.exclude_nets) {
-          if (n.base.v6 || n.prefix <= 0 || n.prefix > 32) continue;
-          FWP_V4_ADDR_AND_MASK m{};
-          m.addr = static_cast<UINT32>(n.base.bytes[0]) << 24 | static_cast<UINT32>(n.base.bytes[1]) << 16 |
-                   static_cast<UINT32>(n.base.bytes[2]) << 8 | n.base.bytes[3];
-          m.mask = n.prefix == 32 ? 0xFFFFFFFFu : ~(0xFFFFFFFFu >> n.prefix);
-          m.addr &= m.mask;
-          FWPM_FILTER_CONDITION0 r{};
-          r.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
-          r.matchType = FWP_MATCH_EQUAL;
+      // The relay's own addresses and the local networks (plan_routes'
+      // exclusions: the relay's as /32 and /128), and DHCP.
+      for (const auto& n : v4 ? plan.exclude4 : plan.exclude6) {
+        FWPM_FILTER_CONDITION0 r{};
+        r.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+        r.matchType = FWP_MATCH_EQUAL;
+        FWP_V4_ADDR_AND_MASK m4{};
+        FWP_V6_ADDR_AND_MASK m6{};
+        if (v4) {
+          m4.addr = static_cast<UINT32>(n.base.bytes[0]) << 24 | static_cast<UINT32>(n.base.bytes[1]) << 16 |
+                    static_cast<UINT32>(n.base.bytes[2]) << 8 | n.base.bytes[3];
+          m4.mask = n.prefix >= 32 ? 0xFFFFFFFFu : ~(0xFFFFFFFFu >> n.prefix);
           r.conditionValue.type = FWP_V4_ADDR_MASK;
-          r.conditionValue.v4AddrMask = &m;
-          ok = ok && add(layer, FWP_ACTION_PERMIT, 13, &r, 1);
+          r.conditionValue.v4AddrMask = &m4;
+        } else {
+          std::memcpy(m6.addr, n.base.bytes.data(), 16);
+          m6.prefixLength = static_cast<UINT8>(n.prefix);
+          r.conditionValue.type = FWP_V6_ADDR_MASK;
+          r.conditionValue.v6AddrMask = &m6;
         }
-        FWPM_FILTER_CONDITION0 dhcp{};
-        dhcp.fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
-        dhcp.matchType = FWP_MATCH_EQUAL;
-        dhcp.conditionValue.type = FWP_UINT16;
-        dhcp.conditionValue.uint16 = 67;
-        ok = ok && add(layer, FWP_ACTION_PERMIT, 12, &dhcp, 1);
+        ok = ok && add(layer, FWP_ACTION_PERMIT, 13, &r, 1);
       }
+      FWPM_FILTER_CONDITION0 dhcp{};
+      dhcp.fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+      dhcp.matchType = FWP_MATCH_EQUAL;
+      dhcp.conditionValue.type = FWP_UINT16;
+      dhcp.conditionValue.uint16 = v4 ? 67 : 547;  // DHCP's server, DHCPv6's
+      ok = ok && add(layer, FWP_ACTION_PERMIT, 12, &dhcp, 1);
       // Everything else.
       ok = ok && add(layer, FWP_ACTION_BLOCK, 0, nullptr, 0);
     }
@@ -248,6 +247,33 @@ bool ipv4(const std::string& text, IN_ADDR& out) {
   if (!a || a->v6) return false;
   std::memcpy(&out, a->bytes.data(), 4);
   return true;
+}
+
+// How long start() waits for the adapter's interface of a family to appear.
+constexpr int kInterfaceWaits = 20, kInterfaceWaitMs = 100;
+
+// Whether this machine has a route to the IPv6 internet (any global unicast
+// address: 2000::/3), so that IPv6 left out of the tunnel would leak.
+bool ipv6_way_out() {
+  SOCKADDR_INET dst{};
+  dst.Ipv6.sin6_family = AF_INET6;
+  dst.Ipv6.sin6_addr.s6_addr[0] = 0x20;  // 2000::1, a global unicast address
+  dst.Ipv6.sin6_addr.s6_addr[15] = 1;
+  MIB_IPFORWARD_ROW2 best{};
+  SOCKADDR_INET src{};
+  return ::GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &src) == NO_ERROR;
+}
+
+SOCKADDR_INET sockaddr_of(const net::address& a) {
+  SOCKADDR_INET s{};
+  if (a.v6) {
+    s.Ipv6.sin6_family = AF_INET6;
+    std::memcpy(&s.Ipv6.sin6_addr, a.bytes.data(), 16);
+  } else {
+    s.Ipv4.sin_family = AF_INET;
+    std::memcpy(&s.Ipv4.sin_addr, a.bytes.data(), 4);
+  }
+  return s;
 }
 
 class wintun_device final : public device {
@@ -304,20 +330,22 @@ class win_port final : public os_port {
     if (!w_.load()) return err(status::unsupported_format);
     if (!elevated()) return err(status::permission_denied);  // owed: an elevated helper
     stop_locked();
-    // The route to the relay before ours exist: kept for it alone.
-    for (const auto& a : s.exclude) {
-      if (a.v6) continue;
-      SOCKADDR_INET dst{};
-      dst.Ipv4.sin_family = AF_INET;
-      std::memcpy(&dst.Ipv4.sin_addr, a.bytes.data(), 4);
-      MIB_IPFORWARD_ROW2 best{};
-      SOCKADDR_INET src{};
-      if (::GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &src) == NO_ERROR) {
+    const route_plan plan = plan_routes(s, route_style::halves);
+    // Each exclusion's route before ours exist, kept for it alone where the
+    // route it takes now is less specific (the relay's /32 and /128; a local
+    // network keeps its own on-link route, as specific as it).
+    for (const auto* list : {&plan.exclude4, &plan.exclude6}) {
+      for (const auto& n : *list) {
+        const SOCKADDR_INET dst = sockaddr_of(n.base);
+        MIB_IPFORWARD_ROW2 best{};
+        SOCKADDR_INET src{};
+        if (::GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &src) != NO_ERROR) continue;
+        if (best.DestinationPrefix.PrefixLength >= n.prefix) continue;
         MIB_IPFORWARD_ROW2 r;
         ::InitializeIpForwardEntry(&r);
         r.InterfaceLuid = best.InterfaceLuid;
         r.DestinationPrefix.Prefix = dst;
-        r.DestinationPrefix.PrefixLength = 32;
+        r.DestinationPrefix.PrefixLength = static_cast<UINT8>(n.prefix);
         r.NextHop = best.NextHop;
         r.Protocol = MIB_IPPROTO_NETMGMT;
         r.Metric = 0;
@@ -346,27 +374,73 @@ class win_port final : public os_port {
       stop_locked();
       return err(status::io);
     }
-    // Its metric, so its DNS server is asked first; its MTU.
-    MIB_IPINTERFACE_ROW iface;
-    ::InitializeIpInterfaceEntry(&iface);
-    iface.InterfaceLuid = luid;
-    iface.Family = AF_INET;
-    if (::GetIpInterfaceEntry(&iface) == NO_ERROR) {
-      iface.UseAutomaticMetric = FALSE;
-      iface.Metric = 1;
-      iface.NlMtu = s.mtu;
-      iface.SitePrefixLength = 0;
-      (void)::SetIpInterfaceEntry(&iface);
+    // Its metric, so its DNS server is asked first; its MTU. IPv6 as well:
+    // a new adapter's interfaces come one family at a time, so its IPv6 one
+    // is waited for. Without it the tunnel goes on with IPv4 alone only when
+    // this machine has no IPv6 way out at all (nothing to leak); otherwise
+    // it does not start (failing closed: IPv6 around the tunnel is the leak).
+    bool v6 = false;
+    for (const ADDRESS_FAMILY family : {static_cast<ADDRESS_FAMILY>(AF_INET), static_cast<ADDRESS_FAMILY>(AF_INET6)}) {
+      MIB_IPINTERFACE_ROW iface;
+      ::InitializeIpInterfaceEntry(&iface);
+      iface.InterfaceLuid = luid;
+      iface.Family = family;
+      DWORD got = ::GetIpInterfaceEntry(&iface);
+      for (int i = 0; got == ERROR_NOT_FOUND && i < kInterfaceWaits; ++i) {
+        ::Sleep(kInterfaceWaitMs);  // a worker's call (os_port::start), never the UI's
+        got = ::GetIpInterfaceEntry(&iface);
+      }
+      if (family == AF_INET6) {
+        if (got == ERROR_NOT_FOUND && !ipv6_way_out()) break;
+        if (got != NO_ERROR) {
+          stop_locked();
+          return err(status::io);
+        }
+        v6 = true;
+      }
+      if (got == NO_ERROR) {
+        iface.UseAutomaticMetric = FALSE;
+        iface.Metric = 1;
+        iface.NlMtu = s.mtu;
+        iface.SitePrefixLength = 0;
+        if (family == AF_INET6) {
+          iface.RouterDiscoveryBehavior = RouterDiscoveryDisabled;  // its routes are ours alone
+          iface.DadTransmits = 0;
+        }
+        (void)::SetIpInterfaceEntry(&iface);
+      }
     }
-    // 0.0.0.0/1 and 128.0.0.0/1 through it.
-    for (const char* half : {"0.0.0.0", "128.0.0.0"}) {
+    if (v6) {
+      MIB_UNICASTIPADDRESS_ROW addr6;
+      ::InitializeUnicastIpAddressEntry(&addr6);
+      addr6.InterfaceLuid = luid;
+      const auto a6 = net::parse_address(s.address6);
+      if (!a6 || !a6->v6) {
+        stop_locked();
+        return err(status::invalid_arg);
+      }
+      addr6.Address = sockaddr_of(*a6);
+      addr6.OnLinkPrefixLength = static_cast<UINT8>(s.prefix6);
+      addr6.DadState = IpDadStatePreferred;
+      if (::CreateUnicastIpAddressEntry(&addr6) != NO_ERROR) {
+        stop_locked();
+        return err(status::io);
+      }
+    }
+    // 0.0.0.0/1 and 128.0.0.0/1 through it, and ::/1 and 8000::/1.
+    std::vector<net::subnet> through = plan.include4;
+    if (v6) through.insert(through.end(), plan.include6.begin(), plan.include6.end());
+    for (const auto& half : through) {
       MIB_IPFORWARD_ROW2 r;
       ::InitializeIpForwardEntry(&r);
       r.InterfaceLuid = luid;
-      r.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
-      ipv4(half, r.DestinationPrefix.Prefix.Ipv4.sin_addr);
-      r.DestinationPrefix.PrefixLength = 1;
-      r.NextHop.Ipv4.sin_family = AF_INET;  // on the link
+      r.DestinationPrefix.Prefix = sockaddr_of(half.base);
+      r.DestinationPrefix.PrefixLength = static_cast<UINT8>(half.prefix);
+      if (half.base.v6) {
+        r.NextHop.Ipv6.sin6_family = AF_INET6;  // on the link
+      } else {
+        r.NextHop.Ipv4.sin_family = AF_INET;
+      }
       r.Protocol = MIB_IPPROTO_NETMGMT;
       r.Metric = 0;
       if (::CreateIpForwardEntry2(&r) != NO_ERROR) {
@@ -383,6 +457,16 @@ class win_port final : public os_port {
       d.Flags = DNS_SETTING_NAMESERVER;
       d.NameServer = dns.data();
       (void)::SetInterfaceDnsSettings(guid, &d);
+      if (v6) {
+        // No IPv6 resolver: else Windows gives the interface its site-local
+        // stand-ins (fec0:0:0:ffff::1..3), asked through the tunnel in vain.
+        wchar_t none[] = L"";
+        DNS_INTERFACE_SETTINGS d6{};
+        d6.Version = DNS_INTERFACE_SETTINGS_VERSION1;
+        d6.Flags = DNS_SETTING_NAMESERVER | DNS_SETTING_IPV6;
+        d6.NameServer = none;
+        (void)::SetInterfaceDnsSettings(guid, &d6);
+      }
     }
     session_ = w_.start(adapter_, 0x400000);  // 4 MiB ring
     if (!session_) {
@@ -391,7 +475,7 @@ class win_port final : public os_port {
     }
     // Block when the tunnel is down (a crash's leftovers are swept either way).
     if (s.kill_switch) {
-      if (!wfp_.block(luid, s)) {
+      if (!wfp_.block(luid, plan)) {
         stop_locked();
         return err(status::io);
       }
