@@ -536,6 +536,7 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
       for (const auto& f : report.failures) {
         if (f.problem == mobile::route_problem::wrong_service) r = reach::wrong_service;
       }
+      s.role.store(0);  // what it may do there is no longer known (set_state bumps)
       set_state(s, r);
       break;
     }

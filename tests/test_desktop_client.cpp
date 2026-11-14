@@ -36,6 +36,7 @@
 #include "player/poster.h"
 #include "remote/key.h"
 #include "remote/library.h"
+#include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/net.h"
 #include "wire/secrets.h"
@@ -251,9 +252,19 @@ TEST_CASE("a desktop pairs from the code alone and is listed with the phones", "
   REQUIRE(servers.size() == 1);
   CHECK(servers[0].name == "Home");
   CHECK(servers[0].state == rm::reach::online);
-  // The service keeps it as one more paired device, under the name it gave.
+  // The service keeps it as one more paired device, under the name it gave: as a desktop it may
+  // view and never back up (owner call 1, #686 §2), so it is on the grants list with backup off,
+  // not on the unlimited list a phone from a plain code joins.
   const auto devices = dw::known::load(*h.store);
-  CHECK(std::any_of(devices.begin(), devices.end(), [](const dw::known::device& dv) { return dv.name == "Test Desktop"; }));
+  CHECK_FALSE(std::any_of(devices.begin(), devices.end(), [](const dw::known::device& dv) { return dv.name == "Test Desktop"; }));
+  std::vector<dw::serve::grants::grant> granted;
+  REQUIRE(dw::serve::grants::load(*h.store, granted));
+  const auto desk = std::find_if(granted.begin(), granted.end(), [](const auto& g) { return g.name == "Test Desktop"; });
+  REQUIRE(desk != granted.end());
+  CHECK_FALSE(desk->backup);
+  CHECK(desk->expires == 0);
+  CHECK_FALSE(desk->roots);
+  CHECK_FALSE(desk->guest);
   // The code is single use; and no key reached servers.json.
   CHECK_FALSE(d.lib->pair(code, std::time(nullptr)));
   auto json = mv::io::read_all(utf8(d.dir / "data" / "servers.json"));
@@ -516,11 +527,14 @@ TEST_CASE("unreachable, offline and ended are said plainly", "[desktop-client]")
   CHECK(again->folders[0].offline);
   fs::rename(h.dir / "unplugged", h.photos);
 
-  // Revoked on the host: access ended, not "unreachable".
-  auto devices = dw::known::load(*h.store);
-  std::erase_if(devices, [](const dw::known::device& dv) { return dv.name == "Test Desktop"; });
-  REQUIRE(dw::known::save(*h.store, devices));
-  REQUIRE(dw::known::load(*h.store).size() == devices.size());
+  // Revoked on the host: access ended, not "unreachable". A desktop is on the grants list
+  // (view only), so that is where the owner's revoke takes it from.
+  std::vector<dw::serve::grants::grant> granted;
+  REQUIRE(dw::serve::grants::load(*h.store, granted));
+  const auto before = granted.size();
+  std::erase_if(granted, [](const auto& g) { return g.name == "Test Desktop"; });
+  REQUIRE(granted.size() < before);
+  REQUIRE(dw::serve::grants::save(*h.store, granted));
   d.relaunch();
   CHECK_FALSE(d.lib->list(rm::server_key(*id)));
   CHECK(d.lib->server(*id)->state == rm::reach::access_ended);
