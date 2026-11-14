@@ -90,6 +90,10 @@ struct host_status {
   std::string duckdns;  // the DuckDNS subdomain (host.json's "ddns"), "" for none
   // The keepers' lines (the router, DuckDNS), as the running host wrote them.
   std::vector<std::string> keepers;
+  // "Tray": hosting off (`host pause`), and today's usage and the phones
+  // connected, in the menu's words (host_tray::usage_lines).
+  bool paused = false;
+  std::vector<std::string> stats;
 };
 [[nodiscard]] host_status read_status(const where& w);
 
@@ -101,6 +105,31 @@ struct running_state {
   bool vpn = false, awake = false;
   std::size_t folders = 0, offline = 0;
   std::vector<std::string> keepers;
+  // The tray (docs/plans/self-hosted.md "Tray"):
+  bool paused = false;             // `host pause`
+  bool tls_failed = false;         // the web-site look could not listen
+  // The phones connected now (state.json "clients"): the paired name, how
+  // ("home", "internet", "relay"), since when (unix s), today's bytes, the rate.
+  struct client {
+    std::string name, via;
+    std::int64_t since = 0;
+    std::uint64_t read = 0, written = 0, read_rate = 0, write_rate = 0;
+  };
+  std::vector<client> clients;
+  // Today's bytes in all (state.json "usage"), and per device by name.
+  struct day_device {
+    std::string name;
+    std::uint64_t read = 0, written = 0;
+  };
+  std::string day;
+  std::uint64_t read_today = 0, written_today = 0, read_rate = 0, write_rate = 0;
+  std::vector<day_device> devices_today;
+  // Combined drives (issue #686 §3, PR #692's drives keeper): its state.json
+  // keeper line ("drives      Photos (mirror): healthy", a line per set) and
+  // its "drives_health" number, the worst set (drives::health: 0 healthy,
+  // 1 rebuilding, 2 degraded, 3 offline, 4 failing; -1: no set).
+  std::vector<std::string> drive_lines;  // "Photos (mirror): healthy", the advice after ';' left out
+  int drives_health = -1;
 };
 // The keepers' lines are tidied for a card: "DuckDNS     home…" becomes
 // "DuckDNS: home…", each line of a line trimmed.
@@ -154,6 +183,17 @@ inline constexpr const char* kTokenSecret = "ddns_token";  // ddns::kTokenSecret
 // This computer's address on its own network: on the route to the default
 // gateway, else its first private IPv4. "" when it is on none.
 [[nodiscard]] std::string lan_address();
+
+// The LAN share's addresses as the host's last elevated step left them
+// (`share_state` in <data>/host/serve/secrets, docs/plans/self-host-users-smb.md §7):
+// "\\PC\Photos" and "smb://pc.local/Photos" for each share. Empty: none made.
+// For the person's own screen only, never logged.
+[[nodiscard]] std::vector<std::string> share_addresses(const where& w);
+// `host users apply --input-stdin`'s lines: "NAME<TAB>PASSWORD" for each.
+struct user_password {
+  std::string name, password;
+};
+[[nodiscard]] std::vector<std::string> apply_lines(std::span<const user_password> p);
 
 // The `host share` arguments for one folder.
 [[nodiscard]] std::vector<std::string> share_args(const std::string& path, const std::string& label, bool backup);

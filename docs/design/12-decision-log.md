@@ -60,6 +60,20 @@ for any download. Never hidden (App Review guideline
 Settings names it and where it comes from, and Forget removes it like any library. Cost: a release
 of about 185 MB on GitHub that must stay published, a key to keep, and one more `remote_file`.
 
+**Users of the self-hosted computer, and a LAN SMB share made through one elevated step (owner, 2026-11-14, #686 §2).**
+There is one admin password, the owner's passphrase. Anyone signed in with it, in the app or in the `driftwire`
+CLI, adds and changes other users (`admin`, `change`, `view`). The list is kept in the host service's store
+beside the passphrase, and never holds a password: an SMB password is the OS account's, typed and handed to
+the OS once. This bends call **C3** ("the CLI does not ask for it locally",
+[nas-owner-and-guests.md](../plans/nas-owner-and-guests.md) §3.7) for `host users` only, because the owner asked
+for sign-in in the CLI. The limit is said plainly: whoever can edit the host's files can edit the list, but
+every change to the OS's accounts and shares needs an OS administrator's approval besides. That approval is
+one elevated step (`driftwire host smb-apply`), started by the unprivileged command and approved each time.
+The always-running host still refuses elevation. The share is SMB3 with encryption on that share, has no
+guest access, and is never SMB1. It is LAN only: `host_ports` refuses 137–139, 445 and 3389 whoever asks, which
+keeps self-hosted.md's "never SMB, never RDP". The step changes only accounts and shares it marked as
+MediaViewer's. Plan: [self-host-users-smb.md](../plans/self-host-users-smb.md).
+
 **Claim tokens do not expire (2026-11-10).** Reading one needs access to the share, and that access could write a
 new one, so an expiry adds nothing, while comparing a NAS clock with a file's time could lock a person out.
 
@@ -2170,6 +2184,37 @@ the app's payload** (`build-release.ps1` still refuses it) and is installed once
 (Homebrew, `install.ps1`); the card says so and checks again. Still no second *app*: nothing opens a
 window. Reopen if the owner wants the program shipped inside the app or the add-on (so the card needs
 no install line), or a non-terminal `host name duckdns` for the card to call instead of the files.
+
+**MediaViewer may erase and combine drives, at the owner's explicit request (owner, 2026-11-14;
+issue #686 §3; against the spirit of rule 5).** Rule 5 says never modify an original, and erasing a
+drive is the most dangerous thing the app could do. With the Synology dead, the owner wants the PC to
+be the NAS, two or more drives combined the way a Synology would. So `driftwire host drives combine`
+(and the "This computer" card's drive step, which runs it) may erase the drives the person picks and
+combine them with **the OS's own tools only**, no RAID code of ours: Storage Spaces on Windows (simple,
+two-way mirror, parity), AppleRAID on the Mac (`diskutil appleRAID create mirror|stripe|concat`),
+`mdadm` on Linux later. **Every choice is offered equally** (owner): Separate (nothing erased),
+Mirror (RAID 1), Span (JBOD), Stripe (RAID 0) and Parity (RAID 5, 3+ drives; macOS has none and the
+row says so), side by side with the space each gives, what a dead drive costs and its speed, under the
+line that **RAID is not a backup**. The guards are not optional: each drive's name, size, model and
+what is on it are shown; the person types each drive's name; a drive holding this computer's system,
+the MediaViewer library or catalogue, or a folder the app shares (it may be the only copy) is refused;
+the erase itself needs an administrator once, approved in the OS's own prompt, never by the running
+host (which still refuses elevation); and tests touch only disk images made for them (the test build
+refuses any other disk). Plan: [self-host-drives.md](../plans/self-host-drives.md). Reopen before
+adding any other erase, or RAID code of our own.
+
+**The app keeps itself, and starts at login, while the self-host does (owner, 2026-11-14; issue
+#686 §4, plan "Tray").** The owner asked for a tray / menu-bar icon while hosting "through the app's
+existing background icon code". So the icon is MediaViewer's own #452 background presence, never a
+second app or a tray in `driftwire host`: while the host runs (its `host.lock` held), the app's
+registry holds one kept entry of its own (`set_shell_keep`, "shell": true) that the hosts draw as a
+kept add-on's, and closing the viewer's window hides it to the icon; while the host's start-at-login
+entry is there, the app's own login item is wanted too (it starts hidden, as #452's does), so the
+icon is there after a login with no window opened. The app runs the host's own `pause`, `resume`
+and `quit` (owner-only, through `host.json`; no socket). Reopen if the cost of MediaViewer hidden
+at every login while hosting is too much (then the icon appears only once the app is opened), or
+when Phone access becomes an add-on (#686 §1), which takes this entry over with `keep_alive` /
+`keep_menu`.
 
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from

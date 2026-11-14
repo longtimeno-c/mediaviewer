@@ -49,6 +49,7 @@ add_library(mv_phone STATIC
   ${_P}/qr.cpp ${_P}/qr.h
   ${_P}/bundled.cpp ${_P}/bundled.h
   ${_phone_dir}
+  ${_P}/host_tray.cpp ${_P}/host_tray.h
 )
 target_include_directories(mv_phone PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
 target_link_libraries(mv_phone PUBLIC mv_project_options mv_wire mv_catalogue Threads::Threads

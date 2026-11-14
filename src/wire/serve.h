@@ -73,6 +73,8 @@ inline constexpr const char* kFeatureRelay = "relay";
 // Phone backup (1.1): backup folders and the backup flag on a phone's grant, so the cards
 // show their controls only to a service that has them.
 inline constexpr const char* kFeatureBackup = "backup";
+// The self-hosted computer's users (share_users.h): serve_admin users, user_set, user_remove.
+inline constexpr const char* kFeatureUsers = "users";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
 // Waiters at the relay, one per paired device: the relay's own per-source cap.
@@ -152,6 +154,11 @@ class server {
     // names another drive). Asked wherever the folder's presence is (roots, a failed
     // request, before a write). Empty: the folder alone decides.
     std::function<bool(const root_config&)> root_present;
+    // Self-hosting with combined drives (docs/plans/self-host-drives.md §4): the worst
+    // set's health word ("degraded", "rebuilding", "offline", "failing"; "" when healthy
+    // or none), sent to every session in serve_caps "storage" so a phone can say
+    // "Your server's mirror lost a drive". Any thread; never blocks.
+    std::function<std::string()> storage;
   };
 
   // Listens and returns. status::not_found when the store has no usable
@@ -164,6 +171,23 @@ class server {
 
   [[nodiscard]] std::uint16_t port() const noexcept;
   [[nodiscard]] counters stats() const noexcept;
+  // The devices with a session up now, each once (docs/plans/self-hosted.md
+  // "Tray": the host's menu names the phones connected). Their keys only; the
+  // owner's own session (the desktop that claimed it) is not one of them.
+  [[nodiscard]] std::vector<std::array<std::uint8_t, 32>> connected_devices() const;
+  // "Tray" usage: per paired device (never the owner's own sessions), the file
+  // bytes read and written by this server's sessions so far (ended ones kept),
+  // whether it is connected now, since when and how. Counted with one relaxed
+  // atomic add per chunk; folded here, when the host writes its state.
+  enum class usage_via : std::uint8_t { home, internet, relay };  // its network; direct from away; the person's relay
+  struct device_usage {
+    std::array<std::uint8_t, 32> device{};
+    std::uint64_t read = 0, written = 0;
+    bool connected = false;
+    std::int64_t since_unix = 0;  // the earliest session up now
+    usage_via via = usage_via::internet;
+  };
+  [[nodiscard]] std::vector<device_usage> usage() const;
   [[nodiscard]] std::vector<root_config> roots() const;
   // Reads the paired list now and cuts sessions no longer on it (it is also
   // read on a timer and for every new connection).

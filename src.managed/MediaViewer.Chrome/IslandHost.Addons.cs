@@ -279,6 +279,9 @@ public static partial class IslandHost
             _ = Task.Run(() => StartSlotAddons(guestSession, guest: true));
             return;
         }
+        // "Tray": the server menu while `driftwire host` runs, the first window's alone
+        // (docs/plans/self-hosted.md "Tray"; Phone access itself is an add-on now).
+        HostTrayNative.Start();
         MediaViewerSession session = _folderSession;
         _ = Task.Run(() =>
         {

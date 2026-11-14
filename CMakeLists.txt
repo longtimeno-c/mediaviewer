@@ -868,6 +868,11 @@ add_library(mediaviewer_core SHARED
   src/abi/script_abi.cpp
   src/abi/crash_export.cpp
   src/abi/meta_abi.cpp
+  # The server's menu while `driftwire host` runs (docs/plans/self-hosted.md "Tray"):
+  # the base app's own kept entry; its model is src/addons/phone/host_tray.* (mv_phone).
+  src/abi/host_tray_glue.cpp
+  src/abi/host_tray_abi.cpp
+  src/abi/host_tray_glue.h
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
@@ -883,7 +888,10 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip
+  # Only the server menu's objects (host_tray, self_host) are pulled from it: the
+  # desk, the link and the card are the Phone access add-on's.
+  mv_phone)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <functional>
 #include <optional>
 
 #include "core/json.h"
@@ -36,9 +37,41 @@ struct folder_row {
 };
 struct host_row {
   bool installed = false, set_up = false, running = false, at_login = false;
+  bool paused = false;  // "Tray": hosting turned off
   std::int64_t service_port = 0, offline = 0;
   std::string name, duckdns;
   std::vector<std::string> keepers;
+  std::vector<std::string> stats;  // today's usage and the phones connected, in the menu's words
+};
+struct user_row {
+  std::string name, role;
+  bool every_folder = true;
+  std::vector<std::string> folders;
+  bool applied = false;
+};
+struct disk_row {
+  std::string id, name, facts, refused;
+};
+struct set_row {
+  std::string id, name, kind, state, line;
+  std::vector<std::string> members;
+  [[nodiscard]] bool can_take_a_drive() const {
+    return (kind == "mirror" || kind == "parity") && (state == "degraded" || state == "failing");
+  }
+};
+struct drives_listing {
+  std::string error;
+  std::vector<disk_row> disks;
+  std::vector<set_row> sets;
+};
+struct drive_option {
+  std::string choice, title, why_not, space_words, dead_words, speed_words;
+  bool offered = false, recommended = false, warning = false;
+  [[nodiscard]] bool erases() const { return choice != "separate"; }
+};
+struct drives_choices {
+  std::string not_a_backup;
+  std::vector<drive_option> options;
 };
 struct catalogue_row {
   bool running = false;
@@ -68,6 +101,10 @@ struct view {
   std::string relay;
   std::optional<host_row> host;
   std::string host_step, host_said;
+  std::optional<std::vector<user_row>> users;
+  std::vector<std::string> share_addresses;
+  std::optional<drives_listing> drives;
+  std::optional<drives_choices> choices;
   [[nodiscard]] bool has(std::string_view f) const {
     return std::find(nas_features.begin(), nas_features.end(), f) != nas_features.end();
   }
@@ -187,10 +224,71 @@ view parse(std::string_view text) {
     r.name = s_of(*h, "name");
     r.duckdns = s_of(*h, "duckdns");
     r.keepers = strings_of(*h, "keepers");
+    r.paused = b_of(*h, "paused");
+    r.stats = strings_of(*h, "stats");
     s.host = r;
   }
   s.host_step = s_of(o, "host_step");
   s.host_said = s_of(o, "host_said");
+  if (const json::value* v = o.find("users"); v && v->k == json::kind::array) {
+    std::vector<user_row> list;
+    for (const json::value& u : v->a) {
+      if (!u.str("name") || !u.str("role")) continue;
+      user_row r;
+      r.name = *u.str("name");
+      r.role = *u.str("role");
+      if (const json::value* f = u.find("folders"); f && f->k == json::kind::array) {
+        r.every_folder = false;
+        r.folders = strings_of(u, "folders");
+      }
+      r.applied = b_of(u, "applied");
+      list.push_back(std::move(r));
+    }
+    s.users = std::move(list);
+  }
+  s.share_addresses = strings_of(o, "share_addresses");
+  if (const json::value* d = o.find("drives"); d && d->k == json::kind::object) {
+    drives_listing l;
+    l.error = s_of(*d, "error");
+    if (const json::value* v = d->find("disks"); v && v->k == json::kind::array) {
+      for (const json::value& k : v->a) {
+        if (s_of(k, "id").empty()) continue;
+        l.disks.push_back({s_of(k, "id"), s_of(k, "name"), s_of(k, "facts"), s_of(k, "refused")});
+      }
+    }
+    if (const json::value* v = d->find("sets"); v && v->k == json::kind::array) {
+      for (const json::value& e : v->a) {
+        if (!e.str("id")) continue;
+        set_row r{s_of(e, "id"), s_of(e, "name"), s_of(e, "kind"), s_of(e, "state"), s_of(e, "line"), {}};
+        if (const json::value* m = e.find("members"); m && m->k == json::kind::array) {
+          for (const json::value& x : m->a) r.members.push_back(s_of(x, "id"));
+        }
+        l.sets.push_back(std::move(r));
+      }
+    }
+    s.drives = std::move(l);
+  }
+  if (const json::value* c = o.find("drives_choices"); c && c->k == json::kind::object) {
+    drives_choices ch;
+    ch.not_a_backup = s_of(*c, "not_a_backup");
+    if (const json::value* v = c->find("options"); v && v->k == json::kind::array) {
+      for (const json::value& e : v->a) {
+        if (!e.str("choice")) continue;
+        drive_option p;
+        p.choice = s_of(e, "choice");
+        p.title = s_of(e, "title");
+        p.offered = b_of(e, "offered");
+        p.why_not = s_of(e, "why_not");
+        p.recommended = b_of(e, "recommended");
+        p.warning = b_of(e, "warning");
+        p.space_words = s_of(e, "space_words");
+        p.dead_words = s_of(e, "dead_words");
+        p.speed_words = s_of(e, "speed_words");
+        ch.options.push_back(std::move(p));
+      }
+    }
+    s.choices = std::move(ch);
+  }
   return s;
 }
 
@@ -340,9 +438,281 @@ const std::vector<std::pair<const char*, std::int64_t>>& durations() {
 constexpr const char* kUnlimited = "Until I remove it";
 constexpr std::size_t kRelayKeyMinimum = 16;  // as driftwire-relay takes it
 
+std::string typed_for(const drives_state& d, const std::string& id) {
+  for (const auto& [k, v] : d.typed) {
+    if (k == id) return v;
+  }
+  return {};
+}
+
+std::string joined(const std::vector<std::string>& v, const char* sep) {
+  std::string out;
+  for (const std::string& x : v) {
+    if (!out.empty()) out += sep;
+    out += x;
+  }
+  return out;
+}
+
+// This computer -> Drives (PhoneDrivesView.swift as it stood on 2026-11-14): the
+// sets' health and Replace a drive, then the drives and the five ways to use
+// them, offered equally, with "RAID is not a backup" above them. A combined
+// choice erases: each drive's name is typed before Erase and combine is enabled
+// (the program checks the names again; the OS asks for an administrator).
+void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std::string& me) {
+  const bool idle = !busy;
+  if (s.drives) {
+    for (const set_row& set : s.drives->sets) {
+      const std::string id = row_hash("ds", set.id);
+      row(w, id, set.name, set.line);
+      if (set.can_take_a_drive() && d.replacing != set.id) {
+        button(w, id + "_replace", "Replace a drive\xE2\x80\xA6", !idle, "plain", "Replace the lost drive in " + set.name);
+      }
+      end_row(w);
+      if (d.replacing != set.id) continue;
+      std::vector<const disk_row*> candidates;
+      for (const disk_row& k : s.drives->disks) {
+        if (!k.refused.empty()) continue;
+        if (std::find(set.members.begin(), set.members.end(), k.id) != set.members.end()) continue;
+        candidates.push_back(&k);
+      }
+      if (candidates.empty()) {
+        row(w, "dr_rep_none", "A drive to take its place",
+            "Connect a drive at least as big as the others, then choose Check again.");
+        button(w, "dr_check", "Check again", !idle);
+        end_row(w);
+      } else {
+        row(w, "dr_rep", "A drive to take its place", "Everything on it is erased, and the mirror rebuilds onto it.");
+        std::vector<option> opts{{"", "Choose\xE2\x80\xA6"}};
+        for (const disk_row* k : candidates) opts.push_back({k->id, k->name});
+        choice(w, "dr_rep_pick", "New drive", opts, d.replace_with, !idle);
+        end_row(w);
+        for (const disk_row* k : candidates) {
+          if (k->id != d.replace_with) continue;
+          row(w, "dr_rep_disk", k->name, k->facts);
+          field(w, "dr_rep_typed", "Type " + k->name + " to erase it", d.replace_typed,
+                "Type \xE2\x80\x9C" + k->name + "\xE2\x80\x9D to erase it");
+          end_row(w);
+        }
+      }
+      stack(w, "dr_rep_buttons", 8, "horizontal");
+      button(w, "dr_rep_cancel", "Cancel", !idle);
+      button(w, "dr_rep_go", "Erase and replace", !idle, "destructive", "Erase the new drive and rebuild " + set.name + " onto it");
+      end(w);
+    }
+  }
+  if (!d.open) {
+    row(w, "drives", "Drives", "Share each drive as it is, or erase two or more and combine them into one.");
+    button(w, "dr_open", "Use two or more drives\xE2\x80\xA6", !idle, "plain", "Choose drives on " + me + " for the server");
+    end_row(w);
+  } else if (s.drives) {
+    const drives_listing& l = *s.drives;
+    if (!l.error.empty()) {
+      row(w, "dr_error", "Drives", l.error);
+      end_row(w);
+    }
+    for (const disk_row& k : l.disks) {
+      const std::string id = row_hash("dk", k.id);
+      row(w, id, k.name, k.refused.empty() ? k.facts : k.facts + "\nCan't be erased: " + k.refused);
+      const bool on = std::find(d.picked.begin(), d.picked.end(), k.id) != d.picked.end();
+      toggle(w, id + "_pick", k.name, on, !idle);
+      end_row(w);
+    }
+    if (l.disks.empty()) {
+      row(w, "dr_none", "Drives", "No drives besides " + me + "'s own. Connect the drives and choose Check again.");
+      button(w, "dr_check", "Check again", !idle);
+      end_row(w);
+    }
+    if (!d.picked.empty() && s.choices) {
+      text(w, "dr_not_backup", s.choices->not_a_backup, "heading");
+      stack(w, "dr_options", 8, "horizontal");
+      for (const drive_option& o : s.choices->options) {
+        const std::string id = "dropt_" + o.choice;
+        stack(w, id + "_card", 6, "vertical", "card");
+        text(w, id + "_t", o.title + (d.choice == o.choice ? " \xC2\xB7 chosen" : ""), "heading");
+        if (o.recommended) text(w, id + "_rec", "For photos", "caption");
+        if (o.warning) text(w, id + "_warn", "Risky", "caption");
+        if (o.offered) {
+          text(w, id + "_space", o.space_words, "secondary");
+          text(w, id + "_dead", "If one dies: " + o.dead_words, "secondary");
+          text(w, id + "_speed", o.speed_words, "secondary");
+        } else {
+          text(w, id + "_why", o.why_not, "secondary");
+        }
+        button(w, id, "Choose " + o.title, !o.offered || !idle, d.choice == o.choice ? "primary" : "plain",
+               o.offered ? o.title : o.title + ", not available: " + o.why_not);
+        end(w);
+      }
+      end(w);
+    }
+    const drive_option* chosen = nullptr;
+    if (!d.picked.empty() && s.choices) {
+      for (const drive_option& o : s.choices->options) {
+        if (o.choice == d.choice && o.offered) chosen = &o;
+      }
+    }
+    if (chosen) {
+      std::vector<const disk_row*> disks;
+      for (const std::string& id : d.picked) {
+        for (const disk_row& k : l.disks) {
+          if (k.id == id) disks.push_back(&k);
+        }
+      }
+      if (!chosen->erases()) {
+        row(w, "dr_share_row", "Share each drive as it is", "Nothing is erased. Each drive becomes its own folder for your phone.");
+        button(w, "dr_share", "Share", !idle, "primary", "Share each picked drive as it is");
+        end_row(w);
+      } else {
+        std::vector<std::string> refused;
+        for (const disk_row* k : disks) {
+          if (!k->refused.empty()) refused.push_back(k->name + " can't be erased: " + k->refused);
+        }
+        row(w, "dr_label_row", "Name of the combined drive", "1 to 27 letters, digits, spaces, - or _. It is shared under this name.");
+        field(w, "dr_label", "Name of the combined drive", d.label, "Photos");
+        end_row(w);
+        for (const disk_row* k : disks) {
+          const std::string id = row_hash("dt", k->id);
+          row(w, id + "_row", k->name, k->facts);
+          field(w, id, "Type " + k->name + " to erase it", typed_for(d, k->id),
+                "Type \xE2\x80\x9C" + k->name + "\xE2\x80\x9D to erase it");
+          end_row(w);
+        }
+        row(w, "dr_combine_row", chosen->title + ": erase and combine",
+            refused.empty() ? "Everything on these drives is erased. " + std::string(me == "this Mac" ? "macOS" : "Windows") +
+                                  " asks for an administrator once."
+                            : joined(refused, "\n"));
+        button(w, "dr_combine", "Erase and combine", !idle || !refused.empty(), "destructive",
+               "Erase the picked drives and combine them");
+        end_row(w);
+      }
+    }
+    stack(w, "dr_close_row", 8, "horizontal");
+    button(w, "dr_close", "Close", !idle, "plain", "Close the drives step");
+    end(w);
+  } else if (idle) {
+    row(w, "dr_unlisted", "Drives", "The drives on " + me + " couldn't be listed.");
+    button(w, "dr_check", "Check again");
+    end_row(w);
+  }
+  // "Made "Photos" (mirror, 2 TB); shared as "Photos"." once a run this card asked for ends.
+  if (!d.asked.empty() && idle && s.error.empty() && !s.host_said.empty()) text(w, "dr_outcome", s.host_said, "secondary");
+}
+
+const std::vector<std::pair<const char*, const char*>>& user_roles() {
+  static const std::vector<std::pair<const char*, const char*>> r{
+      {"view", "Can view files"}, {"change", "Can change files"}, {"admin", "Admin"}};
+  return r;
+}
+
+std::string role_label(const std::string& role) {
+  for (const auto& [v, l] : user_roles()) {
+    if (role == v) return l;
+  }
+  return "Can view files";
+}
+
+// This computer -> Users (PhoneUsersView.swift as it stood on 2026-11-14): who
+// may open this computer's shared folders from other computers at home, and
+// with what role. Admin unlock first (the server passphrase); a password is
+// typed in a secure field, handed on once and forgotten.
+void users_rows(writer& w, const view& s, users_state& u, bool busy, const std::string& me, const std::string& Me,
+                const std::function<std::string(const char*)>& sid) {
+  const bool locked = s.nas_passphrase == "set" && s.unlocked_s == 0;
+  row(w, "users", "Users",
+      "People who can open your shared folders from other computers at home, with their own name and password. For your home network only: MediaViewer never opens it on your router.");
+  if (!locked && !u.adding) button(w, "us_add_open", "Add user\xE2\x80\xA6", busy, "plain", "Add a user");
+  end_row(w);
+  if (locked) {
+    row(w, "us_unlock_row", "Unlock as admin",
+        "Enter the server passphrase to add or change users. " + Me + " keeps the key for 10 minutes and never the passphrase.");
+    secure(w, sid("us_unlock"), "Server passphrase");
+    button(w, "us_unlock_go", "Unlock", busy, "primary");
+    end_row(w);
+  } else {
+    for (const user_row& x : s.users ? *s.users : std::vector<user_row>{}) {
+      const std::string id = row_hash("us", x.name);
+      std::string detail = role_label(x.role);
+      if (!x.every_folder && !x.folders.empty()) detail += " \xC2\xB7 " + joined(x.folders, ", ");
+      if (!x.applied) detail += " \xC2\xB7 Waiting for " + me + "'s administrator";
+      row(w, id, x.name, detail);
+      std::vector<option> opts;
+      for (const auto& [v, l] : user_roles()) opts.push_back({v, l});
+      choice(w, id + "_role", "Role for " + x.name, opts, x.role, busy);
+      button(w, id + "_remove", "Remove", busy, "plain", "Remove " + x.name);
+      end_row(w);
+    }
+    if (u.adding) {
+      stack(w, "us_add", 8, "vertical", "card");
+      text(w, "us_name_note", "Name: lowercase letters and digits, starting with a letter. Their sign-in from other computers.",
+           "secondary");
+      field(w, "us_name", "Name", u.name, "anna");
+      std::vector<option> opts;
+      for (const auto& [v, l] : user_roles()) opts.push_back({v, l});
+      choice(w, "us_role", "Role", opts, u.role);
+      text(w, "us_pass_note", "Password: at least 8 characters. Nothing on " + me + " keeps it.", "secondary");
+      secure(w, sid("us_pass"), "Password");
+      secure(w, sid("us_pass2"), "Again");
+      stack(w, "us_add_buttons", 8, "horizontal");
+      button(w, "us_add_cancel", "Cancel");
+      button(w, "us_add_go", "Add", busy, "primary", "Add the user; " + me + " asks for its administrator");
+      end(w);
+      end(w);
+    }
+    bool waiting = false;
+    for (const user_row& x : s.users ? *s.users : std::vector<user_row>{}) waiting = waiting || !x.applied;
+    if (waiting) {
+      row(w, "us_waiting", "Waiting for " + me + "'s administrator",
+          Me + " asks for an administrator to make these accounts and share the folders.");
+      button(w, "us_apply", "Finish\xE2\x80\xA6", busy, "primary", "Finish with " + me + "'s administrator");
+      end_row(w);
+    }
+  }
+  for (const std::string& a : s.share_addresses) {
+    const std::string id = row_hash("sa", a);
+    row(w, id, a, "");
+    w.begin_object().key("type").string("button").key("id").string(id + "_copy").key("label").string("Copy");
+    w.key("style").string("plain").key("copy").string(a).key("help").string("Copy " + a).end_object();
+    end_row(w);
+  }
+}
+
 }  // namespace
 
 std::string screen::row_id(const char* prefix, const std::string& of) { return row_hash(prefix, of); }
+
+bool valid_user_name(std::string_view name) {
+  static const char* const reserved[] = {"admin", "administrator", "administrators", "guest", "guests", "root",
+                                         "nobody", "daemon", "everyone", "system", "users", "user", "wheel",
+                                         "staff", "operator"};
+  if (name.empty() || name.size() > 20 || name[0] < 'a' || name[0] > 'z' || name.back() == '.') return false;
+  for (const char* r : reserved) {
+    if (name == r) return false;
+  }
+  return std::all_of(name.begin(), name.end(), [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+  });
+}
+
+bool good_drive_label(std::string_view label) {
+  if (label.empty() || label.size() > 27 || label.front() == ' ' || label.back() == ' ') return false;
+  return std::all_of(label.begin(), label.end(), [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == ' ' || c == '-' || c == '_';
+  });
+}
+
+bool drive_names_match(const std::vector<std::string>& typed, const std::vector<std::string>& names) {
+  if (names.empty() || typed.size() != names.size()) return false;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (names[i].empty() || trim(typed[i]) != names[i]) return false;
+  }
+  return true;
+}
+
+std::vector<std::string> screen::take_queued() {
+  std::vector<std::string> out;
+  out.swap(queued_);
+  return out;
+}
 
 // ---- words ---------------------------------------------------------------------------------
 
@@ -467,6 +837,42 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     phone_limited_.push_back(p.limited);
     phone_backup_.push_back(p.backup);
   }
+  disk_ids_.clear();
+  disk_names_.clear();
+  set_ids_.clear();
+  set_names_.clear();
+  set_members_.clear();
+  offered_.clear();
+  user_names_.clear();
+  user_roles_.clear();
+  user_folders_.clear();
+  if (s.drives) {
+    for (const disk_row& k : s.drives->disks) {
+      disk_ids_.push_back(k.id);
+      disk_names_.push_back(k.name);
+    }
+    for (const set_row& r : s.drives->sets) {
+      set_ids_.push_back(r.id);
+      set_names_.push_back(r.name);
+      set_members_.push_back(r.members);
+    }
+    // A drive no longer listed is no longer picked.
+    std::erase_if(drives_.picked, [&](const std::string& id) {
+      return std::find(disk_ids_.begin(), disk_ids_.end(), id) == disk_ids_.end();
+    });
+  }
+  if (s.choices) {
+    for (const drive_option& o : s.choices->options) {
+      if (o.offered) offered_.push_back(o.choice);
+    }
+  }
+  if (s.users) {
+    for (const user_row& u : *s.users) {
+      user_names_.push_back(u.name);
+      user_roles_.push_back(u.role);
+      user_folders_.push_back(u.every_folder ? std::vector<std::string>{} : u.folders);
+    }
+  }
   folder_ids_.clear();
   folder_backup_.clear();
   folder_limit_.clear();
@@ -518,6 +924,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "set_passphrase") busy_text = "Setting the passphrase";
   else if (s.busy == "grant") busy_text = "Changing the phone's access";
   else if (s.busy == "host_start") busy_text = "Starting the server";
+  else if (s.busy == "user_set" || s.busy == "user_remove" || s.busy == "users_apply")
+    busy_text = s.host_step == "users" ? "Waiting for " + me + "'s administrator" : std::string("Changing the users");
+  else if (s.busy == "host_drives") busy_text = "Reading the drives";
+  else if (s.busy == "host_drives_choices") busy_text = "Working out the choices";
+  else if (s.busy == "host_drives_combine") busy_text = "Combining the drives. Allow it in the administrator prompt.";
+  else if (s.busy == "host_drives_replace") busy_text = "Replacing the drive. Allow it in the administrator prompt.";
   else if (s.busy == "host_setup") {
     if (s.host_step == "share") busy_text = "Sharing the folders";
     else if (s.host_step == "name") busy_text = "Naming it on DuckDNS";
@@ -535,18 +947,30 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       line = h.at_login ? "Not running. It starts when you log in; Start runs it now."
                         : "Not running, and not set to start at login. Start runs it and keeps it starting at login.";
     } else {
-      line = "Running";
-      line += h.service_port > 0 ? " \xC2\xB7 port " + std::to_string(h.service_port) : " \xC2\xB7 not listening yet";
+      line = h.paused ? "Running, hosting off" : "Running";
+      if (!h.paused) {
+        line += h.service_port > 0 ? " \xC2\xB7 port " + std::to_string(h.service_port) : " \xC2\xB7 not listening yet";
+      }
       if (!h.duckdns.empty()) line += " \xC2\xB7 " + h.duckdns + ".duckdns.org";
       if (h.offline > 0) {
         line += h.offline == 1 ? std::string(" \xC2\xB7 1 drive not connected")
                                : " \xC2\xB7 " + std::to_string(h.offline) + " drives not connected";
       }
+      for (const std::string& k : h.stats) line += "\n" + k;
       for (const std::string& k : h.keepers) line += "\n" + k;
     }
     row(w, "host", h.name.empty() ? Me + " is your server" : Me + " is your server \xC2\xB7 " + h.name, line);
     if (!h.running) button(w, "host_start", "Start", busy, "plain", "Start the server on " + me);
     end_row(w);
+    drives_rows(w, s, drives_, busy, me);
+    // Users of this computer's LAN share (self-host-users-smb.md §8): once it is claimed.
+    if (s.claimed) {
+      if (!users_.refreshed) {
+        users_.refreshed = true;
+        queued_.push_back(R"({"do":"users_refresh"})");
+      }
+      users_rows(w, s, users_, busy, me, Me, sid);
+    }
   }
 
   const auto search_rows = [&] {
@@ -886,6 +1310,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     pick_folder(w, "host_add", "Add a folder or drive to share", "", "Add folder\xE2\x80\xA6", busy);
     pick_folder(w, "host_add_backup", "Add a folder for phones to back up into", "", "Add backup folder\xE2\x80\xA6", busy);
     end_row(w);
+    if (!(s.host && s.host->set_up)) drives_rows(w, s, drives_, busy, me);
     row(w, "duck", "DuckDNS name",
         "Optional, free at duckdns.org: how your phone finds " + me +
             " away from home. DuckDNS learns your home's address, nothing about your files.");
@@ -963,6 +1388,11 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_not_listening") e = "The server started but isn't answering yet. Another program may be using its port.";
   else if (r == "host_no_network") e = "Claimed, but " + me + " isn't on a network, so a phone can't reach it yet.";
   else if (r == "host_failed") e = "The driftwire program couldn't be run.";
+  else if (r == "host_users")
+    e = s.host_said.empty() ? Me + "'s file sharing wasn't changed." : "File sharing: " + s.host_said;
+  else if (r == "host_drives") e = "The drives on " + me + " couldn't be read. Connect them and try again.";
+  else if (r == "host_drives_failed")
+    e = s.host_said.empty() ? "The drives weren't changed." : "The drives weren't changed: " + s.host_said;
   else if (r == "locked_out")
     e = "Too many tries. Try again at " + clock_text(s.locked_until) +
         ", or reset it on the server with driftwire serve passphrase reset.";
@@ -1043,7 +1473,8 @@ struct req {
 
 bool screen::holds_secret() const noexcept {
   return !passphrase_.empty() || !passphrase_again_.empty() || !unlock_with_.empty() || !relay_key_.empty() ||
-         !duck_token_.empty();
+         !duck_token_.empty() || !users_.password.empty() || !users_.password_again.empty() ||
+         !users_.unlock_with.empty();
 }
 
 std::vector<std::string> screen::on_event(std::string_view node, std::uint32_t kind, std::string_view value_json,
@@ -1065,6 +1496,7 @@ std::vector<std::string> screen::on_event(std::string_view node, std::uint32_t k
 std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kind, std::string_view value_json,
                                         std::int64_t /*now*/) {
   std::vector<std::string> out;
+  std::string_view rest_any;  // a row's control after its id (find_row)
   note_.clear();
   const std::string v = kind == kChange || kind == kSubmit ? value_string(value_json) : std::string();
 
@@ -1121,6 +1553,65 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       if (setup_kind_ == "this") out.push_back(req("host_status").done());
     } else if (node == "folder_pick") {
       if (!v.empty()) out.push_back(req("folder").s("path", v).done());
+    } else if (node == "dr_label") {
+      drives_.label = v;
+    } else if (node == "dr_rep_typed") {
+      drives_.replace_typed = v;
+    } else if (node == "dr_rep_pick") {
+      drives_.replace_with = v;
+      drives_.replace_typed.clear();
+    } else if (node == "us_name") {
+      users_.name = v;
+    } else if (node == "us_role") {
+      if (v == "view" || v == "change" || v == "admin") users_.role = v;
+    } else if (node == "us_pass") {
+      users_.password = v;
+    } else if (node == "us_pass2") {
+      users_.password_again = v;
+    } else if (node == "us_unlock") {
+      users_.unlock_with = v;
+      if (kind == kSubmit && !v.empty()) {
+        out.push_back(req("unlock").s("passphrase", v).done());
+        users_.unlock_with.clear();
+      }
+    } else if (std::size_t di = 0; find_row(node, "dk", disk_ids_, di, rest_any)) {
+      // A drive picked or let go: the choices for what is picked now, in the list's order.
+      const std::string id = disk_ids_[di];
+      std::erase(drives_.picked, id);
+      if (value_bool(value_json)) drives_.picked.push_back(id);
+      std::vector<std::string> ordered;
+      for (const std::string& k : disk_ids_) {
+        if (std::find(drives_.picked.begin(), drives_.picked.end(), k) != drives_.picked.end()) ordered.push_back(k);
+      }
+      drives_.picked = ordered;
+      drives_.choice.clear();
+      if (!ordered.empty()) {
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_choices").key("ids").begin_array();
+        for (const std::string& k : ordered) rw.string(k);
+        out.push_back(rw.end_array().end_object().take());
+      }
+    } else if (std::size_t ti = 0; find_row(node, "dt", disk_ids_, ti, rest_any)) {
+      const std::string id = disk_ids_[ti];
+      bool set = false;
+      for (auto& [k, t] : drives_.typed) {
+        if (k == id) {
+          t = v;
+          set = true;
+        }
+      }
+      if (!set) drives_.typed.emplace_back(id, v);
+    } else if (std::size_t ui = 0; find_row(node, "us", user_names_, ui, rest_any)) {
+      if (rest_any == "_role" && (v == "view" || v == "change" || v == "admin")) {
+        writer rw;
+        rw.begin_object().key("do").string("user_set").key("name").string(user_names_[ui]).key("role").string(v);
+        if (!user_folders_[ui].empty()) {
+          rw.key("folders").begin_array();
+          for (const std::string& f : user_folders_[ui]) rw.string(f);
+          rw.end_array();
+        }
+        out.push_back(rw.end_object().take());
+      }
     } else if (node == "host_add" || node == "host_add_backup") {
       const bool backup = node == "host_add_backup";
       const bool there = std::any_of(host_folders_.begin(), host_folders_.end(),
@@ -1273,6 +1764,104 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     }
   } else if (node == "edit_cancel") {
     editing_.clear();
+  } else if (node == "dr_open") {
+    drives_.open = true;
+    out.push_back(req("host_drives").done());
+  } else if (node == "dr_check") {
+    out.push_back(req("host_drives").done());
+  } else if (node == "dr_close") {
+    drives_.open = false;
+    drives_.picked.clear();
+    drives_.choice.clear();
+    drives_.typed.clear();
+  } else if (node.substr(0, 6) == "dropt_") {
+    const std::string c(node.substr(6));
+    if (std::find(offered_.begin(), offered_.end(), c) != offered_.end()) {
+      drives_.choice = c;
+      drives_.typed.clear();
+      if (c != "separate" && drives_.label.empty()) drives_.label = "Photos";
+    }
+  } else if (node == "dr_share" || node == "dr_combine") {
+    const bool erases = drives_.choice != "separate";
+    std::vector<std::string> typed, names;
+    for (const std::string& id : drives_.picked) {
+      typed.push_back(typed_for(drives_, id));
+      for (std::size_t i = 0; i < disk_ids_.size(); ++i) {
+        if (disk_ids_[i] == id) names.push_back(disk_names_[i]);
+      }
+    }
+    if (drives_.picked.empty() || drives_.choice.empty() || (node == "dr_share") == erases) {
+      // nothing chosen, or the other button
+    } else if (erases && !good_drive_label(trim(drives_.label))) {
+      note_ = "Name the combined drive: 1 to 27 letters, digits, spaces, - or _.";
+    } else if (erases && !drive_names_match(typed, names)) {
+      note_ = "Type each drive's name exactly as shown to erase it.";
+    } else {
+      writer rw;
+      rw.begin_object().key("do").string("host_drives_combine").key("choice").string(drives_.choice).key("ids").begin_array();
+      for (const std::string& id : drives_.picked) rw.string(id);
+      rw.end_array();
+      if (erases) {
+        rw.key("label").string(trim(drives_.label)).key("names").begin_array();
+        for (const std::string& t : typed) rw.string(trim(t));
+        rw.end_array();
+      }
+      out.push_back(rw.end_object().take());
+      drives_.asked = "combine";
+      drives_.typed.clear();
+      drives_.choice.clear();
+      drives_.picked.clear();
+    }
+  } else if (node == "dr_rep_cancel") {
+    drives_.replacing.clear();
+  } else if (node == "dr_rep_go") {
+    std::string set_name, name;
+    for (std::size_t i = 0; i < set_ids_.size(); ++i) {
+      if (set_ids_[i] == drives_.replacing) set_name = set_names_[i];
+    }
+    for (std::size_t i = 0; i < disk_ids_.size(); ++i) {
+      if (disk_ids_[i] == drives_.replace_with) name = disk_names_[i];
+    }
+    if (set_name.empty() || name.empty() || !drive_names_match({drives_.replace_typed}, {name})) {
+      note_ = "Choose the new drive and type its name exactly as shown to erase it.";
+    } else {
+      writer rw;
+      rw.begin_object().key("do").string("host_drives_replace").key("set").string(set_name).key("ids").begin_array();
+      rw.string(drives_.replace_with).end_array().key("name").string(trim(drives_.replace_typed));
+      out.push_back(rw.end_object().take());
+      drives_.asked = "replace";
+      drives_.replacing.clear();
+      drives_.replace_with.clear();
+      drives_.replace_typed.clear();
+    }
+  } else if (node == "us_add_open") {
+    users_.adding = true;
+  } else if (node == "us_add_cancel") {
+    users_.adding = false;
+    users_.name.clear();
+    users_.role = "view";
+    users_.password.clear();
+    users_.password_again.clear();
+  } else if (node == "us_add_go") {
+    if (!valid_user_name(users_.name)) {
+      note_ = "A user's name is lowercase letters and digits, starting with a letter, at most 20.";
+    } else if (users_.password.size() < 8) {
+      note_ = "A password needs at least 8 characters.";
+    } else if (users_.password != users_.password_again) {
+      note_ = "The two passwords are not the same.";
+    } else {
+      out.push_back(req("user_set").s("name", users_.name).s("role", users_.role).s("password", users_.password).done());
+      users_.adding = false;
+      users_.name.clear();
+      users_.role = "view";
+    }
+    users_.password.clear();
+    users_.password_again.clear();
+  } else if (node == "us_unlock_go") {
+    if (!users_.unlock_with.empty()) out.push_back(req("unlock").s("passphrase", users_.unlock_with).done());
+    users_.unlock_with.clear();
+  } else if (node == "us_apply") {
+    out.push_back(req("users_apply").done());
   } else if (node == "takeover_ask") {
     out.push_back(req("takeover_ask").done());
   } else if (node == "restart_open") {
@@ -1292,7 +1881,15 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   } else {
     std::size_t i = 0;
     std::string_view rest;
-    if (find_row(node, "ph", phone_keys_, i, rest)) {
+    if (find_row(node, "ds", set_ids_, i, rest)) {
+      if (rest == "_replace") {
+        drives_.replacing = set_ids_[i];
+        drives_.replace_with.clear();
+        drives_.replace_typed.clear();
+      }
+    } else if (find_row(node, "us", user_names_, i, rest)) {
+      if (rest == "_remove") out.push_back(req("user_remove").s("name", user_names_[i]).done());
+    } else if (find_row(node, "ph", phone_keys_, i, rest)) {
       if (rest == "_remove") out.push_back(req("revoke").s("key", phone_keys_[i]).done());
     } else if (find_row(node, "fo", folder_ids_, i, rest)) {
       if (rest == "_stop") {
@@ -1311,6 +1908,11 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
 
 void screen::forget_secrets() {
   if (holds_secret()) ++secret_gen_;
+  users_.password.clear();
+  users_.password_again.clear();
+  users_.unlock_with.clear();
+  users_.adding = false;
+  users_.refreshed = false;  // asked again when the card opens again
   duck_token_.clear();
   relay_key_.clear();
   relay_editing_ = false;

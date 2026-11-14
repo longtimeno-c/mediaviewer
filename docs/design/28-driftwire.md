@@ -537,7 +537,10 @@ process (`keep_alive`), and the hosts do the rest.
   which are the window's `receiving`, `internet` and `background` toggles under the same ids
   (turning the first or last off ends the background, and the menu goes with it); then **Open
   Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). The rows are
-  re-sent only when one changes (a percentage moves in whole steps). Opening the app
+  re-sent only when one changes (a percentage moves in whole steps). Each kept entry has its own
+  item (2026-11-14): while `driftwire host` runs on this computer the server menu is a second one
+  (Hosting on/off, usage, phones connected, drives, Quit hosting; "On your own computer" below), and
+  it keeps the process as a kept add-on would. Opening the app
   again (Finder, Spotlight, Start, a file) brings the hidden window back. Logout, restart and shut
   down, and an update's restart, quit as before. Only the process that holds
   `driftwire.json.lock` keeps itself; another window's process quits as usual. Hidden, a staged
@@ -1739,6 +1742,8 @@ driftwire host setup                        the guided run: a name, a folder, th
 driftwire host name duckdns|none            the DuckDNS name; subdomain and token typed or pasted, never arguments
 driftwire host pair                         a phone's pairing QR in the terminal
 driftwire host vpn on [--tls-port N] | off  the laptop's VPN exit; `on` prints the relay line (slice 7)
+driftwire host pause | resume | quit        the server menu's control: Hosting off / on; quit stops it
+driftwire host status --watch               the status again whenever it changes (usage, phones connected)
 ```
 
 `/host …` in the interactive program runs the same (`/host` alone is `status`): what only prints
@@ -1786,6 +1791,20 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
 - **Sleep.** While hosting it holds the OS's "system required" request through `power::hold_for`
   ("Driftwire is hosting your server"): the display may still sleep. `host stay-awake off` drops it.
 - **Elevation.** Refused as root or elevated, as `serve`.
+- **The server menu** ([plan "Tray"](../plans/self-hosted.md), issue #686 §4): while the host runs,
+  its own menu-bar item / notification-area icon in the app (#452's mechanism; every kept entry now
+  has its own item): the head with the DuckDNS name, **Hosting** on/off (off is `host pause`), status,
+  drive health (folders offline, PR #692's sets), today's bytes read and written and the rate now, each
+  phone connected by its paired name with how (home network, over the internet, through your relay),
+  since when, its bytes and whether it is reading or writing; **Quit hosting**, **Open Phone access
+  settings**. The app reads `host.lock` and `state.json` (`phone/host_tray.h`, one thread, a stat
+  every 5 s, a read only on a change) and runs the verbs; until Phone access is an add-on it is the
+  registry's one non-add-on kept entry (`set_shell_keep`, `"shell": true`). The host's start at login
+  also wants the app's login item. `pause` writes `host.json`'s `paused`; `quit` its `quit_stamp`
+  (a child of a supervisor started before it ends 4; the supervisor stops and clears it).
+  `state.json` gained `paused`, `clients` and `usage` (from `serve::server::usage()`: per-session
+  atomics, folded at the 2 s pass by `cli/host_usage.h`; today kept in `usage.json`). The card's status
+  row and `host status` (`--watch`: again on each change) say the same lines.
 - **Rule 6.** Its lines say ports and counts, never a path or an address; `state.json` holds ports,
   counts and a pid. `host status` prints folders by their labels.
 - **Keepers** (`cli/host_keepers.*`, slice 5): the DuckDNS keeper (`ddns::keeper`) and the router

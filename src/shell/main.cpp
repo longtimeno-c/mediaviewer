@@ -681,7 +681,11 @@ struct app_state {
   // the notification-area icon shows while the add-on asks for it.
   bool in_background = false;
   bool quit_for_real = false;  // the icon's Quit, an update's restart
-  bool tray_shown = false;
+  // One icon per kept entry (docs/plans/self-hosted.md "Tray": the host's
+  // server menu is its own, as Driftwire's is): the entry's id -> the icon's uID.
+  std::map<std::string, UINT> tray_icons;
+  UINT next_tray_id = 1;
+  bool keep_was_shell_only = false;  // the last non-empty keep list held the app's own entry alone
   // Started hidden at sign-in (--background) and not yet kept by an add-on:
   // an empty keep list then means "not loaded yet", not "show the window".
   bool background_start = false;
@@ -12357,6 +12361,9 @@ struct kept_menu_row {
 struct kept_alive_entry {
   std::string addon, screen, title, label;
   std::vector<kept_menu_row> menu;  // the add-on's own rows (keep_menu), drawn before Open / Quit
+  // The app's own entry (docs/plans/self-hosted.md "Tray": the host's rows
+  // while `driftwire host` runs): its Open row opens Settings at Phone access.
+  bool shell = false;
 };
 
 std::string slot_notices() {
@@ -12386,7 +12393,8 @@ std::vector<kept_alive_entry> kept_alive() {
     if (!addon || !screen) continue;
     const std::string* title = k.str("title");
     const std::string* label = k.str("label");
-    kept_alive_entry e{*addon, *screen, title ? *title : *screen, label ? *label : std::string(), {}};
+    kept_alive_entry e{*addon, *screen, title ? *title : *screen, label ? *label : std::string(), {}, false};
+    if (const mv::json::value* sh = k.find("shell"); sh && sh->k == mv::json::kind::boolean) e.shell = sh->b;
     if (const mv::json::value* menu = k.find("menu"); menu && menu->k == mv::json::kind::array) {
       for (const mv::json::value& r : menu->a) {
         const std::string* kind = r.str("kind");
@@ -12401,6 +12409,17 @@ std::vector<kept_alive_entry> kept_alive() {
     out.push_back(std::move(e));
   }
   return out;
+}
+
+// #452 + "Tray": the app's login item is wanted (an add-on keeps the process,
+// or the host starts at login): notices_json's "login". Unreadable: the keep list decides.
+bool login_item_wanted(const std::vector<kept_alive_entry>& keep) {
+  const std::string json = slot_notices();
+  const auto doc = json.empty() ? std::nullopt : mv::json::parse(json, 8);
+  if (!doc || doc->k != mv::json::kind::object) return !keep.empty();
+  const mv::json::value* login = doc->find("login");
+  if (!login || login->k != mv::json::kind::boolean) return !keep.empty();
+  return login->b;
 }
 
 // #532: an add-on says it has work under way (busy_post: a Driftwire transfer).
@@ -12418,26 +12437,46 @@ void sync_tray(app_state* app, const std::vector<kept_alive_entry>& keep) {
   NOTIFYICONDATAW nid{};
   nid.cbSize = sizeof nid;
   nid.hWnd = app->window;
-  nid.uID = 1;
-  if (keep.empty()) {
-    if (app->tray_shown) (void)::Shell_NotifyIconW(NIM_DELETE, &nid);
-    app->tray_shown = false;
-    return;
+  for (auto it = app->tray_icons.begin(); it != app->tray_icons.end();) {
+    const bool wanted = std::any_of(keep.begin(), keep.end(), [&](const kept_alive_entry& k) { return k.addon == it->first; });
+    if (wanted) {
+      ++it;
+      continue;
+    }
+    nid.uID = it->second;
+    (void)::Shell_NotifyIconW(NIM_DELETE, &nid);
+    it = app->tray_icons.erase(it);
   }
-  nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
-  nid.uCallbackMessage = kMsgTray;
-  (void)::LoadIconWithScaleDown(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(MV_IDI_APP),
-                                ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), &nid.hIcon);
-  const std::wstring tip = wide_from_utf8(keep.front().label.empty() ? std::string("MediaViewer") : keep.front().label);
-  (void)::wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
-  if (!app->tray_shown) {
-    app->tray_shown = ::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
-    nid.uVersion = NOTIFYICON_VERSION_4;
-    if (app->tray_shown) (void)::Shell_NotifyIconW(NIM_SETVERSION, &nid);
-  } else {
-    (void)::Shell_NotifyIconW(NIM_MODIFY, &nid);
+  for (const kept_alive_entry& k : keep) {
+    NOTIFYICONDATAW one{};
+    one.cbSize = sizeof one;
+    one.hWnd = app->window;
+    one.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    one.uCallbackMessage = kMsgTray;
+    (void)::LoadIconWithScaleDown(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(MV_IDI_APP),
+                                  ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), &one.hIcon);
+    const std::wstring tip = wide_from_utf8(k.label.empty() ? std::string("MediaViewer") : k.label);
+    (void)::wcsncpy_s(one.szTip, tip.c_str(), _TRUNCATE);
+    if (auto it = app->tray_icons.find(k.addon); it != app->tray_icons.end()) {
+      one.uID = it->second;
+      (void)::Shell_NotifyIconW(NIM_MODIFY, &one);
+    } else {
+      one.uID = app->next_tray_id++;
+      if (::Shell_NotifyIconW(NIM_ADD, &one) != FALSE) {
+        app->tray_icons[k.addon] = one.uID;
+        one.uVersion = NOTIFYICON_VERSION_4;
+        (void)::Shell_NotifyIconW(NIM_SETVERSION, &one);
+      }
+    }
+    if (one.hIcon) ::DestroyIcon(one.hIcon);  // the shell keeps its own copy
   }
-  if (nid.hIcon) ::DestroyIcon(nid.hIcon);  // the shell keeps its own copy
+}
+
+// A menu label as the person's text: '&' is a mnemonic to Win32, so doubled.
+std::wstring menu_text(const std::string& utf8) {
+  std::wstring w = wide_from_utf8(utf8);
+  for (std::size_t at = w.find(L'&'); at != std::wstring::npos; at = w.find(L'&', at + 2)) w.insert(at, 1, L'&');
+  return w;
 }
 
 // #532: hidden, a staged update and nothing under way: apply it now and start
@@ -12572,13 +12611,20 @@ std::vector<std::string> pick_files(HWND hwnd) {
 // The icon's menu: the add-on's line, its own rows (keep_menu,
 // docs/plans/driftwire-menu-and-tunnel.md), Open <screen> for each, Open
 // MediaViewer, Quit. The Mac twin is AddonNotices.swift.
-void show_tray_menu(app_state* app, POINT at) {
-  const std::vector<kept_alive_entry> keep = kept_alive();
+void show_tray_menu(app_state* app, POINT at, UINT icon) {
+  // The icon's own entry only: each kept entry has its own icon.
+  std::vector<kept_alive_entry> keep = kept_alive();
+  std::string which;
+  for (const auto& [addon, id] : app->tray_icons) {
+    if (id == icon) which = addon;
+  }
+  std::erase_if(keep, [&](const kept_alive_entry& k) { return k.addon != which; });
+  if (keep.empty()) return;
   HMENU menu = ::CreatePopupMenu();
   if (!menu) return;
   constexpr UINT kOpenViewer = 1, kQuit = 2, kOpenScreen = 0x100, kRow = 0x200;
   if (!keep.empty() && !keep.front().label.empty()) {
-    (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(keep.front().label).c_str());
+    (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, menu_text(keep.front().label).c_str());
     (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   }
   // Each row's command id is kRow + its place in this list.
@@ -12593,10 +12639,10 @@ void show_tray_menu(app_state* app, POINT at) {
       if (r.kind == "separator") {
         (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       } else if (r.kind == "text") {
-        (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(r.label).c_str());
+        (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, menu_text(r.label).c_str());
       } else if (rows.size() < 64) {
         const UINT flags = MF_STRING | (r.kind == "toggle" && r.value ? MF_CHECKED : MF_UNCHECKED);
-        (void)::AppendMenuW(menu, flags, kRow + static_cast<UINT>(rows.size()), wide_from_utf8(r.label).c_str());
+        (void)::AppendMenuW(menu, flags, kRow + static_cast<UINT>(rows.size()), menu_text(r.label).c_str());
         rows.push_back({&keep[i], &r});
       }
     }
@@ -12604,7 +12650,7 @@ void show_tray_menu(app_state* app, POINT at) {
   }
   for (std::size_t i = 0; i < keep.size() && i < 16; ++i) {
     (void)::AppendMenuW(menu, MF_STRING, kOpenScreen + static_cast<UINT>(i),
-                        wide_from_utf8("Open " + keep[i].title).c_str());
+                        menu_text("Open " + keep[i].title).c_str());
   }
   (void)::AppendMenuW(menu, MF_STRING, kOpenViewer, L"Open MediaViewer");
   (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -12637,7 +12683,14 @@ void show_tray_menu(app_state* app, POINT at) {
     }
   } else if (picked >= kOpenScreen && picked - kOpenScreen < keep.size()) {
     const kept_alive_entry& k = keep[picked - kOpenScreen];
-    (void)app->chrome.open_addon_screen(k.addon, k.screen);
+    if (k.shell) {
+      // "Tray": the viewer comes back with Settings open at Phone access.
+      leave_background(app);
+      set_settings_open(app, true);
+      app->chrome.show_popup(mv::shell::chrome_popup::settings, mv::shell::kSettingsRevealPhone);
+    } else {
+      (void)app->chrome.open_addon_screen(k.addon, k.screen);
+    }
   }
 }
 
@@ -13351,7 +13404,8 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
           leave_background(app);
           return 0;
         case WM_CONTEXTMENU:
-          show_tray_menu(app, POINT{GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
+          // The icon's uID in HIWORD(lparam): its own entry's menu.
+          show_tray_menu(app, POINT{GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)}, HIWORD(lparam));
           return 0;
         default:
           return 0;
@@ -13366,11 +13420,18 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       // kBackgroundStartTimerId decides.
       const std::vector<kept_alive_entry> keep = kept_alive();
       sync_tray(app, keep);
-      sync_login_item(app, !keep.empty());
+      sync_login_item(app, login_item_wanted(keep));
       if (!keep.empty()) {
         app->background_start = false;
+        app->keep_was_shell_only = std::all_of(keep.begin(), keep.end(), [](const kept_alive_entry& k) { return k.shell; });
       } else if (app->in_background && !app->background_start) {
-        leave_background(app);
+        // "Tray": the host's entry was all that kept it (the host quit, past
+        // its grace): nothing of the person's is open, so quit as the Mac does.
+        if (app->keep_was_shell_only) {
+          quit_from_background(app);
+        } else {
+          leave_background(app);
+        }
       }
       return 0;
     }
@@ -13512,7 +13573,9 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         ::KillTimer(hwnd, kBackgroundStartTimerId);
         if (app->background_start && app->in_background && kept_alive().empty()) {
           MV_LOG_INFO("background start: nothing keeps the process; quitting");
-          app->remove_login_item_at_exit = true;
+          // The host starts at login but is not running: the entry stays ("Tray").
+          const std::vector<kept_alive_entry> none;
+          app->remove_login_item_at_exit = !login_item_wanted(none);
           quit_from_background(app);
         }
         return 0;
@@ -13589,7 +13652,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
   }
   if (app->taskbar_restart_msg != 0 && msg == app->taskbar_restart_msg) {
     // #452: Explorer restarted; its notification area lost the icon.
-    app->tray_shown = false;
+    app->tray_icons.clear();
     sync_tray(app, kept_alive());
     return 0;
   }
@@ -14074,6 +14137,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // nothing is unloaded. Before 2026-09-27 the loaded set was torn down by
   // static destruction after main returned, joining a pack's model load or
   // inference batch (seconds), and could free it under a chrome read.
+  // "Tray": the server menu goes first; it never waits on a `host` verb in flight.
+  (void)mv_host_tray_stop();
   (void)mv_addon_quit();
   // #452: a sign-in start that nothing kept removes its own entry (one registry
   // delete; the window is gone).

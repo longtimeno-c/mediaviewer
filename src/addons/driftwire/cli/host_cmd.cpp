@@ -1,20 +1,24 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/host_drives.h"
 
 #include <sodium.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -22,7 +26,10 @@
 
 #include "addons/driftwire/cli/autostart.h"
 #include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/host_control.h"
+#include "addons/driftwire/cli/host_usage.h"
 #include "addons/driftwire/cli/host_setup.h"
+#include "addons/driftwire/cli/host_users.h"
 #include "addons/driftwire/cli/nas_update.h"
 #include "addons/driftwire/cli/serve_tty.h"
 #include "addons/driftwire/cli/update.h"
@@ -36,6 +43,14 @@
 #include "wire/splice.h"
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <io.h>
 #include <process.h>
 #else
 #include <signal.h>
@@ -202,6 +217,31 @@ std::string state_json(const host_snapshot& s, const std::vector<std::string>& k
   for (const auto& [k, v] : numbers) w.key(k).integer(v);
   w.key("vpn").boolean(s.vpn).key("awake").boolean(s.awake);
   w.key("folders").integer(static_cast<std::int64_t>(s.folders)).key("offline").integer(static_cast<std::int64_t>(s.offline));
+  if (s.paused) w.key("paused").boolean(true);
+  if (!s.clients.empty()) {
+    w.key("clients").begin_array();
+    for (const auto& c : s.clients) {
+      w.begin_object().key("name").string(c.name).key("via").string(c.via).key("since").integer(c.since);
+      w.key("read").integer(static_cast<std::int64_t>(c.read)).key("written").integer(static_cast<std::int64_t>(c.written));
+      w.key("read_rate").integer(static_cast<std::int64_t>(c.read_rate));
+      w.key("write_rate").integer(static_cast<std::int64_t>(c.write_rate));
+      w.end_object();
+    }
+    w.end_array();
+  }
+  if (!s.day.empty()) {
+    w.key("usage").begin_object().key("day").string(s.day);
+    w.key("read").integer(static_cast<std::int64_t>(s.read_today)).key("written").integer(static_cast<std::int64_t>(s.written_today));
+    w.key("read_rate").integer(static_cast<std::int64_t>(s.read_rate));
+    w.key("write_rate").integer(static_cast<std::int64_t>(s.write_rate));
+    w.key("devices").begin_array();
+    for (const auto& d : s.devices_today) {
+      w.begin_object().key("name").string(d.name);
+      w.key("read").integer(static_cast<std::int64_t>(d.read)).key("written").integer(static_cast<std::int64_t>(d.written));
+      w.end_object();
+    }
+    w.end_array().end_object();
+  }
   w.key("keepers").begin_array();
   for (const auto& line : keeper_lines) w.string(line);
   w.end_array();
@@ -259,6 +299,16 @@ std::optional<host_settings> parse_host_settings(std::string_view text) {
     }
     s.library_id = *v;
   }
+  if (doc->find("paused")) {
+    const auto v = doc->boolean("paused");
+    if (!v) return std::nullopt;
+    s.paused = *v;
+  }
+  if (doc->find("quit_stamp")) {
+    const auto v = doc->integer("quit_stamp");
+    if (!v || *v < 0) return std::nullopt;
+    s.quit_stamp = *v;
+  }
   return s;
 }
 
@@ -269,6 +319,8 @@ std::string host_settings_json(const host_settings& s) {
   if (s.ddns_stamp != 0) w.key("ddns_stamp").integer(s.ddns_stamp);
   if (s.tls_port != 0) w.key("tls_port").integer(s.tls_port);
   if (!s.library_id.empty()) w.key("library_id").string(s.library_id);
+  if (s.paused) w.key("paused").boolean(true);
+  if (s.quit_stamp != 0) w.key("quit_stamp").integer(s.quit_stamp);
   w.end_object();
   return w.take();
 }
@@ -358,6 +410,7 @@ std::string unshare_folder(serve::config& c, std::string_view label, std::string
 after_child decide_after_child(const child_process::ended& e, bool stopping) {
   if (stopping) return after_child::stop;
   if (!e.crashed && e.code == kHostChildCannotRun) return after_child::fail;
+  if (!e.crashed && e.code == kHostChildQuit) return after_child::stop;  // `host quit`
   return after_child::restart;  // a crash, a failure, or an end nobody asked for
 }
 
@@ -390,8 +443,21 @@ struct host_service::state {
   bool tls_failed = false;
   bool said_bad_config = false, said_serve_failed = false, said_relay_failed = false;
   std::vector<std::unique_ptr<host_keeper>> keepers;
+  // The drives keeper's word for the phones (serve's options::storage), apart
+  // from `m`: serve asks it on a session's thread, the keeper sets it on its own.
+  mutable std::mutex storage_m;
+  std::string storage;
   std::string state_written;
   bool started = false;  // state.json is this process's to remove
+  // The tray (docs/plans/self-hosted.md "Tray"): when this service started
+  // (a `host quit` stamped later stops it), and the connected phones' names.
+  std::int64_t started_ms = 0;
+  std::atomic<bool> quit{false};
+  std::vector<host_snapshot::client> clients;
+  usage_book usage;           // today's bytes (host_usage.h), kept in usage.json
+  std::string usage_written;  // usage.json's text as last written
+  std::map<std::array<std::uint8_t, 32>, std::string> phone_names;  // the paired list, as last read
+  std::chrono::steady_clock::time_point names_read{};
 
   std::mutex wake_m;
   std::condition_variable wake;
@@ -415,6 +481,10 @@ struct host_service::state {
         std::lock_guard lock(wake_m);
       }
       wake.notify_all();
+    };
+    k.storage_changed = [this](std::string word) {
+      std::lock_guard g(storage_m);
+      storage = std::move(word);
     };
     return k;
   }
@@ -461,6 +531,10 @@ struct host_service::state {
     so.devices_lock = o.where.serve + "/serve-devices.lock";
     so.save_config = [this](const serve::config& c) { return save_from_service(c); };
     so.root_present = o.present;
+    so.storage = [this] {
+      std::lock_guard g(storage_m);
+      return storage;
+    };
     auto s = serve::server::start(so);
     if (!s) {
       serve_retry = std::chrono::steady_clock::now() + std::chrono::milliseconds(o.retry_ms);
@@ -480,6 +554,7 @@ struct host_service::state {
 
   void stop_serve_locked() {
     if (!srv) return;
+    fold_usage_locked();
     srv->stop();
     srv.reset();
     print("driftwire host: no folder shared; the service stopped\n");
@@ -533,7 +608,7 @@ struct host_service::state {
   }
 
   void set_awake_locked() {
-    const bool want = o.power && settings.stay_awake;
+    const bool want = o.power && settings.stay_awake && !settings.paused;
     if (want && !awake) {
       awake = power::hold_for(kHostReason);
     } else if (!want) {
@@ -576,8 +651,9 @@ struct host_service::state {
       stop_serve_locked();
     } else if (srv && !port_changed) {
       (void)srv->replace_config(cfg);
-    } else {
+    } else if (!settings.paused) {
       if (srv) {
+        fold_usage_locked();
         srv->stop();
         srv.reset();
       }
@@ -595,8 +671,29 @@ struct host_service::state {
     const bool relay_changed = next.vpn != settings.vpn || next.relay_port != settings.relay_port ||
                                next.tls_port != settings.tls_port || (next.tls_port != 0 && next.ddns != settings.ddns);
     const bool name_changed = next.ddns != settings.ddns || next.ddns_stamp != settings.ddns_stamp;
+    const bool pause_changed = next.paused != settings.paused;
+    if (next.quit_stamp != 0 && next.quit_stamp >= started_ms && !quit.exchange(true)) {
+      print("driftwire host: asked to quit\n");
+    }
     settings = next;
-    if (relay_changed && rel) {
+    if (pause_changed) {
+      // Paused: nothing for phones or the laptop, and the computer may sleep;
+      // the keepers hear the ports are gone (the router's mapping goes).
+      if (settings.paused) {
+        if (srv) {
+          fold_usage_locked();
+          srv->stop();
+          srv.reset();
+        }
+        rel.reset();
+        print("driftwire host: paused\n");
+      } else {
+        start_relay_locked();
+        if (!cfg.roots.empty()) start_serve_locked();
+        print("driftwire host: resumed\n");
+      }
+      ports_changed_locked();
+    } else if (relay_changed && rel) {
       rel.reset();
       start_relay_locked();
       ports_changed_locked();
@@ -641,6 +738,7 @@ struct host_service::state {
   }
 
   void retry_locked() {
+    if (settings.paused) return;
     const auto now = std::chrono::steady_clock::now();
     if (!srv && !cfg.roots.empty() && now >= serve_retry) {
       start_serve_locked();
@@ -662,14 +760,76 @@ struct host_service::state {
     s.awake = awake != nullptr;
     s.folders = cfg.roots.size();
     s.offline = offline;
+    s.paused = settings.paused;
+    s.clients = clients;
+    s.day = usage.day;
+    s.read_today = usage.total.read;
+    s.written_today = usage.total.written;
+    s.read_rate = usage.total_rate.read;
+    s.write_rate = usage.total_rate.written;
+    for (const auto& [k, b] : usage.today) {
+      if (s.devices_today.size() >= 16) break;
+      const auto it = phone_names.find(k);
+      s.devices_today.push_back({it != phone_names.end() && !it->second.empty() ? it->second : std::string("A phone"),
+                                 b.read, b.written});
+    }
     return s;
   }
 
+  // "Tray": before the service stops, what it counted goes into today's book.
+  void fold_usage_locked() {
+    if (srv) usage.service_gone(srv->usage(), local_day(std::chrono::system_clock::now()), std::chrono::steady_clock::now());
+  }
+
+  // "Tray": the service's per-device bytes into today's book, the phones up now
+  // by the paired list's names. The list is read again only when a device not
+  // on it shows (at most every 10 s); usage.json only when today's totals moved.
+  void refresh_usage_locked() {
+    const auto now = srv ? srv->usage() : std::vector<serve::server::device_usage>{};
+    usage.take(now, local_day(std::chrono::system_clock::now()), std::chrono::steady_clock::now());
+    const bool unknown = std::any_of(now.begin(), now.end(), [&](const auto& u) { return !phone_names.contains(u.device); });
+    const auto t = std::chrono::steady_clock::now();
+    // Unknown: at most every 10 s; a rename in the app: within a minute while any is there.
+    const bool due = names_read == std::chrono::steady_clock::time_point{} ||
+                     t - names_read >= (unknown ? std::chrono::seconds(10) : std::chrono::seconds(60));
+    if (!now.empty() && serve_store && due && (unknown || t - names_read >= std::chrono::seconds(60))) {
+      names_read = t;
+      phone_names.clear();
+      for (const auto& d : known::load(*serve_store)) phone_names[d.key] = d.name;
+      std::vector<serve::grants::grant> limited;
+      (void)serve::grants::load(*serve_store, limited);
+      for (const auto& g : limited) phone_names[g.key] = g.name;
+    }
+    std::vector<host_snapshot::client> up;
+    for (const auto& u : now) {
+      if (!u.connected) continue;
+      host_snapshot::client c;
+      const auto it = phone_names.find(u.device);
+      c.name = it != phone_names.end() && !it->second.empty() ? it->second : std::string("A phone");
+      c.via = u.via == serve::server::usage_via::home ? "home" : u.via == serve::server::usage_via::relay ? "relay" : "internet";
+      c.since = u.since_unix;
+      if (auto d = usage.today.find(u.device); d != usage.today.end()) {
+        c.read = d->second.read;
+        c.written = d->second.written;
+      }
+      if (auto r = usage.rate.find(u.device); r != usage.rate.end()) {
+        c.read_rate = r->second.read;
+        c.write_rate = r->second.written;
+      }
+      up.push_back(std::move(c));
+    }
+    std::sort(up.begin(), up.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    clients = std::move(up);
+    const std::string text = usage.to_json();
+    if (text != usage_written && write_whole(o.where.folder + "/usage.json", text)) usage_written = text;
+  }
+
   void write_state_locked() {
+    refresh_usage_locked();
     std::vector<std::string> lines;
     std::vector<std::pair<std::string, std::int64_t>> numbers;
     for (const auto& kp : keepers) {
-      lines.push_back(kp->status_line());
+      if (std::string line = kp->status_line(); !line.empty()) lines.push_back(std::move(line));
       for (auto& n : kp->state_numbers()) numbers.push_back(std::move(n));
     }
     const std::string text = state_json(snapshot_locked(), lines, numbers);
@@ -747,17 +907,26 @@ std::unique_ptr<host_service> host_service::start(host_service_options o, std::s
     return nullptr;
   }
   st.relay_secret = *rk;
+  if (const auto text = read_small(st.o.where.folder + "/usage.json", 64 * 1024)) {
+    if (auto b = usage_book::from_json(*text)) {
+      st.usage = std::move(*b);
+      st.usage_written = *text;
+    }
+  }
+  st.started_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch()).count();
+  if (st.o.quit_since_ms > 0 && st.o.quit_since_ms < st.started_ms) st.started_ms = st.o.quit_since_ms;
   {
     std::lock_guard lock(st.m);
     st.settings_text = "\x01";  // never a file's text: read the first time
     st.reload_settings_locked();
-    if (!st.rel) st.start_relay_locked();
+    if (!st.rel && !st.settings.paused) st.start_relay_locked();
     st.reload_config_locked();
     st.recheck_roots_locked();
     st.next_roots = std::chrono::steady_clock::now() + std::chrono::milliseconds(st.o.roots_every_ms);
     st.set_awake_locked();
     // The keepers last: they need the ports.
-    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router}) {
+    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives}) {
       if (!make) continue;
       if (auto kp = make()) st.keepers.push_back(std::move(kp));
     }
@@ -779,6 +948,8 @@ host_snapshot host_service::snapshot() const {
 
 void host_service::recheck_now() { st_->pass(true); }
 
+bool host_service::quit_asked() const noexcept { return st_ && st_->quit.load(); }
+
 void host_service::stop() noexcept {
   if (!st_) return;
   {
@@ -797,6 +968,11 @@ void host_service::stop() noexcept {
   keepers.clear();
   std::lock_guard lock(st_->m);
   if (st_->srv) {
+    // "Tray": its last bytes kept for today (usage.json) before it goes.
+    st_->fold_usage_locked();
+    if (const std::string text = st_->usage.to_json(); text != st_->usage_written) {
+      (void)write_whole(st_->o.where.folder + "/usage.json", text);
+    }
     st_->srv->stop();
     st_->srv.reset();
   }
@@ -921,7 +1097,76 @@ int run_start_at_login(const args& a, const host_layout& l, bool test_hooks) {
   return r.ok ? 0 : 1;
 }
 
-int run_status(const host_layout& l, bool test_hooks) {
+// "Tray": decimal units, as the OS's file sizes (phone/host_tray.h's bytes_words).
+std::string bytes_words(std::uint64_t n) {
+  static const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+  double v = static_cast<double>(n);
+  int u = 0;
+  while (v >= 1000.0 && u < 4) {
+    v /= 1000.0;
+    ++u;
+  }
+  char buf[32];
+  (void)std::snprintf(buf, sizeof buf, u == 0 || v >= 10.0 ? "%.0f %s" : "%.1f %s", v, units[u]);
+  return buf;
+}
+
+std::string clock_of(std::int64_t unix_s) {
+  const std::time_t tt = static_cast<std::time_t>(unix_s);
+  std::tm tm{};
+#if defined(_WIN32)
+  (void)localtime_s(&tm, &tt);
+#else
+  (void)localtime_r(&tt, &tm);
+#endif
+  char buf[8];
+  (void)std::snprintf(buf, sizeof buf, "%02d:%02d", tm.tm_hour, tm.tm_min);
+  return buf;
+}
+
+// The usage and the phones connected, from state.json ("Tray"): the same words
+// the menu and the card say. Names only, never an address.
+std::string usage_lines(const json::value& state) {
+  std::string out;
+  const auto n = [](const json::value& v, const char* k) {
+    const auto x = v.integer(k).value_or(0);
+    return x > 0 ? static_cast<std::uint64_t>(x) : std::uint64_t{0};
+  };
+  out += std::string("hosting     ") + (state.boolean("paused").value_or(false) ? "off (driftwire host resume)" : "on") + "\n";
+  if (const json::value* u = state.find("usage"); u && u->k == json::kind::object) {
+    std::string line = "today       " + bytes_words(n(*u, "read")) + " read, " + bytes_words(n(*u, "written")) + " written";
+    const auto rr = n(*u, "read_rate"), wr = n(*u, "write_rate");
+    if (rr || wr) line += "; now " + bytes_words(rr) + "/s read, " + bytes_words(wr) + "/s written";
+    out += line + "\n";
+    if (const json::value* d = u->find("devices"); d && d->k == json::kind::array) {
+      for (const auto& v : d->a) {
+        const std::string* name = v.k == json::kind::object ? v.str("name") : nullptr;
+        if (!name) continue;
+        out += "  " + *name + "  " + bytes_words(n(v, "read")) + " read, " + bytes_words(n(v, "written")) + " written\n";
+      }
+    }
+  }
+  const json::value* c = state.find("clients");
+  const bool any = c && c->k == json::kind::array && !c->a.empty();
+  out += std::string("connected   ") + (any ? std::to_string(c->a.size()) : std::string("none")) + "\n";
+  if (any) {
+    for (const auto& v : c->a) {
+      const std::string* name = v.k == json::kind::object ? v.str("name") : nullptr;
+      if (!name) continue;
+      const std::string* via = v.str("via");
+      const std::string how = via && *via == "home" ? "home network" : via && *via == "relay" ? "through your relay" : "over the internet";
+      std::string line = "  " + *name + "  " + how;
+      if (const auto since = v.integer("since").value_or(0); since > 0) line += " since " + clock_of(since);
+      line += "  " + bytes_words(n(v, "read")) + " read, " + bytes_words(n(v, "written")) + " written";
+      const auto rr = n(v, "read_rate"), wr = n(v, "write_rate");
+      if (rr || wr) line += "  now " + bytes_words(rr) + "/s read, " + bytes_words(wr) + "/s written";
+      out += line + "\n";
+    }
+  }
+  return out;
+}
+
+std::string status_text(const host_layout& l, bool test_hooks) {
   std::string out;
   std::error_code fec;
   const bool folder = fs::is_directory(to_path(l.folder), fec);
@@ -929,7 +1174,7 @@ int run_status(const host_layout& l, bool test_hooks) {
   // just then tries again for a while (run_supervisor).
   const bool running = folder && net::try_lock_instance(l.lock) == nullptr;
   const auto state_text = running ? read_small(l.state) : std::nullopt;
-  const auto state = state_text ? json::parse(*state_text, 4) : std::nullopt;
+  const auto state = state_text ? json::parse(*state_text, 6) : std::nullopt;
   const auto cfg = load_or_new(l, test_hooks);
   const host_settings s = load_settings(l);
   out += std::string("host        ") + (running ? "running" : "not running (driftwire host starts it)") + "\n";
@@ -937,6 +1182,8 @@ int run_status(const host_layout& l, bool test_hooks) {
   const auto port_of = [&](const char* k) -> std::int64_t { return state ? state->integer(k).value_or(0) : 0; };
   if (!cfg || cfg->roots.empty()) {
     out += "service     no folder shared yet (driftwire host share PATH)\n";
+  } else if (running && state && state->boolean("paused").value_or(false)) {
+    out += "service     off while hosting is off\n";
   } else if (running) {
     const auto p = port_of("service_port");
     out += p ? "service     port " + std::to_string(p) + "\n"
@@ -944,7 +1191,9 @@ int run_status(const host_layout& l, bool test_hooks) {
   } else {
     out += "service     port " + std::to_string(cfg->port) + " when running\n";
   }
-  if (running) {
+  if (running && state && state->boolean("paused").value_or(false)) {
+    out += "relay       off while hosting is off\n";
+  } else if (running) {
     const auto p = port_of("relay_port");
     out += p ? "relay       port " + std::to_string(p) + "\n" : "relay       not listening (port taken?)\n";
   } else {
@@ -969,6 +1218,8 @@ int run_status(const host_layout& l, bool test_hooks) {
     std::vector<serve::grants::grant> limited;
     (void)serve::grants::load(*store, limited);
     out += "phones      " + std::to_string(known::load(*store).size() + limited.size()) + " paired\n";
+    // The LAN share and its users: addresses, names and roles only (self-host-users-smb.md §7).
+    for (const auto& line : users_status_lines(*store)) out += line + "\n";
   }
   const bool held = state && state->boolean("awake").value_or(false);
   out += std::string("stay awake  ") + (s.stay_awake ? (running ? (held ? "on" : "on (the OS refused)") : "on") : "off") + "\n";
@@ -979,8 +1230,46 @@ int run_status(const host_layout& l, bool test_hooks) {
         if (line.k == json::kind::string) out += line.s + "\n";
       }
     }
+    out += usage_lines(*state);
+  } else if (!test_hooks) {
+    // Not running: no drives keeper, so the sets' health is asked here (no volume opened).
+    const auto sets = drives::os_port()->sets_only().sets;
+    if (const std::string line = drives_status_line(sets); !line.empty()) out += line + "\n";
   }
-  print(out);
+  return out;
+}
+
+int run_status(const host_layout& l, bool test_hooks) {
+  print(status_text(l, test_hooks));
+  return 0;
+}
+
+// `host status --watch`: again whenever it changed, read at the host's own
+// cadence (every 2 s), until Ctrl-C. A terminal is redrawn in place.
+int run_status_watch(const host_layout& l, bool test_hooks) {
+  (void)std::signal(SIGINT, on_host_signal);
+  (void)std::signal(SIGTERM, on_host_signal);
+#if defined(_WIN32)
+  // Redrawn in place only where the console takes the escapes (Windows 10+); else printed again.
+  bool tty = ::_isatty(1) != 0;
+  if (tty) {
+    HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    tty = out != INVALID_HANDLE_VALUE && ::GetConsoleMode(out, &mode) &&
+          ::SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+  }
+#else
+  const bool tty = ::isatty(1) != 0;
+#endif
+  std::string shown;
+  while (!g_stop.load()) {
+    const std::string now = status_text(l, test_hooks);
+    if (now != shown) {
+      print(tty ? "\x1b[H\x1b[2J" + now + "\n(Ctrl-C to stop)\n" : (shown.empty() ? now : "\n" + now));
+      shown = now;
+    }
+    for (int i = 0; i < 20 && !g_stop.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
   return 0;
 }
 
@@ -1006,15 +1295,21 @@ int run_child(const args& a, const host_layout& l, bool test_hooks) {
   }
   o.power = !test_hooks;
   o.keepers = host_keepers();
+  if (const char* since = std::getenv(kHostSinceEnv)) {
+    char* end = nullptr;
+    const long long v = std::strtoll(since, &end, 10);
+    if (end && *end == '\0' && v > 0) o.quit_since_ms = v;
+  }
   std::string why;
   auto hs = host_service::start(std::move(o), why);
   if (!hs) {
     print("driftwire host: " + why + "\n", true);
     return kHostChildCannotRun;
   }
-  while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  while (!g_stop.load() && !hs->quit_asked()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  const bool quit = hs->quit_asked();
   hs->stop();
-  return 0;
+  return quit ? kHostChildQuit : 0;
 }
 
 // The program's identity on disk: replaced by an update, it changes.
@@ -1082,7 +1377,31 @@ int run_supervisor(const args& a, const host_layout& l, const std::string& data,
   if (test_hooks && a.test_quick) child_args.emplace_back("--test-quick");
   print("driftwire host: hosting from this computer; stop with Ctrl-C (driftwire host status shows it)\n");
   auto next_update_look = std::chrono::steady_clock::now() + std::chrono::milliseconds(update_every_ms);
+  // A `host quit` while no child runs (the 30 s before a restart): taken before the next one.
+  const std::int64_t started_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::system_clock::now().time_since_epoch()).count();
+  // Its children compare a `host quit` with this start, not their own.
+  {
+    const std::string v = std::to_string(started_ms);
+#if defined(_WIN32)
+    (void)::_putenv_s(kHostSinceEnv, v.c_str());
+#else
+    (void)::setenv(kHostSinceEnv, v.c_str(), 1);
+#endif
+  }
+  // A quit taken: its stamp cleared, so a clock set back at the next boot stops nothing.
+  const auto quit_taken = [&] {
+    host_settings s = load_settings(l);
+    if (s.quit_stamp == 0) return;
+    s.quit_stamp = 0;
+    (void)write_whole(l.settings, host_settings_json(s));
+  };
   for (;;) {
+    if (const auto q = load_settings(l).quit_stamp; q != 0 && q >= started_ms) {
+      quit_taken();
+      print("driftwire host: stopped\n");
+      return 0;
+    }
     auto child = child_process::start(program, child_args);
     if (!child) {
       print("driftwire host: could not start its service; trying again in 30 s\n", true);
@@ -1109,6 +1428,7 @@ int run_supervisor(const args& a, const host_layout& l, const std::string& data,
     const child_process::ended how = child->how();
     switch (decide_after_child(how, g_stop.load())) {
       case after_child::stop:
+        if (!how.crashed && how.code == kHostChildQuit) quit_taken();
         print("driftwire host: stopped\n");
         return 0;
       case after_child::fail:
@@ -1155,7 +1475,7 @@ std::optional<json::value> state(const host_layout& l) {
   if (!running(l)) return std::nullopt;
   const auto text = read_small(l.state);
   if (!text) return std::nullopt;
-  return json::parse(*text, 4);
+  return json::parse(*text, 6);
 }
 std::string new_id() { return random_id(); }
 int status(const host_layout& l, bool test_hooks) { return run_status(l, test_hooks); }
@@ -1165,6 +1485,9 @@ int start_at_login(const args& a, const host_layout& l, bool test_hooks) { retur
 
 int run_host(const args& a, bool test_hooks, const char* version) {
   (void)version;
+  // The LAN share's elevated step is the one `host` command that runs elevated,
+  // and only that way (host_users.h); it reads its whole request from the front end.
+  if (a.host == host_action::smb_apply) return run_smb_apply(a);
   if (!test_hooks && serve_is_privileged()) {
 #if defined(_WIN32)
     return fail("it must not run as administrator; run it from a terminal that is not elevated.", 1);
@@ -1191,7 +1514,7 @@ int run_host(const args& a, bool test_hooks, const char* version) {
     case host_action::unshare:
       return run_unshare(a, l, test_hooks);
     case host_action::status:
-      return run_status(l, test_hooks);
+      return a.watch ? run_status_watch(l, test_hooks) : run_status(l, test_hooks);
     case host_action::start_at_login:
       return run_start_at_login(a, l, test_hooks);
     case host_action::stay_awake:
@@ -1204,6 +1527,16 @@ int run_host(const args& a, bool test_hooks, const char* version) {
       return run_host_pair(a, l, test_hooks);
     case host_action::vpn:
       return run_host_vpn(a, l, test_hooks);
+    case host_action::users:
+      return run_host_users(a, l, test_hooks);
+    case host_action::smb_apply:
+      return run_smb_apply(a);
+    case host_action::drives:
+      return run_host_drives(a, l, data, test_hooks);
+    case host_action::pause:
+    case host_action::resume:
+    case host_action::quit:
+      return run_host_control(a, l);
   }
   return 2;
 }

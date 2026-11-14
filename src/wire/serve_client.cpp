@@ -183,7 +183,7 @@ result<std::unique_ptr<client>> client::open(std::shared_ptr<link> l, const opti
   };
   message m;
   if (!o.pair_code.empty()) {
-    (void)(*ch)->send(msg::serve_pair, pair_json(o.pair_code, o.device_name));
+    (void)(*ch)->send(msg::serve_pair, pair_json(o.pair_code, o.device_name, o.device_kind));
     if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
     if (m.type == msg::cancel) {
       refused(m);

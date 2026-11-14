@@ -368,3 +368,151 @@ TEST_CASE("phone access: the module loads, draws its card in Settings and goes",
 #endif
 }
 #endif
+
+// ---- This computer: drives and users (ported from the native cards' tests, 2026-11-14) ----
+
+namespace {
+
+const char* kDrivesState = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+  "host":{"installed":true,"set_up":true,"running":true,"service_port":7878,"paused":true,
+          "stats":["Today: 3.4 GB read, 120 MB written"]},
+  "users":[{"name":"anna","role":"view","applied":true},{"name":"ben","role":"change","folders":["Photos"],"applied":false}],
+  "share_addresses":["smb://pc.local/Photos"],
+  "drives":{"os":"mac","pool_ok":true,"disks":[
+     {"id":"2","name":"Untitled (2)","facts":"Untitled (2) · 2 TB · WD"},
+     {"id":"3","name":"Photos B","facts":"Photos B · 2 TB"},
+     {"id":"0","name":"Macintosh HD","facts":"x","refused":"it holds this computer's system"}],
+   "sets":[{"id":"{abc}","name":"Photos","kind":"mirror","state":"degraded","line":"Photos (mirror): degraded",
+            "members":[{"id":"3"},{"id":"","missing":true}]}]},
+  "drives_choices":{"not_a_backup":"RAID is not a backup.","options":[
+     {"choice":"separate","title":"Separate","offered":true},
+     {"choice":"mirror","title":"Mirror (RAID 1)","offered":true,"recommended":true,"space_words":"2 TB","dead_words":"Nothing is lost."},
+     {"choice":"stripe","title":"Stripe (RAID 0)","offered":true,"warning":true},
+     {"choice":"parity","title":"Parity (RAID 5)","offered":false,"why_not":"Needs 3 or more drives."}]}})J";
+
+}  // namespace
+
+TEST_CASE("phone access: every typed drive name must match its drive, and the combined drive's name", "[phone-addon]") {
+  using mv::phone::card::drive_names_match;
+  using mv::phone::card::good_drive_label;
+  CHECK(drive_names_match({"Untitled (2)", "  Photos B\n"}, {"Untitled (2)", "Photos B"}));
+  CHECK_FALSE(drive_names_match({"Untitled (2)", "photos b"}, {"Untitled (2)", "Photos B"}));
+  CHECK_FALSE(drive_names_match({"Photos B", "Untitled (2)"}, {"Untitled (2)", "Photos B"}));
+  CHECK_FALSE(drive_names_match({"Untitled (2)"}, {"Untitled (2)", "Photos B"}));
+  CHECK_FALSE(drive_names_match({}, {}));
+  CHECK_FALSE(drive_names_match({""}, {""}));
+  for (const auto& [label, good] : std::vector<std::pair<std::string, bool>>{
+           {"Photos", true}, {"My Photos_2-b", true}, {std::string(27, 'a'), true}, {std::string(28, 'a'), false},
+           {"", false}, {" Photos", false}, {"Photos/2", false}, {"Fot\xC3\xB3s", false}}) {
+    CHECK(good_drive_label(label) == good);
+  }
+  using mv::phone::card::valid_user_name;
+  CHECK(valid_user_name("anna"));
+  CHECK(valid_user_name("ann.b_2-c"));
+  CHECK_FALSE(valid_user_name("Anna"));
+  CHECK_FALSE(valid_user_name("2anna"));
+  CHECK_FALSE(valid_user_name("admin"));
+  CHECK_FALSE(valid_user_name("anna."));
+  CHECK_FALSE(valid_user_name(std::string(21, 'a')));
+}
+
+TEST_CASE("phone access: the drives step offers the five ways, erases only what was named", "[phone-addon]") {
+  screen c(mv::phone::card::computer::mac);
+  std::string tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Running, hosting off") != std::string::npos);
+  CHECK(tree.find("Today: 3.4 GB read") != std::string::npos);
+  CHECK(tree.find("Replace a drive") != std::string::npos);  // the degraded mirror
+  auto r = c.on_event("dr_open", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives"})J");
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Can't be erased: it holds this computer's system") != std::string::npos);
+  // Picked out of order, asked in the list's order.
+  r = c.on_event(screen::row_id("dk", "3") + "_pick", kChange, "true", kNow);
+  REQUIRE(r.size() == 1);
+  r = c.on_event(screen::row_id("dk", "2") + "_pick", kChange, "true", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_choices","ids":["2","3"]})J");
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("RAID is not a backup.") != std::string::npos);
+  CHECK(tree.find("If one dies: Nothing is lost.") != std::string::npos);
+  CHECK(tree.find("For photos") != std::string::npos);
+  CHECK(tree.find("Risky") != std::string::npos);
+  CHECK(tree.find("Needs 3 or more drives.") != std::string::npos);
+  // Parity is not offered: choosing it does nothing.
+  (void)c.on_event("dropt_parity", kClick, "", kNow);
+  CHECK(c.on_event("dr_combine", kClick, "", kNow).empty());
+  // Mirror: nothing is sent until each drive's name is typed as shown.
+  (void)c.on_event("dropt_mirror", kClick, "", kNow);
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Erase and combine") != std::string::npos);
+  CHECK(c.on_event("dr_combine", kClick, "", kNow).empty());
+  CHECK(c.build(kDrivesState, kNow).find("Type each drive's name exactly") != std::string::npos);
+  (void)c.on_event(screen::row_id("dt", "2"), kChange, quoted("Untitled (2)"), kNow);
+  (void)c.on_event(screen::row_id("dt", "3"), kChange, quoted(" Photos B "), kNow);
+  r = c.on_event("dr_combine", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_combine","choice":"mirror","ids":["2","3"],"label":"Photos","names":["Untitled (2)","Photos B"]})J");
+  // Separate erases nothing and sends no names.
+  (void)c.on_event(screen::row_id("dk", "2") + "_pick", kChange, "true", kNow);
+  (void)c.on_event("dropt_separate", kClick, "", kNow);
+  r = c.on_event("dr_share", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_combine","choice":"separate","ids":["2"]})J");
+  // Replacing the lost drive: only a drive outside the set, named as shown.
+  (void)c.build(kDrivesState, kNow);
+  (void)c.on_event(screen::row_id("ds", "{abc}") + "_replace", kClick, "", kNow);
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("A drive to take its place") != std::string::npos);
+  (void)c.on_event("dr_rep_pick", kChange, quoted("2"), kNow);
+  (void)c.on_event("dr_rep_typed", kChange, quoted("Untitled (2)"), kNow);
+  r = c.on_event("dr_rep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_replace","set":"Photos","ids":["2"],"name":"Untitled (2)"})J");
+}
+
+TEST_CASE("phone access: users ask for the admin first, and a password is sent once and never shown", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  std::string tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  // Asked for once when the section first shows.
+  auto queued = c.take_queued();
+  REQUIRE(queued.size() == 1);
+  CHECK(queued[0] == R"J({"do":"users_refresh"})J");
+  CHECK(c.take_queued().empty());
+  CHECK(tree.find("Waiting for this PC's administrator") != std::string::npos);
+  CHECK(tree.find("smb://pc.local/Photos") != std::string::npos);
+  CHECK(tree.find("Can change files \xC2\xB7 Photos") != std::string::npos);
+  // A role change keeps the user's folders.
+  auto r = c.on_event(screen::row_id("us", "ben") + "_role", kChange, quoted("view"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"user_set","name":"ben","role":"view","folders":["Photos"]})J");
+  r = c.on_event(screen::row_id("us", "anna") + "_remove", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"user_remove","name":"anna"})J");
+  (void)c.on_event("us_add_open", kClick, "", kNow);
+  (void)c.on_event("us_name", kChange, quoted("carla"), kNow);
+  (void)c.on_event("us_pass", kChange, quoted("s3cret-pass"), kNow);
+  (void)c.on_event("us_pass2", kChange, quoted("s3cret-pass"), kNow);
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("s3cret") == std::string::npos);
+  r = c.on_event("us_add_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"user_set","name":"carla","role":"view","password":"s3cret-pass"})J");
+  r = c.on_event("us_apply", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"users_apply"})J");
+  // Locked: the unlock first, nothing else.
+  const std::string locked = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":0,
+    "host":{"installed":true,"set_up":true,"running":true},"users":[{"name":"anna","role":"view","applied":true}]})J";
+  tree = c.build(locked, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Unlock as admin") != std::string::npos);
+  CHECK(tree.find(screen::row_id("us", "anna")) == std::string::npos);
+}

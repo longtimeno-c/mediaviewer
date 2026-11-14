@@ -180,6 +180,21 @@ above it in [12](../design/12-decision-log.md)). Built:
   installed command line is left alone.
 - **The Synology** keeps its own signed package feed (`nas-setup.md`), unchanged.
 
+**Merged with the integration branch (2026-11-14):** the Users section (`self-host-users-smb.md` §8) and
+the Drives step (`self-host-drives.md` §6), built first as native views on both hosts, are the add-on's
+card now (`users_rows`, `drives_rows` in `screens.cpp`), with their rules (`valid_user_name`,
+`good_drive_label`, `drive_names_match`) and their tests ported (`[phone-addon]`). The native views, their
+models and their C#/Swift tests are gone. A password and the admin unlock are secure fields.
+
+**The server's menu stays the base app's for now.** The tray (`host_tray.*`, `src/abi/host_tray_glue.*`,
+`mv_host_tray_start` / `_stop`) is the registry's shell keep, started by the first window's process. Its
+model and watcher live in `src/addons/phone/host_tray.*` and the core links `mv_phone` for them alone (the
+linker pulls only those objects). It runs whatever `self_host::find()` names, which looks in the add-on's
+`bin/` first, so the menu's Pause / Resume / Quit act on the add-on's program. Removing the add-on stops the
+host (the login entry goes), so the menu goes with it. Moving it into the add-on needs two things an
+add-on keep cannot say yet: the app's login item while the host only starts at login (a "login" flag on
+`keep_alive`) and opening Settings → Phone access from the menu (a settings-place screen as the keep's).
+
 Still owed:
 
 - **The server's menu** (#686 §4, session `host-tray`): its `src/phone/host_tray.*` and the shell keep move

@@ -632,6 +632,10 @@ void mv_chrome_background_show_viewer(void);
 void mv_chrome_background_quit(void);
 void mv_chrome_background_changed(void);
 void mv_chrome_background_window_shown(void);
+// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row
+// (a kept entry with "shell": true): the viewer comes back, Settings open at
+// Phone access. [main-thread]
+void mv_chrome_open_phone_settings(void);
 uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
                                       const mv_chrome_slot_theme* theme, float width, float scale);
 void mv_chrome_slots_clear_info(void);

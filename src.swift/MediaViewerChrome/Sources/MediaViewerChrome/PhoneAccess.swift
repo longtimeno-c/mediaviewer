@@ -13,6 +13,26 @@ import Combine
 import MVChromeBridge
 import SwiftUI
 
+/// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
+/// row opens Settings at this section. Its own small store (as
+/// PhotosBackupStore's reveal), so Settings does not redraw on every phone
+/// state change; `pending` carries a request made before the page appeared.
+@MainActor
+final class PhoneReveal: ObservableObject {
+  static let shared = PhoneReveal()
+  static let anchor = "phone-access-section"
+  @Published private(set) var requests = 0
+  private var pending = false
+  func reveal() {
+    pending = true
+    requests += 1
+  }
+  func take() -> Bool {
+    defer { pending = false }
+    return pending
+  }
+}
+
 @MainActor
 final class PhoneAccessStore: ObservableObject {
   static let shared = PhoneAccessStore()

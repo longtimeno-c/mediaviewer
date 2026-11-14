@@ -863,6 +863,26 @@ expected desk::set_relay(const std::string& address, const std::string& key) {
   return {};
 }
 
+result<std::string> desk::users(std::string_view verb, const std::string& name, const std::string& role,
+                                const std::optional<std::vector<std::string>>& folders) {
+  if (verb != "users" && verb != "user_set" && verb != "user_remove") return err(status::invalid_arg);
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string(verb);
+  if (verb != "users") w.key("name").string(name);
+  if (verb == "user_set") {
+    w.key("role").string(role);
+    if (folders) {
+      w.key("folders").begin_array();
+      for (const auto& f : *folders) w.string(f);
+      w.end_array();
+    }
+  }
+  w.end_object();
+  return st_->ask(w.str());
+}
+
 expected desk::grant(const key32& key, std::int64_t for_s) {
   std::lock_guard lock(st_->m);
   st_->load();
@@ -1173,6 +1193,17 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     if (!key || !on) return err(status::invalid_arg);
     MV_TRY_VOID(d.set_phone_backup(*key, *on));
     return std::string("{}");
+  }
+  if (method == "users" || method == "user_set" || method == "user_remove") {
+    std::optional<std::vector<std::string>> folders;
+    if (const json::value* f = doc->find("folders"); f && f->k == json::kind::array) {
+      std::vector<std::string> labels;
+      for (const auto& e : f->a) {
+        if (e.k == json::kind::string) labels.push_back(e.s);
+      }
+      folders = std::move(labels);
+    }
+    return d.users(method, text("name"), text("role"), folders);
   }
   if (method == "last_refusal") return d.last_refusal();
   if (method == "pair_stop") {

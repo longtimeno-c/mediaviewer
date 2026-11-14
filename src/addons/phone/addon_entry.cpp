@@ -210,6 +210,8 @@ struct addon_state {
   void post_locked() {
     if (!open) return;
     const std::string tree = card.build(mv::phone::app_state_json(), now_s());
+    // A section shown for the first time asks for its list ([no-block]: queued for the link).
+    for (const std::string& r : card.take_queued()) (void)mv::phone::app_request(r);
     if (tree != last_tree) {
       if (host->screen_post(host->host, kScreen, generation, tree.c_str()) == MV_OK) last_tree = tree;
     }

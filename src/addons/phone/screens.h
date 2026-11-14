@@ -25,12 +25,43 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace mv::phone::card {
 
 // The word for this computer: "this Mac", "this PC", "this computer".
 enum class computer : std::uint8_t { mac, pc, other };
+
+// This computer -> Drives (docs/plans/self-host-drives.md §6): what the card
+// holds while the person picks drives and a way to use them.
+struct drives_state {
+  bool open = false;
+  std::vector<std::string> picked;  // drive ids, in the listing's order
+  std::string choice;               // "" none; "separate", "mirror", ...
+  std::string label;                // the combined drive's name
+  std::vector<std::pair<std::string, std::string>> typed;  // drive id -> the name typed
+  std::string replacing;            // a set's id
+  std::string replace_with, replace_typed;
+  std::string asked;                // "combine" | "replace" until its outcome shows
+};
+
+// This computer -> Users (docs/plans/self-host-users-smb.md §8).
+struct users_state {
+  bool adding = false;
+  std::string name, role = "view";
+  std::string password, password_again, unlock_with;  // secure: never in a tree
+  bool refreshed = false;  // users_refresh asked since the card opened
+};
+
+// The rules the card applies before it sends (the program checks them again).
+// A user name the service takes: a-z first, then a-z 0-9 . _ -, at most 20, not reserved.
+[[nodiscard]] bool valid_user_name(std::string_view name);
+// The combined drive's name: 1 to 27 ASCII letters, digits, spaces, '-' or '_',
+// no space at either end.
+[[nodiscard]] bool good_drive_label(std::string_view label);
+// One typed name per drive, in order, each equal to that drive's name once trimmed.
+[[nodiscard]] bool drive_names_match(const std::vector<std::string>& typed, const std::vector<std::string>& names);
 
 class screen {
  public:
@@ -44,6 +75,9 @@ class screen {
                                                   std::string_view value_json, std::int64_t now);
   // What was typed and never sent, and the parts it was typed in (Settings closed).
   void forget_secrets();
+  // Requests the last build wants sent (a section shown for the first time asks
+  // for its list); taken once.
+  [[nodiscard]] std::vector<std::string> take_queued();
 
   // The pairing code's text from the last build ("" when none shows): the QR's.
   [[nodiscard]] const std::string& qr_text() const noexcept { return qr_; }
@@ -101,6 +135,13 @@ class screen {
   std::string qr_;
 
   std::uint64_t secret_gen_ = 1;  // a secure field's id suffix (build)
+  drives_state drives_;
+  users_state users_;
+  std::vector<std::string> queued_;
+  // From the last build: the drives listing's ids and names, and the choices offered.
+  std::vector<std::string> disk_ids_, disk_names_, set_ids_, set_names_, offered_, user_names_, user_roles_;
+  std::vector<std::vector<std::string>> user_folders_;
+  std::vector<std::vector<std::string>> set_members_;
 
   [[nodiscard]] std::vector<std::string> handle(std::string_view node, std::uint32_t kind, std::string_view value_json,
                                                 std::int64_t now);

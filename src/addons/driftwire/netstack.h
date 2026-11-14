@@ -37,6 +37,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -97,6 +98,12 @@ class stack {
     std::function<void(std::unique_ptr<link>, const flow&)> on_tcp;
     // A datagram the app sent.
     std::function<void(const flow&, std::span<const std::uint8_t>)> on_udp;
+    // A resend now falls due at `due`, which may be sooner than the
+    // next_deadline() the timer sleeps to: a connection came, a segment went
+    // out with none outstanding, a backed-off timer was reset. Called under
+    // the stack's lock, from any thread: take only a leaf lock (the runner's
+    // timer mutex), never call back into the stack.
+    std::function<void(std::chrono::steady_clock::time_point due)> timer;
   };
   explicit stack(callbacks cb);
   // Every connection reset. Every link on_tcp handed out is destroyed
@@ -109,8 +116,13 @@ class stack {
   void input(std::span<const std::uint8_t> packet);
   // A datagram back to the app on `f` (as on_udp named it).
   void udp_reply(const flow& f, std::span<const std::uint8_t> payload);
-  // Retransmission and idle limits: call every ~100 ms.
+  // Retransmission and idle limits: call at next_deadline(), and again
+  // whenever `callbacks::timer` says it may have moved.
   void tick();
+  // When tick() next has work (a resend, an idle limit), just past it so the
+  // tick that wakes then finds it due; nullopt with no connections. An idle
+  // stack has nothing to do for kIdleMs, so its timer need not wake before.
+  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> next_deadline() const;
   [[nodiscard]] std::size_t connections() const;
 
  private:
@@ -121,6 +133,7 @@ class stack {
   void on_tcp_packet(const parsed& p, std::vector<std::vector<std::uint8_t>>& out,
                      std::unique_ptr<link>& accepted);
   void send_data_locked(conn& c, std::vector<std::vector<std::uint8_t>>& out, bool resend);
+  [[nodiscard]] static clock::time_point resend_due(const conn& c);
   void emit(std::vector<std::vector<std::uint8_t>>& out);
   // The link side.
   [[nodiscard]] result<std::size_t> read(const std::shared_ptr<conn>& c, std::span<std::uint8_t> into, int timeout_ms);

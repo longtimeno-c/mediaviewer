@@ -468,6 +468,16 @@ MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
  * every add-on's screen, and Local search's catalogue reaches it through the
  * host table's catalogue_* rows. */
 
+/* docs/plans/self-hosted.md "Tray": mv_host_tray_start, in the first window's
+ * process at launch, watches `driftwire host` on this computer: while it runs
+ * its server menu is a kept entry of mv_slots_notices_json ("shell": true; its
+ * Open row opens Settings → Phone access; its own icon) and the process is kept
+ * in the background as an add-on's keep would; "login" says whether the app's
+ * login item is wanted. mv_host_tray_stop at quit, before the add-ons unload;
+ * it never waits on a `host` verb in flight. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_host_tray_start(void);
+MV_API mv_status MV_CALL mv_host_tray_stop(void);
+
 /* 0.19. Kinds the folder listing leaves out (Settings, "Show audio files" /
  * "Show documents"): MV_FOLDER_HIDE_AUDIO (MP3, M4A, M4P) and
  * MV_FOLDER_HIDE_DOCUMENTS (PDF, DOCX). The file a folder was opened on, and

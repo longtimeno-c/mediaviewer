@@ -47,6 +47,10 @@ struct keeper_context {
   // saw a new outside address): the host passes it to every other keeper.
   // Any thread; never blocks.
   std::function<void()> address_moved;
+  // The drives keeper's news (host_drives.h): the worst combined set's health
+  // word for the phones ("": healthy or none), passed to serve's options::storage.
+  // Any thread; never blocks.
+  std::function<void(std::string)> storage_changed;
 };
 
 class host_keeper {
@@ -73,10 +77,11 @@ class host_keeper {
 struct keeper_factories {
   std::function<std::unique_ptr<host_keeper>()> ddns;    // slice 3
   std::function<std::unique_ptr<host_keeper>()> router;  // slice 4
+  std::function<std::unique_ptr<host_keeper>()> drives;  // combined drives' health (host_drives.h)
 };
 
 // The keepers this build has (host_keepers.cpp): DuckDNS over cli::https_get,
-// and the router on the default gateway.
+// the router on the default gateway, and the combined drives' health.
 [[nodiscard]] keeper_factories host_keepers();
 
 // ---- the two keepers (slice 5) -------------------------------------------------------------

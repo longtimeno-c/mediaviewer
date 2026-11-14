@@ -1931,6 +1931,25 @@ status slot_registry::keep_menu(const std::string& addon_id, std::string_view me
 
 status slot_registry::menu_action(const std::string& addon_id, const std::string& item_id,
                                   const std::string& value_json) {
+  {
+    // The app's own entry ("Tray"): its handler, called outside the lock.
+    std::function<void(const std::string&, const std::string&)> run;
+    {
+      std::lock_guard lock(m_);
+      if (auto sk = shell_keep_.find(addon_id); sk != shell_keep_.end()) {
+        const auto& rows = sk->second.menu;
+        const bool has = std::any_of(rows.begin(), rows.end(), [&](const menu_row& r) {
+          return !r.id.empty() && r.id == item_id;
+        });
+        if (!sk->second.kept || !has || !sk->second.on_menu) return status::not_found;
+        run = sk->second.on_menu;
+      }
+    }
+    if (run) {
+      run(item_id, value_json.empty() ? std::string("null") : value_json);
+      return status::ok;
+    }
+  }
   std::lock_guard lock(m_);
   auto it = addons_.find(addon_id);
   if (it == addons_.end()) return status::not_found;
@@ -1982,7 +2001,48 @@ status slot_registry::post_busy(const std::string& addon_id, std::string what) {
 
 bool slot_registry::keeping_alive() const {
   std::lock_guard lock(m_);
-  return !keep_.empty();
+  return !keep_.empty() ||
+         std::any_of(shell_keep_.begin(), shell_keep_.end(), [](const auto& k) { return k.second.kept; });
+}
+
+bool slot_registry::wants_login_item() const {
+  std::lock_guard lock(m_);
+  return !keep_.empty() ||
+         std::any_of(shell_keep_.begin(), shell_keep_.end(), [](const auto& k) { return k.second.login; });
+}
+
+status slot_registry::set_shell_keep(const std::string& id, std::optional<shell_keep> k) {
+  if (id.empty() || id.size() > 64 || !json::detail::valid_utf8(id)) return status::invalid_arg;
+  if (k) {
+    if (k->menu.size() > 16 || !notice_text_ok(k->label, 120) || !notice_text_ok(k->title, 120) ||
+        !notice_text_ok(k->screen, 64)) {
+      return status::invalid_arg;
+    }
+    for (const menu_row& r : k->menu) {
+      if (r.kind == "separator") continue;
+      if (r.kind != "text" && r.kind != "toggle" && r.kind != "button") return status::invalid_arg;
+      if (r.label.empty() || !notice_text_ok(r.label, 120)) return status::invalid_arg;
+      if (r.kind != "text" && !menu_id_ok(r.id)) return status::invalid_arg;
+    }
+  }
+  {
+    std::lock_guard lock(m_);
+    auto it = shell_keep_.find(id);
+    if (!k) {
+      if (it == shell_keep_.end()) return status::ok;
+      shell_keep_.erase(it);
+    } else {
+      if (it != shell_keep_.end() && it->second.kept == k->kept && it->second.login == k->login &&
+          it->second.screen == k->screen && it->second.title == k->title && it->second.label == k->label &&
+          it->second.menu == k->menu) {
+        it->second.on_menu = std::move(k->on_menu);
+        return status::ok;  // nothing a host draws changed
+      }
+      shell_keep_[id] = std::move(*k);
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
 }
 
 std::string slot_registry::busy_what() const {
@@ -2016,7 +2076,26 @@ std::string slot_registry::notices_json() const {
     }
     w.end_object();
   }
-  w.end_array().key("busy").begin_array();
+  for (const auto& [id, k] : shell_keep_) {
+    if (!k.kept) continue;
+    w.begin_object().key("addon").string(id).key("screen").string(k.screen).key("title").string(k.title);
+    w.key("label").string(k.label).key("shell").boolean(true);
+    if (!k.menu.empty()) {
+      w.key("menu").begin_array();
+      for (const menu_row& r : k.menu) {
+        w.begin_object().key("kind").string(r.kind);
+        if (!r.id.empty()) w.key("id").string(r.id);
+        if (!r.label.empty()) w.key("label").string(r.label);
+        if (r.kind == "toggle") w.key("value").boolean(r.value);
+        w.end_object();
+      }
+      w.end_array();
+    }
+    w.end_object();
+  }
+  const bool login = !keep_.empty() ||
+                     std::any_of(shell_keep_.begin(), shell_keep_.end(), [](const auto& e) { return e.second.login; });
+  w.end_array().key("login").boolean(login).key("busy").begin_array();
   for (const auto& [addon, what] : busy_) w.begin_object().key("addon").string(addon).key("what").string(what).end_object();
   w.end_array().key("notices").begin_array();
   for (const auto& [key, n] : notices_) {

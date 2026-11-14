@@ -4,6 +4,11 @@
 // driftwire program.
 #include "addons/phone/self_host.h"
 
+#include "addons/phone/bundled.h"
+#include "addons/phone/service.h"
+
+#include "addons/phone/host_tray.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -19,6 +24,7 @@
 #include "wire/net.h"
 #include "wire/secrets.h"
 #include "wire/serve_wire.h"
+#include "wire/share_users.h"
 
 namespace mv::phone::self_host {
 
@@ -268,6 +274,14 @@ where find() {
   // the login entry it writes points at it. A separately installed driftwire
   // keeps its own place and its own updates; it is used only without one.
   if (const std::string b = bundled(); !b.empty() && is_file(b)) w.program = b;
+  // Where the add-on installs it, also for a caller in the base app (the
+  // server's menu, host_tray), which the add-on's set_bundled never reaches.
+  if (w.program.empty()) {
+    if (auto dir = feature_dir()) {
+      const std::string b = bundled::program_in(bundled::bin_dir(*dir));
+      if (is_file(b)) w.program = b;
+    }
+  }
   for (const auto& c : w.program.empty() ? program_candidates(o, e) : std::vector<std::string>{}) {
     if (is_file(c)) {
       w.program = c;
@@ -280,7 +294,7 @@ where find() {
 }
 
 std::optional<running_state> parse_state(std::string_view text) {
-  const auto doc = json::parse(text, 4);
+  const auto doc = json::parse(text, 6);
   if (!doc || doc->k != json::kind::object) return std::nullopt;
   running_state s;
   s.pid = doc->integer("pid").value_or(0);
@@ -298,6 +312,62 @@ std::optional<running_state> parse_state(std::string_view text) {
   if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
     for (const auto& line : k->a) {
       if (line.k == json::kind::string && !line.s.empty()) s.keepers.push_back(tidy_keeper_line(line.s));
+    }
+  }
+  s.paused = doc->boolean("paused").value_or(false);
+  s.tls_failed = doc->boolean("tls_failed").value_or(false);
+  const auto count = [](const json::value& v, const char* k) {
+    const auto n = v.integer(k).value_or(0);
+    return n > 0 ? static_cast<std::uint64_t>(n) : std::uint64_t{0};
+  };
+  if (const json::value* c = doc->find("clients"); c && c->k == json::kind::array) {
+    for (const auto& v : c->a) {
+      if (v.k != json::kind::object || s.clients.size() >= 64) continue;
+      const std::string* name = v.str("name");
+      if (!name || name->empty()) continue;
+      running_state::client cl;
+      cl.name = *name;
+      const std::string* via = v.str("via");
+      cl.via = via && (*via == "home" || *via == "relay") ? *via : std::string("internet");
+      cl.since = v.integer("since").value_or(0);
+      cl.read = count(v, "read");
+      cl.written = count(v, "written");
+      cl.read_rate = count(v, "read_rate");
+      cl.write_rate = count(v, "write_rate");
+      s.clients.push_back(std::move(cl));
+    }
+  }
+  if (const json::value* u = doc->find("usage"); u && u->k == json::kind::object) {
+    if (const std::string* day = u->str("day")) s.day = *day;
+    s.read_today = count(*u, "read");
+    s.written_today = count(*u, "written");
+    s.read_rate = count(*u, "read_rate");
+    s.write_rate = count(*u, "write_rate");
+    if (const json::value* d = u->find("devices"); d && d->k == json::kind::array) {
+      for (const auto& v : d->a) {
+        const std::string* name = v.k == json::kind::object ? v.str("name") : nullptr;
+        if (name && !name->empty() && s.devices_today.size() < 16) {
+          s.devices_today.push_back({*name, count(v, "read"), count(v, "written")});
+        }
+      }
+    }
+  }
+  if (doc->find("drives_sets")) s.drives_health = static_cast<int>(doc->integer("drives_health").value_or(-1));
+  if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
+    for (const auto& line : k->a) {
+      if (line.k != json::kind::string || !line.s.starts_with("drives ")) continue;
+      // The keeper's column, then a set per line.
+      std::string_view rest(line.s);
+      std::size_t at = 0;
+      while (at < rest.size() && s.drive_lines.size() < 8) {
+        const auto end = rest.find('\n', at);
+        std::string part = trim(rest.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at));
+        if (at == 0) part = trim(part.substr(std::string_view("drives").size()));
+        if (const auto semi = part.find(';'); semi != std::string::npos) part.resize(semi);
+        if (!part.empty()) s.drive_lines.push_back(part);
+        if (end == std::string_view::npos) break;
+        at = end + 1;
+      }
     }
   }
   return s;
@@ -366,6 +436,8 @@ host_status read_status(const where& w) {
       if (st->folders) s.folders = st->folders;
       s.offline = st->offline;
       s.keepers = st->keepers;
+      s.paused = st->paused;
+      s.stats = host_tray::usage_lines(*st);
     }
   }
   return s;
@@ -396,7 +468,8 @@ result<ran> run_host(const where& w, std::vector<std::string> args, std::span<co
   ran r;
   std::string line;
   while (child.read_line(line)) {
-    if (r.output.size() < 4096) {
+    // `host drives list --json` names every disk and volume: room for a big machine's, not unbounded.
+    if (r.output.size() < 1024 * 1024) {
       r.output += line;
       r.output += '\n';
     }
@@ -423,6 +496,37 @@ std::vector<shared_folder> shared_folders(const where& w) {
     if (auto c = serve::parse_config(*text, true, true)) {
       for (const auto& r : c->roots) out.push_back({r.path, r.label});
     }
+  }
+  return out;
+}
+
+std::vector<std::string> share_addresses(const where& w) {
+  std::vector<std::string> out;
+  if (w.data_dir.empty()) return out;
+  auto store = driftwire::secrets::file_store(w.data_dir + "/host/serve/secrets");
+  if (!store || !store->exists("share_state")) return out;
+  const auto bytes = store->get("share_state");
+  if (!bytes) return out;
+  const auto doc = json::parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()), 3);
+  const std::string* computer = doc ? doc->str("computer") : nullptr;
+  const std::string* mdns = doc ? doc->str("mdns_host") : nullptr;
+  const json::value* shares = doc ? doc->find("shares") : nullptr;
+  if (!computer || !mdns || !shares || shares->k != json::kind::array) return out;
+  namespace su = driftwire::serve::share_users;
+  for (const auto& s : shares->a) {
+    if (s.k != json::kind::string) continue;
+    if (auto unc = su::unc_address(*computer, s.s); !unc.empty()) out.push_back(std::move(unc));
+    if (auto url = su::smb_url(*mdns, s.s); !url.empty()) out.push_back(std::move(url));
+  }
+  return out;
+}
+
+std::vector<std::string> apply_lines(std::span<const user_password> p) {
+  std::vector<std::string> out;
+  out.reserve(p.size());
+  for (const auto& x : p) {
+    if (x.name.empty() || x.password.empty()) continue;
+    out.push_back(x.name + "\t" + x.password);
   }
   return out;
 }

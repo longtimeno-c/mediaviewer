@@ -281,6 +281,7 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   auto opts_with_code = opts;
   opts_with_code.pair_code = code_copy;
   opts_with_code.device_name = name;
+  opts_with_code.device_kind = c.device_kind;
   auto done = race<std::shared_ptr<serve::client>>(
       targets, timeout_ms, cancel, report.failures, report,
       [opts_with_code](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {
@@ -608,6 +609,13 @@ int link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
   if (!live_->caps().has_grant) return 0;
   expires_unix = live_->caps().grant_expires;
   scoped = live_->caps().grant_scoped;
+  return 1;
+}
+
+int link_session::storage(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().storage;
   return 1;
 }
 

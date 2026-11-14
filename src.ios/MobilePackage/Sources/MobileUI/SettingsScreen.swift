@@ -13,6 +13,13 @@ enum SettingsCopy {
     "When MediaViewer reaches your server through your own relay, it tries to connect to it directly, which is faster. On Wi-Fi it always tries."
   /// What kind of server the sample library stands in for.
   static let sampleServerKind = "A computer"
+  /// The sample's stand-in for a server's mirror (docs/plans/self-host-drives.md §4).
+  static let sampleDrives = "Server's drives"
+  static let sampleMirrorHealthy = "A mirror of two drives, both working"
+  static let sampleMirrorLost = "A mirror that lost a drive"
+  static let sampleLoseDrive = "Show a lost drive"
+  static let sampleMendDrive = "Put the drive back"
+  static let serverDrives = "Server's drives"
 }
 
 struct SettingsScreen: View {
@@ -27,6 +34,10 @@ struct SettingsScreen: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
           failureCard
+          if model.connection.serverStorage > 0, !model.connection.serverStorageWords.isEmpty {
+            NoticeCard(message: model.connection.serverStorageWords)
+              .accessibilityLabel(SettingsCopy.serverDrives + ": " + model.connection.serverStorageWords)
+          }
           section("Library") {
             if model.connection.isSample {
               InfoRow(label: "Library", value: "Sample library")
@@ -37,6 +48,14 @@ struct SettingsScreen: View {
               // The sample stands in for a server that is a computer (docs/plans/self-hosted.md §8),
               // so the words a self-hosted library shows can be seen without one.
               InfoRow(label: "Server", value: SettingsCopy.sampleServerKind)
+              // The phone stands in for the server's mirror, so "lost a drive" can be seen with no server.
+              InfoRow(label: SettingsCopy.sampleDrives,
+                      value: model.connection.serverStorage == 2 ? SettingsCopy.sampleMirrorLost : SettingsCopy.sampleMirrorHealthy)
+              Button(model.connection.serverStorage == 2 ? SettingsCopy.sampleMendDrive : SettingsCopy.sampleLoseDrive) {
+                let lose = model.connection.serverStorage != 2
+                Task { await model.services.connection.showSampleLostDrive(lose) }
+              }
+              .buttonStyle(SecondaryButtonStyle())
               if case .reachable(let address, _, _) = model.connection.synology {
                 InfoRow(label: "Served from", value: address)
               }

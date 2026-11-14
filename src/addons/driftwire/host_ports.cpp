@@ -84,6 +84,10 @@ outside_kind classify(const net::address& a) noexcept {
   return outside_kind::double_nat;
 }
 
+bool forwardable(std::uint16_t port) noexcept {
+  return port != 137 && port != 138 && port != 139 && port != 445 && port != 3389;
+}
+
 keeper::keeper(std::vector<port_wanted> ports, options o) : opts_(std::move(o)) {
   const auto cancelled = [&] { return opts_.router.cancelled && opts_.router.cancelled(); };
   const int lease = std::max(2, opts_.lease_s);
@@ -113,6 +117,14 @@ keeper::keeper(std::vector<port_wanted> ports, options o) : opts_(std::move(o)) 
     if (w.internal_port == 0) {
       p.v4 = port_state::refused;
       p.why.emplace_back("no port to forward");
+      r.ports.push_back(std::move(p));
+      continue;
+    }
+    // SMB, NetBIOS and RDP never leave the home network: refused before any router is asked,
+    // inside or outside, a fallback included.
+    if (!forwardable(w.internal_port) || !forwardable(w.external_port) || !forwardable(w.fallback_external)) {
+      p.v4 = port_state::refused;
+      p.why.emplace_back(kNeverForwarded);
       r.ports.push_back(std::move(p));
       continue;
     }
@@ -267,6 +279,11 @@ std::vector<std::string> advice(const report& r) {
                                       [](const port_report& p) { return p.v4 == port_state::not_offered; });
   for (const auto& p : r.ports) {
     if (p.v4 == port_state::mapped || p.wanted.internal_port == 0) continue;
+    // Never told to forward one by hand: it stays on the home network.
+    if (!forwardable(p.wanted.internal_port) || !forwardable(p.wanted.external_port) ||
+        !forwardable(p.wanted.fallback_external)) {
+      continue;
+    }
     missing = true;
     const std::uint16_t internal = p.wanted.internal_port;
     // The fallback is what a hand forward asks for: the preferred port (443)

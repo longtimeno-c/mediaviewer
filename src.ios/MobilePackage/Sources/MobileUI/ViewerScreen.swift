@@ -102,6 +102,8 @@ struct ViewerScreen: View {
       if showsFilmstrip {
         Filmstrip(entries: request.entries, current: index, images: model.services.images) { target in
           jump = PagerJump(index: target)
+        } scrub: { target in
+          jump = PagerJump(index: target, animated: false)
         }
       }
     }
@@ -239,22 +241,32 @@ struct ViewerScreen: View {
 
 // MARK: Filmstrip
 
-/// The Mac's bottom strip, for a phone. It follows the page once a swipe has settled, and shows and
-/// hides with the rest of the viewer's controls.
+/// The Mac's bottom strip, for a phone, scrubbed as Photos' is: dragging it shows the photo whose
+/// cell is in the middle, one cut per cell, and it comes to rest on a cell. A tap goes to that
+/// photo. It follows the page once a swipe has settled, and shows and hides with the rest of the
+/// viewer's controls.
 private struct Filmstrip: View {
   let entries: GridSource
   let current: Int
   let images: ImageLadder
   let choose: (Int) -> Void
+  /// The cell in the middle while the person moves the strip: the pager cuts to it.
+  let scrub: (Int) -> Void
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The cell in the middle of the strip.
+  @State private var centred: Int?
+  /// The person is moving the strip (a drag, or the coast after one): what comes to the middle
+  /// leads the pager, rather than the pager leading the strip.
+  @State private var scrubbing = false
   private static let cellSide: CGFloat = 48
+  private static let spacing: CGFloat = 4
 
   var body: some View {
-    ScrollViewReader { proxy in
+    GeometryReader { space in
       ScrollView(.horizontal, showsIndicators: false) {
         // Lazy, so a very large library builds only the cells on screen.
-        LazyHStack(spacing: 4) {
+        LazyHStack(spacing: Self.spacing) {
           ForEach(entries.indices, id: \.self) { index in
             Button { choose(index) } label: {
               FilmstripCell(entry: entries[index], images: images, side: Self.cellSide, isCurrent: index == current)
@@ -265,17 +277,31 @@ private struct Filmstrip: View {
             .id(index)
           }
         }
-        .padding(.horizontal, Theme.inset)
+        .scrollTargetLayout()
         .padding(.vertical, 8)
       }
-      .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
-      .onAppear { proxy.scrollTo(current, anchor: .center) }
+      // Margins of half the strip less half a cell: the first and the last photo reach the middle
+      // too, and a cell at rest sits there.
+      .contentMargins(.horizontal, max(0, (space.size.width - Self.cellSide) / 2), for: .scrollContent)
+      .scrollTargetBehavior(.viewAligned)
+      .scrollPosition(id: $centred, anchor: .center)
+      .onScrollPhaseChange { _, phase in
+        scrubbing = phase == .interacting || phase == .decelerating
+        // At rest on a cell the scrub has already shown: nothing more to do.
+        if !scrubbing, let centred, centred != current { scrub(centred) }
+      }
+      .onChange(of: centred) { _, new in
+        guard scrubbing, let new, new != current, entries.indices.contains(new) else { return }
+        scrub(new)
+      }
+      .onAppear { centred = current }
       .onChange(of: current) { _, new in
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-          proxy.scrollTo(new, anchor: .center)
-        }
+        // The strip leads while it is being moved; otherwise it follows the page.
+        guard !scrubbing, new != centred else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { centred = new }
       }
     }
+    .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
     .frame(height: Self.cellSide + 16)
     .background(Color.black.opacity(0.55).ignoresSafeArea(edges: .bottom))
   }

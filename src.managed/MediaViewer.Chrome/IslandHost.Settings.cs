@@ -596,6 +596,7 @@ public static partial class IslandHost
             RefreshSettingsScreen();
             RefreshCardOutlines();  // a contrast theme turned on since it was built
             ShowWantedAddonPage();  // #510: the list, or the page something asked for
+            if (_phoneRevealWanted) RevealPhoneSettings();  // "Tray": after the page is chosen
             // docs/design/25: what is installed from others may have changed on disk.
             RefreshOpenAddons();
             // PR 56: the first-party add-ons' settings pages, values re-read.
