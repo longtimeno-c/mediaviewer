@@ -28,18 +28,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: proto.serverAddress ?? "127.0.0.1")
     let v4 = NEIPv4Settings(addresses: [address4], subnetMasks: [Self.mask(prefix4)])
-    v4.includedRoutes = [NEIPv4Route.default()]
-    var excluded: [NEIPv4Route] = []
-    for a in (config["exclude"] as? [String]) ?? [] where !a.contains(":") {
-      excluded.append(NEIPv4Route(destinationAddress: a, subnetMask: "255.255.255.255"))
-    }
-    for n in (config["excludeNets"] as? [[String: Any]]) ?? [] {
-      if let base = n["base"] as? String, let prefix = n["prefix"] as? Int, !base.contains(":") {
-        excluded.append(NEIPv4Route(destinationAddress: base, subnetMask: Self.mask(prefix)))
+    if let include4 = Self.routes(config["include4"]), let exclude4 = Self.routes(config["exclude4"]) {
+      v4.includedRoutes = include4.map(Self.route4)
+      v4.excludedRoutes = exclude4.map(Self.route4)
+    } else {
+      // An add-on from before IPv6 (vpn_mac.mm sends both).
+      v4.includedRoutes = [NEIPv4Route.default()]
+      var excluded: [NEIPv4Route] = []
+      for a in (config["exclude"] as? [String]) ?? [] where !a.contains(":") {
+        excluded.append(NEIPv4Route(destinationAddress: a, subnetMask: "255.255.255.255"))
       }
+      for n in Self.routes(config["excludeNets"]) ?? [] where !n.base.contains(":") && n.prefix > 0 {
+        excluded.append(Self.route4(n))
+      }
+      v4.excludedRoutes = excluded
     }
-    v4.excludedRoutes = excluded
     settings.ipv4Settings = v4
+    // IPv6 into the tunnel too: without it an app's IPv6 goes around the
+    // tunnel (the relay carries it, vpn.h settings). An older add-on sends no
+    // IPv6 routes: the default route still, with its relay and networks left
+    // out, never IPv6 left alone.
+    let address6 = (config["address6"] as? String) ?? "fd5d:7269:6674::1"
+    let prefix6 = (config["prefix6"] as? Int) ?? 64
+    let v6 = NEIPv6Settings(addresses: [address6], networkPrefixLengths: [NSNumber(value: prefix6)])
+    if let include6 = Self.routes(config["include6"]), let exclude6 = Self.routes(config["exclude6"]) {
+      v6.includedRoutes = include6.map(Self.route6)
+      v6.excludedRoutes = exclude6.map(Self.route6)
+    } else {
+      v6.includedRoutes = [NEIPv6Route.default()]
+      var excluded: [NEIPv6Route] = []
+      for a in (config["exclude"] as? [String]) ?? [] where a.contains(":") {
+        excluded.append(NEIPv6Route(destinationAddress: a, networkPrefixLength: 128))
+      }
+      for n in Self.routes(config["excludeNets"]) ?? [] where n.base.contains(":") && n.prefix > 0 {
+        excluded.append(Self.route6(n))
+      }
+      v6.excludedRoutes = excluded
+    }
+    settings.ipv6Settings = v6
     let dns = NEDNSSettings(servers: [dns4])
     dns.matchDomains = [""]  // every name
     settings.dnsSettings = dns
@@ -72,6 +98,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     link?.cancel()
     link = nil
     completionHandler()
+  }
+
+  // A route list from the configuration ([{base, prefix}]); nil when absent.
+  private static func routes(_ value: Any?) -> [(base: String, prefix: Int)]? {
+    guard let all = value as? [[String: Any]] else { return nil }
+    return all.compactMap { n in
+      guard let base = n["base"] as? String, let prefix = n["prefix"] as? Int else { return nil }
+      return (base, prefix)
+    }
+  }
+
+  // A prefix of 0 is the default route (the system's own, not a /0 of ours).
+  private static func route4(_ n: (base: String, prefix: Int)) -> NEIPv4Route {
+    n.prefix == 0 ? NEIPv4Route.default() : NEIPv4Route(destinationAddress: n.base, subnetMask: mask(n.prefix))
+  }
+
+  private static func route6(_ n: (base: String, prefix: Int)) -> NEIPv6Route {
+    n.prefix == 0
+      ? NEIPv6Route.default() : NEIPv6Route(destinationAddress: n.base, networkPrefixLength: NSNumber(value: n.prefix))
   }
 
   private static func mask(_ prefix: Int) -> String {
