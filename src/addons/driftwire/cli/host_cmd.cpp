@@ -1119,7 +1119,7 @@ std::string clock_of(std::int64_t unix_s) {
 #else
   (void)localtime_r(&tt, &tm);
 #endif
-  char buf[8];
+  char buf[32];  // room for any int (GCC's -Wformat-truncation), though a time needs 5
   (void)std::snprintf(buf, sizeof buf, "%02d:%02d", tm.tm_hour, tm.tm_min);
   return buf;
 }

@@ -123,7 +123,9 @@ std::string local_day(std::chrono::system_clock::time_point t) {
 #else
   (void)localtime_r(&tt, &tm);
 #endif
-  char buf[16];
+  // Room for any int in each field: GCC's -Wformat-truncation counts them as
+  // up to 11 characters, though a real date needs 10 in all.
+  char buf[40];
   (void)std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
   return buf;
 }
