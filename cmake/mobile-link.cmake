@@ -5,9 +5,10 @@
 # in src/mobile/mv_mobile_link.h. Static for src.ios to link; on the Mac it is
 # what the link tests run, so nothing here is Apple-only but the APIs named.
 set(_M "${MV_SOURCE_ROOT}/src/mobile")
+# The link and the pairing code are shared with the desktop's remote folder (cmake/remote.cmake).
+include("${CMAKE_CURRENT_LIST_DIR}/remote.cmake")
 add_library(mv_mobile_link STATIC
-  ${_M}/link.cpp ${_M}/link.h
-  ${_M}/link_payload.cpp ${_M}/link_payload.h
+  $<TARGET_OBJECTS:mv_mobile_route>
   ${_M}/link_generation.cpp ${_M}/link_generation.h
   ${_M}/file_map.cpp ${_M}/file_map.h
   ${_M}/link_thumbs.cpp ${_M}/link_thumbs.h

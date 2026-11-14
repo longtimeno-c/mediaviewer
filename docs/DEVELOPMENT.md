@@ -433,6 +433,30 @@ the Mac app built, the card drawn only through the core's registry in `[phone-ad
 on a release channel, the phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
 run against a real Synology or phone.
 
+### Another computer's folders (plan: `docs/plans/desktop-client.md`, #686)
+
+Another desktop pairs with a self-hosted computer or a Synology from its code (the phone's code, no
+password) and sees its folders pinned at the top of the folder tree, read-only. The core is `src/remote`
+(`key.*` the `remote:` keys, `cache.*` originals by content identity, `library.*` servers, pairing,
+listings, tiles and fetches) over the phone's own link (`src/mobile/link.*`, shared through the
+`mv_mobile_route` OBJECT library in `cmake/remote.cmake`, so `libmv_mobile_link.a` keeps its contents for
+the iOS project). The Mac host is `main_mac.mm` (File → Connect to a Server…, `mv_chrome_remote_*`) with the
+rows in `FolderTreeView.swift`; Windows is the core's session (`abi/abi.cpp`, `abi/remote_abi.cpp`,
+`mv_remote_*`, ABI 0.42) with the rows in `IslandHost.Remote.cs`. Servers are in `servers.json`
+(Mac `~/Library/Application Support/MediaViewer/Remote Folders`, Windows `%LocalAppData%\MediaViewer\remote`);
+their keys in the OS store ("MediaViewer Driftwire", `remote_<id>`); the cache in
+`~/Library/Caches/MediaViewer/Remote` / `%LocalAppData%\MediaViewer\remote-cache`.
+
+To try it on one Mac: run `driftwire host` (or `driftwire serve` with a `serve.json`) with a folder shared,
+take the code from `driftwire host pair` or the Phone access card, and paste it in File → Connect to a Server….
+
+```bash
+build/bin/mv_tests "[desktop-client]"          # loopback: pairing, listing, tiles, fetches, unreachable / offline / revoked
+build/bin/mv_tests "[.desktop-client-perf]"    # remote first pixel, full resolution, arrow-to-next over loopback
+```
+
+`MV_REMOTE_BENCH_JSON=path` writes the timings. They are also in `"[.perf-bench]"`.
+
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
 
 Screens are in `src.ios/MobilePackage` (`MobileKit` holds the protocols, `MobileUI` the screens,

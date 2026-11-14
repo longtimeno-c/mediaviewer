@@ -507,6 +507,22 @@ bool mv_chrome_photos_library_available(void);
 bool mv_chrome_photos_library_open(void);
 void mv_chrome_open_photos_library(void);
 
+// docs/plans/desktop-client.md: another computer's folders, pinned in the folder
+// tree. `servers`: one line per paired server, "name\tkey\tstate" (state:
+// unknown, online, unreachable, access_ended, wrong_service, too_old), no I/O;
+// `generation` bumps when that list or a state changes. A key ("remote:…/") is
+// listed with mv_chrome_list_subdirectories and opened with
+// mv_chrome_open_folder like a path. `open_key` is the remote folder on
+// screen ("" none). `pair` takes a code or its mediaviewer://pair#… link,
+// confirms, then pairs on a worker (the Phone access add-on's hook); `connect`
+// asks for one; `forget` removes a server here. [main-thread]
+int32_t mv_chrome_remote_servers(char* buf, int32_t size);
+uint64_t mv_chrome_remote_generation(void);
+int32_t mv_chrome_remote_open_key(char* buf, int32_t size);
+void mv_chrome_remote_pair(const char* code_utf8);
+void mv_chrome_remote_connect(void);
+void mv_chrome_remote_forget(const char* server_key_utf8);
+
 // docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
 // the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW
 // too) copied, verified, into <destination> in the chosen layout (YYYY/YYYY-MM-DD

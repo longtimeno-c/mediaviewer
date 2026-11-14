@@ -143,6 +143,9 @@
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
 #include "shell/photos_items_mac.h"
+#include "remote/library.h"
+#include "image/thumb.h"
+#include "player/poster.h"
 #include "shell/photos_backup.h"
 #include "shell/photos_backup_mac.h"
 #include "shell/photos_backup_library.h"
@@ -677,6 +680,17 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // The real file behind an item: the path itself, or what a Photos key resolved
 // to ("" while unresolved or when only a preview stands in).
 - (std::string)fileForEntry:(const mv::io::dir_entry&)entry;
+// docs/plans/desktop-client.md: another computer's folders (src/remote), pinned
+// in the folder tree. A remote folder opens as a list of `remote:` keys; an item
+// shows its tile, then its original once fetched; the ±2 fetch behind it.
+- (void)startRemoteFolders;
+- (void)openRemoteFolder:(const std::string&)key;
+- (void)openRemoteEntry:(const mv::io::dir_entry&)entry moment:(std::int64_t)moment;
+- (void)remoteListEnding;
+- (void)remotePrefetchAround:(std::uint64_t)seq;
+- (void)connectToServerCode:(const std::string&)code;
+- (void)connectToServerFromMenu:(id)sender;
+- (std::string)remoteOpenKey;
 
 // Fullscreen (F11 / F) and slideshow (F5), docs/design/16's Browse and Slideshow
 // tables. No video on Mac yet (PR 19), so slideshow is a plain interval
@@ -1782,6 +1796,17 @@ extern "C" void mv_chrome_tree_blur(void) {
 // [any-thread]: a directory read, called from Swift's background task.
 extern "C" int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size) {
   if (!dir_utf8) return -1;
+  if (mv::remote::is_key(dir_utf8)) {
+    // docs/plans/desktop-client.md: a remote folder's folders, from its server
+    // (blocks: Swift's background task). Offline ones keep their place.
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return -1;
+    auto listed = lib->list(dir_utf8, /*person=*/true);
+    if (!listed) return MvCopyOut("", buf, size);
+    std::string out;
+    for (const auto& f : listed->folders) out += MvFlat(f.name) + "\t" + f.key + "\n";
+    return MvCopyOut(out, buf, size);
+  }
   auto dirs = mv::io::list_subdirectories(dir_utf8);
   if (!dirs) return -1;
   std::string out;
@@ -1822,6 +1847,48 @@ extern "C" void mv_chrome_set_thumb_cache_cap(uint64_t bytes) {
 extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
   return MvCopyOut(std::string([[g_chrome_app currentFolder] UTF8String]), buf, size);
+}
+// docs/plans/desktop-client.md: the pinned rows. One line per paired server,
+// "name\tkey\tstate" (state: reach_name). [any-thread][no-block]
+extern "C" int32_t mv_chrome_remote_servers(char* buf, int32_t size) {
+  mv::remote::library* lib = mv::remote::library::shared();
+  std::string out;
+  if (lib) {
+    for (const auto& s : lib->servers()) {
+      out += MvFlat(s.name) + "\t" + mv::remote::server_key(s.id) + "\t" + mv::remote::reach_name(s.state) + "\n";
+    }
+  }
+  return MvCopyOut(out, buf, size);
+}
+extern "C" uint64_t mv_chrome_remote_generation(void) {
+  mv::remote::library* lib = mv::remote::library::shared();
+  return lib ? lib->generation() : 0;
+}
+// The remote folder on screen ("" none). [main-thread]
+extern "C" int32_t mv_chrome_remote_open_key(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app remoteOpenKey] : std::string{}, buf, size);
+}
+// The code or its mediaviewer://pair#… link: asks to confirm, then pairs on a
+// worker; the notice says how it went. The hook the Phone access add-on calls.
+// [main-thread]
+extern "C" void mv_chrome_remote_pair(const char* code_utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app && code_utf8) [g_chrome_app connectToServerCode:code_utf8];
+}
+extern "C" void mv_chrome_remote_connect(void) {
+  if (g_chrome_app) [g_chrome_app connectToServerFromMenu:nil];
+}
+// Forgets a server here (its keys, its cache). [main-thread][no-block]
+extern "C" void mv_chrome_remote_forget(const char* server_key_utf8) {
+  if (!server_key_utf8) return;
+  auto k = mv::remote::parse_key(server_key_utf8);
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!k || !lib || !g_chrome_app) return;
+  const std::string id = k->server;
+  if (![g_chrome_app remoteOpenKey].empty() && [g_chrome_app remoteOpenKey].rfind(server_key_utf8, 0) == 0) {
+    [g_chrome_app returnToWelcome];
+  }
+  std::thread([lib, id] { (void)lib->forget(id); }).detach();
 }
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
   (void)mv::shell::crash::note_native_call();
@@ -3848,6 +3915,14 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // A library listing is on a worker: a second Open Photos Library waits for it
   // rather than starting another (#420).
   BOOL _photosListing;
+  // docs/plans/desktop-client.md: the remote folder on screen ("" none), what its
+  // keys resolved to (their originals in the cache), and the viewer's fetch.
+  std::string _remoteFolderKey;
+  std::unordered_map<std::string, std::string> _remoteResolved;
+  std::uint64_t _remoteResolveSeq;
+  std::uint64_t _remoteOpenSeq;  // the latest remote folder asked for: a slower listing lands nowhere
+  std::shared_ptr<mv::mobile::cancel_flag> _remoteFetchCancel;
+  int _remoteFetchPercent;
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
@@ -4812,6 +4887,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   _folder.set_virtual_items(std::string(mv::shell::photos::kKeyPrefix), [](const std::string& key) {
     return mv::shell::photos::thumb_jpeg(key, mv::image::kThumbLongEdge);
   });
+  [self startRemoteFolders];
   _jobs.submit_at(mv::background_generation, [](const mv::job_context&) -> mv::status {
     mv::shell::photos::clear_cache();
     return mv::status::ok;
@@ -5817,7 +5893,13 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                       (_shownMtime == kShownStampUnknown ||
                        (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
     if (!same) {
-      if (mv::shell::photos::is_key(entry.path_utf8)) {
+      if (mv::remote::is_key(entry.path_utf8)) {
+        // docs/plans/desktop-client.md: its tile, then its original, on a worker.
+        if (_remoteFetchCancel) _remoteFetchCancel->stop.store(true);
+        _remoteFetchCancel.reset();
+        _shownItem = 0;
+        [self openRemoteEntry:entry moment:moment];
+      } else if (mv::shell::photos::is_key(entry.path_utf8)) {
         // docs/design/26: through its file, resolved on a worker if not yet.
         if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
         _photosFetchCancel.reset();
@@ -5851,8 +5933,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
         const auto i = static_cast<std::ptrdiff_t>(cur) + off;
         if (i >= 0 && static_cast<std::size_t>(i) < _items.size()) {
           const std::string& p = _items[static_cast<std::size_t>(i)].path_utf8;
-          // A Photos item prefetches through its resolve (openPhotosEntry).
-          if (!mv::shell::photos::is_key(p)) near.push_back(p);
+          // A Photos item prefetches through its resolve (openPhotosEntry), a
+          // remote one through its fetch (openRemoteEntry).
+          if (!mv::shell::photos::is_key(p) && !mv::remote::is_key(p)) near.push_back(p);
         }
       }
       if (!near.empty()) _lab.prefetch(near);
@@ -6053,7 +6136,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 - (BOOL)refuseWriteTo:(const std::string&)path {
   if (!mv::shell::write_protected(path)) return NO;
   NSBeep();
-  [self noticeShow:std::string(mv::shell::kWriteProtectedNotice)];
+  [self noticeShow:std::string(mv::shell::write_protected_notice(path))];
   return YES;
 }
 
@@ -7645,6 +7728,10 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"" mods:0 toMenu:file];
   // docs/design/26: shown once the library was added in Settings (validateMenuItem:).
   [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
+  // docs/plans/desktop-client.md: another computer's folders, from its code.
+  NSMenuItem* connect = [file addItemWithTitle:@"Connect to a Server…" action:@selector(connectToServerFromMenu:)
+                                 keyEquivalent:@""];
+  connect.target = self;
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
   _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
   _openRecentMenu.delegate = self;
@@ -14454,6 +14541,10 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   return [NSString stringWithUTF8String:_currentDir.c_str()];
 }
 - (void)openFolderPath:(const char*)utf8_path {
+  if (utf8_path && mv::remote::is_key(utf8_path)) {
+    [self openRemoteFolder:utf8_path];
+    return;
+  }
   // A tree click stays on the trail (visit), so the root the user started from
   // remains the root. Open Folder from the menu still resets it.
   if (!utf8_path || ![self openPath:utf8_path navigation:YES]) NSBeep();
@@ -14928,6 +15019,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 // downloads go ("cleared after", owner 2026-09-28) and so does what the keys
 // resolved to. Previews stay until the next launch; they are tiny.
 - (void)photosListEnding {
+  [self remoteListEnding];
   [_photosFetchTimer invalidate];
   _photosFetchTimer = nil;
   if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
@@ -14942,6 +15034,10 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 }
 
 - (std::string)fileForEntry:(const mv::io::dir_entry&)entry {
+  if (mv::remote::is_key(entry.path_utf8)) {
+    const auto hit = _remoteResolved.find(entry.path_utf8);
+    return hit == _remoteResolved.end() ? std::string() : hit->second;
+  }
   if (!mv::shell::photos::is_key(entry.path_utf8)) return entry.path_utf8;
   const auto hit = _photosResolved.find(entry.path_utf8);
   if (hit == _photosResolved.end() || hit->second.preview) return {};
@@ -15115,6 +15211,329 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 - (void)photosFetchEnded {
   _photosFetchPercent = -1;
   if ([self noticeText].rfind(mv::shell::photos::kFetchNoticePrefix, 0) == 0) [self noticeClear];
+}
+
+// ---- docs/plans/desktop-client.md: another computer's folders ----------------------------
+
+namespace {
+constexpr const char* kRemoteFetchPrefix = "Downloading from ";
+// A neighbour the viewer fetches ahead (±2) only up to this size: a clip of
+// gigabytes waits for the person to land on it.
+constexpr std::uint64_t kRemotePrefetchMax = 256ull << 20;
+
+class remote_clip_source final : public mv::player::byte_source {
+ public:
+  explicit remote_clip_source(mv::remote::range_reader& r) : r_(r) {}
+  mv::result<std::size_t> read_at(std::uint64_t offset, std::span<std::uint8_t> out) noexcept override {
+    return r_.read_at(offset, out);
+  }
+  std::uint64_t size() const noexcept override { return r_.size(); }
+
+ private:
+  mv::remote::range_reader& r_;
+};
+}  // namespace
+
+// The library and its keys load on a worker (servers.json, the Keychain, the
+// computer's name); the folder tree's rows appear when it is in.
+- (void)startRemoteFolders {
+  _remoteResolveSeq = 0;
+  _remoteOpenSeq = 0;
+  _remoteFetchPercent = -1;
+  NSString* support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+  NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+  if (!support || !caches) return;
+  const std::string data_dir = std::string(support.UTF8String) + "/MediaViewer/Remote Folders";
+  const std::string cache_dir = std::string(caches.UTF8String) + "/MediaViewer/Remote";
+  // Its originals are another computer's files: read-only here (owner call 1).
+  mv::shell::set_remote_cache_prefix(cache_dir);
+  _folder.set_virtual_items(std::string(mv::remote::kKeyPrefix), [](const std::string& key) -> mv::result<std::vector<std::uint8_t>> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::unsupported_format);
+    return lib->tile(key, nullptr);
+  });
+  _jobs.submit_at(mv::background_generation, [data_dir, cache_dir](const mv::job_context&) -> mv::status {
+    mv::remote::config c;
+    c.data_dir = data_dir;
+    c.cache_dir = cache_dir;
+    NSString* computer = [[NSHost currentHost] localizedName];
+    if (computer.length > 0) c.device_name = computer.UTF8String;
+    c.still_tile = [](std::span<const std::uint8_t> bytes, const mv::job_context* ctx) {
+      return mv::image::make_thumb_jpeg(bytes, ctx);
+    };
+    c.clip_tile = [](mv::remote::range_reader& r, const mv::job_context* ctx) -> mv::result<std::vector<std::uint8_t>> {
+      remote_clip_source src(r);
+      auto poster = mv::player::poster_frame(src, mv::image::kThumbLongEdge, ctx);
+      if (!poster) return mv::err(poster.error());
+      return mv::image::encode_thumb_rgba(poster->rgba, poster->width, poster->height);
+    };
+    auto lib = std::make_unique<mv::remote::library>(std::move(c));
+    (void)lib->load();  // a damaged servers.json lists nothing; pairing again rewrites it
+    mv::remote::library::install(std::move(lib));
+    return mv::status::ok;
+  });
+}
+
+- (std::string)remoteOpenKey {
+  return _listOpen ? _remoteFolderKey : std::string();
+}
+
+- (void)remoteListEnding {
+  if (_remoteFetchCancel) _remoteFetchCancel->stop.store(true);
+  _remoteFetchCancel.reset();
+  ++_remoteResolveSeq;
+  _remoteFolderKey.clear();
+  _remoteResolved.clear();
+  if (_remoteFetchPercent >= 0 && [self noticeText].rfind(kRemoteFetchPrefix, 0) == 0) [self noticeClear];
+  _remoteFetchPercent = -1;
+}
+
+// A folder of another computer, from the tree's pinned rows: listed on a
+// worker (the network), opened as a list of virtual items in the gallery.
+- (void)openRemoteFolder:(const std::string&)key {
+  mv::remote::library* lib = mv::remote::library::shared();
+  auto k = mv::remote::parse_key(key);
+  if (!lib || !k) {
+    NSBeep();
+    return;
+  }
+  const std::string shown = lib->display_name(key);
+  const std::string opening = "Opening " + (shown.empty() ? std::string("the folder") : shown) + "…";
+  [self noticeShowUntilCleared:opening];
+  const std::uint64_t open_seq = ++_remoteOpenSeq;
+  const std::uint64_t listing_seq = _listingGeneration;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, server = k->server, opening, open_seq,
+                                              listing_seq](const mv::job_context&) -> mv::status {
+    auto listed = lib->list(key, /*person=*/true);
+    const auto srv = lib->server(server);
+    const std::string server_name = srv ? srv->name : std::string();
+    const mv::remote::reach state = srv ? srv->state : mv::remote::reach::unknown;
+    const mv::status st = listed ? mv::status::ok : listed.error();
+    auto out = std::make_shared<std::optional<mv::remote::listing>>();
+    if (listed) *out = std::move(listed).value();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      if ([strongSelf noticeText] == opening) [strongSelf noticeClear];
+      // Another remote folder asked for since, or anything else opened since
+      // (a folder, a list): this listing is not what is wanted now.
+      if (open_seq != strongSelf->_remoteOpenSeq || listing_seq != strongSelf->_listingGeneration) return;
+      if (!*out) {
+        [strongSelf noticeShow:mv::remote::open_problem_words(st, state, server_name)];
+        return;
+      }
+      const mv::remote::listing& l = **out;
+      if (l.files.empty()) {
+        [strongSelf noticeShow:l.stale ? mv::remote::stale_words(server_name)
+                               : l.folders.empty() ? std::string("This folder is empty.")
+                                                   : std::string("No photos or videos here. Its folders are in the folder list.")];
+        return;
+      }
+      std::vector<mv::shell::folder_model::list_entry> entries;
+      entries.reserve(l.files.size());
+      for (const auto& f : l.files) {
+        mv::shell::folder_model::list_entry e;
+        e.path_utf8 = f.key;
+        e.is_virtual = true;
+        e.name_utf8 = f.name;
+        e.mtime_unix = f.mtime;
+        e.size = f.size;
+        entries.push_back(std::move(e));
+      }
+      const std::string title = l.title.empty() ? server_name : l.title;
+      if (![strongSelf openListTitled:title entries:std::move(entries) select:0 gallery:YES]) return;
+      strongSelf->_remoteFolderKey = key;
+      if (l.stale) [strongSelf noticeShow:mv::remote::stale_words(server_name)];
+    });
+    return mv::status::ok;
+  });
+}
+
+// An item of a remote folder (rule 3 over the network): its original when it
+// is here; else its tile at once, then the original fetched (progress in the
+// notice) and opened in its place. The ±2 fetch after, so an arrow lands on a
+// local file. Navigating away cancels the viewer's fetch.
+- (void)openRemoteEntry:(const mv::io::dir_entry&)entry moment:(std::int64_t)moment {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) return;
+  const std::string key = entry.path_utf8;
+  const std::uint64_t seq = ++_remoteResolveSeq;
+  if (const auto hit = _remoteResolved.find(key); hit != _remoteResolved.end()) {
+    _shownItem = _lab.open_item(hit->second, entry.mtime_unix, entry.size, moment);
+    [self editItemOpened:entry item:_shownItem];
+    [self metadataSelectionChanged];
+    [self remotePrefetchAround:seq];
+    return;
+  }
+  auto cancel = std::make_shared<mv::mobile::cancel_flag>();
+  _remoteFetchCancel = cancel;
+  auto k = mv::remote::parse_key(key);
+  const auto srv = k ? lib->server(k->server) : std::nullopt;
+  const std::string server_name = srv ? srv->name : std::string("the server");
+  MvLabApp* __weak weakSelf = self;
+  const auto here = [key, seq](MvLabApp* s) {
+    return s && seq == s->_remoteResolveSeq && !s->_items.empty() && s->_index.current() < s->_items.size() &&
+           s->_items[s->_index.current()].path_utf8 == key;
+  };
+  _jobs.submit([weakSelf, lib, key, cancel, here, server_name, moment, mtime = entry.mtime_unix,
+                size = entry.size](const mv::job_context&) -> mv::status {
+    auto local = lib->cached(key);
+    if (!local && !cancel->stopped()) {
+      // The first picture: the tile (a small still's makes its original come
+      // whole; a large one's reads its head; a clip's its poster).
+      auto tile = lib->cached_tile(key);
+      if (!tile) {
+        (void)lib->tile(key, nullptr, cancel.get());
+        tile = lib->cached_tile(key);
+        local = lib->cached(key);
+      }
+      if (!local && tile) {
+        const std::string preview = *tile;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          MvLabApp* s = weakSelf;
+          if (!here(s)) return;
+          s->_shownItem = s->_lab.open_item(preview, mv::shell::present_lab_mac::kNoStamp, 0, -1);
+        });
+      }
+    }
+    mv::status st = mv::status::ok;
+    if (!local && !cancel->stopped()) {
+      auto last_pct = std::make_shared<std::atomic<int>>(-1);
+      auto fetched = lib->fetch(key, cancel.get(), [weakSelf, cancel, last_pct, server_name](std::uint64_t done, std::uint64_t total) {
+        const int pct = total ? static_cast<int>(done * 100 / total) : 0;
+        if (pct == last_pct->exchange(pct)) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          MvLabApp* s = weakSelf;
+          if (!s || cancel->stopped()) return;
+          s->_remoteFetchPercent = pct;
+          [s noticeShowUntilCleared:std::string(kRemoteFetchPrefix) + server_name + "… " + std::to_string(pct) + " %"];
+        });
+      });
+      if (fetched) local = std::move(fetched).value();
+      else st = fetched.error();
+    }
+    auto got = std::make_shared<std::optional<std::string>>(local);
+    const auto srv_now = mv::remote::parse_key(key) ? lib->server(mv::remote::parse_key(key)->server) : std::nullopt;
+    const mv::remote::reach state = srv_now ? srv_now->state : mv::remote::reach::unknown;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      if (s->_remoteFetchPercent >= 0 && [s noticeText].rfind(kRemoteFetchPrefix, 0) == 0) [s noticeClear];
+      s->_remoteFetchPercent = -1;
+      if (*got) s->_remoteResolved[key] = **got;
+      if (!here(s)) return;
+      if (!*got) {
+        if (st != mv::status::cancelled) [s noticeShow:mv::remote::open_problem_words(st, state, server_name)];
+        return;
+      }
+      s->_shownItem = s->_lab.open_item(**got, mtime, size, moment);
+      const mv::io::dir_entry& now = s->_items[s->_index.current()];
+      [s editItemOpened:now item:s->_shownItem];
+      [s metadataSelectionChanged];
+      [s remotePrefetchAround:s->_remoteResolveSeq];
+    });
+    return st;
+  });
+}
+
+// The ±2 neighbours of the item on screen, fetched behind it (background lane,
+// shared with a fetch already running for the same file), then decoded ahead
+// like a local folder's. A clip over kRemotePrefetchMax waits to be landed on.
+- (void)remotePrefetchAround:(std::uint64_t)seq {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib || _items.empty()) return;
+  std::vector<std::pair<std::string, std::uint64_t>> near;
+  const std::size_t cur = _index.current();
+  for (const int off : {1, -1, 2, -2}) {
+    const auto i = static_cast<std::ptrdiff_t>(cur) + off;
+    if (i < 0 || static_cast<std::size_t>(i) >= _items.size()) continue;
+    const auto& e = _items[static_cast<std::size_t>(i)];
+    if (!mv::remote::is_key(e.path_utf8) || _remoteResolved.count(e.path_utf8)) continue;
+    if (e.size > kRemotePrefetchMax) continue;
+    near.emplace_back(e.path_utf8, e.size);
+  }
+  if (near.empty()) return;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, near, seq](const mv::job_context&) -> mv::status {
+    auto got = std::make_shared<std::vector<std::pair<std::string, std::string>>>();
+    for (const auto& [k, sz] : near) {
+      (void)sz;
+      if (auto p = lib->fetch(k)) got->emplace_back(k, std::move(p).value());
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      std::vector<std::string> stills;
+      for (auto& [k, p] : *got) {
+        s->_remoteResolved[k] = p;
+        if (!mv::shell::is_video_name(p)) stills.push_back(p);
+      }
+      if (seq == s->_remoteResolveSeq && !stills.empty()) s->_lab.prefetch(stills);
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)connectToServerFromMenu:(id)sender {
+  (void)sender;
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Connect to a Server";
+  alert.informativeText = @"Paste the code from the other computer: its Phone access card, or `driftwire host pair` "
+                          @"on it. Its folders then appear in the folder list, read-only.";
+  NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 360, 24)];
+  field.placeholderString = @"mediaviewer://pair#…";
+  alert.accessoryView = field;
+  [alert addButtonWithTitle:@"Connect"];
+  [alert addButtonWithTitle:@"Cancel"];
+  alert.window.initialFirstResponder = field;
+  if ([alert runModal] != NSAlertFirstButtonReturn) return;
+  NSString* text = field.stringValue ?: @"";
+  [self connectToServerCode:std::string(text.UTF8String)];
+}
+
+// Pairing is the code alone (owner call 2): no password. The fingerprint is
+// shown to compare with the other computer's card before anything is sent.
+- (void)connectToServerCode:(const std::string&)code {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) {
+    NSBeep();
+    return;
+  }
+  const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+  auto preview = lib->preview(code, now);
+  if (!preview) {
+    [self noticeShow:mv::remote::pair_problem_words(preview.error(), {})];
+    return;
+  }
+  NSAlert* confirm = [[NSAlert alloc] init];
+  confirm.messageText = [NSString stringWithFormat:@"Connect to %s?", preview->name.c_str()];
+  confirm.informativeText = [NSString
+      stringWithFormat:@"Check that %s shows the same check: %s\n\nThis computer will see its folders, read-only. "
+                       @"Its owner can remove this computer there at any time.",
+                       preview->name.c_str(), preview->fingerprint.c_str()];
+  [confirm addButtonWithTitle:@"Connect"];
+  [confirm addButtonWithTitle:@"Cancel"];
+  if ([confirm runModal] != NSAlertFirstButtonReturn) return;
+  const std::string name = preview->name;
+  const std::string connecting = "Connecting to " + name + "…";
+  [self noticeShowUntilCleared:connecting];
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, code, now, name, connecting](const mv::job_context&) -> mv::status {
+    auto paired = lib->pair(code, now);
+    const mv::status st = paired ? mv::status::ok : paired.error();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      if ([s noticeText] == connecting) [s noticeClear];
+      if (st == mv::status::ok) {
+        [s noticeShow:"Connected to " + name + ". Its folders are in the folder list."];
+      } else if (std::string words = mv::remote::pair_problem_words(st, name); !words.empty()) {
+        [s noticeShow:words];
+      }
+    });
+    return st;
+  });
 }
 
 // S0: a saved edit of a library item is a new photo (the media hook's add).

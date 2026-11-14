@@ -51,6 +51,7 @@
 
 #include "abi/guard.h"
 #include "shell/app_icon.h"
+#include "remote/key.h"
 #include "core/boot_timeline.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
@@ -1044,6 +1045,35 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   const std::string dir = utf8_from_wide(wide_dir);
   if (dir.empty()) return;
   const std::string select = utf8_from_wide(wide_select);
+  if (mv::remote::is_key(dir)) {
+    // 0.43 (docs/plans/desktop-client.md): another computer's folder is a list
+    // from its server. No siblings or trail (nothing on this disk to walk);
+    // the folder tree keeps its pinned row lit.
+    app->reveal_child.clear();
+    app->folder_find = false;
+    app->folder_query.clear();
+    app->list_title.clear();
+    app->list_return_select.clear();
+    app->early_open_dir.clear();
+    app->early_open_select.clear();
+    // Up and the sibling keys must not walk the local folder left behind.
+    app->siblings.clear();
+    app->sibling_index = -1;
+    app->trail.reset(dir);
+    uint64_t job_id = 0;
+    (void)mv_folder_open(app->session, dir.c_str(), nullptr, &job_id);
+    ++app->folder_token;
+    app->current_dir = dir;
+    app->folder_cursor = -1;
+    app->gallery_if_empty_dir = dir;
+    push_tree_root(app);
+    push_browse_state(app);
+    ++app->input.activity_seq;
+    publish(app);
+    apply_view_state(app);
+    layout_chrome(app);
+    return;
+  }
   // Moving up into a folder that contains the one we are leaving: remember
   // that child so its tile is selected when the parent listing arrives.
   if (navigation && !app->current_dir.empty() && dir != app->current_dir &&

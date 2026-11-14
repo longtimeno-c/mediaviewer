@@ -162,14 +162,25 @@ void folder_model::set_changed_notify(changed_fn fn, void* user) noexcept {
 
 void folder_model::set_virtual_items(std::string prefix, virtual_thumb_fn thumb) noexcept {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  state_->virtual_prefix = std::move(prefix);
-  state_->virtual_thumb = std::move(thumb);
+  auto& v = state_->virtual_providers;
+  if (prefix.empty()) {
+    v.clear();
+    return;
+  }
+  std::erase_if(v, [&](const auto& p) { return p.first == prefix; });
+  if (thumb) v.emplace_back(std::move(prefix), std::move(thumb));
+}
+
+const folder_model::virtual_thumb_fn* folder_model::shared_state::provider_of(std::string_view path) const noexcept {
+  for (const auto& [prefix, fn] : virtual_providers) {
+    if (path.size() > prefix.size() && path.compare(0, prefix.size(), prefix) == 0) return &fn;
+  }
+  return nullptr;
 }
 
 bool folder_model::is_virtual_path(std::string_view path_utf8) const noexcept {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  const std::string& p = state_->virtual_prefix;
-  return !p.empty() && path_utf8.size() > p.size() && path_utf8.substr(0, p.size()) == p;
+  return state_->provider_of(path_utf8) != nullptr;
 }
 
 status folder_model::relist_now(shared_state& state, const std::string& dir) {
@@ -381,9 +392,10 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                      virtual_thumb_fn virtual_thumb;
                      {
                        std::lock_guard<std::mutex> lock(state->mutex);
-                       const std::string& p = state->virtual_prefix;
-                       is_virtual = !p.empty() && path.size() > p.size() && path.compare(0, p.size(), p) == 0;
-                       if (is_virtual) virtual_thumb = state->virtual_thumb;
+                       if (const virtual_thumb_fn* fn = state->provider_of(path)) {
+                         is_virtual = true;
+                         virtual_thumb = *fn;
+                       }
                      }
                      if (is_virtual) {
                        if (moment_ms >= 0) {

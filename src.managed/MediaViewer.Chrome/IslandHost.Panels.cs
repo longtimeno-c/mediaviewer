@@ -1847,6 +1847,7 @@ public static partial class IslandHost
         _treeRootNode = null;
         _treeCurrentNode = null;
         _treeRevealedKey = "";
+        DropRemoteUi();
     }
 
     private static UIElement BuildTree()
@@ -1861,9 +1862,13 @@ public static partial class IslandHost
         Grid.SetRow(_treeUp, 1);
         body.Children.Add(_treeUp);
         _treeList = new StackPanel { Padding = Pad(8, 0, 8, 12) };
+        // docs/plans/desktop-client.md: other computers' folders, pinned above the tree.
+        var content = new StackPanel();
+        content.Children.Add(BuildRemoteSection());
+        content.Children.Add(_treeList);
         var scroll = new ScrollViewer
         {
-            Content = _treeList,
+            Content = content,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
         Grid.SetRow(scroll, 2);
@@ -1932,7 +1937,7 @@ public static partial class IslandHost
     // tree already built if it holds it, else the open folder itself.
     private static string TreeRootPath()
     {
-        if (_treeCurrent.Length == 0) return "";
+        if (_treeCurrent.Length == 0 || IsRemoteKey(_treeCurrent)) return "";
         string current = TreeKey(_treeCurrent);
         foreach (var (_, path) in Crumbs)
         {
@@ -1971,7 +1976,8 @@ public static partial class IslandHost
             _treeList.Children.Clear();
             _treeRootNode = null;
             _treeCurrentNode = null;
-            _treeUp.Child = Text("No folder open", Body);
+            // A remote folder on screen: its row above is the tree (no disk path to root at).
+            _treeUp.Child = IsRemoteKey(_treeCurrent) ? null : Text("No folder open", Body);
             _treeRevealedKey = "";
             return;
         }
@@ -2044,6 +2050,7 @@ public static partial class IslandHost
 
         public readonly string Path;
         public readonly int Depth;
+        public string Label => _name.Text;
         public readonly StackPanel Node = new();
         public readonly StackPanel Children = new() { Visibility = Visibility.Collapsed };
         private readonly Dictionary<string, TreeNodeUi> _kids = new(StringComparer.OrdinalIgnoreCase);

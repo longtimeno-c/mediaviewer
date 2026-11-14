@@ -809,6 +809,8 @@ include("${CMAKE_SOURCE_DIR}/cmake/driftwire.cmake")
 # The Phone access add-on (docs/plans/phone-access-addon.md): mv_phone_access.dll in
 # build/addons/phone-access, packed and signed separately; never installed with the app.
 include("${CMAKE_SOURCE_DIR}/cmake/phone.cmake")
+# Another desktop opens the host's drives (docs/plans/desktop-client.md): part of the app.
+include("${CMAKE_SOURCE_DIR}/cmake/remote.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -873,6 +875,8 @@ add_library(mediaviewer_core SHARED
   src/abi/host_tray_glue.cpp
   src/abi/host_tray_abi.cpp
   src/abi/host_tray_glue.h
+  src/abi/remote_abi.cpp
+  src/abi/remote_source.h
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
@@ -889,9 +893,10 @@ target_include_directories(mediaviewer_core
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
 target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip
-  # Only the server menu's objects (host_tray, self_host) are pulled from it: the
-  # desk, the link and the card are the Phone access add-on's.
-  mv_phone)
+  # Only the server menu's objects (host_tray, self_host) are pulled from mv_phone: the
+  # desk, the link and the card are the Phone access add-on's. mv_remote: another
+  # computer's folders (docs/plans/desktop-client.md).
+  mv_phone mv_remote)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -1178,6 +1183,8 @@ if(MV_BUILD_TESTS)
   add_executable(mv_tests
     tests/crt_no_dialogs.cpp
     tests/test_result.cpp
+    # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
+    tests/test_desktop_client.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_boot_timeline.cpp
@@ -1386,6 +1393,8 @@ if(MV_BUILD_TESTS)
   endif()
   target_link_libraries(mv_tests PRIVATE
     ${MV_SQLITE_TARGET}  # docs/design/26: the Photos backup engine's manifest
+    mv_remote
+    mv_wire
     mv_core
     mv_gfx
     mv_player
