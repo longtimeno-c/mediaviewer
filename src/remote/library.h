@@ -166,9 +166,12 @@ class library {
   [[nodiscard]] result<listing> list(std::string_view folder_key, bool person = true,
                                      const mobile::cancel_flag* cancel = nullptr);
   // A JPEG-512 for a file key (docs/plans/desktop-client.md §3 "First pixel"):
-  // from the tile cache, else a still's bytes (whole up to kWholeTileBytes,
-  // else its head first), else a clip's poster through range reads.
-  [[nodiscard]] result<std::vector<std::uint8_t>> tile(std::string_view file_key, const job_context* ctx = nullptr);
+  // from the tile cache, else a still's bytes (whole; a RAW over
+  // kWholeTileBytes its head first, for its embedded preview), else a clip's
+  // poster through range reads.
+  // `cancel` (the viewer moved on) stops it as `ctx`'s cancel does, network waits included.
+  [[nodiscard]] result<std::vector<std::uint8_t>> tile(std::string_view file_key, const job_context* ctx = nullptr,
+                                                       const mobile::cancel_flag* cancel = nullptr);
   // The tile's file when one was made (no network). For the viewer's first picture.
   [[nodiscard]] std::optional<std::string> cached_tile(std::string_view file_key);
   // The original, fetched whole into the cache if it is not there: its local

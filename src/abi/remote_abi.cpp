@@ -92,6 +92,11 @@ void start() {
   std::thread([] { (void)library(); }).detach();
 }
 
+std::optional<std::pair<std::uint64_t, std::int64_t>> stamp(std::string_view file_key) {
+  remote::library* lib = library();
+  return lib ? lib->stamp(file_key) : std::nullopt;
+}
+
 result<remote::listing> list(std::string_view folder_key) {
   remote::library* lib = library();
   if (!lib) return err(status::internal);

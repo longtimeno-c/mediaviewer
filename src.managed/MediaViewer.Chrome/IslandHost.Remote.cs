@@ -135,6 +135,8 @@ public static partial class IslandHost
                 _remoteNodes[key] = node;
             }
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+            // A kept node is still its old row's child: XAML refuses a second parent.
+            (node.Node.Parent as Panel)?.Children.Remove(node.Node);
             row.Children.Add(node.Node);
             Button forget = FlatButton(Text("Forget", Body, TypeSize(TypeSmall)), Pad(6, 2, 6, 2), tabStop: false);
             AutomationProperties_SetName(forget, "Forget " + name);

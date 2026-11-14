@@ -65,15 +65,19 @@ void put_file(const fs::path& p, const std::vector<std::uint8_t>& bytes) {
   f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
-// A camera-ish JPEG: noise, so it does not compress to nothing.
+// A camera-ish JPEG: a gradient with grain, so it compresses as a photo does
+// (a 12 MP frame lands at a few MiB, not the 20 of pure noise).
 std::vector<std::uint8_t> photo(std::uint32_t w, std::uint32_t h, std::uint32_t seed) {
   std::vector<std::uint8_t> rgb(static_cast<std::size_t>(w) * h * 3);
   std::mt19937 rng(seed);
-  for (std::size_t i = 0; i < rgb.size(); i += 3) {
-    const std::uint8_t v = static_cast<std::uint8_t>(rng());
-    rgb[i] = v;
-    rgb[i + 1] = static_cast<std::uint8_t>(v / 2 + (i / 3) % 97);
-    rgb[i + 2] = static_cast<std::uint8_t>(255 - v);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::size_t i = (static_cast<std::size_t>(y) * w + x) * 3;
+      const int grain = static_cast<int>(rng() % 24) - 12;
+      rgb[i] = static_cast<std::uint8_t>(std::clamp<int>(static_cast<int>(x * 255 / w) + grain, 0, 255));
+      rgb[i + 1] = static_cast<std::uint8_t>(std::clamp<int>(static_cast<int>(y * 255 / h) + grain, 0, 255));
+      rgb[i + 2] = static_cast<std::uint8_t>(std::clamp<int>(static_cast<int>((x + y + seed * 37) % 255) + grain, 0, 255));
+    }
   }
   return fixtures::jpeg_rgb(w, h, rgb.data());
 }
@@ -305,12 +309,16 @@ TEST_CASE("the host's folders list as remote keys, the Catalogue hidden", "[desk
 TEST_CASE("first pixel: a tile before the original, and each read once", "[desktop-client]") {
   host h;
   put_file(h.photos / "small.jpg", photo(1600, 1200, 5));
-  // A large still whose picture is all in its head (a camera's embedded
-  // preview stands in): 17 MiB past the JPEG's end.
+  // A large RAW whose picture is all in its head (a camera's embedded preview
+  // stands in): a JPEG, then 17 MiB of sensor data. Read by its head only.
   std::vector<std::uint8_t> big = photo(1200, 900, 6);
   const std::size_t picture = big.size();
   big.resize(picture + (17u << 20), 0x5a);
-  put_file(h.photos / "big.jpg", big);
+  put_file(h.photos / "big.dng", big);
+  // A large JPEG is never read by its head: cut short it would be a wrong tile.
+  std::vector<std::uint8_t> huge = photo(1600, 1200, 9);
+  huge.resize(huge.size() + (17u << 20), 0x00);
+  put_file(h.photos / "huge.jpg", huge);
   namespace fx = mv::test::clipfx;
   fx::spec clip;
   clip.audio = false;
@@ -324,10 +332,12 @@ TEST_CASE("first pixel: a tile before the original, and each read once", "[deskt
   auto listing = d.lib->list(top->folders.at(0).key);
   REQUIRE(listing);
   const rm::file* small = find_file(*listing, "small.jpg");
-  const rm::file* large = find_file(*listing, "big.jpg");
+  const rm::file* large = find_file(*listing, "big.dng");
+  const rm::file* huge_jpeg = find_file(*listing, "huge.jpg");
   const rm::file* movie = find_file(*listing, "clip.mp4");
   REQUIRE(small);
   REQUIRE(large);
+  REQUIRE(huge_jpeg);
   REQUIRE(movie);
 
   // A small still: fetched whole once, the tile made from it, the original kept.
@@ -351,11 +361,17 @@ TEST_CASE("first pixel: a tile before the original, and each read once", "[deskt
   CHECK(d.lib->stats().whole_fetches == 1);
   CHECK(d.lib->stats().bytes_read - read_after_small <= rm::library::kHeadTileBytes);
 
+  // A large JPEG: whole (its head is not a picture of it).
+  REQUIRE(d.lib->tile(huge_jpeg->key));
+  CHECK(d.lib->stats().head_reads == 1);
+  CHECK(d.lib->stats().whole_fetches == 2);
+  CHECK(d.lib->cached(huge_jpeg->key));
+
   // A clip: its poster through range reads, never the whole clip.
   const auto before_clip = d.lib->stats().bytes_read.load();
   auto t3 = d.lib->tile(movie->key);
   REQUIRE(t3);
-  CHECK(d.lib->stats().whole_fetches == 1);
+  CHECK(d.lib->stats().whole_fetches == 2);
   CHECK(d.lib->stats().bytes_read - before_clip <= movie->size + (256u << 10));
 
   // A relaunch: tiles and the original from the disk, nothing from the network.
@@ -423,7 +439,7 @@ TEST_CASE("originals: a range, one fetch for two callers, cancel leaves nothing"
 
 TEST_CASE("the cache keeps to its cap, newest kept", "[desktop-client]") {
   scratch_dir dir("remote_cache");
-  rm::disk_cache cache(utf8(dir.root()), 3000);
+  rm::disk_cache cache(utf8(dir.root()), 3000, /*keep_recent=*/1);
   auto put = [&](const char* rel) {
     rm::identity id{"0123456789abcdef", "a1a1a1a1a1a1a1a1", rel, 1000, 7};
     const std::string part = cache.original_path(id) + ".part";

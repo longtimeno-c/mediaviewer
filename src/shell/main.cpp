@@ -1050,6 +1050,12 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
     app->folder_query.clear();
     app->list_title.clear();
     app->list_return_select.clear();
+    app->early_open_dir.clear();
+    app->early_open_select.clear();
+    // Up and the sibling keys must not walk the local folder left behind.
+    app->siblings.clear();
+    app->sibling_index = -1;
+    app->trail.reset(dir);
     uint64_t job_id = 0;
     (void)mv_folder_open(app->session, dir.c_str(), nullptr, &job_id);
     ++app->folder_token;

@@ -3871,6 +3871,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   std::string _remoteFolderKey;
   std::unordered_map<std::string, std::string> _remoteResolved;
   std::uint64_t _remoteResolveSeq;
+  std::uint64_t _remoteOpenSeq;  // the latest remote folder asked for: a slower listing lands nowhere
   std::shared_ptr<mv::mobile::cancel_flag> _remoteFetchCancel;
   int _remoteFetchPercent;
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
@@ -15178,6 +15179,7 @@ class remote_clip_source final : public mv::player::byte_source {
 // computer's name); the folder tree's rows appear when it is in.
 - (void)startRemoteFolders {
   _remoteResolveSeq = 0;
+  _remoteOpenSeq = 0;
   _remoteFetchPercent = -1;
   NSString* support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
   NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
@@ -15239,8 +15241,11 @@ class remote_clip_source final : public mv::player::byte_source {
   const std::string shown = lib->display_name(key);
   const std::string opening = "Opening " + (shown.empty() ? std::string("the folder") : shown) + "…";
   [self noticeShowUntilCleared:opening];
+  const std::uint64_t open_seq = ++_remoteOpenSeq;
+  const std::uint64_t listing_seq = _listingGeneration;
   MvLabApp* __weak weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, server = k->server, opening](const mv::job_context&) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, server = k->server, opening, open_seq,
+                                              listing_seq](const mv::job_context&) -> mv::status {
     auto listed = lib->list(key, /*person=*/true);
     const auto srv = lib->server(server);
     const std::string server_name = srv ? srv->name : std::string();
@@ -15252,6 +15257,9 @@ class remote_clip_source final : public mv::player::byte_source {
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
       if ([strongSelf noticeText] == opening) [strongSelf noticeClear];
+      // Another remote folder asked for since, or anything else opened since
+      // (a folder, a list): this listing is not what is wanted now.
+      if (open_seq != strongSelf->_remoteOpenSeq || listing_seq != strongSelf->_listingGeneration) return;
       if (!*out) {
         [strongSelf noticeShow:mv::remote::open_problem_words(st, state, server_name)];
         return;
@@ -15317,7 +15325,7 @@ class remote_clip_source final : public mv::player::byte_source {
       // whole; a large one's reads its head; a clip's its poster).
       auto tile = lib->cached_tile(key);
       if (!tile) {
-        (void)lib->tile(key, nullptr);
+        (void)lib->tile(key, nullptr, cancel.get());
         tile = lib->cached_tile(key);
         local = lib->cached(key);
       }

@@ -30,7 +30,7 @@ class disk_cache {
  public:
   // `dir`: created as needed. `cap_bytes`: originals kept at most (tiles are
   // not counted: a few tens of KiB each, cleared with the server).
-  disk_cache(std::string dir, std::uint64_t cap_bytes);
+  disk_cache(std::string dir, std::uint64_t cap_bytes, std::size_t keep_recent = 8);
 
   // Where the original lives once it is here: <dir>/<server>/<h>/<name>, the
   // name kept so kind-by-name (the D5 table) holds.
@@ -39,7 +39,7 @@ class disk_cache {
   // The original when it is here whole (its size checked): marked used.
   [[nodiscard]] std::optional<std::string> find(const identity& id);
   // A finished part file becomes the original (size checked). Then trims to
-  // the cap, never removing `keep`.
+  // the cap, oldest first, never the 8 most recently used (the viewer's own).
   [[nodiscard]] bool admit(const identity& id, const std::string& part_path);
   // Everything of one server (Forget).
   void remove_server(std::string_view server);
@@ -52,6 +52,7 @@ class disk_cache {
 
   std::string dir_;
   std::uint64_t cap_;
+  std::size_t keep_recent_;
   std::mutex m_;
   bool scanned_ = false;
   std::list<std::pair<std::string, std::uint64_t>> lru_;  // newest first: path, bytes

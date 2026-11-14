@@ -245,6 +245,8 @@ class link_reader final : public range_reader {
 
 library::library(config c) : cfg_(std::move(c)), cache_(cfg_.cache_dir, cfg_.cache_cap) {
   (void)sodium_init();
+  // Made here, once: pairing, forgetting and loading run on different threads.
+  if (!cfg_.store) own_store_ = driftwire::secrets::os_store(driftwire::secrets::kAppService);
 }
 
 library::~library() {
@@ -264,9 +266,7 @@ void library::install(std::unique_ptr<library> lib) {
 library* library::shared() noexcept { return g_shared_ptr.load(std::memory_order_acquire); }
 
 driftwire::secrets::store& library::store() {
-  if (cfg_.store) return *cfg_.store;
-  if (!own_store_) own_store_ = driftwire::secrets::os_store(driftwire::secrets::kAppService);
-  return *own_store_;
+  return cfg_.store ? *cfg_.store : *own_store_;
 }
 
 namespace {
@@ -831,7 +831,8 @@ result<std::string> library::fetch(std::string_view file_key, const mobile::canc
   }
 }
 
-result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const job_context* ctx) {
+result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const job_context* ctx,
+                                                const mobile::cancel_flag* cancel) {
   auto k = parse_key(file_key);
   if (!k || k->folder || k->root.empty()) return err(status::invalid_arg);
   auto id = identity_of(file_key);
@@ -845,7 +846,7 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
   if (!known || kind == io::media_kind::audio || kind == io::media_kind::document) {
     return err(status::unsupported_format);
   }
-  const auto stopped = [ctx] { return ctx && ctx->cancelled(); };
+  const auto stopped = [ctx, cancel] { return (ctx && ctx->cancelled()) || (cancel && cancel->stopped()); };
   result<std::vector<std::uint8_t>> jpeg = err(status::unsupported_format);
   if (kind == io::media_kind::video) {
     if (!cfg_.clip_tile) return err(status::unsupported_format);
@@ -858,7 +859,10 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
     // for the viewer too): its bytes. A large one: its head first, where a
     // camera's embedded preview usually is.
     std::optional<std::string> local = cache_.find(*id);
-    if (!local && id->size > kWholeTileBytes) {
+    // Only a RAW's head: its embedded preview is a whole JPEG near the start. A
+    // JPEG, HEIC or TIFF cut short would decode (or half-decode) to a wrong
+    // picture, so those are read whole.
+    if (!local && id->size > kWholeTileBytes && kind == io::media_kind::raw) {
       MV_TRY_VOID(connect(*s, false, nullptr));
       std::vector<std::uint8_t> head;
       head.reserve(static_cast<std::size_t>(kHeadTileBytes));
@@ -871,7 +875,7 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
             stats_.bytes_read.fetch_add(bytes.size(), std::memory_order_relaxed);
             return true;
           },
-          nullptr, false);
+          cancel, false);
       if (stopped()) return err(status::cancelled);
       if (read) jpeg = cfg_.still_tile(head, ctx);
     }
@@ -880,7 +884,8 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
         if (stopped()) return err(status::cancelled);
         if (!connect(*s, false, nullptr)) return err(status::io);
         mobile::cancel_flag flag;  // the job's cancel reaches the fetch through its sink
-        auto fetched = fetch(file_key, &flag, [&](std::uint64_t, std::uint64_t) {
+        if (stopped()) flag.stop.store(true);
+        auto fetched = fetch(file_key, cancel ? cancel : &flag, [&](std::uint64_t, std::uint64_t) {
           if (stopped()) flag.stop.store(true);
         });
         if (!fetched) return err(fetched.error());

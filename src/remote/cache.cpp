@@ -30,10 +30,15 @@ std::string leaf_of(std::string_view rel) {
 }
 
 constexpr std::string_view kTiles = "tiles";
+constexpr std::string_view kListings = "listings";  // library.cpp's last listings: not originals
+// trim_locked never removes the `keep_recent_` most recently used originals:
+// the one on screen and its ±2 neighbours are among them, so none is removed
+// between its fetch and its read, or while a clip of it plays.
 
 }  // namespace
 
-disk_cache::disk_cache(std::string dir, std::uint64_t cap_bytes) : dir_(std::move(dir)), cap_(cap_bytes) {}
+disk_cache::disk_cache(std::string dir, std::uint64_t cap_bytes, std::size_t keep_recent)
+    : dir_(std::move(dir)), cap_(cap_bytes), keep_recent_(keep_recent) {}
 
 std::string disk_cache::hash_of(const identity& id) {
   // BLAKE2b-128 over the parts, each length-prefixed so no two identities share bytes.
@@ -76,7 +81,10 @@ void disk_cache::scan_locked() {
   for (fs::directory_iterator s(fs_path(dir_), ec), end; !ec && s != end; s.increment(ec)) {
     if (!s->is_directory(ec)) continue;
     for (fs::directory_iterator h(s->path(), ec), hend; !ec && h != hend; h.increment(ec)) {
-      if (!h->is_directory(ec) || h->path().filename() == fs_path(kTiles)) continue;
+      if (!h->is_directory(ec) || h->path().filename() == fs_path(kTiles) ||
+          h->path().filename() == fs_path(kListings)) {
+        continue;
+      }
       for (fs::directory_iterator f(h->path(), ec), fend; !ec && f != fend; f.increment(ec)) {
         if (!f->is_regular_file(ec)) continue;
         if (f->path().extension() == fs_path(".part")) {
@@ -150,6 +158,7 @@ void disk_cache::trim_locked(const std::string& keep) {
   while (used_ > cap_ && it != lru_.begin()) {
     --it;
     if (it->first == keep) continue;
+    if (static_cast<std::size_t>(std::distance(lru_.begin(), it)) < keep_recent_) break;  // only recent ones left
     // A file another process holds open on Windows cannot go: it stays listed,
     // and the next admit tries again.
     fs::remove(fs_path(it->first), ec);
