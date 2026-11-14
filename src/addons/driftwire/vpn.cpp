@@ -98,6 +98,7 @@ result<std::unique_ptr<runner>> runner::start(options o) {
   cb.out = [raw](std::vector<std::uint8_t> p) { (void)raw->opts_.dev->write(p); };
   cb.on_tcp = [raw](std::unique_ptr<link> l, const flow& f) { raw->on_tcp(std::move(l), f); };
   cb.on_udp = [raw](const flow& f, std::span<const std::uint8_t> p) { raw->on_udp(f, p); };
+  cb.timer = [raw](std::chrono::steady_clock::time_point due) { raw->kick(due); };
   r->stack_ = std::make_unique<stack>(std::move(cb));
   r->pump_thread_ = std::thread([raw] { raw->pump(); });
   r->tick_thread_ = std::thread([raw] { raw->ticker(); });
@@ -106,10 +107,7 @@ result<std::unique_ptr<runner>> runner::start(options o) {
 
 runner::~runner() {
   stop_.store(true);
-  {
-    std::lock_guard lock(m_);
-    tick_cv_.notify_all();
-  }
+  kick();
   if (dial_) dial_->stop();
   if (pump_thread_.joinable()) pump_thread_.join();  // reads time out within 250 ms
   if (tick_thread_.joinable()) tick_thread_.join();
@@ -158,16 +156,41 @@ void runner::pump() {
   }
 }
 
+// Wakes only when there is work: the stack's next resend or idle limit, a
+// kick (a timer that moved sooner, a worker to reap), or stop. Idle, with
+// nothing outstanding, that is kIdleMs away, not every 100 ms
+// (docs/plans/phone-vpn.md §2.2: a phone's battery).
 void runner::ticker() {
-  std::unique_lock lock(m_);
+  std::unique_lock t(tick_m_);
   while (!stop_.load()) {
-    tick_cv_.wait_for(lock, std::chrono::milliseconds(100));
-    if (stop_.load()) break;
-    reap_locked();
-    lock.unlock();
+    const std::uint64_t seen = kicks_;  // before looking: a kick after this wakes the wait
+    armed_ = std::chrono::steady_clock::time_point::max();  // awake: every kick counts
+    t.unlock();
+    {
+      std::lock_guard lock(m_);
+      ++snap_.ticks;
+      reap_locked();
+    }
     stack_->tick();
-    lock.lock();
+    const auto next = stack_->next_deadline();
+    t.lock();
+    armed_ = next ? *next : std::chrono::steady_clock::time_point::max();
+    const auto woken = [&] { return stop_.load() || kicks_ != seen; };
+    if (next) {
+      tick_cv_.wait_until(t, *next, woken);
+    } else {
+      tick_cv_.wait(t, woken);
+    }
   }
+}
+
+void runner::kick(std::chrono::steady_clock::time_point due) {
+  {
+    std::lock_guard t(tick_m_);
+    if (due >= armed_) return;  // the ticker wakes by then anyway
+    ++kicks_;
+  }
+  tick_cv_.notify_all();
 }
 
 void runner::reap_locked() {
@@ -242,6 +265,7 @@ void runner::on_tcp(std::unique_ptr<link> l, const flow& f) {
                             local->shutdown();
                           }
                           done->store(true);
+                          kick();  // to be reaped now, not at the next deadline
                         }),
                         done, remote, local});
   } catch (...) {
@@ -266,6 +290,7 @@ void runner::on_udp(const flow& f, std::span<const std::uint8_t> payload) {
         workers_.push_back({std::thread([this, u, done] {
                               serve_udp(u);
                               done->store(true);
+                              kick();  // to be reaped now, not at the next deadline
                             }),
                             done, u->remote, nullptr});
       } catch (...) {

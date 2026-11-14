@@ -228,7 +228,7 @@ TEST_CASE("driftwire vpn: the stack takes an app's TCP connection as a link, bot
                   accepted = std::move(l);
                   accepted_flow = f;
                 },
-                {}});
+                {}, {}});
   struct drop_first {
     std::unique_ptr<sp::link>& l;
     ~drop_first() { l.reset(); }
@@ -313,6 +313,142 @@ TEST_CASE("driftwire vpn: the stack takes an app's TCP connection as a link, bot
   CHECK(s.connections() == 0);
 }
 
+TEST_CASE("driftwire vpn: the stack says when its timer is next due, and when that moves sooner",
+          "[driftwire]") {
+  // The runner's ticker sleeps until next_deadline(), not every 100 ms: a
+  // phone's battery (docs/plans/phone-vpn.md §2.2).
+  using clock = std::chrono::steady_clock;
+  wire w;
+  std::atomic<int> kicks{0};
+  std::shared_ptr<sp::link> accepted;
+  vpn::stack::callbacks cb;
+  cb.out = [&](std::vector<std::uint8_t> p) { w.push(std::move(p)); };
+  cb.on_tcp = [&](std::unique_ptr<sp::link> l, const vpn::flow&) { accepted = std::move(l); };
+  std::optional<clock::time_point> due;  // the last kick's
+  cb.timer = [&](clock::time_point t) {
+    ++kicks;
+    due = t;
+  };
+  vpn::stack st(std::move(cb));
+  CHECK_FALSE(st.next_deadline());  // nothing to do, ever
+  // A SYN: the SYN-ACK's resend is due in one RTO, and the timer was told.
+  app_tcp a{v4_flow("198.18.0.1", 40200, "93.184.216.34", 443)};
+  const auto t0 = clock::now();
+  st.input(a.packet(vpn::kSyn));
+  CHECK(kicks.load() == 1);
+  auto d = st.next_deadline();
+  REQUIRE(d);
+  REQUIRE(due);
+  CHECK(*due == *d);  // the kick says when, so a ticker sleeping sooner is left alone
+  CHECK(*d > t0 + std::chrono::milliseconds(vpn::kRtoMs));
+  CHECK(*d < clock::now() + std::chrono::milliseconds(vpn::kRtoMs + 50));
+  auto synack = next_tcp(w);
+  REQUIRE(synack);
+  a.seq = 1001;
+  a.ack = synack->t.seq + 1;
+  st.input(a.packet(vpn::kAck));
+  REQUIRE(accepted);
+  // Established, nothing outstanding: only the idle limit is ahead.
+  d = st.next_deadline();
+  REQUIRE(d);
+  CHECK(*d > clock::now() + std::chrono::milliseconds(vpn::kIdleMs - 1000));
+  const int before = kicks.load();
+  // Bytes to the app: a resend timer starts, and the ticker hears of it.
+  REQUIRE(accepted->write_all(bytes("hello")));
+  CHECK(kicks.load() == before + 1);
+  d = st.next_deadline();
+  REQUIRE(d);
+  CHECK(*d < clock::now() + std::chrono::milliseconds(vpn::kRtoMs + 50));
+  // More while it is outstanding: no kick (the deadline only moves later).
+  REQUIRE(accepted->write_all(bytes(" again")));
+  CHECK(kicks.load() == before + 1);
+  d = st.next_deadline();  // from the later send
+  REQUIRE(d);
+  // Not resent before it is due; resent once it is.
+  st.tick();
+  auto p1 = next_tcp(w);
+  REQUIRE(p1);
+  CHECK(p1->payload == "hello");
+  auto p2 = next_tcp(w);
+  REQUIRE(p2);
+  CHECK(p2->payload == " again");
+  CHECK(w.size() == 0);
+  std::this_thread::sleep_until(*d);
+  st.tick();
+  auto again = next_tcp(w);
+  REQUIRE(again);
+  CHECK(again->payload == "hello again");  // go-back-N: from snd_una
+  // The resend backed the timer off (2 RTOs): an ACK of part resets it with
+  // the rest still out, a deadline sooner than the ticker sleeps to: a kick.
+  const int backed = kicks.load();
+  a.ack = again->t.seq + 5;
+  st.input(a.packet(vpn::kAck));
+  CHECK(kicks.load() == backed + 1);
+  REQUIRE(due);
+  CHECK(*due < clock::now() + std::chrono::milliseconds(vpn::kRtoMs + 50));
+  // All acked: back to the idle limit alone.
+  a.ack = again->t.seq + static_cast<std::uint32_t>(again->payload.size());
+  st.input(a.packet(vpn::kAck));
+  d = st.next_deadline();
+  REQUIRE(d);
+  CHECK(*d > clock::now() + std::chrono::milliseconds(vpn::kIdleMs - 1000));
+  accepted.reset();
+}
+
+TEST_CASE("driftwire vpn: an idle runner's ticker sleeps, and still resends on time", "[driftwire]") {
+  // Before this, the ticker woke every 100 ms with nothing to do. Count the
+  // stack's ticks through its timer: none while idle, prompt when a TCP
+  // segment is outstanding.
+  tcp_echo te;
+  udp_echo ue;
+  auto server = relay::server::start(relay_options(te.port(), ue.port()));
+  REQUIRE(server);
+  auto [ours, os_side] = loopback_pair();
+  auto os = vpn::framed_device(std::move(os_side));
+  vpn::runner::options o;
+  o.dial.relay = "127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey;
+  o.dev = vpn::framed_device(std::move(ours));
+  auto r = vpn::runner::start(std::move(o));
+  REQUIRE(r);
+  // Idle: nothing open, nothing outstanding. The ticker wakes once at start
+  // and then sleeps (it woke 10 times a second before).
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(r->get()->state().ticks <= 2);
+  std::vector<std::uint8_t> buf(65536);
+  const auto next_tcp_from_vpn = [&](int ms) -> std::optional<seen> {
+    static thread_local std::vector<std::uint8_t> keep;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < until) {
+      auto n = os->read(buf, 250);
+      if (!n) {
+        if (n.error() == mv::status::timeout) continue;
+        return std::nullopt;
+      }
+      keep.assign(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+      auto p = vpn::parse(keep);
+      if (p && p->f.proto == vpn::kTcp) return seen{p->tcp, std::string(p->payload.begin(), p->payload.end())};
+    }
+    return std::nullopt;
+  };
+  // An app connects and never acknowledges the SYN-ACK: the runner's ticker
+  // must resend it about one RTO later, though nothing else wakes it.
+  app_tcp a{v4_flow("198.18.0.1", 40300, "127.0.0.1", te.port())};
+  const auto t0 = std::chrono::steady_clock::now();  // the SYN-ACK goes after this
+  REQUIRE(os->write(a.packet(vpn::kSyn)));
+  auto first = next_tcp_from_vpn(3000);
+  REQUIRE(first);
+  CHECK(first->t.flags == (vpn::kSyn | vpn::kAck));
+  auto second = next_tcp_from_vpn(3000);
+  REQUIRE(second);
+  CHECK(second->t.flags == (vpn::kSyn | vpn::kAck));
+  const auto waited = std::chrono::steady_clock::now() - t0;
+  CHECK(waited >= std::chrono::milliseconds(vpn::kRtoMs));
+  CHECK(waited < std::chrono::milliseconds(2 * vpn::kRtoMs + 300));  // backed off once, at most
+  // Woken for the connection, its resends and its worker, not 10 times a second.
+  CHECK(r->get()->state().ticks < 15);
+  r->reset();  // and stopping does not wait for a deadline 10 minutes away
+}
+
 TEST_CASE("driftwire vpn: a reset ends the link, a stray segment is reset, and UDP goes up and down",
           "[driftwire]") {
   wire w;
@@ -322,7 +458,8 @@ TEST_CASE("driftwire vpn: a reset ends the link, a stray segment is reset, and U
                 [&](std::unique_ptr<sp::link> l, const vpn::flow&) { accepted = std::move(l); },
                 [&](const vpn::flow& f, std::span<const std::uint8_t> d) {
                   datagrams.emplace_back(f, std::string(d.begin(), d.end()));
-                }});
+                },
+                {}});
   struct drop_first {
     std::unique_ptr<sp::link>& l;
     ~drop_first() { l.reset(); }
