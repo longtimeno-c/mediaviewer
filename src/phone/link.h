@@ -106,6 +106,13 @@ class link {
   //                        (and at login), makes the first folder the library's,
   //                        claims it over loopback, sets its addresses and shows a code
   //   host_start           starts it again (and at login)
+  // Two or more drives (docs/plans/self-host-drives.md §6), the program's `host drives`:
+  //   host_drives          lists them (state_json "drives": the program's own JSON)
+  //   host_drives_choices {ids:[…]}   the five choices for them (state_json "drives_choices")
+  //   host_drives_combine {choice, ids:[…], label, names:[…]}   erases and combines them; `names`
+  //                        are what the person typed, one per drive, handed to the program's
+  //                        stdin (--confirm-stdin). The OS's administrator prompt shows meanwhile.
+  //   host_drives_replace {set, id, name}   a new drive in a mirror
   // A passphrase or token is handed on and never kept here or shown in state_json.
   [[nodiscard]] expected request(const std::string& request_json);
   // The card's state, one JSON object (docs/plans/phone-in-the-app.md §3). [no-block]
@@ -181,6 +188,9 @@ class link {
     self_host::host_status host;
     bool host_read = false;
     std::string host_step, host_said;
+    // `host drives list --json` and `host drives choices … --json`, as the program printed them
+    // (docs/plans/self-host-drives.md §6): handed to the card as they are. No mount path in either.
+    std::string drives_json, drives_choices_json;
   };
 
   void loop();
@@ -202,6 +212,7 @@ class link {
   // This computer as the server: read its host's files; set it up from the card.
   void read_host();
   void host_setup(const std::string& request);
+  void host_drives(const std::string& what, const std::string& request);
   [[nodiscard]] self_host::where host_where() const;
   [[nodiscard]] expected start_host_now(const self_host::where& w);
   [[nodiscard]] result<std::string> route(const char* method, const std::string& json);

@@ -8,6 +8,8 @@
 // nothing here touches the network beyond 127.0.0.1.
 #include <sodium.h>
 
+#include <mutex>
+
 #include "driftwire_fixture.h"
 
 #include "wire/known.h"
@@ -91,6 +93,7 @@ struct service_fixture {
   int max_pending = 16;
   int max_sessions = 8;
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
+  std::function<std::string()> storage;  // options::storage (the host's drives keeper)
 
   explicit service_fixture(int per_minute = 10000, int pending_per_source = 2, int pending_all = 16, int sessions = 8,
                            std::function<std::unique_ptr<sp::net::listener>()> listener_maker = {})
@@ -151,6 +154,7 @@ struct service_fixture {
     o.max_pending = max_pending;
     o.max_sessions = max_sessions;
     o.make_listener = make_listener;
+    o.storage = storage;
     auto started = serve::server::start(o);
     REQUIRE(started);
     srv = std::move(*started);
@@ -1574,4 +1578,28 @@ TEST_CASE("serve backup: two phones placing one name at once keep both files", "
     CHECK(slurp(s.backup / ra->name) == one);
     CHECK(slurp(s.backup / rb->name) == two);
   }
+}
+
+TEST_CASE("serve: every session hears the server's drives' health in its caps", "[driftwire-serve][host-drives]") {
+  service_fixture s;
+  CHECK(s.open_client()->caps().storage.empty());  // no drives keeper: nothing said
+  s.srv.reset();
+  std::string word = "degraded";
+  std::mutex m;
+  s.storage = [&] {
+    std::lock_guard g(m);
+    return word;
+  };
+  s.start(10000);
+  CHECK(s.open_client()->caps().storage == "degraded");
+  {
+    std::lock_guard g(m);
+    word.clear();  // healthy again
+  }
+  CHECK(s.open_client()->caps().storage.empty());
+  {
+    std::lock_guard g(m);
+    word = "not a word";  // never sent
+  }
+  CHECK(s.open_client()->caps().storage.empty());
 }

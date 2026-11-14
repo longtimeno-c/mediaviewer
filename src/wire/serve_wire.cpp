@@ -109,6 +109,18 @@ std::optional<hello_msg> parse_hello(std::string_view text) {
   return h;
 }
 
+bool is_storage_word(std::string_view w) noexcept {
+  return w == "degraded" || w == "rebuilding" || w == "offline" || w == "failing";
+}
+
+const char* storage_words(std::string_view w) noexcept {
+  if (w == "degraded") return "Your server's mirror lost a drive. Your files are safe until another one fails: replace it soon.";
+  if (w == "rebuilding") return "Your server is rebuilding its mirror onto a new drive.";
+  if (w == "offline") return "Your server's combined drive is offline: some of its drives are not there.";
+  if (w == "failing") return "A drive in your server reports it is failing. Replace it soon.";
+  return "";
+}
+
 std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields) {
   json::writer w;
   w.begin_object().key("v").integer(version);
@@ -146,6 +158,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* p = doc->str("passphrase"); p && p->size() <= 16) c.passphrase = *p;
+  if (const std::string* s = doc->str("storage"); s && is_storage_word(*s)) c.storage = *s;
   if (const json::value* g = doc->find("grant"); g && g->k == json::kind::object) {
     const auto expires = g->integer("expires");
     if (expires && *expires >= 0) {

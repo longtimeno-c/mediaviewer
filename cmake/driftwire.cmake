@@ -214,6 +214,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host_setup.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_host_drives.cpp"
     # The phone's own reading of a pairing QR, for the host's (pure: sodium, json, pair_check).
     "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
@@ -274,14 +275,17 @@ set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
   set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp ${_C}/serve_tty_win.cpp
-                          ${_C}/autostart_win.cpp ${_C}/host_proc_win.cpp ${_C}/volume_win.cpp)
+                          ${_C}/autostart_win.cpp ${_C}/host_proc_win.cpp ${_C}/volume_win.cpp
+                          ${_C}/drives_win.cpp)
 elseif(APPLE)
   set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm ${_C}/serve_tty_posix.cpp
-                          ${_C}/autostart_mac.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp)
+                          ${_C}/autostart_mac.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp
+                          ${_C}/drives_mac.mm)
   set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
   set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp ${_C}/serve_tty_posix.cpp
-                          ${_C}/autostart_linux.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp)
+                          ${_C}/autostart_linux.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp
+                          ${_C}/drives_linux.cpp)
 endif()
 # Where `driftwire` asks whether a newer version is out, and whose installers
 # `driftwire update` runs (cli/update.h): the site release.yml deploys.
@@ -303,6 +307,7 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.cpp ${_C}/host_keepers.h
   ${_C}/host_setup.cpp ${_C}/host_setup.h ${_C}/qr.cpp ${_C}/qr.h
   ${_C}/autostart.cpp ${_C}/autostart.h ${_C}/host_proc.h ${_C}/volume.h
+  ${_C}/drives.cpp ${_C}/drives.h ${_C}/host_drives.cpp ${_C}/host_drives.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/nas_update.cpp ${_C}/nas_update.h
   ${_C}/term.h ${_C}/data_dir.h ${_C}/serve_tty.h ${_driftwire_cli_port}
@@ -315,11 +320,13 @@ set(MV_NAS_UPDATE_KEY "" CACHE STRING "Ed25519 public key (hex) pinned for the N
 target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="${MV_DRIFTWIRE_SITE_URL}"
                                                          MV_NAS_UPDATE_KEY="${MV_NAS_UPDATE_KEY}")
 if(WIN32)
-  # winhttp: the update check (update_net_win.cpp), Windows' own DLL.
-  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp)
+  # winhttp: the update check (update_net_win.cpp), Windows' own DLL; shell32:
+  # ShellExecuteEx "runas" for `host drives` (drives_win.cpp).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp shell32)
 elseif(APPLE)
-  # Foundation: NSURLSession for the update check (update_net_mac.mm).
-  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation")
+  # Foundation: NSURLSession for the update check (update_net_mac.mm);
+  # CoreFoundation: diskutil's property lists (drives_mac.mm).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation" "-framework CoreFoundation")
 endif()
 
 if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")
@@ -330,6 +337,11 @@ if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")
   endif()
 endif()
 
+if(WIN32)
+  set(_driftwire_child_process ${MV_SOURCE_ROOT}/src/io/child_process_win.cpp)
+else()
+  set(_driftwire_child_process ${MV_SOURCE_ROOT}/src/io/child_process_posix.cpp)
+endif()
 function(_mv_driftwire_cli_program target)
   add_executable(${target}
     ${_C}/main.cpp
@@ -337,6 +349,8 @@ function(_mv_driftwire_cli_program target)
     # The file port and BLAKE3 hashing, compiled in (as the module does).
     ${MV_SOURCE_ROOT}/src/io/file_port.cpp
     ${MV_SOURCE_ROOT}/src/io/content_hash.cpp
+    # `host drives` runs diskutil / PowerShell and reads what they print.
+    ${_driftwire_child_process}
     ${_driftwire_io})
   target_link_libraries(${target} PRIVATE mv_driftwire_cli_core)
   target_compile_definitions(${target} PRIVATE MV_DRIFTWIRE_CLI_VERSION="${MV_DRIFTWIRE_CLI_VERSION}")

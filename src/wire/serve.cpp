@@ -352,6 +352,7 @@ struct server::state {
   std::function<result<std::unique_ptr<link>>(const std::string&, std::uint16_t, int)> relay_connect;
   std::function<void()> before_gather;  // the tests
   std::function<bool(const root_config&)> root_present;  // the host's (options::root_present)
+  std::function<std::string()> storage;  // options::storage
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -1279,6 +1280,15 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     w.key("scoped").boolean(c.grant->roots.has_value()).end_object().end_object();
     const std::string g = w.take();
     extra = g.substr(1, g.size() - 2);
+  }
+  if (storage) {
+    // Every session's, the owner's and a limited phone's alike: the health of the server's drives.
+    if (const std::string word = storage(); is_storage_word(word)) {
+      json::writer w;
+      w.begin_object().key("storage").string(word).end_object();
+      const std::string sw = w.take();
+      extra += (extra.empty() ? "" : ",") + sw.substr(1, sw.size() - 2);
+    }
   }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
@@ -2670,6 +2680,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.relay_connect = o.relay_connect;
   st.before_gather = o.before_gather;
   st.root_present = o.root_present;
+  st.storage = o.storage;
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay

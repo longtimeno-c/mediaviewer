@@ -152,6 +152,11 @@ class server {
     // names another drive). Asked wherever the folder's presence is (roots, a failed
     // request, before a write). Empty: the folder alone decides.
     std::function<bool(const root_config&)> root_present;
+    // Self-hosting with combined drives (docs/plans/self-host-drives.md §4): the worst
+    // set's health word ("degraded", "rebuilding", "offline", "failing"; "" when healthy
+    // or none), sent to every session in serve_caps "storage" so a phone can say
+    // "Your server's mirror lost a drive". Any thread; never blocks.
+    std::function<std::string()> storage;
   };
 
   // Listens and returns. status::not_found when the store has no usable

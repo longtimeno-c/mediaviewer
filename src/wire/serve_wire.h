@@ -156,7 +156,15 @@ struct caps_msg {
   bool has_grant = false;
   std::int64_t grant_expires = 0;
   bool grant_scoped = false;
+  // The server's combined drives, when they are not healthy (docs/plans/self-host-drives.md §4):
+  // "degraded", "rebuilding", "offline" or "failing"; "" from a service with none, or from one
+  // older than that.
+  std::string storage;
 };
+// One of the words above.
+[[nodiscard]] bool is_storage_word(std::string_view word) noexcept;
+// What the phone says for it ("Your server's mirror lost a drive. …"); "" for none.
+[[nodiscard]] const char* storage_words(std::string_view word) noexcept;
 // `owner_fields`: members appended to the object as they are (the owner's
 // "features" and "passphrase"), or empty.
 [[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields = {});
