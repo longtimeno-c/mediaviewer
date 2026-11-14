@@ -159,8 +159,16 @@ struct caps_msg {
   // The device's role (self-host-users-smb.md §9): "view", "change" or "admin"; "" from a
   // service older than roles (treat as "change" for a paired device: it could write).
   std::string role;
+  // The server's combined drives, when they are not healthy (docs/plans/self-host-drives.md §4):
+  // "degraded", "rebuilding", "offline" or "failing"; "" from a service with none, or from one
+  // older than that.
+  std::string storage;
 };
 inline constexpr const char* kCapsRole = "role";
+// One of the words above.
+[[nodiscard]] bool is_storage_word(std::string_view word) noexcept;
+// What the phone says for it ("Your server's mirror lost a drive. …"); "" for none.
+[[nodiscard]] const char* storage_words(std::string_view word) noexcept;
 // `owner_fields`: members appended to the object as they are (the owner's
 // "features" and "passphrase"), or empty.
 [[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields = {});

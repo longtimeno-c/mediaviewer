@@ -160,6 +160,8 @@ if(MV_DRIFTWIRE_CLI_TESTS)
     "${MV_ROOT}/src/addons/driftwire/bt_none.cpp"
     "${MV_ROOT}/src/io/file_port.cpp"
     "${MV_ROOT}/src/io/content_hash.cpp"
+    # `host drives` runs the OS's disk tools (cli/drives.cpp), as the programs do.
+    ${_driftwire_child_process}
     "${MV_ROOT}/src/io/file_port_mac.cpp")
   target_include_directories(mv_driftwire_cli_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
   target_link_libraries(mv_driftwire_cli_tests PRIVATE mv_driftwire_cli_core Catch2::Catch2WithMain)

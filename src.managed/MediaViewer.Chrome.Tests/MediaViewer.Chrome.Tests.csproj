@@ -42,6 +42,7 @@
     <Compile Include="..\Shared\ProgressWords.cs" Link="Shared\ProgressWords.cs" />
     <Compile Include="..\Shared\QrCode.cs" Link="Shared\QrCode.cs" />
     <Compile Include="..\Shared\PhoneWords.cs" Link="Shared\PhoneWords.cs" />
+    <Compile Include="..\Shared\PhoneDrives.cs" Link="Shared\PhoneDrives.cs" />
   </ItemGroup>
 
 </Project>

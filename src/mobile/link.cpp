@@ -612,6 +612,13 @@ int link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
   return 1;
 }
 
+int link_session::storage(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().storage;
+  return 1;
+}
+
 bool link_session::connected() const {
   std::lock_guard lock(m_);
   return live_ && !live_->closed();

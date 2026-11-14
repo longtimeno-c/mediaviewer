@@ -72,6 +72,7 @@
     <!-- Settings -> Phone access (IslandHost.Phone.cs): the pairing QR and the card's words. -->
     <Compile Include="..\Shared\QrCode.cs" Link="Shared\QrCode.cs" />
     <Compile Include="..\Shared\PhoneWords.cs" Link="Shared\PhoneWords.cs" />
+    <Compile Include="..\Shared\PhoneDrives.cs" Link="Shared\PhoneDrives.cs" />
   </ItemGroup>
 
   <ItemGroup>

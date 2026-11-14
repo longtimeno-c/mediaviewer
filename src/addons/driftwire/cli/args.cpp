@@ -73,6 +73,11 @@ std::string help_text() {
          "                               keeps who may open its folders from other computers at home\n"
          "                               (the admin passphrase and passwords are typed; an administrator\n"
          "                               approves each change to this computer's file sharing)\n"
+         "                               host drives lists the drives, host drives choices DRIVE...\n"
+         "                               shows Separate, Mirror, Span, Stripe and Parity for them, host\n"
+         "                               drives combine CHOICE DRIVE... --label L erases and combines\n"
+         "                               them (each name typed; an administrator once), host drives\n"
+         "                               replace SET DRIVE puts a new drive in a mirror\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -104,6 +109,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   bool want_label = false, want_backup = false;
   bool want_users_opts = false;  // --folders, --input-stdin (host users only)
   bool want_role = false;        // --role: host users, or a device's role (serve grant)
+  bool want_drives_flag = false;  // --json, --confirm-stdin: host drives only
 
   for (std::size_t i = 0; i < argv.size(); ++i) {
     const std::string_view s = argv[i];
@@ -163,6 +169,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
           return out;
         }
         a.tls_port = static_cast<std::uint16_t>(p);
+      } else if (t.name == "--json" && flag) {  // host drives (host_drives.h)
+        a.json = true;
+        want_drives_flag = true;
+      } else if (t.name == "--confirm-stdin" && flag) {
+        a.confirm_stdin = true;
+        want_drives_flag = true;
       } else if (t.name == "--backup" && flag) {
         a.backup = true;
         want_backup = true;
@@ -357,19 +369,29 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (what == "smb-apply" && words.size() <= 2) {
         a.host = host_action::smb_apply;
         a.host_words.assign(words.begin() + 1, words.end());
+      } else if (what == "drives") {
+        // host drives …: its own words, read by parse_drives_words (host_drives.h).
+        a.host = host_action::drives;
+        a.paths.assign(words.begin() + 1, words.end());
       } else if (what == "name" && words.size() == 2 && (words[1] == "duckdns" || words[1] == "none")) {
         // Only the provider: the subdomain and the token are typed or pasted, never arguments.
         a.host = host_action::name;
         a.on = words[1] == "duckdns";
       } else {
         out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
-                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off, stay-awake on|off or users";
+                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off, stay-awake on|off, "
+                    "users … or drives …";
         return out;
       }
       if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {
         out.error = "--tls-port goes with host vpn on";
         return out;
       }
+      if (want_drives_flag && a.host != host_action::drives) {
+        out.error = "--json and --confirm-stdin go with host drives";
+        return out;
+      }
+      if (want_label && a.host == host_action::drives && !want_backup) break;  // the combined drive's name
       if ((want_label || want_backup) && a.host != host_action::share) {
         out.error = "--label and --backup go with host share";
         return out;
@@ -395,6 +417,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   }
   if ((want_users_opts || (want_role && a.cmd != command::serve)) && a.cmd != command::host) {
     out.error = "--role, --folders and --input-stdin go with host users";
+    return out;
+  }
+  if (want_drives_flag && a.cmd != command::host) {
+    out.error = "--json and --confirm-stdin go with host drives";
     return out;
   }
   if (want_to && a.cmd != command::send) {

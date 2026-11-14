@@ -151,6 +151,14 @@ void mv_link_close(mv_mobile_link* link);
  * Never blocks. */
 int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
 
+/* The server's combined drives (docs/plans/self-host-drives.md 4), as its caps said at connect:
+ * 0 healthy or none, 1 rebuilding, 2 degraded (a mirror lost a drive), 3 offline, 4 a drive failing;
+ * -1 when there is no live connection (keep what you had). Never blocks. */
+int32_t mv_link_storage(mv_mobile_link* link);
+/* The sentence the phone shows for a code above ("Your server's mirror lost a drive. ..."), UTF-8,
+ * static; "" for 0 or an unknown code. */
+const char* mv_link_storage_words(int32_t code);
+
 /* A direct path after the relay (docs/plans/nas-relay.md 9): once the link is through the person's
  * own relay, the core tries to punch a direct one and moves to it. On Wi-Fi always; on mobile data
  * only when `allowed_on_cellular` (Settings, "Faster direct connection on mobile data", default on).

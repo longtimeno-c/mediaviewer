@@ -233,6 +233,7 @@ public static partial class IslandHost
         foreach (Flyout f in PhoneFlyouts) f.Hide();  // its button leaves the tree now
         PhoneFlyouts.Clear();
         DetachPhoneInputs();
+        DetachPhoneDriveInputs();  // IslandHost.PhoneDrives.cs
         rows.Children.Clear();
         _phoneCountdown = null;
         _phonePublishLine = null;
@@ -267,7 +268,11 @@ public static partial class IslandHost
             progress.Show(line, null);
             rows.Children.Add(progress.Root);
         }
-        if (s.Host is { SetUp: true } host) AddPhoneHostRow(rows, host, busy);
+        if (s.Host is { SetUp: true } host)
+        {
+            AddPhoneHostRow(rows, host, busy);
+            AddPhoneDrives(rows, s, busy);
+        }
         // Users of this PC's LAN share (IslandHost.PhoneUsers.cs): once it is claimed.
         if (s.Host is { SetUp: true } && s.Claimed) AddPhoneUsers(rows, s, busy);
         // Until a service is claimed; and again after a setup on this PC that stopped part way.
@@ -379,6 +384,7 @@ public static partial class IslandHost
                 ? "A folder or a whole drive your phone reads, and a folder phones back up into if you want one."
                 : "Your phone reads these. The first one holds the library.",
             add, keepName: true));
+        if (s.Host is not { SetUp: true }) AddPhoneDrives(rows, s, busy);
         rows.Children.Add(SettingsRow("DuckDNS name",
             "Optional, free at duckdns.org: how your phone finds this PC away from home. DuckDNS learns your home's address, nothing about your files.",
             _phoneDuckName!, keepName: true));
@@ -1066,6 +1072,7 @@ public static partial class IslandHost
             _phoneAdd.IsEnabled = !busy && path.StartsWith('/') && PhoneWords.ShareLabel(path).Length > 0;
         if (_phoneHostGo is not null)
             _phoneHostGo.IsEnabled = PhoneWords.HostReady(PhoneHostFolders, _phoneDuckName!.Text.Trim(), _phoneDuckToken!.Text, busy);
+        PhoneDrivesFieldsChanged();
     }
 
     private static void AddPhoneFolder()

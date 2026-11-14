@@ -312,7 +312,8 @@ result<ran> run_host(const where& w, std::vector<std::string> args, std::span<co
   ran r;
   std::string line;
   while (child.read_line(line)) {
-    if (r.output.size() < 4096) {
+    // `host drives list --json` names every disk and volume: room for a big machine's, not unbounded.
+    if (r.output.size() < 1024 * 1024) {
       r.output += line;
       r.output += '\n';
     }

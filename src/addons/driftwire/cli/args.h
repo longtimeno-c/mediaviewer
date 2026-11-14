@@ -17,6 +17,8 @@
 //                   | start-at-login on|off | stay-awake on|off
 //                   | users [add NAME | role NAME ROLE | password NAME | remove NAME | apply]
 //                     [--role R] [--folders L1,L2|all] [--input-stdin]] [--data DIR]
+//                   | drives [list | choices DRIVE... | combine CHOICE DRIVE... --label L
+//                             | replace SET DRIVE] [--json] [--confirm-stdin]] [--data DIR]
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
 //
@@ -53,7 +55,8 @@ enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_c
 enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn,
                                         // The LAN share's users (docs/plans/self-host-users-smb.md): `host users …`, and
                                         // the elevated step it starts (`host smb-apply`, never typed).
-                                        users, smb_apply };
+                                        users, smb_apply,
+                                        drives };
 
 struct args {
   command cmd = command::session;
@@ -85,6 +88,9 @@ struct args {
   std::vector<std::string> host_words;
   std::string role, folders;
   bool input_stdin = false;
+  // host drives (host_drives.h): its words are in `paths`; --label is the combined drive's name.
+  bool json = false;           // host drives list|choices --json
+  bool confirm_stdin = false;  // host drives combine|replace --confirm-stdin: the typed names on stdin
   // The test build's.
   bool test_loopback = false;
   std::string test_data;

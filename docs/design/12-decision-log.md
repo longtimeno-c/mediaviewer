@@ -2157,6 +2157,24 @@ the app's payload** (`build-release.ps1` still refuses it) and is installed once
 window. Reopen if the owner wants the program shipped inside the app or the add-on (so the card needs
 no install line), or a non-terminal `host name duckdns` for the card to call instead of the files.
 
+**MediaViewer may erase and combine drives, at the owner's explicit request (owner, 2026-11-14;
+issue #686 §3; against the spirit of rule 5).** Rule 5 says never modify an original, and erasing a
+drive is the most dangerous thing the app could do. With the Synology dead, the owner wants the PC to
+be the NAS, two or more drives combined the way a Synology would. So `driftwire host drives combine`
+(and the "This computer" card's drive step, which runs it) may erase the drives the person picks and
+combine them with **the OS's own tools only**, no RAID code of ours: Storage Spaces on Windows (simple,
+two-way mirror, parity), AppleRAID on the Mac (`diskutil appleRAID create mirror|stripe|concat`),
+`mdadm` on Linux later. **Every choice is offered equally** (owner): Separate (nothing erased),
+Mirror (RAID 1), Span (JBOD), Stripe (RAID 0) and Parity (RAID 5, 3+ drives; macOS has none and the
+row says so), side by side with the space each gives, what a dead drive costs and its speed, under the
+line that **RAID is not a backup**. The guards are not optional: each drive's name, size, model and
+what is on it are shown; the person types each drive's name; a drive holding this computer's system,
+the MediaViewer library or catalogue, or a folder the app shares (it may be the only copy) is refused;
+the erase itself needs an administrator once, approved in the OS's own prompt, never by the running
+host (which still refuses elevation); and tests touch only disk images made for them (the test build
+refuses any other disk). Plan: [self-host-drives.md](../plans/self-host-drives.md). Reopen before
+adding any other erase, or RAID code of our own.
+
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
 anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,

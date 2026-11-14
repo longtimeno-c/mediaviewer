@@ -8,6 +8,7 @@
 #include "phone/link.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -56,6 +57,24 @@ std::string first_line(const std::string& out) {
     l.resize(at);
   }
   return l;
+}
+
+// The program's last line (`host drives` says what it made, or why not, last).
+std::string last_line(const std::string& out) {
+  std::string s = out;
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+  const auto nl = s.rfind('\n');
+  std::string l = first_line(nl == std::string::npos ? s : s.substr(nl + 1));
+  static constexpr std::string_view kLead = "driftwire host drives: ";
+  if (l.rfind(kLead, 0) == 0) l.erase(0, kLead.size());
+  return l;
+}
+
+// A JSON document the program printed, trimmed ("" when it is not one).
+std::string json_out(const std::string& out, int depth) {
+  std::string s = out;
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+  return json::parse(s, depth) ? s : std::string();
 }
 
 std::string slurp(const std::string& path) {
@@ -1061,6 +1080,11 @@ void link::run(const std::string& request) {
     users_apply({});
     return;
   }
+  if (what == "host_drives" || what == "host_drives_choices" || what == "host_drives_combine" ||
+      what == "host_drives_replace") {
+    host_drives(what, request);
+    return;
+  }
   if (what == "host_start") {
     const auto w = host_where();
     if (w.program.empty()) {
@@ -1440,6 +1464,96 @@ expected link::start_host_now(const self_host::where& w) {
   return err(r ? status::io : r.error());
 }
 
+void link::host_drives(const std::string& what, const std::string& request) {
+  const auto doc = json::parse(request, 4);
+  const auto text = [&](const char* k) -> std::string {
+    const std::string* v = doc ? doc->str(k) : nullptr;
+    return v ? *v : std::string();
+  };
+  const auto list = [&](const char* k) {
+    std::vector<std::string> out;
+    if (const json::value* a = doc ? doc->find(k) : nullptr; a && a->k == json::kind::array) {
+      for (const auto& e : a->a) {
+        if (e.k == json::kind::string) out.push_back(e.s);
+      }
+    }
+    return out;
+  };
+  const auto w = host_where();
+  const auto fail = [this](const char* why, std::string said = {}) {
+    std::lock_guard lock(m_);
+    v_.error = why;
+    v_.host_step.clear();
+    v_.host_said = std::move(said);
+  };
+  if (w.program.empty()) return fail("no_driftwire_program");
+  // A drive id is what the program listed ("disk4", "2"): letters and digits only, never an option.
+  const auto good_id = [](const std::string& id) {
+    return !id.empty() && id.size() <= 32 &&
+           std::all_of(id.begin(), id.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; });
+  };
+  const std::vector<std::string> ids = list("ids");
+  for (const auto& id : ids) {
+    if (!good_id(id)) return fail("host_drives");
+  }
+  if (what == "host_drives") {
+    auto r = self_host::run_host(w, {"drives", "list", "--json"}, {}, 60000);
+    std::lock_guard lock(m_);
+    v_.drives_json = r ? json_out(r->output, 16) : std::string();
+    if (v_.drives_json.empty()) v_.error = "host_drives";
+    return;
+  }
+  if (what == "host_drives_choices") {
+    std::vector<std::string> args = {"drives", "choices"};
+    args.insert(args.end(), ids.begin(), ids.end());
+    args.push_back("--json");
+    auto r = self_host::run_host(w, args, {}, 60000);
+    std::lock_guard lock(m_);
+    v_.drives_choices_json = r && r->code == 0 ? json_out(r->output, 8) : std::string();
+    if (v_.drives_choices_json.empty()) v_.error = "host_drives";
+    return;
+  }
+  std::vector<std::string> args;
+  std::vector<std::string> names;
+  if (what == "host_drives_combine") {
+    const std::string choice = text("choice");
+    if (choice != "separate" && choice != "mirror" && choice != "span" && choice != "stripe" && choice != "parity") {
+      return fail("host_drives");
+    }
+    args = {"drives", "combine", choice};
+    args.insert(args.end(), ids.begin(), ids.end());
+    if (choice != "separate") {
+      args.push_back("--label");
+      args.push_back(text("label"));
+    }
+    names = list("names");
+  } else {
+    if (ids.size() != 1) return fail("host_drives");
+    args = {"drives", "replace", text("set"), ids.front()};
+    names = {text("name")};
+  }
+  args.push_back("--confirm-stdin");
+  {
+    std::lock_guard lock(m_);
+    v_.host_step = what == "host_drives_combine" ? "drives_combine" : "drives_replace";
+    v_.host_said.clear();
+  }
+  // The administrator prompt waits for the person, and a big mirror takes a while to make.
+  auto r = self_host::run_host(w, args, names, 30 * 60 * 1000);
+  if (!r || r->code != 0) return fail("host_drives_failed", r ? last_line(r->output) : std::string());
+  {
+    std::lock_guard lock(m_);
+    v_.host_step.clear();
+    v_.host_said = last_line(r->output);
+  }
+  read_host();
+  auto again = self_host::run_host(w, {"drives", "list", "--json"}, {}, 60000);
+  std::lock_guard lock(m_);
+  if (again) {
+    if (std::string j = json_out(again->output, 16); !j.empty()) v_.drives_json = std::move(j);
+  }
+}
+
 void link::host_setup(const std::string& request) {
   const auto doc = json::parse(request, 4);
   const auto text = [&](const char* k) -> std::string {
@@ -1709,6 +1823,8 @@ std::string link::state_json() const {
   w.key("share_addresses").begin_array();
   for (const auto& a : v_.share_addresses) w.string(a);
   w.end_array();
+  if (!v_.drives_json.empty()) w.key("drives").raw(v_.drives_json);
+  if (!v_.drives_choices_json.empty()) w.key("drives_choices").raw(v_.drives_choices_json);
   w.end_object();
   return w.take();
 }

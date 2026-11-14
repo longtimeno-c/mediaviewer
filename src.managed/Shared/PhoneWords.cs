@@ -113,6 +113,10 @@ internal sealed record PhoneLinkState
     public string HostSaid { get; init; } = "";       // the driftwire program's own words for a step that failed
     public IReadOnlyList<PhoneUser>? Users { get; init; }  // this PC's users, once read (self-host-users-smb.md §8)
     public IReadOnlyList<string> ShareAddresses { get; init; } = Array.Empty<string>();  // \\PC\Photos, smb://… (screen only)
+    // Two or more drives (docs/plans/self-host-drives.md §6): the program's own JSON, kept as text so
+    // two reads compare by value; PhoneDrives.Listing / Choices read it.
+    public string DrivesJson { get; init; } = "";
+    public string DrivesChoicesJson { get; init; } = "";
 
     /// <summary>The NAS takes guest codes, time limits and a passphrase.</summary>
     public bool NasHasFeatures => NasFeatures.Contains("passphrase");
@@ -270,6 +274,8 @@ internal static class PhoneWords
                     : null,
                 ShareAddresses = Items(o, "share_addresses").Where(a => a.ValueKind == JsonValueKind.String)
                                                             .Select(a => a.GetString() ?? "").ToList(),
+                DrivesJson = Raw(o, "drives"),
+                DrivesChoicesJson = Raw(o, "drives_choices"),
             };
         }
         catch (JsonException)
@@ -351,6 +357,8 @@ internal static class PhoneWords
         "host_no_network" => "Claimed, but this PC isn't on a network, so a phone can't reach it yet.",
         "host_failed" => "The driftwire program couldn't be run.",
         "host_users" => "Your PC's file sharing wasn't changed.",
+        "host_drives" => "The drives on this PC couldn't be read. Connect them and try again.",
+        "host_drives_failed" => "The drives weren't changed.",
         _ => "That didn't work.",
     };
 
@@ -366,6 +374,7 @@ internal static class PhoneWords
         "host_users" when s.HostSaid.Length > 0 => $"File sharing: {s.HostSaid}",
         "host_name" when s.HostSaid.Length > 0 => $"DuckDNS: {s.HostSaid}",
         "host_start" when s.HostSaid.Length > 0 => $"The server didn't start: {s.HostSaid}",
+        "host_drives_failed" when s.HostSaid.Length > 0 => $"The drives weren't changed: {s.HostSaid}",
         _ => ErrorText(s.Error),
     };
 
@@ -501,6 +510,10 @@ internal static class PhoneWords
         "host_start" => "Starting the server",
         "host_setup" => "Setting up this PC",
         "user_set" or "user_remove" or "users_apply" => "Changing the users",
+        "host_drives" => "Reading the drives",
+        "host_drives_choices" => "Working out the choices",
+        "host_drives_combine" => "Combining the drives. Allow it in the administrator prompt.",
+        "host_drives_replace" => "Replacing the drive. Allow it in the administrator prompt.",
         _ => null,
     };
 
@@ -660,6 +673,9 @@ internal static class PhoneWords
     private static bool Bool(JsonElement o, string name, bool fallback) =>
         o.TryGetProperty(name, out JsonElement v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? v.GetBoolean() : fallback;
+
+    private static string Raw(JsonElement o, string name) =>
+        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Object ? v.GetRawText() : "";
 
     private static double Num(JsonElement o, string name) =>
         o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out double d) ? d : 0;

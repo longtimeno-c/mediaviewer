@@ -421,13 +421,22 @@ public final class AppModel {
       first = nil
     }
     // The stale-catalogue and hand-over cards wait their turn behind anything more serious.
-    return [first, handoverNotice, staleNotice].compactMap { $0 }.first { !dismissedNotices.contains($0.id) }
+    return [first, storageNotice, handoverNotice, staleNotice].compactMap { $0 }.first { !dismissedNotices.contains($0.id) }
   }
 
   public func dismiss(_ notice: LibraryNotice) {
     dismissedNotices.insert(notice.id)
     if notice.id.hasPrefix("handover"), let epoch = connection.catalogue?.epoch { Self.epochSeen = epoch }
     if notice.id.hasPrefix("stale") { Self.staleSeen = notice.id }
+  }
+
+  /// The server's combined drive is not healthy (docs/plans/self-host-drives.md §4): "Your server's
+  /// mirror lost a drive." Calm and dismissable; said again when the state changes.
+  private var storageNotice: LibraryNotice? { Self.storageNotice(for: connection) }
+
+  nonisolated static func storageNotice(for c: ConnectionSnapshot) -> LibraryNotice? {
+    guard c.hasLibrary, c.serverStorage > 0, !c.serverStorageWords.isEmpty else { return nil }
+    return LibraryNotice(id: "storage-\(c.serverStorage)", message: c.serverStorageWords, canDismiss: true, action: nil)
   }
 
   private var staleNotice: LibraryNotice? {

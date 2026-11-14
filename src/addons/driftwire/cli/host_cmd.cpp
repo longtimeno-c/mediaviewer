@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/host_drives.h"
 
 #include <sodium.h>
 
@@ -391,6 +392,10 @@ struct host_service::state {
   bool tls_failed = false;
   bool said_bad_config = false, said_serve_failed = false, said_relay_failed = false;
   std::vector<std::unique_ptr<host_keeper>> keepers;
+  // The drives keeper's word for the phones (serve's options::storage), apart
+  // from `m`: serve asks it on a session's thread, the keeper sets it on its own.
+  mutable std::mutex storage_m;
+  std::string storage;
   std::string state_written;
   bool started = false;  // state.json is this process's to remove
 
@@ -416,6 +421,10 @@ struct host_service::state {
         std::lock_guard lock(wake_m);
       }
       wake.notify_all();
+    };
+    k.storage_changed = [this](std::string word) {
+      std::lock_guard g(storage_m);
+      storage = std::move(word);
     };
     return k;
   }
@@ -462,6 +471,10 @@ struct host_service::state {
     so.devices_lock = o.where.serve + "/serve-devices.lock";
     so.save_config = [this](const serve::config& c) { return save_from_service(c); };
     so.root_present = o.present;
+    so.storage = [this] {
+      std::lock_guard g(storage_m);
+      return storage;
+    };
     auto s = serve::server::start(so);
     if (!s) {
       serve_retry = std::chrono::steady_clock::now() + std::chrono::milliseconds(o.retry_ms);
@@ -670,7 +683,7 @@ struct host_service::state {
     std::vector<std::string> lines;
     std::vector<std::pair<std::string, std::int64_t>> numbers;
     for (const auto& kp : keepers) {
-      lines.push_back(kp->status_line());
+      if (std::string line = kp->status_line(); !line.empty()) lines.push_back(std::move(line));
       for (auto& n : kp->state_numbers()) numbers.push_back(std::move(n));
     }
     const std::string text = state_json(snapshot_locked(), lines, numbers);
@@ -758,7 +771,7 @@ std::unique_ptr<host_service> host_service::start(host_service_options o, std::s
     st.next_roots = std::chrono::steady_clock::now() + std::chrono::milliseconds(st.o.roots_every_ms);
     st.set_awake_locked();
     // The keepers last: they need the ports.
-    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router}) {
+    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives}) {
       if (!make) continue;
       if (auto kp = make()) st.keepers.push_back(std::move(kp));
     }
@@ -982,6 +995,10 @@ int run_status(const host_layout& l, bool test_hooks) {
         if (line.k == json::kind::string) out += line.s + "\n";
       }
     }
+  } else if (!test_hooks) {
+    // Not running: no drives keeper, so the sets' health is asked here (no volume opened).
+    const auto sets = drives::os_port()->sets_only().sets;
+    if (const std::string line = drives_status_line(sets); !line.empty()) out += line + "\n";
   }
   print(out);
   return 0;
@@ -1214,6 +1231,8 @@ int run_host(const args& a, bool test_hooks, const char* version) {
       return run_host_users(a, l, test_hooks);
     case host_action::smb_apply:
       return run_smb_apply(a);
+    case host_action::drives:
+      return run_host_drives(a, l, data, test_hooks);
   }
   return 2;
 }

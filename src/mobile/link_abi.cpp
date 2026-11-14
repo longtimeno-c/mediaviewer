@@ -26,6 +26,8 @@
 #include "mobile/sound_tower.h"
 #include "mobile/sync.h"
 
+#include "wire/serve_wire.h"
+
 using namespace mv;
 using namespace mv::mobile;
 
@@ -367,6 +369,28 @@ void mv_link_set_upgrade(mv_mobile_link* l, int32_t on_cellular, int32_t allowed
     if (l && l->session) l->session->set_upgrade_policy(on_cellular != 0, allowed_on_cellular != 0);
   } catch (...) {
   }
+}
+
+namespace {
+constexpr const char* kStorageWords[] = {"", "rebuilding", "degraded", "offline", "failing"};
+}  // namespace
+
+int32_t mv_link_storage(mv_mobile_link* l) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: no drives of its own
+    std::string word;
+    if (l->session->storage(word) < 0) return -1;
+    for (int32_t i = 1; i < 5; ++i) {
+      if (word == kStorageWords[i]) return i;
+    }
+    return 0;
+  });
+}
+
+const char* mv_link_storage_words(int32_t code) {
+  if (code < 1 || code > 4) return "";
+  return mv::driftwire::serve::storage_words(kStorageWords[code]);
 }
 
 int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {

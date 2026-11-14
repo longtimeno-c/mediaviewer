@@ -137,6 +137,8 @@ class link_session final : public remote_file {
   // The live connection's limit, as the service said it in serve_caps: 1
   // limited, 0 unlimited, -1 no live connection (nothing known).
   [[nodiscard]] int grant(std::int64_t& expires_unix, bool& scoped) const;
+  // The caps' "storage" word (serve_wire.h): "" when healthy or none; -1 (as grant) with no live link.
+  [[nodiscard]] int storage(std::string& word) const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list(const std::string& root,
