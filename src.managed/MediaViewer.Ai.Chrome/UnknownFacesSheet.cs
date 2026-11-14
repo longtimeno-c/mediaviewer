@@ -224,7 +224,11 @@ internal sealed class UnknownFacesSheet : Window
                     }
                 }
                 UpdateButtons();
-                if (FocusManager.GetFocusedElement(Content.XamlRoot) is not (ButtonBase or FakeInput)) _focusHost.Focus(FocusState.Programmatic);
+                // GetFocusedElement(null) throws, and a throw here fail-fasts the host.
+                if (Content.XamlRoot is XamlRoot xr && FocusManager.GetFocusedElement(xr) is not (ButtonBase or FakeInput))
+                {
+                    _focusHost.Focus(FocusState.Programmatic);
+                }
             });
         });
     }
