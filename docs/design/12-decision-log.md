@@ -2118,6 +2118,16 @@ menu offers Driftwire's one-click install, and Sharepoint is removed in Settings
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
 
+**The self-host may map its own router ports (owner, 2026-11-14; plan call 2).** `driftwire serve`
+never touches a router's mapping ([28](28-driftwire.md#the-nas-service-driftwire-serve)). With the
+Synology dead the owner wants their own PC to be the NAS and the VPN exit, easy for someone who has
+never forwarded a port, and accepted [the self-hosting plan](../plans/self-hosted.md)'s call 2: the
+host (`driftwire host`, not `serve` run alone) asks the router for **its own ports only** (the
+service's, and the relay's with the VPN on; 443 for the TLS look unless someone else forwards it),
+with the code's mapping rules (#499: the gateway only, never another's forward taken over, short
+leases renewed while it runs, removed on stop, a ledger for a crash). Never SMB, RDP or another
+program's port. Built as `host_ports.*` (slice 4); behind carrier NAT it says that no forward helps.
+
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
 anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,

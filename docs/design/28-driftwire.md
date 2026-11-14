@@ -1463,7 +1463,10 @@ instance is `MediaViewer-` and six random hex digits, since Windows does not ren
 `serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan: `docs/plans/mobile.md`
 §7.2, M2b. A headless mode of the command line that lets a paired phone list and read named folders
 on a NAS through one forwarded port, the same way on the NAS's own network. It moves bytes and
-nothing else. It never touches the DHT, a router's mapping or the beacon.
+nothing else. It never touches the DHT, a router's mapping or the beacon. The one exception is the
+self-host (`docs/plans/self-hosted.md` §5, decision log 2026-11-14): run under `driftwire host`, its
+router keeper (`host_ports.h`) asks the router to forward the host's own ports while it runs and
+removes them on stop; `serve` alone still never does.
 
 ```
 driftwire serve [--data DIR]              the service, with no terminal: DIR/serve.json, DIR/secrets
@@ -2156,6 +2159,7 @@ protocol has no DHT.
 | Wire, code, path rule, beacon | `src/wire/wire.*` |
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
+| The self-host's router keeper (its own ports held, outside address and kind, carrier-NAT advice; `docs/plans/self-hosted.md` §5) | `host_ports.*` (tests `"[host-ports]"` in `test_driftwire_internet.cpp`) |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |

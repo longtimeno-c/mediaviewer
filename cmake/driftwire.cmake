@@ -68,6 +68,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
+  ${_S}/host_ports.cpp ${_S}/host_ports.h
   ${_S}/race.h
   ${_S}/internet.cpp ${_S}/internet.h
   ${_S}/bencode.cpp ${_S}/bencode.h
