@@ -99,6 +99,7 @@ driftwire code                   the session, making a code to receive from anyw
                                  when the receive it lets in ends, or the code fails or runs out
 driftwire devices                the remembered devices (no terminal needed)
 driftwire serve [--data DIR]     the NAS service, no terminal ([below](#the-nas-service-driftwire-serve)); init, devices, add, revoke
+driftwire host [--data DIR]      this computer as the service and a relay ([below](#on-your-own-computer-driftwire-host)); share, unshare, status, start-at-login, stay-awake
 driftwire update                 update it the way it was installed (no terminal needed)
 driftwire --help | --version     (no terminal needed)
   --save-to DIR, --name NAME     this run only
@@ -1564,7 +1565,11 @@ link entries left out.
 [self-hosted.md](../plans/self-hosted.md) §6): `roots` lists it with `"offline":true`, sent only then,
 and a request on it that fails ends `not_found` with `{"why":"offline"}`. The folder is looked at only
 for `roots`, before a write at its top, and after a request failed. The session is not ended; the folder serves again when it is
-back.
+back. A folder `driftwire host share` keeps with `"mount":true` (POSIX: it was a mount point) or a
+`"volume"` (Windows: its volume's GUID path) is also not there while it is not a mount point, or while
+its letter names another volume (`server::options::root_present`, the host's `cli/volume.*`), and is
+looked at before every write, not only one at its top: an unmounted mount point is an empty folder on
+the system disk, and the write's walk would make folders there. Neither field is ever sent.
 
 **Rule 6.** The service prints its port and that it stopped, and counts totals (`server::stats`).
 No address, path or file name is ever logged.
@@ -1713,6 +1718,76 @@ for a service too old to wait at a relay.
   up a stop. The phone's side is in `"[mobile-link]"` (the race through the relay, the direct route
   winning, an old code, pairing never relayed). Never a public relay or the public DHT. The phone's
   Swift tests were not run with it (no iOS core build here); the Swift side compiles.
+### On your own computer: `driftwire host`
+
+[Self-hosted.md](../plans/self-hosted.md) slice 2 (2026-11-14): the job a NAS would have done, on a PC
+or a Mac, from one command that runs while its user is logged in.
+
+```
+driftwire host [--data DIR]                 the supervisor, no terminal: what starts at login
+driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it)
+driftwire host unshare LABEL                takes one back (its files stay)
+driftwire host status                       name, ports, folders by label (offline or not), phones,
+                                            VPN, staying awake, start at login
+driftwire host start-at-login on|off        per user, no administrator
+driftwire host stay-awake on|off            the "system required" request while hosting (off for laptops)
+```
+
+- **One process for the services.** `driftwire host` is a supervisor: it runs the same program as
+  `host child`, which holds `serve::server` for the shared folders and the relay server (`splice.*`,
+  as `mv-driftwire-relay`) together, and the power request. The child's stdin is a pipe the
+  supervisor holds: closing it (or the supervisor dying) stops the child. A child that ends unasked
+  (a crash, an exit) is started again after 30 s; one that says it cannot run (exit 3: its folder is
+  not this user's, its keys cannot be read) ends the supervisor with 3, which the systemd unit does
+  not restart (`RestartPreventExitStatus=3`; launchd and Task Scheduler still try every 30 s / 5 min). Inside the child, a service
+  whose port is taken is tried again every 30 s without stopping the other.
+- **Its folder** is `<data dir>/host` (0700): `host.json` (`relay_port`, `vpn`, `stay_awake`),
+  `serve/` (`serve.json` and the service's secrets, the layout `driftwire serve --data` reads),
+  `relay/secrets` (the relay's key, made at the first run, never printed: slice 7 prints the relay
+  line), `secrets/` (for the keepers), `state.json` (the running child's ports, counts and pid, for
+  `host status`), `host.lock` (one supervisor). The child also holds `serve/serve.lock`.
+- **Changes while it runs** come through the files: `serve.json` and `host.json` are read every 2 s
+  (one small file each; nothing renders in this process). A `host share` from another terminal is
+  served within that; the running service takes the folders with `server::replace_config` (requests
+  already open keep the view they opened with); a new port restarts it; no folder stops it, the relay
+  stays. The service's own writes (the owner's edits from the desktop) and `host share` take
+  `serve/serve-config.lock`, and the service's write is refused when the file changed since this
+  process read it (the desktop tries again), so neither loses the other's change.
+- **Drives.** Every minute each folder's drive is looked at (`cli/volume.h`): a POSIX folder that was
+  a mount point when shared (`st_dev` differs from its parent's) is offline while it is not one; a
+  Windows folder on a volume mounted at a drive letter's root is kept by its volume's GUID path too,
+  and when the volume is back under another letter the folder is moved there and `serve.json`
+  rewritten (one under a folder mount point keeps its path). A desktop's `add_root` is refused,
+  like `host share`, for a folder holding the host's own folder.
+- **Starting at login** (`cli/autostart.h`, one file per OS): a per-user Scheduled Task at log on,
+  least privilege, tried again every 5 minutes while not running (Task Scheduler's own restart is for
+  a start that fails, not an exit), made with `schtasks /Create /XML`; a LaunchAgent
+  (`io.github.longtimeno-c.driftwire.host`, KeepAlive unless it exited 0, ThrottleInterval 30); a
+  `systemd --user` unit (Restart=on-failure, 30 s) with `sudo loginctl enable-linger` printed, never
+  run. The entry runs the program's stable path (a Homebrew Cellar path becomes its `opt` link).
+  A host started while one runs says so and exits 0.
+- **Updates.** The supervisor looks at its program every minute; replaced (an install channel's
+  update, `driftwire update`), it stops the child and ends 75, and the entry starts the new one.
+- **Sleep.** While hosting it holds the OS's "system required" request through `power::hold_for`
+  ("Driftwire is hosting your server"): the display may still sleep. `host stay-awake off` drops it.
+- **Elevation.** Refused as root or elevated, as `serve`.
+- **Rule 6.** Its lines say ports and counts, never a path or an address; `state.json` holds ports,
+  counts and a pid. `host status` prints folders by their labels.
+- **Keepers.** `cli/host_keepers.h` is where the DuckDNS keeper (slice 3) and the router keeper
+  (slice 4) plug in: a factory each in `host_keepers()`, started after the services and stopped
+  before them, told when the ports change, and a status line each. None is built yet.
+- **Not yet:** `host setup` and `/host` in the session (slice 5), `host vpn on|off` and the relay line
+  (slice 7: today `vpn` is read from `host.json` and turns on forwarding to 80/443 and UDP 53), the
+  desktop's "This computer" (slice 6), watching for a volume arriving (the minute's recheck only).
+- **Tested** (`"[host]"`, loopback only): the arguments, `host.json`, sharing rules, the three entries'
+  texts and the files written into a home of the test's own (the OS's tools never run in a test), the
+  drive checks (`/dev` as a real mount point), the service process in-process (relay alone, a share
+  served, a second share without a restart, offline and a new letter, the VPN restart, a broken
+  `serve.json`, unsharing all), and the supervisor as a program on POSIX: a second supervisor exits 0,
+  a SIGKILLed child is started again, a replaced program ends it 75 with its child, SIGTERM ends both
+  with 0. Windows and Linux run in CI only; the entries were never registered with a real
+  launchd, systemd or Task Scheduler.
+
 ## The Tunnel (2026-11-12)
 
 The owner's ask: on a public network that filters sites (and blocks the common VPNs), reach the
@@ -2177,9 +2252,10 @@ protocol has no DHT.
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Phone access (the app's, `src/phone`) | `phone/desk.*` (claim, devices, codes, nearby, the route), `wire/advert*` (Bonjour: `advert_mac.cpp` dns_sd, `advert_win.cpp` DnsServiceRegister, `advert_none.cpp` Linux and iOS) |
 | The NAS service (`driftwire serve`) | `serve_wire.*` (the messages, the config), `serve.*` (the listener, sessions, streams, revocation), `serve_client.*` (the client), `channel.*` (`open_library`, `read_library_hello`), `secrets_file.cpp` (owner-only), `cli/serve_cmd.*` |
+| Self-hosting (`driftwire host`) | `cli/host_cmd.*` (the supervisor, the service process, share and status), `cli/host_keepers.h` (slices 3–4 plug in), `cli/host_proc*` (the child process), `cli/autostart*` (start at login per OS), `cli/volume*` (a folder's drive), `power::hold_for` |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_serve.cpp` (the NAS service over `::1`: the verify line as far as loopback goes), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_serve.cpp` (the NAS service over `::1`: the verify line as far as loopback goes), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`), `tests/test_driftwire_host.cpp` (`"[host]"`) |
 
 ## Not built
 

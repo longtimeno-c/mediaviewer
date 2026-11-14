@@ -147,6 +147,11 @@ class server {
     std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms)> relay_connect;
     // The tests: runs before a direct path's candidates are gathered (a slow relay).
     std::function<void()> before_gather;
+    // Self-hosting (docs/plans/self-hosted.md §6): whether a named folder's drive is there,
+    // beyond the folder being a folder (an unmounted mount point, a volume whose letter now
+    // names another drive). Asked wherever the folder's presence is (roots, a failed
+    // request, before a write). Empty: the folder alone decides.
+    std::function<bool(const root_config&)> root_present;
   };
 
   // Listens and returns. status::not_found when the store has no usable
@@ -163,6 +168,10 @@ class server {
   // Reads the paired list now and cuts sessions no longer on it (it is also
   // read on a timer and for every new connection).
   void recheck_devices() noexcept;
+  // `driftwire host`: the named folders changed on disk (a `host share` from another
+  // process, a drive's new letter). Taken as they are, not saved again; requests already
+  // open keep the view they opened with. False for a config with no folders.
+  bool replace_config(config next);
   void stop() noexcept;
 
  private:

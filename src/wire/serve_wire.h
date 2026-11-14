@@ -284,6 +284,13 @@ struct root_config {
   bool backup = false;
   std::uint64_t limit = 0;
   std::uint64_t reserve = 0;
+  // Self-hosting (docs/plans/self-hosted.md §6), set by `driftwire host share`:
+  // `mount`, the folder is a mount point (POSIX: on another device than its
+  // parent), so an unmounted one left as an empty folder reads offline;
+  // `volume`, on Windows the volume's GUID path ("\\?\Volume{...}\"), so a
+  // drive whose letter changed is found again. Neither is ever sent.
+  bool mount = false;
+  std::string volume{};
 };
 struct config {
   std::uint16_t port = 0;
@@ -304,8 +311,10 @@ struct config {
 // false for anything else (no port, port 0, spaces or control characters).
 [[nodiscard]] bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port);
 // {"port":N,"name":"...","roots":[{"id","label","path"}],"relay":"host:port"?}. `any_port`: port 0
-// is accepted (the OS picks; the test build only): a service needs a fixed one.
-[[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false);
+// is accepted (the OS picks; the test build only): a service needs a fixed one. `no_roots`: a
+// config with no folders yet is accepted (`driftwire host`, which serves nothing until one is
+// shared); the service itself needs one.
+[[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false, bool no_roots = false);
 // The same, written ("backup":{"limit","reserve"} only on a backup folder).
 [[nodiscard]] std::string config_json(const config& c);
 // The free space a backup folder keeps when the owner sets none.

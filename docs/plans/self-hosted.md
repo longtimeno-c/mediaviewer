@@ -228,7 +228,8 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
    `mv_import_tests` already builds on Windows), the elevated-run refusal, loopback as own network for
    the claim, offline roots. No new feature; makes the ground solid. **Built 2026-11-14** (below).
 2. **`driftwire host`**: the supervisor, `host.json`, `share`/`unshare`, serve + relay in one process,
-   `status`, autostart per OS, the power assertion. Tests `"[host]"` on loopback.
+   `status`, autostart per OS, the power assertion. Tests `"[host]"` on loopback. **Built 2026-11-14**
+   (§12).
 3. **DuckDNS keeper** (`ddns.*`, `"[ddns]"` against a loopback stand-in) and `host name duckdns`.
 4. **Router keeper** for the host's ports (reusing `mapping.*` against its stand-in routers), the
    carrier-NAT message, the decision-log row.
@@ -271,3 +272,34 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   share can stall that one session's `roots`.
 - **Not yet:** the phone saying "offline" (the Swift side reads the flag only once a screen shows it),
   the volume GUID path for a drive letter that changes, and the host's minute recheck (slice 2).
+
+## 12. Slice 2, as built (2026-11-14)
+
+- **`driftwire host`** (`cli/host_cmd.*`): a supervisor that runs `host child` (the same program) and
+  starts it again 30 s after it ends unasked; the child holds `serve::server` and the relay server in
+  one process, from `<data dir>/host/` (0700: `host.json`, `serve/`, `relay/`, `secrets/`,
+  `state.json`, `host.lock`). A service whose port is taken is tried again every 30 s inside the child
+  without stopping the other. `serve.json` and `host.json` are read again every 2 s; the running
+  service takes new folders with `server::replace_config`; unsharing the last stops it.
+- **`host share PATH [--label L] [--backup]`, `unshare LABEL`, `status`, `start-at-login on|off`,
+  `stay-awake on|off`.** A share is refused for the host's own folder or one holding it (its keys);
+  `--backup` has no limit of its own (the 1 GiB reserve keeps the drive from filling; a `--limit` is
+  owed if asked). `status` prints labels, ports, counts and switches, never a path or an address.
+- **Start at login**, one file per OS (`cli/autostart_win.cpp`, `_mac.cpp`, `_linux.cpp`; texts pure
+  in `autostart.cpp`): a per-user Scheduled Task at log on (least privilege, retried every 5 min while
+  not running, since Task Scheduler's restart-on-failure does not cover an exit), a LaunchAgent with
+  KeepAlive unless exit 0, a systemd user unit with Restart=on-failure and linger printed only.
+- **Updates**: the supervisor ends 75 when its program on disk changes; the entry starts the new one.
+- **Power**: `power::hold_for(kHostReason)` while hosting, `stay-awake off` to drop it.
+- **Offline roots (§11's owed items)**: Windows keeps a folder's volume GUID path and moves it to a new
+  letter at the minute's recheck; POSIX keeps `mount` and reads an unmounted mount point offline;
+  serve looks at such a folder before every write (`options::root_present`).
+- **Hooks for slices 3 and 4**: `cli/host_keepers.h` (`host_keeper`, `keeper_context`,
+  `host_keepers()` in `host_cmd.cpp` returns none yet). `ddns.*` and `host_ports.*` are not created
+  here.
+- **Owed:** running any of it on Windows or Linux (CI builds and runs `"[host]"` there; the
+  Windows port files were written without a Windows compiler here), registering a real Scheduled
+  Task, LaunchAgent or systemd unit by hand and rebooting into it, the console window that may flash
+  at login on Windows (the host frees a console made for it alone), a volume-arrival notice (the
+  minute's recheck only), and on Windows the entry reads "on" from its XML file even if the task was
+  deleted in Task Scheduler by hand.

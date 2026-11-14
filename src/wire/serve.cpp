@@ -351,6 +351,7 @@ struct server::state {
   };
   std::function<result<std::unique_ptr<link>>(const std::string&, std::uint16_t, int)> relay_connect;
   std::function<void()> before_gather;  // the tests
+  std::function<bool(const root_config&)> root_present;  // the host's (options::root_present)
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -688,10 +689,17 @@ class session_state {
 
   // Whether a named folder is there now. Asked for `roots`, and after a
   // request on it failed, never before one: a working request costs nothing.
-  static bool root_online(const root_config& root) {
+  bool root_online(const root_config& root) const {
+    if (root_present_ && !root_present_(root)) return false;
     auto st = io::stat_beneath(root.path, "");
     return st && st->is_directory;
   }
+
+ public:
+  // The host's check of a folder's drive (server::options::root_present).
+  void set_root_present(std::function<bool(const root_config&)> fn) { root_present_ = std::move(fn); }
+
+ private:
 
   // A request on `root` failed with `e`: said as offline when its folder is
   // gone (a drive unplugged), so the phone can say so instead of "not found".
@@ -850,8 +858,14 @@ class session_state {
       rel_dir = std::string(kBackupMetaFolder) + "/" + device_id_;
     }
     // At the folder's top there is no walk to fail, so its drive is looked
-    // at here (one stat, as the walk's own open of the folder would be).
-    if (rel_dir.empty() && !root_online(root)) return send_end(r.id, end_code::not_found, why_json(kWhyOffline));
+    // at here (one stat, as the walk's own open of the folder would be). A
+    // mount point or a volume the host keeps is looked at before every write:
+    // an unmounted one is an empty folder on the system disk, and the walk
+    // would make the write's folders there.
+    const bool guarded = root.mount || !root.volume.empty();
+    if ((rel_dir.empty() || guarded) && !root_online(root)) {
+      return send_end(r.id, end_code::not_found, why_json(kWhyOffline));
+    }
     auto dir = rel_dir.empty() ? result<std::string>(root.path) : io::make_directories_beneath(root.path, rel_dir);
     if (!dir) return send_failed(r.id, root, dir.error());
     if (!r.meta) {
@@ -1173,6 +1187,7 @@ class session_state {
 
   send_fn send_;
   config_fn cfg_;
+  std::function<bool(const root_config&)> root_present_;
   const std::uint32_t ops_;
   admin_fn admin_;
   upgrade_fn upgrade_;
@@ -1281,6 +1296,7 @@ void server::state::session(conn& c, std::optional<message> first_message) {
   session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
                   [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler), std::move(upgrade_handler),
                   &book, c.device, [this, &c](const root_config& root) { return device_may_write(c, root); });
+  s.set_root_present(root_present);
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -2650,10 +2666,12 @@ result<std::unique_ptr<server>> server::start(const options& o) {
     st.listen = std::move(*l);
   }
   st.port = st.listen->port();
-  st.acceptor = std::thread([&st] { st.accept_loop(); });
-  st.watcher = std::thread([&st] { st.watch_loop(); });
+  // Everything a session or the relay thread reads, set before either starts.
   st.relay_connect = o.relay_connect;
   st.before_gather = o.before_gather;
+  st.root_present = o.root_present;
+  st.acceptor = std::thread([&st] { st.accept_loop(); });
+  st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
   return srv;
 }
@@ -3023,6 +3041,14 @@ std::array<std::uint8_t, 32> claim_key(std::string_view token_hex) {
   std::array<std::uint8_t, 32> k{};
   crypto_generichash(k.data(), k.size(), reinterpret_cast<const unsigned char*>(token_hex.data()), token_hex.size(), label, sizeof label - 1);
   return k;
+}
+
+bool server::replace_config(config next) {
+  if (next.roots.empty()) return false;
+  auto made = std::make_shared<const config>(std::move(next));
+  std::lock_guard lock(st_->cfg_m);
+  st_->cfg_now = std::move(made);
+  return true;
 }
 
 void server::recheck_devices() noexcept {

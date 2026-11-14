@@ -434,7 +434,7 @@ std::optional<admin_msg> parse_admin(std::span<const std::uint8_t> body) noexcep
   return m;
 }
 
-result<config> parse_config(std::string_view text, bool any_port) {
+result<config> parse_config(std::string_view text, bool any_port, bool no_roots) {
   if (text.size() > kMaxConfigBytes) return err(status::invalid_arg);
   const auto doc = json::parse(text, 6);
   if (!doc) return err(status::corrupt);
@@ -445,7 +445,7 @@ result<config> parse_config(std::string_view text, bool any_port) {
   const std::string* name = doc->str("name");
   c.name = name ? clean_name(*name) : std::string("MediaViewer");
   const json::value* roots = doc->find("roots");
-  if (!roots || roots->k != json::kind::array || roots->a.empty() || roots->a.size() > kMaxRoots) {
+  if (!roots || roots->k != json::kind::array || (roots->a.empty() && !no_roots) || roots->a.size() > kMaxRoots) {
     return err(status::invalid_arg);
   }
   std::set<std::string> seen;
@@ -473,6 +473,15 @@ result<config> parse_config(std::string_view text, bool any_port) {
       rc.limit = static_cast<std::uint64_t>(*limit);
       rc.reserve = reserve ? static_cast<std::uint64_t>(*reserve) : kDefaultReserve;
     }
+    if (const json::value* m = v.find("mount")) {
+      if (m->k != json::kind::boolean) return err(status::invalid_arg);
+      rc.mount = v.boolean("mount").value_or(false);
+    }
+    if (v.find("volume")) {
+      const std::string* g = v.str("volume");
+      if (!g || g->size() > 64 || g->rfind("\\\\?\\Volume{", 0) != 0) return err(status::invalid_arg);
+      rc.volume = *g;
+    }
     c.roots.push_back(std::move(rc));
   }
   if (const std::string* relay = doc->str("relay")) {
@@ -493,6 +502,8 @@ std::string config_json(const config& c) {
       w.key("reserve").integer(static_cast<std::int64_t>(r.reserve));
       w.end_object();
     }
+    if (r.mount) w.key("mount").boolean(true);
+    if (!r.volume.empty()) w.key("volume").string(r.volume);
     w.end_object();
   }
   w.end_array();

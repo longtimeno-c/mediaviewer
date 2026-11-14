@@ -12,6 +12,8 @@
 //   driftwire update
 //   driftwire serve [init | status | devices | add NAME KEY | revoke NAME-OR-KEY | pair-code [SECONDS] | disown
 //                    | passphrase set|reset] [--data DIR] [--passphrase-stdin | --no-passphrase]
+//   driftwire host [share PATH [--label L] [--backup] | unshare LABEL | status
+//                   | start-at-login on|off | stay-awake on|off] [--data DIR]
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
 //
@@ -24,8 +26,9 @@
 //
 // The test build (MV_DRIFTWIRE_CLI_TEST_HOOKS) also takes its own options,
 // refused by the product: --test-loopback (loopback networking only, no
-// router, no beacon), --test-data DIR (a data folder of its own) and
-// --test-events (machine-readable lines on stderr for the end-to-end test).
+// router, no beacon), --test-data DIR (a data folder of its own),
+// --test-events (machine-readable lines on stderr for the end-to-end test) and
+// --test-quick (`host`: its waits in a second or less instead of 30 s and a minute).
 #pragma once
 
 #include <cstdint>
@@ -35,11 +38,16 @@
 
 namespace mv::driftwire::cli {
 
-enum class command : std::uint8_t { session, send, receive, code, devices, update, serve, help, version };
+enum class command : std::uint8_t { session, send, receive, code, devices, update, serve, host, help, version };
 
 // `driftwire serve`: the service itself (no terminal, docs/design/28 "The NAS
 // service"), or one of its local chores.
 enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_code, disown, status, passphrase_set, passphrase_reset, grant, self_test };
+
+// `driftwire host` (docs/plans/self-hosted.md §3): run the service and the
+// relay together (run; `child` is the supervisor's own process, never typed),
+// or change what it shares and how it starts.
+enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake };
 
 struct args {
   command cmd = command::session;
@@ -60,10 +68,16 @@ struct args {
   // serve add / pair-code / grant: --for DURATION ("24h", "7d", "90m", seconds), or grant --forever.
   std::string for_duration;
   bool forever = false;
+  host_action host = host_action::run;
+  std::string host_path;  // host share: the folder, as given
+  std::string label;      // host share --label; host unshare: the label
+  bool backup = false;    // host share --backup
+  bool on = false;        // host start-at-login / stay-awake: on or off
   // The test build's.
   bool test_loopback = false;
   std::string test_data;
   bool test_events = false;
+  bool test_quick = false;
 };
 
 struct parsed_args {

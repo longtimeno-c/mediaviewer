@@ -700,6 +700,25 @@ cmake --build build-cli && ctest --test-dir build-cli --output-on-failure
 
 Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 
+#### Hosting from this computer (`driftwire host`, plan: `docs/plans/self-hosted.md`)
+
+The service and a relay in one process on your own PC or Mac (slice 2; [docs/design/28](design/28-driftwire.md#on-your-own-computer-driftwire-host)).
+Its folder is `<data dir>/host`; `--data DIR` uses `DIR/host` instead.
+
+```sh
+build/bin/driftwire host share ~/Pictures --label Photos     # what phones see; --backup lets them back up into it
+build/bin/driftwire host                                     # runs until Ctrl-C: the service on 7878, the relay on 47614
+build/bin/driftwire host status                              # from another terminal
+build/bin/driftwire host start-at-login on                   # LaunchAgent / systemd --user / Scheduled Task, no admin
+build/bin/driftwire host stay-awake off                      # a laptop: let it sleep
+build/bin/mv_import_tests "[host]"                           # loopback only; the supervisor case spawns mv_driftwire_cli_test
+```
+
+`start-at-login on` from a build of your own points the entry at that build; turn it off before
+deleting the build (`host start-at-login off`). The test build refuses it. Router ports, DuckDNS,
+`host setup` and `host vpn` are later slices: today the host is reachable on its own network, or
+through ports you forward by hand.
+
 ### The phone's library and search (`src/mobile`, `MobileCore`; plan: `docs/plans/mobile.md` M5, M6)
 
 The real app links `src/mobile` through `tools/ios/build-core.sh`, a build phase that makes

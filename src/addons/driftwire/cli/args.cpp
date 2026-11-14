@@ -55,6 +55,13 @@ std::string help_text() {
          "                               set|reset changes or resets the owner's passphrase (here only);\n"
          "                               add, pair-code --for 24h|7d|... make a timed phone, serve grant\n"
          "                               NAME-OR-KEY --for D|--forever changes one\n"
+         "  driftwire host               host the service and a relay on this computer, from\n"
+         "         [--data DIR]          its own folder (DIR/host), until stopped: what starts at\n"
+         "                               login; host share PATH [--label L] [--backup] gives phones\n"
+         "                               a folder (--backup: they may back up into it), host unshare\n"
+         "                               LABEL takes one back, host status shows it, host\n"
+         "                               start-at-login on|off and host stay-awake on|off change\n"
+         "                               how it runs (no administrator needed)\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -83,6 +90,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   std::vector<std::string> words;  // after the command
   std::string first_word;          // a word that is not a command, for the error
   bool want_to = false, want_once = false;
+  bool want_label = false, want_backup = false;
 
   for (std::size_t i = 0; i < argv.size(); ++i) {
     const std::string_view s = argv[i];
@@ -129,6 +137,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.passphrase_stdin = true;
       } else if (t.name == "--no-passphrase" && flag) {
         a.no_passphrase = true;
+      } else if (t.name == "--label") {
+        if (!value(a.label, "a label")) return out;
+        want_label = true;
+      } else if (t.name == "--backup" && flag) {
+        a.backup = true;
+        want_backup = true;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -145,6 +159,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         if (!value(a.test_data, "a folder")) return out;
       } else if (test_hooks && t.name == "--test-events" && flag) {
         a.test_events = true;
+      } else if (test_hooks && t.name == "--test-quick" && flag) {
+        a.test_quick = true;
       } else {
         out.error = "unknown option " + std::string(s.substr(0, s.find('=')));
         return out;
@@ -165,6 +181,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.cmd = command::update;
       } else if (s == "serve") {
         a.cmd = command::serve;
+      } else if (s == "host") {
+        a.cmd = command::host;
       } else if (s == "help") {
         help = true;
       } else {
@@ -267,10 +285,49 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       }
       return out;
     }
+    case command::host: {
+      const auto on_off = [&](host_action act) {
+        if (words.size() == 2 && (words[1] == "on" || words[1] == "off")) {
+          a.host = act;
+          a.on = words[1] == "on";
+          return true;
+        }
+        return false;
+      };
+      const std::string what = words.empty() ? std::string() : words.front();
+      if (words.empty()) {
+        a.host = host_action::run;
+      } else if (what == "child" && words.size() == 1) {
+        a.host = host_action::child;
+      } else if (what == "share" && words.size() == 2) {
+        a.host = host_action::share;
+        a.host_path = words[1];
+      } else if (what == "unshare" && words.size() == 2 && !want_label) {
+        a.host = host_action::unshare;
+        a.label = words[1];
+      } else if (what == "status" && words.size() == 1) {
+        a.host = host_action::status;
+      } else if (what == "start-at-login" && on_off(host_action::start_at_login)) {
+      } else if (what == "stay-awake" && on_off(host_action::stay_awake)) {
+      } else {
+        out.error = "host takes share PATH [--label L] [--backup], unshare LABEL, status, start-at-login on|off "
+                    "or stay-awake on|off";
+        return out;
+      }
+      if ((want_label || want_backup) && a.host != host_action::share) {
+        out.error = "--label and --backup go with host share";
+        return out;
+      }
+      break;
+    }
     case command::session:
     case command::help:
     case command::version:
       break;
+  }
+  if ((want_label || want_backup) && a.cmd != command::host) {
+    out.error = "--label and --backup go with host share";
+    return out;
   }
   if (want_to && a.cmd != command::send) {
     out.error = "--to goes with send (driftwire send PATH... --to NAME)";

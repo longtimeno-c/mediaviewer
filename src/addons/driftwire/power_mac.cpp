@@ -23,12 +23,15 @@ class assertion final : public stay_awake {
 }  // namespace
 
 std::unique_ptr<stay_awake> hold(bool receiving) noexcept {
-  CFStringRef why = nullptr;
   try {
-    why = CFStringCreateWithCString(kCFAllocatorDefault, reason(receiving).c_str(), kCFStringEncodingUTF8);
+    return hold_for(reason(receiving));
   } catch (...) {
     return nullptr;
   }
+}
+
+std::unique_ptr<stay_awake> hold_for(const std::string& reason_ascii) noexcept {
+  CFStringRef why = CFStringCreateWithCString(kCFAllocatorDefault, reason_ascii.c_str(), kCFStringEncodingUTF8);
   if (!why) return nullptr;
   IOPMAssertionID id = kIOPMNullAssertionID;
   const IOReturn made =
