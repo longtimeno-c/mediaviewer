@@ -32,6 +32,7 @@ public final class MVImportChrome: NSObject {
     let m = ImportModel(table: table)
     m.chrome = self
     m.duplicates.chrome = self
+    m.check.chrome = self
     model = m
     return m
   }
@@ -112,6 +113,10 @@ public final class MVImportChrome: NSObject {
         duplicatesFinished(identifier, state: UInt32(truncatingIfNeeded: payload))
       case MV_ADDON_EVENT_DUPLICATE_TRASHED.rawValue:
         model?.duplicates.refresh(identifier)
+      case MV_ADDON_EVENT_LIBRARY_CHECKED.rawValue:
+        tick()
+        model?.check.refresh(identifier)
+        if jobs.removeValue(forKey: identifier) != nil, jobs.isEmpty { setStatus(nil) }
       default:
         break
       }
@@ -176,11 +181,14 @@ public final class MVImportChrome: NSObject {
       MainActor.assumeIsolated {
         model?.progressed(job, p)
         model?.duplicates.progressed(job, p)
+        model?.check.progressed(job, p)
       }
       if p.state == MV_IMPORT_JOB_RUNNING.rawValue || p.state == MV_IMPORT_JOB_PAUSED.rawValue ||
           p.state == MV_IMPORT_JOB_QUEUED.rawValue {
         let pct = p.bytes_total == 0 ? 0 : Int(100 * Double(p.bytes_read) / Double(p.bytes_total))
-        if jobs[job] == "duplicates" {
+        if jobs[job] == "check" {
+          line = "Checking the library · \(pct)%"
+        } else if jobs[job] == "duplicates" {
           line = "Finding duplicates · \(pct)%"
         } else {
           line = (p.state == MV_IMPORT_JOB_PAUSED.rawValue ? "Import paused · " : "Importing · ") + "\(pct)%"

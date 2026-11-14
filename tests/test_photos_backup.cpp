@@ -3,7 +3,7 @@
 // shell/photos_backup (docs/design/26 "Backup"): the engine over a fake library. The
 // real one is PhotoKit (shell/photos_backup_mac.mm) and needs the user's
 // permission, so what is proved here is the engine: layout, verified copies,
-// the manifest making a second run free, a deleted file coming back, a cloud
+// the manifest making a second run free, a deleted file held until someone chooses (and Leave deleted by hash), a cloud
 // fetch, a name collision, a cancel that leaves nothing behind, and the
 // folder layouts (issue #414) with a manifest that finds a file in any of them.
 #include "catch_compat.h"
@@ -194,45 +194,135 @@ TEST_CASE("a first backup copies every original into YYYY/YYYY-MM-DD, verified",
   CHECK(fs::exists(keep / "last-run.txt"));
 }
 
-TEST_CASE("a second run writes nothing; a file deleted from the backup comes back", "[shell][photos_backup]") {
+TEST_CASE("a second run writes nothing; a file deleted from the backup is held until someone chooses",
+          "[shell][photos_backup]") {
+  // Owner, 2026-11-14 (docs/plans/check-library.md §2.3, A+B): a photo removed
+  // from the folder after it was backed up is not brought back by itself.
   scratch_dir lib("pb_lib2");
   scratch_dir dest("pb_dest2");
   scratch_dir scratch("pb_scratch2");
-  auto first = std::make_unique<fake_library>();
-  first->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 120'000, 5, true));
-  first->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.MOV", kDay1, 400'000, 6, false));
-  auto second = std::make_unique<fake_library>();
-  second->files = first->files;
-  auto third = std::make_unique<fake_library>();
-  third->files = first->files;
-  fake_library* raw2 = second.get();
-  fake_library* raw3 = third.get();
-
-  {
+  auto source = [&] {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 120'000, 5, true));
+    s->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.MOV", kDay1, 400'000, 6, false));
+    return s;
+  };
+  const auto run = [&](std::unique_ptr<fake_library> s, bool check_only = false) {
     bk::engine e;
-    REQUIRE(e.start(std::move(first), {utf8(dest.root()), utf8(scratch / "tmp")}));
-    CHECK(run_to_end(e).done == 2);
-  }
-  {
-    bk::engine e;
-    REQUIRE(e.start(std::move(second), {utf8(dest.root()), utf8(scratch / "tmp")}));
+    bk::options o{utf8(dest.root()), utf8(scratch / "tmp")};
+    o.check_only = check_only;
+    REQUIRE(e.start(std::move(s), std::move(o)));
     const bk::progress p = run_to_end(e);
+    return std::make_pair(p, e.last_check());
+  };
+  CHECK(run(source()).first.done == 2);
+  {
+    const bk::progress p = run(source()).first;
     CHECK(p.state == bk::run_state::done);
     CHECK(p.done == 0);
     CHECK(p.skipped == 2);
-    CHECK(p.bytes == 0);
-    CHECK(raw2->fetches == 0);  // nothing was fetched from the "cloud" again
+    CHECK(p.bytes == 0);  // nothing was fetched from the "cloud" or written again
   }
   const fs::path gone = fs::path(bk::layout_dir(utf8(dest.root()), kDay1)) / "IMG_0002.MOV";
   REQUIRE(fs::exists(gone));
   fs::remove(gone);
   {
-    bk::engine e;
-    REQUIRE(e.start(std::move(third), {utf8(dest.root()), utf8(scratch / "tmp")}));
-    const bk::progress p = run_to_end(e);
-    CHECK(p.done == 1);
+    const bk::progress p = run(source()).first;
+    CHECK(p.done == 0);
+    CHECK(p.held == 1);
     CHECK(p.skipped == 1);
-    CHECK(raw3->fetches == 1);
+    CHECK(p.bytes == 0);
+    CHECK_FALSE(fs::exists(gone));
+  }
+  // Check library lists it with what was chosen (nothing yet).
+  {
+    const auto [p, rep] = run(source(), true);
+    CHECK(p.state == bk::run_state::done);
+    REQUIRE(rep.deleted.size() == 1);
+    CHECK(rep.deleted[0].asset == "B");
+    CHECK(rep.deleted[0].name == "IMG_0002.MOV");
+    CHECK_FALSE(rep.deleted[0].left);
+  }
+  // Copy again: the next run copies it back.
+  REQUIRE(bk::decide_deleted(utf8(dest.root()), {{"B", bk::file_kind::original, true}}));
+  {
+    const bk::progress p = run(source()).first;
+    CHECK(p.done == 1);
+    CHECK(p.held == 0);
+    CHECK(fs::exists(gone));
+  }
+  // An unknown file is refused and nothing changes.
+  CHECK_FALSE(bk::decide_deleted(utf8(dest.root()), {{"Z", bk::file_kind::original, false}}));
+}
+
+TEST_CASE("Leave deleted is remembered by hash, whatever asset the bytes come back as", "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib2b");
+  scratch_dir dest("pb_dest2b");
+  scratch_dir scratch("pb_scratch2b");
+  const auto run = [&](std::unique_ptr<fake_library> s, bool check_only = false) {
+    bk::engine e;
+    bk::options o{utf8(dest.root()), utf8(scratch / "tmp")};
+    o.check_only = check_only;
+    REQUIRE(e.start(std::move(s), std::move(o)));
+    const bk::progress p = run_to_end(e);
+    return std::make_pair(p, e.last_check());
+  };
+  auto first = std::make_unique<fake_library>();
+  first->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 120'000, 7, true));
+  first->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.JPG", kDay1, 90'000, 8, true));
+  REQUIRE(run(std::move(first)).first.done == 2);
+  const fs::path gone = fs::path(bk::layout_dir(utf8(dest.root()), kDay1)) / "IMG_0002.JPG";
+  fs::remove(gone);
+  REQUIRE(bk::decide_deleted(utf8(dest.root()), {{"B", bk::file_kind::original, false}}));
+
+  // The same asset: left deleted, not held, not copied.
+  {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 120'000, 7, true));
+    s->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.JPG", kDay1, 90'000, 8, true));
+    const bk::progress p = run(std::move(s)).first;
+    CHECK(p.done == 0);
+    CHECK(p.held == 0);
+    CHECK(p.left_deleted == 1);
+  }
+  // The photo comes back into Photos as a new asset (re-downloaded, re-imported):
+  // its bytes are still left deleted.
+  {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 120'000, 7, true));
+    s->files.push_back(make(lib, "B2", bk::file_kind::original, "IMG_0002 copy.JPG", kDay2, 90'000, 8, false));
+    const bk::progress p = run(std::move(s)).first;
+    CHECK(p.done == 0);
+    CHECK(p.left_deleted == 1);  // B2's bytes: fetched to learn them, then not written
+    CHECK(p.bytes == 0);
+    CHECK(files_under(dest.root()).size() == 1);
+  }
+  // Recorded for B2 too: the next run does not fetch it again.
+  {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "B2", bk::file_kind::original, "IMG_0002 copy.JPG", kDay2, 90'000, 8, false));
+    fake_library* raw = s.get();
+    bk::engine e;
+    REQUIRE(e.start(std::move(s), {utf8(dest.root()), utf8(scratch / "tmp")}));
+    const bk::progress p = run_to_end(e);
+    CHECK(p.left_deleted == 1);
+    CHECK(p.done == 0);
+    CHECK(raw->fetches == 0);
+  }
+  // Check library shows the choice, and Copy again undoes it.
+  {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.JPG", kDay1, 90'000, 8, true));
+    const auto [p, rep] = run(std::move(s), true);
+    REQUIRE(rep.deleted.size() == 1);
+    CHECK(rep.deleted[0].left);
+  }
+  REQUIRE(bk::decide_deleted(utf8(dest.root()), {{"B", bk::file_kind::original, true}}));
+  {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.JPG", kDay1, 90'000, 8, true));
+    const bk::progress p = run(std::move(s)).first;
+    CHECK(p.done == 1);
     CHECK(fs::exists(gone));
   }
 }
@@ -502,3 +592,33 @@ TEST_CASE("manifest rows from before 2026-10-05 (absolute paths) still match aft
   CHECK(raw->fetches == 0);
   CHECK(files_under(new_root).size() == 1);
 }
+
+#if !defined(_WIN32)
+TEST_CASE("a file whose stat is refused is never held as deleted", "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib_perm");
+  scratch_dir dest("pb_dest_perm");
+  scratch_dir scratch("pb_scratch_perm");
+  const auto source = [&] {
+    auto s = std::make_unique<fake_library>();
+    s->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 50'000, 3, true));
+    return s;
+  };
+  {
+    bk::engine e;
+    REQUIRE(e.start(source(), {utf8(dest.root()), utf8(scratch / "tmp")}));
+    REQUIRE(run_to_end(e).done == 1);
+  }
+  const fs::path day(bk::layout_dir(utf8(dest.root()), kDay1));
+  fs::permissions(day, fs::perms::none);  // the folder answers nothing about its files
+  bk::progress p;
+  {
+    bk::engine e;
+    REQUIRE(e.start(source(), {utf8(dest.root()), utf8(scratch / "tmp")}));
+    p = run_to_end(e);
+  }
+  fs::permissions(day, fs::perms::owner_all);
+  CHECK(p.held == 0);
+  CHECK(p.skipped == 1);
+  CHECK(p.done == 0);
+}
+#endif

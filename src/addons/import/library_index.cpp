@@ -224,6 +224,50 @@ std::vector<library_row> library_index::all_rows() {
   return out;
 }
 
+std::vector<library_row> library_index::by_root(const std::string& root) {
+  std::lock_guard lock(mutex_);
+  std::vector<library_row> out;
+  stmt s(db_, "SELECT root, rel, size, mtime, hash FROM library WHERE root = ?1");
+  s.bind(1, root);
+  while (s.step_row()) out.push_back(library_from(s));
+  return out;
+}
+
+expected library_index::store(const std::vector<library_row>& upserts,
+                              const std::vector<std::pair<std::string, std::string>>& drops) {
+  if (upserts.empty() && drops.empty()) return {};
+  std::lock_guard lock(mutex_);
+  if (!exec("BEGIN IMMEDIATE")) return err(status::io);
+  bool ok = true;
+  {
+    stmt d(db_, "DELETE FROM library WHERE root = ?1 AND rel = ?2");
+    for (const auto& [root, rel] : drops) {
+      d.reset();
+      d.bind(1, root).bind(2, rel);
+      if (!d.run()) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  if (ok) {
+    stmt s(db_,
+           "INSERT INTO library(root, rel, size, mtime, hash) VALUES(?1, ?2, ?3, ?4, ?5) "
+           "ON CONFLICT(root, rel) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, "
+           "hash = excluded.hash");
+    for (const library_row& r : upserts) {
+      s.reset();
+      s.bind(1, r.root).bind(2, r.rel).bind(3, static_cast<std::int64_t>(r.size)).bind(4, r.mtime)
+          .bind(5, r.hash);
+      if (!s.run()) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  return finish(ok);
+}
+
 std::vector<std::string> library_index::legacy_roots() {
   std::lock_guard lock(mutex_);
   std::vector<std::string> out;

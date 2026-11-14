@@ -19,6 +19,8 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
     private ImportWindow? _window;
     private DuplicatesApi? _dups;
     private DuplicatesWindow? _dupWindow;
+    private CheckLibraryApi? _checkApi;
+    private CheckLibraryWindow? _checkWindow;
     private DispatcherQueueTimer? _timer;
     private readonly HashSet<ulong> _jobs = new();
     private readonly Dictionary<ulong, string> _jobLabels = new();
@@ -33,6 +35,7 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
         ImportLook.Attach(host);
         _api = new ImportApi(interfaceTable);
         _dups = new DuplicatesApi(interfaceTable);
+        _checkApi = new CheckLibraryApi(interfaceTable);
         _timer = DispatcherQueue.GetForCurrentThread()?.CreateTimer();
         if (_timer is not null)
         {
@@ -116,6 +119,21 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
         await _dupWindow.ChooseAndStart();
     }
 
+    /// <summary>The Import native library has Check library.</summary>
+    internal bool HasCheckLibrary => _dups?.Available == true && _checkApi?.Available == true;
+
+    /// <summary>Check library: its own window, so the report stays open beside the viewer.</summary>
+    internal void OpenCheckLibrary(string defaultLibrary)
+    {
+        if (_checkApi is null || !HasCheckLibrary) return;
+        if (_checkWindow is null)
+        {
+            _checkWindow = new CheckLibraryWindow(this, _checkApi, defaultLibrary);
+            _checkWindow.Closed += (_, _) => _checkWindow = null;
+        }
+        _checkWindow.Activate();
+    }
+
     internal void Track(ulong job, string label)
     {
         _jobs.Add(job);
@@ -165,6 +183,10 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
             case (MvAddonEvent)DuplicatesApi.EventTrashed:
                 if (_dupWindow is not null) _ = _dupWindow.Refresh(e.Id);
                 break;
+            case (MvAddonEvent)CheckLibraryApi.EventChecked:
+                Tick();
+                _ = CheckFinished(e.Id);
+                break;
         }
     }
 
@@ -184,6 +206,22 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
             if (state == MvImportJobState.Done) text = w.Headline;
         }
         if (mine) _host?.Notify("Find duplicates", text);
+    }
+
+    private async Task CheckFinished(ulong job)
+    {
+        bool mine = _jobs.Remove(job);
+        _jobLabels.Remove(job);
+        if (_jobs.Count == 0)
+        {
+            _timer?.Stop();
+            _host?.SetStatus(null);
+        }
+        if (_checkWindow is { } w && w.Job == job)
+        {
+            await w.Refresh(job);
+            if (mine) _host?.Notify("Check library", w.Headline);
+        }
     }
 
     private void Finished(ulong job, MvImportJobState state)
@@ -228,8 +266,13 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
             catch (MediaViewerException) { _jobs.Remove(job); continue; }
             _window?.OnProgress(job, p);
             _dupWindow?.OnProgress(job, p);
+            _checkWindow?.OnProgress(job, p);
             bool active = p.State is MvImportJobState.Running or MvImportJobState.Paused or MvImportJobState.Queued;
-            if (active && _jobLabels.GetValueOrDefault(job) == "duplicates")
+            if (active && _jobLabels.GetValueOrDefault(job) == "check")
+            {
+                line = $"Checking the library · {(p.BytesTotal == 0 ? 0 : 100.0 * p.BytesRead / p.BytesTotal):0}%";
+            }
+            else if (active && _jobLabels.GetValueOrDefault(job) == "duplicates")
             {
                 line = $"Finding duplicates · {(p.UnitsTotal == 0 ? 0 : 100.0 * p.UnitsDone / p.UnitsTotal):0}%";
             }
@@ -269,6 +312,13 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
 
 internal static class Format
 {
+    public static string Bytes(long n) => n switch
+    {
+        < 1_000 => $"{n} bytes",
+        < 1_000_000 => $"{n / 1_000.0:0.#} KB",
+        < 1_000_000_000 => $"{n / 1_000_000.0:0.#} MB",
+        _ => $"{n / 1_000_000_000.0:0.##} GB",
+    };
 
     public static string Eta(long seconds) => seconds switch
     {

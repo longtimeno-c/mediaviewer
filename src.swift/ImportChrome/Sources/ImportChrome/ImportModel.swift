@@ -199,10 +199,13 @@ final class ImportModel: ObservableObject {
 
   /// Find duplicates (PR 54): its own sheet over the same table.
   let duplicates: DuplicatesModel
+  /// Check library (docs/plans/check-library.md): its own sheet over the same table.
+  let check: CheckLibraryModel
 
   init(table: ImportTable) {
     self.table = table
     duplicates = DuplicatesModel(table: table)
+    check = CheckLibraryModel(table: table)
   }
 
   var api: mv_import_api { table.api.pointee }

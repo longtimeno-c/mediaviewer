@@ -138,10 +138,14 @@ add_executable(mv_import_tests
   "${MV_ROOT}/src/addons/ai/provider_verdict.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
+  # Check library (docs/plans/check-library.md).
+  "${MV_ROOT}/tests/test_check_library.cpp"
+  "${MV_ROOT}/src/shell/photos_backup.cpp"
+  "${MV_ROOT}/src/shell/photos_backup_library.cpp"
   "${MV_ROOT}/tests/test_json.cpp"
 )
 target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
-  ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
+  ${MV_SODIUM_TARGET} ${MV_SQLITE_TARGET} ${MV_CATCH2_TARGET})
 target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
 target_compile_definitions(mv_import_tests PRIVATE
   MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")

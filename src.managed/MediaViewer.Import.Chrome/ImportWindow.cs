@@ -213,6 +213,14 @@ internal sealed class ImportWindow : Window
             dups.Click += async (_, _) => await _chrome.OpenDuplicates();
             tools.Items.Add(dups);
         }
+        if (_chrome.HasCheckLibrary)
+        {
+            var check = new MenuFlyoutItem { Text = "Check a folder against the library…" };
+            ToolTipService.SetToolTip(check,
+                "Find which of a folder's files are already in the library by content, even renamed or elsewhere. Changes nothing.");
+            check.Click += (_, _) => _chrome.OpenCheckLibrary(_destinationForOpen);
+            tools.Items.Add(check);
+        }
         tools.Items.Add(new MenuFlyoutSeparator());
         var help = new MenuFlyoutItem { Text = "About Import" };
         help.Click += (_, _) => _ = ShowExplainer();

@@ -47,30 +47,6 @@ bool ensure_hash(const host& h, library_index& idx, const scan_result& scan, sou
   return true;
 }
 
-// The hash of a file already at a destination, `live` being where `root`
-// (import.db's name for it) is now: the index's when its size and mtime still
-// match, else read once and indexed. A missing file drops its row, unless its
-// folder is missing too: an offline share or an empty stale mount point says
-// nothing about the file, and the row is the only memory of a file renamed since.
-std::optional<digest> destination_hash(const host& h, library_index& idx, const std::string& live,
-                                       const std::string& root, const std::string& rel,
-                                       const std::atomic<bool>& cancel) {
-  const std::string full = join_native(live, rel);
-  auto st = h.stat(full);
-  if (!st || st->is_directory) {
-    const auto folder = h.stat(parent_native(full));
-    if (folder && folder->is_directory) idx.drop(root, rel);
-    return std::nullopt;
-  }
-  if (auto row = idx.by_path(root, rel); row && row->size == st->size && row->mtime == st->mtime) {
-    return row->hash;
-  }
-  auto d = h.hash(full, false, cancel_only(cancel));
-  if (!d) return std::nullopt;
-  idx.upsert(library_row{root, rel, st->size, st->mtime, *d});
-  return *d;
-}
-
 struct dup_finder {
   const host& h;
   library_index& idx;
@@ -189,6 +165,30 @@ const char* type_name(file_type t) {
 }
 
 }  // namespace
+
+// The hash of a file already at a destination, `live` being where `root`
+// (import.db's name for it) is now: the index's when its size and mtime still
+// match, else read once and indexed. A missing file drops its row, unless its
+// folder is missing too: an offline share or an empty stale mount point says
+// nothing about the file, and the row is the only memory of a file renamed since.
+std::optional<digest> destination_hash(const host& h, library_index& idx, const std::string& live,
+                                       const std::string& root, const std::string& rel,
+                                       const std::atomic<bool>& cancel) {
+  const std::string full = join_native(live, rel);
+  auto st = h.stat(full);
+  if (!st || st->is_directory) {
+    const auto folder = h.stat(parent_native(full));
+    if (folder && folder->is_directory) idx.drop(root, rel);
+    return std::nullopt;
+  }
+  if (auto row = idx.by_path(root, rel); row && row->size == st->size && row->mtime == st->mtime) {
+    return row->hash;
+  }
+  auto d = h.hash(full, false, cancel_only(cancel));
+  if (!d) return std::nullopt;
+  idx.upsert(library_row{root, rel, st->size, st->mtime, *d});
+  return *d;
+}
 
 std::string normalize_root(std::string root) {
   while (root.size() > 1 && (root.back() == '/' || root.back() == '\\')) {

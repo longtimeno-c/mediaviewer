@@ -111,6 +111,7 @@ add_library(mv_import_engine STATIC
   ${R}/src/addons/import/naming.h
   ${R}/src/addons/import/host.cpp
   ${R}/src/addons/import/host.h
+  ${R}/src/addons/import/library_check.cpp
   ${R}/src/addons/import/library_index.cpp
   ${R}/src/addons/import/library_index.h
   ${R}/src/addons/import/scanner.cpp

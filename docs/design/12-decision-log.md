@@ -1452,6 +1452,32 @@ on the other.
 **`F8` across volumes moves through the verified copy (2026-09-24).** The base app deletes the
 source only after the copy is verified, on both hosts.
 
+**Check library (2026-11-14, owner: "does the backup recognise photos already in the library, by
+hash?").** Import's library index is the one index of what a library folder holds, whoever put the
+files there: Check library walks the folder and adds every file it hashes to `library` under the
+destination's volume key, and the Mac's Photos backup reaches it through `mv.import.1`
+(`check_library`, `library_find`, `library_record`) rather than opening `import.db` itself, because
+the add-on owns that file (add-ons carry their own code, 2026-10-11). So the backup's
+skip-by-content needs Import installed; without it the backup is as before. A file is read only
+when its size is one the source has, or one another library file has. Hashes from a check are
+cached reads (a comparison, as Find duplicates), so verify-a-folder's later re-hash compares against
+the bytes as they were at the check. The backup's manifest gains `found` rows (bytes already in the
+library, not copied), re-confirmed by content each run, so a library reorganised by hand keeps them
+found. iCloud-only originals are never downloaded to answer a check; their size comes from
+`PHAssetResource`'s `fileSize` key (KVC: Photos has no public size property), and a size match is
+settled when the backup fetches the file anyway.
+
+**Deleted on purpose: held, then chosen (owner, 2026-11-14, "A+B").** Reverses 2026-10-03's "a file
+the user deleted there is copied again": a photo backed up and then removed from the folder is no
+longer brought back by Back Up Now. It is *held* until someone chooses in Check library: *Copy
+again* forgets its manifest row (the next run copies it), *Leave deleted* writes its hash to the
+manifest's `left_deleted` table, and those bytes are never copied to that destination again, under
+any asset id or name, until *Copy again*. Its bytes elsewhere in the library is a move, not a
+deletion. Never decided from a missing file alone: the destination must answer with its manifest
+(an offline share's empty mount point has none), and a file found in another library counts as gone
+only when its own folder answers (2026-11-09). Nothing is lost by holding: Photos keeps the
+original. A "Delete from library" command that records the choice when deleting waits.
+
 **Find duplicates (2026-10-03).** A tool in Import that hashes every file under a folder (not only
 media; hidden, system, packages and empty files are skipped) and reports groups.
 
