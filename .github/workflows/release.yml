@@ -367,6 +367,42 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'packing driftwire failed' }
 
+      # Phone access (docs/plans/phone-access-addon.md): code only, like Driftwire.
+      - name: Find the Phone access add-on build
+        id: phoneaccess
+        if: inputs.mode == 'stable'
+        run: |
+          $dll = Get-ChildItem build/addons/phone-access -Recurse -Filter mv_phone_access.dll | Select-Object -First 1
+          if (-not $dll) { throw 'mv_phone_access.dll was not built' }
+          "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the Phone access add-on's binary
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ steps.phoneaccess.outputs.dir }}
+          files-folder-filter: dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Pack the Phone access add-on
+        if: inputs.mode == 'stable'
+        env:
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          PHONE_ACCESS_DIR: ${{ steps.phoneaccess.outputs.dir }}
+        run: |
+          python tools/package/addon-pack.py pack --addon phone-access --platform win-x64 --src $env:PHONE_ACCESS_DIR `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'packing phone-access failed' }
+
       # Enhance (#297): preferred, not required, like Places. Our DLL is signed
       # on its own (ONNX Runtime's carry Microsoft's signature); each kind's
       # weights are pins in the signed manifest, fetched on the person's click.
@@ -724,7 +760,7 @@ jobs:
           python3 tools/mac/test_check_minos.py -v
           # Nothing shipped may need a newer macOS than LSMinimumSystemVersion.
           python3 tools/mac/check_minos.py build/MediaViewer.app build/addons/import build/addons/places \
-            build/addons/driftwire \
+            build/addons/driftwire build/addons/phone-access \
             $([[ -d build/addons/ai ]] && echo build/addons/ai) \
             $([[ -d build/addons/enhance ]] && echo build/addons/enhance)
 
@@ -739,6 +775,8 @@ jobs:
           tar -C build/addons/places -cf "upload/PlacesAddon-${{ matrix.arch }}.tar" libmv_places.dylib
           # Driftwire (docs/design/28): the dylib, joined and signed in `macos`.
           tar -C build/addons/driftwire -cf "upload/DriftwireAddon-${{ matrix.arch }}.tar" libmv_driftwire.dylib
+          # Phone access (docs/plans/phone-access-addon.md): the dylib, joined and signed in `macos`.
+          tar -C build/addons/phone-access -cf "upload/PhoneAccessAddon-${{ matrix.arch }}.tar" libmv_phone_access.dylib
           # The driftwire command line (docs/design/28 "Installing"), joined, signed and packed in `macos`.
           tar -C build/bin -cf "upload/DriftwireCli-${{ matrix.arch }}.tar" driftwire
           # Enhance (#297) is arm64 only too: its models run on ORT. The
@@ -1021,6 +1059,29 @@ jobs:
           cp build/release/addon/mediaviewer-addon-driftwire-macos.zip \
              build/release/addon/mediaviewer-addon-driftwire-macos.json \
              build/release/addon/mediaviewer-addon-driftwire-macos.json.sig upload/
+
+      # Phone access (docs/plans/phone-access-addon.md): joined and signed like Driftwire, code only.
+      - name: Phone access add-on (join, sign, notarize, pack)
+        if: inputs.mode == 'stable'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p phoneaccess/arm64 build/addons
+          tar -xf apps/PhoneAccessAddon-arm64.tar -C phoneaccess/arm64
+          if [[ -f apps/PhoneAccessAddon-x64.tar ]]; then
+            mkdir -p phoneaccess/x86_64
+            tar -xf apps/PhoneAccessAddon-x64.tar -C phoneaccess/x86_64
+            python3 tools/mac/lipo_merge.py --arm64 phoneaccess/arm64 --x86_64 phoneaccess/x86_64 --out build/addons/phone-access
+          else
+            cp -R phoneaccess/arm64 build/addons/phone-access
+          fi
+          python3 tools/mac/macpack.py addon --dir build/addons/phone-access \
+            --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+          python3 tools/package/addon-pack.py pack --addon phone-access --platform macos --src build/addons/phone-access \
+            --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
+          cp build/release/addon/mediaviewer-addon-phone-access-macos.zip \
+             build/release/addon/mediaviewer-addon-phone-access-macos.json \
+             build/release/addon/mediaviewer-addon-phone-access-macos.json.sig upload/
 
       # Enhance (#297): preferred, arm64 only (no x86_64 join); signed and
       # notarized like Places. Its weights are never packed: remote.json pins

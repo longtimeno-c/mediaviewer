@@ -1,13 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "phone/app.h"
+#include "addons/phone/service.h"
 
 #include <memory>
 #include <mutex>
 
 #include "catalogue/publisher.h"
-#include "io/paths.h"
-#include "phone/desk.h"
+#include "addons/phone/desk.h"
 #include "wire/net.h"
 #include "wire/secrets.h"
 
@@ -50,6 +49,7 @@ struct app_state {
   // access, a later window's (secondary) never does. Nothing runs before.
   enum class role { unknown, primary, secondary } who = role::unknown;
   desk_holder desk;
+  std::string dir;  // the link's folder (set_app_dir)
 };
 
 app_state& state() {
@@ -62,7 +62,7 @@ link* get_link() {
   std::lock_guard lock(s.m);
   if (s.l || s.stopped || s.who != app_state::role::primary) return s.l;
   link::options o;
-  if (auto dir = io::phone_dir()) o.data_dir = *dir;
+  o.data_dir = s.dir;
   o.key_store = [] { return secrets::os_store(mv::ai::catalog::kPublisherService); };
   o.legacy_key_store = [] { return secrets::os_store(mv::ai::catalog::kLegacyService); };
   o.route = [&s](const char* method, const std::string& json) -> result<std::string> {
@@ -79,6 +79,11 @@ link* get_link() {
 }
 
 }  // namespace
+
+void set_app_dir(std::string dir) {
+  std::lock_guard lock(state().m);
+  state().dir = std::move(dir);
+}
 
 expected app_request(const std::string& request_json) {
   link* l = get_link();

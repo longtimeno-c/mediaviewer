@@ -1120,6 +1120,17 @@ typedef struct mv_host_api {
    * the pointer is non-NULL. */
   mv_status(MV_CALL* thumbnail_make)(void* host, const char* path_utf8, int64_t pts_ms, uint8_t* out,
                                      uint64_t capacity, uint64_t* out_size);
+  /* ---- the phone's catalogue from Local search (docs/plans/phone-access-addon.md §2) ----
+   * [worker-thread] Local search's phone_publish / phone_cancel / phone_json
+   * (mediaviewer_ai.h), for the Phone access add-on: the AI pack is not a slot
+   * add-on, so addon_request cannot reach it. MV_ERR_NOT_FOUND while the pack
+   * is not loaded (or too old). catalogue_json: `*out_size` is always the bytes
+   * needed with the NUL; MV_ERR_INVALID_ARG with it larger than `capacity`:
+   * call again. Appended after thumbnail_make: read only when `struct_size`
+   * covers them and the pointer is non-NULL. */
+  mv_status(MV_CALL* catalogue_publish)(void* host, const char* destination_utf8);
+  mv_status(MV_CALL* catalogue_cancel)(void* host);
+  mv_status(MV_CALL* catalogue_json)(void* host, char* out_utf8, uint32_t capacity, uint32_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1472,8 +1483,9 @@ MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, 
  * 11 `editor_items`, the Video Editor's bar (2026-11-02);
  * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04);
  * 13 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04);
- * 14 a progress bar's "detail" and "timed" (2026-11-05). */
-#define MV_ADDON_CONTRIBUTION_API 14
+ * 14 a progress bar's "detail" and "timed" (2026-11-05);
+ * 15 a `text_field` with "secure" (2026-11-14, the Phone access add-on). */
+#define MV_ADDON_CONTRIBUTION_API 15
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

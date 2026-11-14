@@ -570,35 +570,42 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
-### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-in-the-app.md`)
+### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-access-addon.md`)
 
-Part of the app since 2026-11-12, with or without Local search: Settings → Phone access on both hosts
-(`PhoneAccessView.swift` in MediaViewerChrome, `IslandHost.Phone.cs` in MediaViewer.Chrome; words in
-`src.managed/Shared/PhoneWords.cs`, the Windows QR in `Shared/QrCode.cs`). The work is `src/phone`
-(`link.*` the state machine, `desk.*` claim/codes/devices/nearby, `app.*` the one link per process) over
-`src/wire` (Driftwire's protocol) and `src/catalogue` (keys, `library.json`, current.json, delivery);
-hosts reach it through `mv_phone_*` (ABI 0.41) and the Mac bridge `mv_chrome_phone_*`. Local search,
-when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only the first window's process
-runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
-on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".
+An add-on since 2026-11-14 (`phone-access`, `src/addons/phone`, built as `build/addons/phone-access/
+libmv_phone_access.dylib` / `mv_phone_access.dll`; packed by `tools/package/addon-pack.py --addon phone-access`).
+Not installed by default: Settings → Phone access offers it (Mac `PhoneAccess.swift`, Windows
+`IslandHost.PhoneAccess.cs`) and, once loaded, draws its card, which is the add-on's own view tree
+(`screens.*`, its QR `qr.*` as a surface). The work is `link.*` (the state machine), `desk.*`
+(claim/codes/devices/nearby), `service.*` (the one link per process; the first window's process holds
+`instance.lock` in the feature's folder) and `self_host.*` (this computer as the server), over `src/wire`
+(Driftwire's protocol) and `src/catalogue`. Local search's catalogue reaches it through the host table's
+`catalogue_*` rows. Keys stay in the OS store under "MediaViewer Phone access"; the library's folder stays
+where the app kept it (`~/Library/Application Support/MediaViewer/Phone Access`,
+`%LocalAppData%\MediaViewer\phone-access`), so a library set up before the add-on keeps its id.
+`MV_PHONE_ACCESS_DIR` points the add-on at another folder (the tests use it).
 
 **This computer** (Set up the service…, [self-hosted.md](plans/self-hosted.md) §16) needs the
-`driftwire` program installed (`brew install longtimeno-c/tap/driftwire`, or `install.ps1`); the app finds
-it and runs its `host` commands (`src/phone/self_host.*`). To try the card against a local build, put
-`build/bin/driftwire` on one of the places it looks (`~/.local/bin/driftwire`); remove the login entry
-afterwards with `driftwire host start-at-login off`.
+`driftwire` program installed (`brew install longtimeno-c/tap/driftwire`, or `install.ps1`); the add-on finds
+it and runs its `host` commands. To try the card against a local build, put `build/bin/driftwire` on one of
+the places it looks (`~/.local/bin/driftwire`); remove the login entry afterwards with
+`driftwire host start-at-login off`. A local build cannot load its own unsigned add-on in the app; sideload it
+as the AI pack's recipe does (a build with `MV_ADDON_DEV_PUBLIC_KEY`).
 
-Tests, always filtered by tag: `mv_import_tests "[phone-self-host]"` (the setup against the test build of
+Tests, always filtered by tag: `mv_import_tests "[phone-addon]"` (the card's trees against the core's
+vocabulary, the secure field, the catalogue rows, the manifest, the module through a signed store in a
+folder of the test's own), `mv_import_tests "[phone-qr]"` (the encoder against the matrices the C# encoder
+had, read by a phone scanner), `mv_import_tests "[phone-self-host]"` (the setup against the test build of
 `driftwire host` on loopback), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
 claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
-machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the app's link over
-a Local search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`),
-and `dotnet test src.managed/MediaViewer.Chrome.Tests` (QR, words against the Swift). To try it without a
-Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that
-machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
+machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the link over a Local
+search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`). To try it
+without a Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the
+card that machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
 
-Not done: either card seen running (the Windows one is compiled only; the Mac one built, not driven), the
-phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
+Not done: the add-on's card seen running in the app on either host (the Windows chrome is compiled only;
+the Mac app built, the card drawn only through the core's registry in `[phone-addon]`), the add-on published
+on a release channel, the phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
 run against a real Synology or phone.
 
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)

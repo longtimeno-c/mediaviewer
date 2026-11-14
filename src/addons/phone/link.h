@@ -35,7 +35,7 @@
 #include <vector>
 
 #include "core/result.h"
-#include "phone/self_host.h"
+#include "addons/phone/self_host.h"
 #include "wire/secrets.h"
 
 namespace mv::phone {

@@ -14,7 +14,7 @@
 #include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/ddns.h"
 #include "core/json.h"
-#include "phone/self_host.h"
+#include "addons/phone/self_host.h"
 
 namespace sh = mv::phone::self_host;
 namespace cli = mv::driftwire::cli;

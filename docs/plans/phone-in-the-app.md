@@ -1,5 +1,9 @@
 # Plan — Phone access in the app, not in Local search
 
+> **Superseded in part (2026-11-14, owner):** Phone access is an add-on again,
+> [phone-access-addon.md](phone-access-addon.md). `src/phone` moved to `src/addons/phone`; `src/wire`,
+> `src/catalogue` and Local search as the catalogue's builder stay as built here.
+
 Owner calls, 2026-11-12: Phone access is a base feature of MediaViewer, with its own Settings section,
 built into the app on Mac and Windows. It must pair, claim and serve with Local search not installed.
 Local search only provides the search catalogue. A phone paired with a library that has no catalogue

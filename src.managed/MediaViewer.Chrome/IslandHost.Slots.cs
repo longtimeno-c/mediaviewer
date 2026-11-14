@@ -1074,6 +1074,8 @@ public static partial class IslandHost
             }
             (Border card, StackPanel body) = AddonCard(row.Name);
             if (row.Description.Length > 0) body.Children.Add(Note(row.Description));
+            // Its page is Settings → Phone access: one view per screen.
+            if (row.Id == PhoneAccessId) body.Children.Add(Note("Its settings are in Settings \u2192 Phone access."));
             bool loaded = SlotAddonsLoaded.Contains(row.Id);
             body.Children.Add(Note(SlotStateText(row, loaded)));
             AddonSlot channel = SlotChannelFor(row);

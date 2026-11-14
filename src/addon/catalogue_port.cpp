@@ -1,27 +1,42 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Local search as Phone access's catalogue source (phone/link.h): its
-// phone_publish, phone_cancel and phone_json entries, while the pack is
-// loaded. Both hosts set it when the pack attaches and clear it before the
-// pack goes (addon_abi.cpp, shell/addons_mac.mm). Header-only.
-#pragma once
+#include "addon/catalogue_port.h"
 
 #include <cstddef>
-#include <string>
+#include <mutex>
 #include <vector>
 
 #include "mediaviewer/mediaviewer_ai.h"
-#include "phone/link.h"
 
-namespace mv::abi {
+namespace mv::addon::catalogue {
 
-inline mv::phone::catalogue_source ai_catalogue_source(const mv_ai_api* api) {
+namespace {
+
+// Taken around every call into the pack, so set_provider({}) returns only
+// once none is in flight.
+std::mutex& lock_of() {
+  static std::mutex* m = new std::mutex();  // never destroyed: no order at static exit
+  return *m;
+}
+provider& current() {
+  static provider* p = new provider();
+  return *p;
+}
+
+}  // namespace
+
+void set_provider(provider p) {
+  std::lock_guard lock(lock_of());
+  current() = std::move(p);
+}
+
+provider from_ai(const mv_ai_api* api) {
   const auto has = [api](std::size_t end) { return api && api->struct_size >= end; };
   if (!has(offsetof(mv_ai_api, phone_json) + sizeof(api->phone_json)) || !api->phone_publish || !api->phone_cancel ||
       !api->phone_json) {
     return {};
   }
-  mv::phone::catalogue_source s;
+  provider s;
   s.publish = [api](const std::string& destination) -> expected {
     const mv_status r = api->phone_publish(api->ctx, destination.c_str());
     if (r == MV_OK) return {};
@@ -42,4 +57,23 @@ inline mv::phone::catalogue_source ai_catalogue_source(const mv_ai_api* api) {
   return s;
 }
 
-}  // namespace mv::abi
+expected publish(const std::string& destination) {
+  std::lock_guard lock(lock_of());
+  if (!current()) return err(status::not_found);
+  return current().publish(destination);
+}
+
+expected cancel() {
+  std::lock_guard lock(lock_of());
+  if (!current()) return err(status::not_found);
+  current().cancel();
+  return {};
+}
+
+result<std::string> json() {
+  std::lock_guard lock(lock_of());
+  if (!current()) return err(status::not_found);
+  return current().json();
+}
+
+}  // namespace mv::addon::catalogue

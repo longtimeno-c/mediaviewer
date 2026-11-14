@@ -18,8 +18,8 @@
 #include "catalogue/catalog_chain.h"
 #include "catalogue/publisher.h"
 #include "core/json.h"
-#include "phone/desk.h"
-#include "phone/link.h"
+#include "addons/phone/desk.h"
+#include "addons/phone/link.h"
 #include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/pair_check.h"
@@ -2191,7 +2191,7 @@ TEST_CASE("phone pairing: a guest code's phone backs nothing up, and the grant k
 
 #if !defined(_WIN32)
 #include "io/child_process.h"
-#include "phone/self_host.h"
+#include "addons/phone/self_host.h"
 
 namespace {
 

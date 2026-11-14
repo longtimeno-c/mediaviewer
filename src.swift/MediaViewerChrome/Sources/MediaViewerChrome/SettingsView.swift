@@ -606,8 +606,8 @@ struct SettingsView: View {
         // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
         section("Storage")
         StorageSection()
-        // docs/plans/phone-in-the-app.md: Phone access is the app's, with or
-        // without Local search.
+        // docs/plans/phone-access-addon.md: Phone access is an add-on, drawn
+        // here once installed and offered here until then.
         section("Phone access")
         PhoneAccessSection()
         // docs/design/26: the Photos library's backup, once the library was added

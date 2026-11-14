@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // self_host.h: this computer as the phones' server, through the installed
 // driftwire program.
-#include "phone/self_host.h"
+#include "addons/phone/self_host.h"
 
 #include <algorithm>
 #include <chrono>

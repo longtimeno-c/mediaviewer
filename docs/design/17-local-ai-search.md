@@ -1624,9 +1624,10 @@ names; nothing about it is logged or sent.
 ## Setting a phone up
 
 Since 2026-11-12 setting a phone up is the app's, not Local search's ([plan](../plans/phone-in-the-app.md)):
-Settings → Phone access (`PhoneAccessView.swift` on the Mac, `IslandHost.Phone.cs` on Windows, the same words
-and requests) asks and watches; `src/phone/link.cpp` does the work on a thread of its own and calls the desk
-(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)) directly. Local search, when
+Settings → Phone access (the Phone access add-on's card, `src/addons/phone/screens.*`, drawn by both hosts;
+[plan](../plans/phone-access-addon.md)) asks and watches; `src/addons/phone/link.cpp` does the work on a thread
+of its own and calls the desk (`src/addons/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access))
+directly, and reaches Local search through the host table's `catalogue_*` rows. Local search, when
 loaded, is the link's catalogue source: it builds and delivers generations (`phone_publish`) signed with the
 app's publisher key (`catalogue/publisher.h`), under the library id and epoch of the share's `library.json`,
 which the app writes when the person chooses the folder; `phone_json` says the id, the epoch and the newest

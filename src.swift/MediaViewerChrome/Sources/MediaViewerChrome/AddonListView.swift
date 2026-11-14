@@ -293,7 +293,11 @@ struct AddonPageView: View {
       AddonStorageBlock(page: id)
       // The add-on's own settings (place "settings"), its cards under this one:
       // never a card in a card.
-      if let screen = slots.settingsScreens[id] {
+      // Phone access's is drawn in Settings → Phone access instead: one view per screen.
+      if id == PhoneAccessStore.addonID {
+        Text("Its settings are in Settings \u{2192} Phone access.")
+          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+      } else if let screen = slots.settingsScreens[id] {
         AddonSettingsScreen(address: ScreenAddress(addon: id, screen: screen))
           .padding(.top, MVTheme.space(4))
       }

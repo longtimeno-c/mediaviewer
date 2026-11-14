@@ -60,6 +60,9 @@ add_library(mv_addon STATIC
   ${R}/src/addon/keymap.cpp
   ${R}/src/addon/keymap.h
   ${R}/src/addon/host.cpp
+  # The phone catalogue's provider for the host table's catalogue_* rows (Phone access).
+  ${R}/src/addon/catalogue_port.cpp
+  ${R}/src/addon/catalogue_port.h
   ${R}/src/addon/host.h
   # Screens and slots (docs/design/25 PRs 58-59): the view-tree vocabulary, the
   # contribution tables and the registry both chromes read.

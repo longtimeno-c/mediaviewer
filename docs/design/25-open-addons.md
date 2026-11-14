@@ -347,7 +347,12 @@ small vocabulary both hosts render with their own controls.
   the viewer's cache), thumbnail grid (virtualised by the host), list, table, button, toggle,
   choice, slider, number, text field, progress, separator, and `surface` (pixels the add-on
   drew, for what the vocabulary lacks). Since #442 also `tiles`, and looks on stack, progress,
-  text field and text (implementation notes below).
+  text field and text (implementation notes below). Contribution API 15 (2026-11-14, the Phone
+  access add-on): a text field with `"secure": true` draws dots (`SecureField`, a secret
+  `FakeInput`); the core never keeps its value in the tree (a posted tree may only give `""`, an
+  event's value goes to the add-on alone), so a passphrase or token is in no snapshot, log or
+  crash report. The add-on renames the field when it has used or dropped what was typed, so the
+  host draws a new, empty one.
 - **State** lives in the add-on. It posts a tree, then diffs; the host applies them on the UI
   thread in one pass. Events (click, change, key, selection) post back to the add-on's worker.
 - **Keyboard-complete** by construction: every control the host renders is focusable and named;

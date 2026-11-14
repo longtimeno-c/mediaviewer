@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "core/keep_ranges.h"
+#include "addon/catalogue_port.h"
 #include "addon/settings_values.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
@@ -1398,6 +1399,35 @@ mv_status MV_CALL t_thumbnail_make(void* host, const char* path, int64_t pts_ms,
   });
 }
 
+// docs/plans/phone-access-addon.md §2: Local search's catalogue, for Phone access.
+mv_status MV_CALL t_catalogue_publish(void*, const char* destination) {
+  return guarded([&] {
+    if (!destination) return MV_ERR_INVALID_ARG;
+    const expected r = catalogue::publish(destination);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_catalogue_cancel(void*) {
+  return guarded([&] {
+    const expected r = catalogue::cancel();
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_catalogue_json(void*, char* out, uint32_t capacity, uint32_t* out_size) {
+  return guarded([&] {
+    if (!out_size) return MV_ERR_INVALID_ARG;
+    auto r = catalogue::json();
+    if (!r) return to_mv(r.error());
+    const auto need = static_cast<uint32_t>(r->size() + 1);
+    *out_size = need;
+    if (!out || capacity < need) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, r->c_str(), need);
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_place_labels(void* host, const mv_addon_route_point* points, uint32_t count,
                                  mv_addon_label_fn visit, void* user) {
   return guarded([&] {
@@ -1615,6 +1645,9 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.place_labels = &t_place_labels;
   api_.addon_request = &t_addon_request;
   if (svc_.thumbnail_make) api_.thumbnail_make = &t_thumbnail_make;
+  api_.catalogue_publish = &t_catalogue_publish;
+  api_.catalogue_cancel = &t_catalogue_cancel;
+  api_.catalogue_json = &t_catalogue_json;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

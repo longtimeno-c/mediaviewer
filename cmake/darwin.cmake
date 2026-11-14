@@ -524,7 +524,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 # The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
 # build/addons/driftwire, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
-# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+# The Phone access add-on (docs/plans/phone-access-addon.md): libmv_phone_access.dylib
+# in build/addons/phone-access, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/phone.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
@@ -757,7 +758,6 @@ function(mv_mac_host target)
     mv_image
     mv_canvas
     mv_shell
-    mv_phone
     mv_io
     mv_player
     imgui::imgui

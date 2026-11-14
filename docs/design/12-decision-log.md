@@ -10,7 +10,19 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ## Phone access
 
-**Phone access is part of the app, not an add-on (2026-11-12, owner).** It pairs a phone, claims and
+**Phone access is an add-on, offered the first time someone opens it (2026-11-14, owner; reverses
+2026-11-12 below).** Issue #686 §1: the Synology path, this computer as the server and their setup screens
+leave the base viewer for a new Phone access add-on (`src/addons/phone`, id `phone-access`), not installed by
+default and offered in Settings → Phone access. The owner wants the viewer to carry the viewer only, now that
+self-hosting made the feature large; the 2026-10-11 rule (add-ons carry their own code) applies again. What
+2026-11-12 built stays: the protocol in `src/wire`, the catalogue's generic half in `src/catalogue`, Local
+search as the catalogue's only builder. The core no longer links either; Local search's catalogue reaches the
+add-on through the host table (`catalogue_*`), and its card is a view tree both hosts draw, so its words exist
+once instead of twice. Phones already paired keep working: the NAS or this computer's `driftwire host` serves
+them on its own; the add-on reads the same OS secret-store items and the same feature folder (the library id)
+in place, nothing is copied or renamed. Plan: [phone-access-addon.md](../plans/phone-access-addon.md).
+
+**Phone access is part of the app, not an add-on (2026-11-12, owner; reversed 2026-11-14 above).** It pairs a phone, claims and
 manages the NAS service, serves nearby and keeps the publisher key with no add-on installed: the phone app
 is its own product and must work without Local search. This is a deliberate exception to the 2026-10-11
 rule that optional features ship as add-ons carrying their own code. The Driftwire protocol it needs moves

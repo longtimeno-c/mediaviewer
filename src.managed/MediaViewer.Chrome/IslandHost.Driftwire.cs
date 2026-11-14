@@ -70,6 +70,7 @@ public static partial class IslandHost
             OpenDriftwire(paths);
         }
         RefreshSlotSettings();
+        RefreshPhoneAccess();  // its screen, or its offer
         SyncAddonSettingsScreen(reopen: true);
         // Enhance loaded (or again) while its Edit tab shows: ask for its page,
         // whose "tierlevel" the tab's chip reads (a no-op in the core while open).
