@@ -78,6 +78,15 @@ final class SearchUpdatesTests: XCTestCase {
       if t == nil { stale += 1 }
     }
     func clear() { if field.buttons["Clear text"].exists { field.buttons["Clear text"].tap() } }
+    // Words nothing in the library answers: "Nothing found", never the library newest first
+    // (owner, 2026-11-14).
+    for query in ["qwxzv", "zebra"] {
+      clear()
+      field.typeText(query)
+      check(query, "nothing")
+      XCTAssertTrue(app.staticTexts["Nothing found for “\(query)”."].exists, "“\(query)” did not say Nothing found")
+      XCTAssertEqual(app.buttons.matching(tilePredicate).count, 0, "“\(query)” showed tiles")
+    }
     // Each round: quick, slow, a pause mid-word, backspacing into another query.
     for round in 0..<3 {
       for (query, gap) in [("dog on a beach", 60_000), ("waterfall", 250_000), ("bridge at night", 30_000),
@@ -93,16 +102,16 @@ final class SearchUpdatesTests: XCTestCase {
       check("lake sunset", "r\(round) extended")
       // A result opened and closed, then a new query.
       clear()
-      field.typeText("dog")
-      check("dog", "r\(round) before viewer")
+      field.typeText("dog on a beach")
+      check("dog on a beach", "r\(round) before viewer")
       app.buttons.matching(tilePredicate).firstMatch.tap()
       sleep(2)
       if app.buttons["Close"].firstMatch.exists { app.buttons["Close"].firstMatch.tap() } else { app.swipeDown(velocity: .fast) }
       sleep(1)
       field.tap()
       clear()
-      field.typeText("beach")
-      check("beach", "r\(round) after viewer")
+      field.typeText("waterfall")
+      check("waterfall", "r\(round) after viewer")
       // Leave the tab and come back.
       app.buttons["Library"].firstMatch.tap()
       sleep(1)

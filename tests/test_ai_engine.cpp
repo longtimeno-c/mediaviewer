@@ -1347,9 +1347,8 @@ struct rig {
     };
     return d;
   }
-  std::unique_ptr<engine> start_reader() {
-    auto rd = std::make_unique<engine>(table->api(), reader_deps(),
-                                       mv::ai::engine_options{.read_only = true, .background_threads = false});
+  std::unique_ptr<engine> start_reader(mv::ai::engine_options options = {.read_only = true, .background_threads = false}) {
+    auto rd = std::make_unique<engine>(table->api(), reader_deps(), options);
     REQUIRE(rd->start());
     REQUIRE(wait_for(
         [&] {
@@ -9591,4 +9590,32 @@ TEST_CASE("perf: a 30k-asset folder removed during a 300k-line reload", "[.perf-
   const double after_drop_ms = std::chrono::duration<double, std::milli>(end - dropped).count();
   CHECK(r.eng->speech_lines() == 300000);
   std::printf("{\"rows\":300000,\"dropped_assets\":30000,\"install_after_drop_ms\":%.1f}\n", after_drop_ms);
+}
+
+TEST_CASE("a phone's reader says nothing found for a description nothing answers; filters still list",
+          "[ai][search-agent][order]") {
+  // Owner, 2026-11-14: on the phone #412's newest-first list read as the same
+  // grid for every search. engine_options::empty_when_unanswered.
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.file("holiday_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  auto phone = r.start_reader({.read_only = true, .background_threads = false, .empty_when_unanswered = true});
+  auto desk = r.start_reader();
+  // Nonsense: the desktop lists everything newest first (#412); the phone, nothing.
+  CHECK(ranked(*desk, "xyzzy plugh", MV_AI_KIND_ALL, false).size() == 3);
+  CHECK(ranked(*phone, "xyzzy plugh", MV_AI_KIND_ALL, false).empty());
+  CHECK(ranked(*phone, "xyzzy plugh video", MV_AI_KIND_ALL, false).empty());
+  // An answered description is the same on both.
+  const auto red_desk = ranked(*desk, "red");
+  const auto red_phone = ranked(*phone, "red", MV_AI_KIND_ALL, false);
+  REQUIRE_FALSE(red_phone.empty());
+  REQUIRE(red_phone.size() == red_desk.size());
+  CHECK(red_phone.front().name == red_desk.front().name);
+  // Filters alone still list what they allow, newest first.
+  CHECK(ranked(*phone, "video", MV_AI_KIND_ALL, false).size() == 1);
+  CHECK(ranked(*phone, "photo", MV_AI_KIND_ALL, false).size() == 2);
 }

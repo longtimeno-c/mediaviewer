@@ -330,6 +330,9 @@ result<std::unique_ptr<search_engine>> search_engine::start(std::shared_ptr<cons
   ai::engine_options options;
   options.read_only = true;
   options.immutable = true;
+  // A search nothing answers says "Nothing found" on the phone, never the
+  // library newest first (owner, 2026-11-14; the desktop keeps #412).
+  options.empty_when_unanswered = true;
   i.eng = std::make_unique<ai::engine>(&i.api, std::move(deps), options);
   MV_TRY_VOID(i.eng->start());
   return s;

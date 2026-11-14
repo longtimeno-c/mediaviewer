@@ -18,6 +18,18 @@ to `src/wire` (linked by the core, the Driftwire add-on, the `driftwire` CLI and
 `src/phone`; Local search only builds the catalogue the core signs and delivers. Plan:
 [phone-in-the-app.md](../plans/phone-in-the-app.md).
 
+**The phone says "Nothing found" for a description nothing answers (owner, 2026-11-14).** Reverses
+#412 (below, "Result order") on the phone only; the desktop keeps the newest-first list. The owner
+reported phone search "not showing accurate results" and "not updating": a query the gate held back
+showed the whole library newest first, the same grid for every such query, with no sign it was not a
+match. `engine_options::empty_when_unanswered`, set by `src/mobile/search.cpp`; filters alone
+(`is:video in:2024`) still list newest first. Known cost, measured the same day and shipped knowingly:
+the gate also holds back broad one-word subjects. On a copy of the owner's Dolomites folder (779 items,
+L/14) snow, sky, clouds, tree, road, river, sunset, church, dog, car, food and selfie answer nothing,
+while mountain (314), hiking (279) and "a snowy mountain" (104) answer; on the sample library (47,
+B/32) dog, beach, lake and sunset answer nothing. Those now say "Nothing found" on the phone until the
+gate is retuned for broad subjects (docs/design/17 "Nothing found").
+
 **Nearby sync is the NAS's protocol, pulled by the phone (2026-11-10).** `docs/plans/mobile.md` §7.5 describes
 the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac runs a LAN-only
 `serve::server` over a local copy and the phone reads it as it reads the NAS. The phone needs no second

@@ -8520,8 +8520,9 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     }
     // #412: a description nothing answered (the "nothing found" rule held
     // every pass back) is not an empty page: what the rest of the query
-    // allows, newest first. An answered query keeps its best match.
-    if (!plan.text.empty() && st.rows.empty()) newest_first(st, *allowed);
+    // allows, newest first. An answered query keeps its best match. A phone
+    // (empty_when_unanswered) says "nothing found" instead.
+    if (!plan.text.empty() && st.rows.empty() && !options_.empty_when_unanswered) newest_first(st, *allowed);
     // The phrase under a result that matched on something else too.
     for (said& r : said_rows) {
       if (!st.row_of.count(r.asset)) continue;

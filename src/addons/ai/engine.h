@@ -325,6 +325,12 @@ struct engine_options {
   // loaded machine a background thread can wait a minute for a core, and a
   // test asserts what the engine does, not how the OS ranks it (issue #154).
   bool background_threads = true;
+  // A description no pass answers (the "nothing found" gate held every row
+  // back) is answered with no rows, never #412's newest-first list of what the
+  // rest of the query allows. The phone's search turns it on (owner,
+  // 2026-11-14): there an unanswered search looked like the same grid for every
+  // query. Filters alone ("is:video in:2024") still list newest first.
+  bool empty_when_unanswered = false;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;
 
