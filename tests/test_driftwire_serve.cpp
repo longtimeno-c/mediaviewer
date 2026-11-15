@@ -1636,6 +1636,8 @@ TEST_CASE("serve: the devices with a session up now (the tray names them)", "[dr
     const auto after = s.srv->usage();
     return after.size() == 1 && after[0].read == 50000 && !after[0].connected;
   }));
+}
+
 namespace {
 
 // Bench only: the client's writes (its credit, its requests) reach the service
