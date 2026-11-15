@@ -2042,3 +2042,52 @@ TEST_CASE("serve convert: a stream cancelled while it converts ends, and the ses
   CHECK(read_all(**again) == "SEG0:webmwebm");
   CHECK((*c)->stat(kRootA, "b.webm"));
 }
+
+// docs/plans/phone-clip-convert.md, measured: the real clip helper behind the real service over
+// loopback. MV_CONVERT_BENCH_HELPER is MediaViewerClipJob, MV_CONVERT_BENCH_DIR a folder of clips.
+// Per clip: the first frame cold (plan, then segment 0), a seek to the middle cold, and segment 0
+// again from the cache. Hidden: it needs a hardware encoder and the files.
+#include "addons/driftwire/cli/convert_run.h"
+TEST_CASE("serve convert: first frame and seek times with the real helper", "[.convert-bench]") {
+  const char* helper = std::getenv("MV_CONVERT_BENCH_HELPER");
+  const char* clips = std::getenv("MV_CONVERT_BENCH_DIR");
+  if (!helper || !clips) SKIP("set MV_CONVERT_BENCH_HELPER and MV_CONVERT_BENCH_DIR");
+  service_fixture s;
+  for (const auto& e : fs::directory_iterator(clips)) {
+    if (e.is_regular_file()) fs::copy_file(e.path(), s.library / e.path().filename());
+  }
+  scratch_dir cache{"serve_convert_bench_cache"};
+  auto conv = mv::driftwire::cli::start_converter(helper, utf8(cache.root()));
+  REQUIRE(conv);
+  s.srv->set_converter(conv);
+  auto opts = s.client_options();
+  opts.ops |= serve::kConvertOp;
+  auto c = serve::client::open(s.connect(), opts);
+  REQUIRE(c);
+  using ms = std::chrono::duration<double, std::milli>;
+  for (const auto& e : fs::directory_iterator(s.library)) {
+    if (!e.is_regular_file()) continue;
+    const std::string name = utf8(e.path().filename());
+    const auto t0 = std::chrono::steady_clock::now();
+    auto plan = (*c)->convert_plan_of(kRootA, name);
+    if (!plan) continue;
+    const auto t1 = std::chrono::steady_clock::now();
+    auto seg0 = (*c)->convert_segment(kRootA, name, 0);
+    REQUIRE(seg0);
+    const auto bytes0 = read_all(**seg0).size();
+    const auto t2 = std::chrono::steady_clock::now();
+    const std::uint32_t mid = plan->segments / 2;
+    auto segm = (*c)->convert_segment(kRootA, name, mid);
+    REQUIRE(segm);
+    (void)read_all(**segm);
+    const auto t3 = std::chrono::steady_clock::now();
+    auto again = (*c)->convert_segment(kRootA, name, 0);
+    REQUIRE(again);
+    (void)read_all(**again);
+    const auto t4 = std::chrono::steady_clock::now();
+    std::printf("{\"case\":\"convert_bench\",\"file\":\"%s\",\"plan_ms\":%.0f,\"first_frame_ms\":%.0f,\"seek_ms\":%.0f,"
+                "\"cached_ms\":%.0f,\"seg0_bytes\":%zu,\"segments\":%u}\n",
+                name.c_str(), ms(t1 - t0).count(), ms(t2 - t0).count(), ms(t3 - t2).count(), ms(t4 - t3).count(),
+                bytes0, plan->segments);
+  }
+}

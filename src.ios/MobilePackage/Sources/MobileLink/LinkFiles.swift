@@ -559,7 +559,7 @@ public final class LinkFiles: @unchecked Sendable {
   /// A clip the phone can't play: the first frame of the server's conversion (its first segment,
   /// which then waits in the server's cache for the clip to be opened). nil when it converts nothing.
   private func convertedPoster(of file: FileEntry, link: LinkHandle) async -> UIImage? {
-    guard let url = await ConvertedClips.url(link: link, root: file.path.root, rel: file.path.rel),
+    guard let url = await ConvertedClips.url(link: link, root: file.path.root, rel: file.path.rel, firstOnly: true),
           let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels, timeout: .seconds(20)) else { return nil }
     return UIImage(cgImage: frame)
   }

@@ -10,8 +10,9 @@ import Foundation
 import MobileLinkSupport
 
 enum ConvertedClips {
-  /// File mode: the clip by its folder and path.
-  static func url(link: LinkHandle, root: String, rel: String) async -> URL? {
+  /// File mode: the clip by its folder and path. `firstOnly`: a poster's playlist, its first segment
+  /// alone, so the muted player that takes its first frame cannot buffer (and convert) further.
+  static func url(link: LinkHandle, root: String, rel: String, firstOnly: Bool = false) async -> URL? {
     let plan: ConvertPlan? = await onLinkQueue {
       root.withCString { r in
         rel.withCString { p in
@@ -21,7 +22,7 @@ enum ConvertedClips {
       }
     }
     guard let plan else { return nil }
-    return await TsStreams.shared.register(converted: plan) { k, cancel, sink in
+    return await TsStreams.shared.register(converted: firstOnly ? plan.firstSegment : plan) { k, cancel, sink in
       let box = Unmanaged.passRetained(BlockBox(sink))
       defer { box.release() }
       return root.withCString { r in

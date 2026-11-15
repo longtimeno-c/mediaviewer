@@ -26,6 +26,12 @@ public struct ConvertPlan: Sendable, Equatable {
     return max(0.001, Double(durationMs - Int64(segmentMs) * Int64(segments - 1)) / 1000)
   }
 
+  /// The first segment alone, as a clip of its own (a poster's).
+  public var firstSegment: ConvertPlan {
+    ConvertPlan(durationMs: Int64((seconds(of: 0) * 1000).rounded()), segmentMs: segmentMs, segments: min(segments, 1),
+                width: width, height: height)
+  }
+
   public func playlist(segmentURL: (Int) -> String) -> String {
     let count = Int(segments)
     let longest = (0..<count).map { seconds(of: $0) }.max() ?? 1

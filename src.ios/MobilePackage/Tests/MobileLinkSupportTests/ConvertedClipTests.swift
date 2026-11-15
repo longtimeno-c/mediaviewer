@@ -26,4 +26,13 @@ final class ConvertedClipTests: XCTestCase {
     XCTAssertTrue(text.contains("#EXTINF:4.200,\ns1\n"))
     XCTAssertEqual(plan.seconds(of: 2), 0)
   }
+
+  func testAPostersPlaylistHoldsTheFirstSegmentAlone() {
+    let plan = ConvertPlan(durationMs: 30_000, segmentMs: 4000, segments: 8, width: 1920, height: 1080)
+    let text = plan.firstSegment.playlist { "\($0).ts" }
+    XCTAssertEqual(text.split(separator: "\n").filter { $0.hasPrefix("#EXTINF:") }, ["#EXTINF:4.000,"])
+    XCTAssertFalse(text.contains("1.ts"))
+    let short = ConvertPlan(durationMs: 2_500, segmentMs: 4000, segments: 1, width: 1, height: 1).firstSegment
+    XCTAssertEqual(short.durationMs, 2_500)
+  }
 }
