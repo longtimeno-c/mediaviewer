@@ -18,20 +18,27 @@ final class PhoneAccessTests: XCTestCase {
     throw XCTSkip("\(name) not found")
   }
 
-  // Owner, 2026-11-14: offered the first time someone opens Phone access, never at launch.
-  func testTheSectionIsTheAddOnsScreenOrItsOffer() throws {
+  // Its offer is asked for when its page shows, never at launch.
+  func testTheOfferIsAskedWhenItShows() throws {
     let text = try source("PhoneAccess.swift")
     XCTAssertTrue(text.contains(#"static let addonID = "phone-access""#))
-    XCTAssertTrue(text.contains("AddonSettingsScreen(address: address)"))
     XCTAssertTrue(text.contains(#"AddonChannel(name: "mediaviewer-addon-phone-access-macos")"#))
     XCTAssertTrue(text.contains(".onAppear { if store.offer == .unknown"))
     XCTAssertTrue(text.contains("Your paired phones keep working through your server."))
   }
 
-  // One view per screen: its page under Add-ons does not draw it a second time.
-  func testTheAddOnsPageDoesNotDrawItTwice() throws {
-    let text = try source("AddonListView.swift")
-    XCTAssertTrue(text.contains("if id == PhoneAccessStore.addonID {"))
+  // Phone access is a row of Settings → Add-ons, its settings and offer on its own
+  // page like every other add-on's, and no section of its own in Settings.
+  func testItLivesOnItsAddOnPage() throws {
+    let list = try source("AddonListView.swift")
+    XCTAssertTrue(list.contains(#"list.append(Entry(id: PhoneAccessStore.addonID, name: "Phone access","#))
+    XCTAssertFalse(list.contains("Its settings are in Settings"))
+    let page = try source("SlotItems.swift")
+    XCTAssertTrue(page.contains("if only == PhoneAccessStore.addonID"))
+    let settings = try source("SettingsView.swift")
+    XCTAssertFalse(settings.contains(#"section("Phone access")"#))
+    let host = try source("ChromeHost.swift")
+    XCTAssertTrue(host.contains("AddonNav.shared.show(PhoneAccessStore.addonID)"))
   }
 
   // Contribution API 15: a secure field draws dots and never takes a value from the tree.

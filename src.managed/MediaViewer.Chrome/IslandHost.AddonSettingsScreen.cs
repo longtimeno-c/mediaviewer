@@ -13,9 +13,8 @@ namespace MediaViewer.Chrome;
 /// tree drawn on its page in Settings → Add-ons, under the add-on's card, with
 /// the screens' renderer (its cards are siblings of that card, never inside
 /// it). Opened while the page shows and Settings is up, closed when either
-/// goes; never a window. Driftwire's is the window's settings. Phone access's
-/// is drawn in Settings → Phone access instead, while no add-on page shows
-/// (IslandHost.PhoneAccess.cs): one settings screen is open at a time. The
+/// goes; never a window. Driftwire's is the window's settings. One settings
+/// screen is open at a time. The
 /// Mac's twin is AddonSettingsScreen in AddonListView.swift.
 /// </summary>
 public static partial class IslandHost
@@ -30,9 +29,8 @@ public static partial class IslandHost
     // until the screen closes (IslandHost.Screens.cs); never in a tree.
     private static readonly Dictionary<string, string> ScreenSecrets = new(StringComparer.Ordinal);
 
-    // Where the open settings screen is drawn: its add-on page, or Phone access's section.
-    private static ContentControl? SettingsScreenHost =>
-        _settingsScreenAt?.Addon == PhoneAccessId ? _phoneAccessScreen : _addonPageSettings;
+    // Where the open settings screen is drawn: its add-on page.
+    private static ContentControl? SettingsScreenHost => _addonPageSettings;
 
     // From NoteSlotWindowScreens: the contributions' settings screens.
     private static void NoteSlotSettingsScreens(JsonElement root)
@@ -66,12 +64,7 @@ public static partial class IslandHost
         ScreenAt? want = null;
         if (_settingsVisible && _slotPageId is { } id)
         {
-            if (id != PhoneAccessId && SlotSettingsScreens.TryGetValue(id, out string? screen)) want = new ScreenAt(id, screen);
-        }
-        else if (_settingsVisible && SlotSettingsScreens.TryGetValue(PhoneAccessId, out string? phone))
-        {
-            // Settings' list shows, and with it Phone access's section.
-            want = new ScreenAt(PhoneAccessId, phone);
+            if (SlotSettingsScreens.TryGetValue(id, out string? screen)) want = new ScreenAt(id, screen);
         }
         if (_settingsScreenAt == want && !reopen) return;
         if (_settingsScreenAt is { } was && was != want)

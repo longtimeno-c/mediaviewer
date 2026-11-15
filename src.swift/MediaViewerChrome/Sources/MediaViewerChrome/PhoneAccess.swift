@@ -1,10 +1,10 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Phone access from the app's side (docs/plans/phone-access-addon.md,
-// owner 2026-11-14): Phone access is an add-on. Installed, its card is the
-// add-on's own view tree (its "settings" screen, drawn here by ScreenView);
-// not installed, this section offers it, once, the first time someone opens
-// Phone access. Nothing here talks to the network except the plain GETs of the
+// Phone access from the app's side (docs/plans/phone-access-addon.md): an
+// add-on with its own page in Settings → Add-ons, like the others. Installed,
+// the page draws its "settings" screen, the add-on's own view tree
+// (AddonSettingsScreen); not installed, the page offers it, asked when the page
+// shows. Nothing here talks to the network except the plain GETs of the
 // add-on's fixed release assets every add-on install makes (AddonChannel), and
 // only when the person asks. A desktop set up before the move is told that its
 // phones keep working through its server. The Windows twin is
@@ -12,26 +12,6 @@
 import Combine
 import MVChromeBridge
 import SwiftUI
-
-/// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
-/// row opens Settings at this section. Its own small store (as
-/// PhotosBackupStore's reveal), so Settings does not redraw on every phone
-/// state change; `pending` carries a request made before the page appeared.
-@MainActor
-final class PhoneReveal: ObservableObject {
-  static let shared = PhoneReveal()
-  static let anchor = "phone-access-section"
-  @Published private(set) var requests = 0
-  private var pending = false
-  func reveal() {
-    pending = true
-    requests += 1
-  }
-  func take() -> Bool {
-    defer { pending = false }
-    return pending
-  }
-}
 
 @MainActor
 final class PhoneAccessStore: ObservableObject {
@@ -48,11 +28,6 @@ final class PhoneAccessStore: ObservableObject {
   @Published private(set) var setUpBefore = false
 
   private init() {}
-
-  /// The add-on's page in Settings (its "settings" screen), once it is loaded.
-  var screen: ScreenAddress? {
-    SlotStore.shared.settingsScreens[Self.addonID].map { ScreenAddress(addon: Self.addonID, screen: $0) }
-  }
 
   /// Two small GETs of the fixed release assets, then the host checks the
   /// signed manifest: Install is offered only for what would install. The
@@ -110,21 +85,7 @@ final class PhoneAccessStore: ObservableObject {
   }
 }
 
-/// Settings → Phone access: the add-on's card, or the offer to install it.
-struct PhoneAccessSection: View {
-  @ObservedObject private var store = PhoneAccessStore.shared
-  @ObservedObject private var slots = SlotStore.shared
-
-  var body: some View {
-    if let address = store.screen {
-      AddonSettingsScreen(address: address)
-    } else {
-      PhoneAccessOffer()
-    }
-  }
-}
-
-/// The install offer, while Phone access is not installed.
+/// Its add-on page's install offer, while Phone access is not installed.
 struct PhoneAccessOffer: View {
   @ObservedObject private var store = PhoneAccessStore.shared
 
@@ -159,7 +120,7 @@ struct PhoneAccessOffer: View {
       }
     }
     .animation(.easeOut(duration: 0.15), value: store.phase == nil)
-    // Offered the first time someone opens Phone access (owner, 2026-11-14): asked when it shows, never at launch.
+    // Asked when its page shows, never at launch.
     .onAppear { if store.offer == .unknown || store.offer == .unreachable { store.probe() } }
   }
 

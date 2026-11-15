@@ -27,7 +27,7 @@ namespace mv::phone {
 // feature_dir()). "" leaves it unset: the link keeps nothing.
 void set_app_dir(std::string dir);
 
-// Settings → Phone access: a request, and the card's state.
+// Settings → Add-ons → Phone access: a request, and the card's state.
 [[nodiscard]] expected app_request(const std::string& request_json);
 [[nodiscard]] std::string app_state_json();
 // The host, as Local search loads (a source) or goes (an empty one). Kept for
