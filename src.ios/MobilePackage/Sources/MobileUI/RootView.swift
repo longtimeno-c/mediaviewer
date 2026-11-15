@@ -43,7 +43,7 @@ public struct RootView: View {
     } message: {
       Text(model.connection.isSample
            ? "Once the new library is paired, the sample library is removed from this phone."
-           : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your Synology changes.")
+           : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your server changes.")
     }
     .task { await model.run() }
   }

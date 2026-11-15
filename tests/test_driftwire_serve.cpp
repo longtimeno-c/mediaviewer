@@ -8,6 +8,8 @@
 // nothing here touches the network beyond 127.0.0.1.
 #include <sodium.h>
 
+#include <mutex>
+
 #include "driftwire_fixture.h"
 
 #include "wire/known.h"
@@ -91,6 +93,7 @@ struct service_fixture {
   int max_pending = 16;
   int max_sessions = 8;
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
+  std::function<std::string()> storage;  // options::storage (the host's drives keeper)
 
   explicit service_fixture(int per_minute = 10000, int pending_per_source = 2, int pending_all = 16, int sessions = 8,
                            std::function<std::unique_ptr<sp::net::listener>()> listener_maker = {})
@@ -151,6 +154,7 @@ struct service_fixture {
     o.max_pending = max_pending;
     o.max_sessions = max_sessions;
     o.make_listener = make_listener;
+    o.storage = storage;
     auto started = serve::server::start(o);
     REQUIRE(started);
     srv = std::move(*started);
@@ -736,6 +740,64 @@ TEST_CASE("serve: a path outside the named folders is refused", "[driftwire-serv
   auto ok = c->read_range(kRootA, "ok.txt", 0, 100);
   REQUIRE(ok);
   CHECK(read_all(**ok) == "inside");
+}
+
+TEST_CASE("serve: a named folder whose drive is gone is listed offline, and comes back", "[driftwire-serve]") {
+  service_fixture s;
+  write_file(s.other / "a.txt", "on the drive");
+  auto c = s.open_client();
+  const auto offline = [&](const std::string& id) {
+    auto roots = c->roots();
+    REQUIRE(roots);
+    for (const auto& r : *roots) {
+      if (r.id == id) return r.offline;
+    }
+    FAIL("no such root");
+    return false;
+  };
+  CHECK_FALSE(offline(kRootA));
+  CHECK_FALSE(offline(kRootB));
+
+  // The drive unplugged: its folder is not there. The session goes on.
+  const fs::path away = s.dir.root() / "unplugged";
+  fs::rename(s.other, away);
+  CHECK(offline(kRootB));
+  CHECK_FALSE(offline(kRootA));
+  serve::end_code code = serve::end_code::ok;
+  CHECK_FALSE(c->list(kRootB, "", &code));
+  CHECK(code == serve::end_code::not_found);
+  code = serve::end_code::ok;
+  CHECK_FALSE(c->stat(kRootB, "a.txt", &code));
+  CHECK(code == serve::end_code::not_found);
+  auto gone = c->read_range(kRootB, "a.txt", 0, 100);
+  REQUIRE(gone);
+  CHECK(read_all(**gone).empty());
+  CHECK((*gone)->code() == serve::end_code::not_found);
+  CHECK_FALSE(c->closed());
+
+  // Plugged back in: the same session reads it again.
+  fs::rename(away, s.other);
+  CHECK_FALSE(offline(kRootB));
+  auto back = c->read_range(kRootB, "a.txt", 0, 100);
+  REQUIRE(back);
+  CHECK(read_all(**back) == "on the drive");
+}
+
+TEST_CASE("serve: the roots list says offline only when it is", "[driftwire-serve]") {
+  std::vector<serve::root_info> roots(2);
+  roots[0].id = "a1a1a1a1a1a1a1a1";
+  roots[0].label = "Photos";
+  roots[1].id = "b2b2b2b2b2b2b2b2";
+  roots[1].label = "Drive";
+  roots[1].offline = true;
+  const std::string text = serve::roots_json(roots);
+  // A root that is there reads exactly as before, for an older phone.
+  CHECK(text.find("\"offline\"") == text.rfind("\"offline\""));
+  auto back = serve::parse_roots(text);
+  REQUIRE(back);
+  REQUIRE(back->size() == 2);
+  CHECK_FALSE((*back)[0].offline);
+  CHECK((*back)[1].offline);
 }
 
 #if !defined(_WIN32)
@@ -1516,4 +1578,60 @@ TEST_CASE("serve backup: two phones placing one name at once keep both files", "
     CHECK(slurp(s.backup / ra->name) == one);
     CHECK(slurp(s.backup / rb->name) == two);
   }
+}
+
+TEST_CASE("serve: every session hears the server's drives' health in its caps", "[driftwire-serve][host-drives]") {
+  service_fixture s;
+  CHECK(s.open_client()->caps().storage.empty());  // no drives keeper: nothing said
+  s.srv.reset();
+  std::string word = "degraded";
+  std::mutex m;
+  s.storage = [&] {
+    std::lock_guard g(m);
+    return word;
+  };
+  s.start(10000);
+  CHECK(s.open_client()->caps().storage == "degraded");
+  {
+    std::lock_guard g(m);
+    word.clear();  // healthy again
+  }
+  CHECK(s.open_client()->caps().storage.empty());
+  {
+    std::lock_guard g(m);
+    word = "not a word";  // never sent
+  }
+  CHECK(s.open_client()->caps().storage.empty());
+}
+
+TEST_CASE("serve: the devices with a session up now (the tray names them)", "[driftwire-serve][host-tray]") {
+  // docs/plans/self-hosted.md "Tray": the host's menu names the phones connected.
+  service_fixture s;
+  CHECK(s.srv->connected_devices().empty());
+  auto c = s.open_client();
+  REQUIRE(c->roots());
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), s.device.data());
+  REQUIRE(eventually([&] { return s.srv->connected_devices().size() == 1; }));
+  CHECK(s.srv->connected_devices().front() == pub);
+  // Its file bytes, counted per device, with how and since when.
+  write_file(s.library / "u.bin", marker(0, 50000));
+  auto r = c->read_range(kRootA, "u.bin", 0, 50000);
+  REQUIRE(r);
+  CHECK(read_all(**r).size() == 50000);
+  auto u = s.srv->usage();
+  REQUIRE(u.size() == 1);
+  CHECK(u[0].device == pub);
+  CHECK(u[0].read == 50000);
+  CHECK(u[0].written == 0);
+  CHECK(u[0].connected);
+  CHECK(u[0].since_unix > 0);
+  CHECK(u[0].via != serve::server::usage_via::relay);
+  c->close();
+  CHECK(eventually([&] { return s.srv->connected_devices().empty(); }));
+  // Ended, its bytes stay counted (once the session is reaped).
+  CHECK(eventually([&] {
+    const auto after = s.srv->usage();
+    return after.size() == 1 && after[0].read == 50000 && !after[0].connected;
+  }));
 }

@@ -494,6 +494,7 @@ struct SettingsView: View {
   @ObservedObject private var theme = ThemeStore.shared
   @ObservedObject private var addons = OpenAddonStore.shared
   @ObservedObject private var photos = PhotosBackupStore.shared
+  @ObservedObject private var phoneReveal = PhoneReveal.shared
   @ObservedObject private var addonNav = AddonNav.shared  // #510: an add-on's page
   @State private var filter = ""
   @State private var keyboard = false
@@ -606,9 +607,10 @@ struct SettingsView: View {
         // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
         section("Storage")
         StorageSection()
-        // docs/plans/phone-in-the-app.md: Phone access is the app's, with or
-        // without Local search.
+        // docs/plans/phone-access-addon.md: Phone access is an add-on, drawn
+        // here once installed and offered here until then.
         section("Phone access")
+          .id(PhoneReveal.anchor)
         PhoneAccessSection()
         // docs/design/26: the Photos library's backup, once the library was added
         // (Local search -> Add Photos Library); absent otherwise.
@@ -665,6 +667,19 @@ struct SettingsView: View {
         withAnimation(nil) { scroll.scrollTo(PhotosBackupStore.anchor, anchor: .top) }
       }
     }
+    // docs/plans/self-hosted.md "Tray": the host's menu row opens Settings here.
+    .onChange(of: phoneReveal.requests) { _, _ in
+      guard phoneReveal.take() else { return }
+      keyboard = false
+      // Phone access is on the list, not an add-on's page; back from one, the
+      // list's own scroll back to that row goes first, then this one.
+      if addonNav.page != nil { addonNav.back() }
+      DispatchQueue.main.async {
+        DispatchQueue.main.async {
+          withAnimation(nil) { scroll.scrollTo(PhoneReveal.anchor, anchor: .top) }
+        }
+      }
+    }
     .onAppear {
       // #510: the list, or the page something asked for while Settings was closed.
       addonNav.settingsShown()
@@ -673,6 +688,8 @@ struct SettingsView: View {
         scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center)
       } else if photos.takeReveal() {
         scroll.scrollTo(PhotosBackupStore.anchor, anchor: .top)
+      } else if phoneReveal.take() {
+        scroll.scrollTo(PhoneReveal.anchor, anchor: .top)
       } else if theme.takeChosenHere() {
         // Choosing a theme rebuilds the chrome; stay at the row that did it.
         scroll.scrollTo(ThemeStore.rowAnchor, anchor: .center)

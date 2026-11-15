@@ -109,6 +109,18 @@ std::optional<hello_msg> parse_hello(std::string_view text) {
   return h;
 }
 
+bool is_storage_word(std::string_view w) noexcept {
+  return w == "degraded" || w == "rebuilding" || w == "offline" || w == "failing";
+}
+
+const char* storage_words(std::string_view w) noexcept {
+  if (w == "degraded") return "Your server's mirror lost a drive. Your files are safe until another one fails: replace it soon.";
+  if (w == "rebuilding") return "Your server is rebuilding its mirror onto a new drive.";
+  if (w == "offline") return "Your server's combined drive is offline: some of its drives are not there.";
+  if (w == "failing") return "A drive in your server reports it is failing. Replace it soon.";
+  return "";
+}
+
 std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields) {
   json::writer w;
   w.begin_object().key("v").integer(version);
@@ -146,6 +158,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* p = doc->str("passphrase"); p && p->size() <= 16) c.passphrase = *p;
+  if (const std::string* s = doc->str("storage"); s && is_storage_word(*s)) c.storage = *s;
   if (const json::value* g = doc->find("grant"); g && g->k == json::kind::object) {
     const auto expires = g->integer("expires");
     if (expires && *expires >= 0) {
@@ -154,6 +167,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
       c.grant_scoped = g->boolean("scoped") == true;
     }
   }
+  if (const std::string* r = doc->str(kCapsRole); r && (*r == "view" || *r == "change" || *r == "admin")) c.role = *r;
   return c;
 }
 
@@ -298,6 +312,7 @@ std::string roots_json(std::span<const root_info> roots) {
     w.begin_object().key("id").string(r.id).key("label").string(r.label);
     // Only on a backup folder, so a reader from before 1.1 sees exactly what it did.
     if (r.backup) w.key("backup").boolean(true).key("writable").boolean(r.writable);
+    if (r.offline) w.key("offline").boolean(true);
     w.end_object();
   }
   w.end_array().end_object();
@@ -317,6 +332,7 @@ std::optional<std::vector<root_info>> parse_roots(std::string_view text) {
     root_info info{*id, *label};
     info.backup = v.boolean("backup").value_or(false);
     info.writable = info.backup && v.boolean("writable").value_or(false);
+    info.offline = v.boolean("offline").value_or(false);
     out.push_back(std::move(info));
   }
   return out;
@@ -399,9 +415,13 @@ std::optional<std::vector<list_entry>> parse_listing(std::string_view lines) {
   return out;
 }
 
-std::string pair_json(std::string_view code, std::string_view name) {
+std::string pair_json(std::string_view code, std::string_view name) { return pair_json(code, name, {}); }
+
+std::string pair_json(std::string_view code, std::string_view name, std::string_view kind) {
   json::writer w;
-  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name))).end_object();
+  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name)));
+  if (!kind.empty()) w.key("kind").string(kind);
+  w.end_object();
   return w.take();
 }
 
@@ -413,6 +433,7 @@ std::optional<pair_msg> parse_pair(std::string_view text) {
   pair_msg out;
   out.code = *code;
   if (const std::string* name = doc->str("name")) out.name = clean_name(*name);
+  if (const std::string* kind = doc->str("kind"); kind && *kind == kDeviceDesktop) out.kind = *kind;
   return out;
 }
 
@@ -432,7 +453,7 @@ std::optional<admin_msg> parse_admin(std::span<const std::uint8_t> body) noexcep
   return m;
 }
 
-result<config> parse_config(std::string_view text, bool any_port) {
+result<config> parse_config(std::string_view text, bool any_port, bool no_roots) {
   if (text.size() > kMaxConfigBytes) return err(status::invalid_arg);
   const auto doc = json::parse(text, 6);
   if (!doc) return err(status::corrupt);
@@ -443,7 +464,7 @@ result<config> parse_config(std::string_view text, bool any_port) {
   const std::string* name = doc->str("name");
   c.name = name ? clean_name(*name) : std::string("MediaViewer");
   const json::value* roots = doc->find("roots");
-  if (!roots || roots->k != json::kind::array || roots->a.empty() || roots->a.size() > kMaxRoots) {
+  if (!roots || roots->k != json::kind::array || (roots->a.empty() && !no_roots) || roots->a.size() > kMaxRoots) {
     return err(status::invalid_arg);
   }
   std::set<std::string> seen;
@@ -471,6 +492,15 @@ result<config> parse_config(std::string_view text, bool any_port) {
       rc.limit = static_cast<std::uint64_t>(*limit);
       rc.reserve = reserve ? static_cast<std::uint64_t>(*reserve) : kDefaultReserve;
     }
+    if (const json::value* m = v.find("mount")) {
+      if (m->k != json::kind::boolean) return err(status::invalid_arg);
+      rc.mount = v.boolean("mount").value_or(false);
+    }
+    if (v.find("volume")) {
+      const std::string* g = v.str("volume");
+      if (!g || g->size() > 64 || g->rfind("\\\\?\\Volume{", 0) != 0) return err(status::invalid_arg);
+      rc.volume = *g;
+    }
     c.roots.push_back(std::move(rc));
   }
   if (const std::string* relay = doc->str("relay")) {
@@ -491,6 +521,8 @@ std::string config_json(const config& c) {
       w.key("reserve").integer(static_cast<std::int64_t>(r.reserve));
       w.end_object();
     }
+    if (r.mount) w.key("mount").boolean(true);
+    if (!r.volume.empty()) w.key("volume").string(r.volume);
     w.end_object();
   }
   w.end_array();

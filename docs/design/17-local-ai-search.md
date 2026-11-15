@@ -271,6 +271,9 @@ cleanup. Port `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `c
   row, or filters only) everything the query allows, **newest by date created first**
   (`engine::newest_first`: `taken_at`, else Photos `created`, else mtime; ties by path). Hosts keep
   the order.
+  **The phone** (owner, 2026-11-14) ranks such a description instead: every allowed picture by its
+  margin over the generic prompts, best first, no cut-off (`engine_options::rank_when_unanswered`),
+  so "dog" shows the dogs the gate held back. Filters alone still list newest first.
 - **Scope:** `MV_AI_SCOPE_TREE` (open folder and subfolders, default) · `MV_AI_SCOPE_ALL`; kind and
   tower filters. No folder open: everywhere. Opening a folder re-asks the search.
 - **Find similar:** the still or paused frame; stored vector if indexed, else embedded on demand.
@@ -751,9 +754,10 @@ reload after.
 
 ## Setting a phone up
 
-Owned by the app ([plan](../plans/phone-in-the-app.md)): Settings → Phone access
-(`PhoneAccessView.swift`, `IslandHost.Phone.cs`) drives `src/phone/link.cpp`, which calls the desk
-(`src/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access)). Local search is the
+Owned by the Phone access add-on ([plan](../plans/phone-access-addon.md)): Settings → Phone access
+is its card (`src/addons/phone/screens.*`, drawn by both hosts), which drives `src/addons/phone/link.cpp`,
+which calls the desk (`src/addons/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access))
+and reaches Local search through the host table's `catalogue_*` rows. Local search is the
 catalogue source: `phone_publish` builds generations signed with the app's publisher key
 (`catalogue/publisher.h`) under the library id and epoch in the share's `library.json`. `phone_json`
 gives id, epoch and newest generation folder. The pack's `phone_link` entries are null.

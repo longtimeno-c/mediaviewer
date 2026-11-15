@@ -411,13 +411,21 @@ public static partial class IslandHost
             {
                 // #508: as wide as its row allows (the Mac's TextField), never
                 // narrower than a short path.
+                // "secure" (contribution API 15, Phone access): dots, and never a
+                // value from the tree. What is typed is carried across a rebuild
+                // here, by node id (the add-on renames the field once it has used
+                // or dropped it), and goes with the screen.
+                bool secure = JFlag(n, "secure");
+                string secretKey = $"{at.Addon}/{at.Screen}/{id}";
                 var field = new FakeInput(JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"),
                                           look: InScreenWindow ? ScreenInputLook(_screenFace!) : null)
                 {
-                    Text = JStr(n, "value"),
+                    Secret = secure,
+                    Text = secure ? ScreenSecrets.GetValueOrDefault(secretKey, "") : JStr(n, "value"),
                     MinWidth = 180,
                 };
-                string last = field.Text;
+                if (secure) field.Changed += () => ScreenSecrets[secretKey] = field.Text;
+                string last = secure ? "" : field.Text;
                 field.Submitted += () =>
                 {
                     last = field.Text;

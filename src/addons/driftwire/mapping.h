@@ -91,6 +91,10 @@ class mapper {
   // A router answered but its outside address was not public (double NAT,
   // carrier NAT).
   [[nodiscard]] bool behind_another_nat() const noexcept { return behind_nat_; }
+  // The last outside address a router answered with (PCP's MAP, NAT-PMP's
+  // or UPnP's address), public or not: what tells double NAT from carrier
+  // NAT (host_ports). Never logged (rule 6).
+  [[nodiscard]] const std::optional<net::address>& last_outside() const noexcept { return last_outside_; }
 
  private:
   struct upnp_device {
@@ -110,6 +114,7 @@ class mapper {
   std::optional<upnp_device> upnp_;
   bool upnp_searched_ = false;
   bool behind_nat_ = false;
+  std::optional<net::address> last_outside_;
   std::vector<std::string> notes_;
 };
 

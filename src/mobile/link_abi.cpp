@@ -26,6 +26,8 @@
 #include "mobile/sound_tower.h"
 #include "mobile/sync.h"
 
+#include "wire/serve_wire.h"
+
 using namespace mv;
 using namespace mv::mobile;
 
@@ -369,6 +371,28 @@ void mv_link_set_upgrade(mv_mobile_link* l, int32_t on_cellular, int32_t allowed
   }
 }
 
+namespace {
+constexpr const char* kStorageWords[] = {"", "rebuilding", "degraded", "offline", "failing"};
+}  // namespace
+
+int32_t mv_link_storage(mv_mobile_link* l) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: no drives of its own
+    std::string word;
+    if (l->session->storage(word) < 0) return -1;
+    for (int32_t i = 1; i < 5; ++i) {
+      if (word == kStorageWords[i]) return i;
+    }
+    return 0;
+  });
+}
+
+const char* mv_link_storage_words(int32_t code) {
+  if (code < 1 || code > 4) return "";
+  return mv::driftwire::serve::storage_words(kStorageWords[code]);
+}
+
 int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
   return catch_all([&]() -> int32_t {
     if (expires_unix) *expires_unix = 0;
@@ -682,6 +706,12 @@ int32_t mv_files_roots(mv_mobile_link* l, mv_root_fn fn, void* ctx) {
     if (!listed) return status_of_read(listed.error());
     std::vector<driftwire::serve::root_info> keep;
     for (const auto& r : *listed) {
+      // An offline folder cannot be looked into, and what a look would find is not known until it
+      // is back: listed as it is, nothing remembered about it.
+      if (r.offline) {
+        keep.push_back(r);
+        continue;
+      }
       std::optional<bool> known;
       {
         std::lock_guard lock(l->roots_m);
@@ -699,7 +729,19 @@ int32_t mv_files_roots(mv_mobile_link* l, mv_root_fn fn, void* ctx) {
       }
       if (!*known) keep.push_back(r);
     }
-    for (const auto& r : keep) fn(ctx, r.id.c_str(), r.label.c_str());
+    for (const auto& r : keep) fn(ctx, r.id.c_str(), r.label.c_str(), r.offline ? 1 : 0);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_offline_roots(mv_mobile_link* l, mv_root_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    auto listed = l->remote->roots();
+    if (!listed) return status_of_read(listed.error());
+    for (const auto& r : *listed) {
+      if (r.offline) fn(ctx, r.id.c_str(), r.label.c_str(), 1);
+    }
     return MV_LINK_OK;
   });
 }

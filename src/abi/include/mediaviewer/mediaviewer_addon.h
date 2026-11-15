@@ -1125,6 +1125,17 @@ typedef struct mv_host_api {
    * the pointer is non-NULL. */
   mv_status(MV_CALL* thumbnail_make)(void* host, const char* path_utf8, int64_t pts_ms, uint8_t* out,
                                      uint64_t capacity, uint64_t* out_size);
+  /* ---- the phone's catalogue from Local search (docs/plans/phone-access-addon.md §2) ----
+   * [worker-thread] Local search's phone_publish / phone_cancel / phone_json
+   * (mediaviewer_ai.h), for the Phone access add-on: the AI pack is not a slot
+   * add-on, so addon_request cannot reach it. MV_ERR_NOT_FOUND while the pack
+   * is not loaded (or too old). catalogue_json: `*out_size` is always the bytes
+   * needed with the NUL; MV_ERR_INVALID_ARG with it larger than `capacity`:
+   * call again. Appended after thumbnail_make: read only when `struct_size`
+   * covers them and the pointer is non-NULL. */
+  mv_status(MV_CALL* catalogue_publish)(void* host, const char* destination_utf8);
+  mv_status(MV_CALL* catalogue_cancel)(void* host);
+  mv_status(MV_CALL* catalogue_json)(void* host, char* out_utf8, uint32_t capacity, uint32_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1159,6 +1170,15 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
  * add-on with nothing outside its data folder leaves it out. */
 typedef mv_status(MV_CALL* mv_addon_forget_fn)(const char* data_dir_utf8);
 #define MV_ADDON_FORGET_SYMBOL "mv_addon_forget"
+
+/* Optional third export (2026-11-14, the Phone access add-on). The host calls
+ * it on EVERY removal, with keep_data 1 or 0, after its shutdown and before
+ * MV_ADDON_FORGET_SYMBOL and before its files go, on the remover's worker; the
+ * add-on is not loaded. It undoes what it set up outside the app that must not
+ * outlive it (a login entry it registered, a program it installed for it),
+ * never the person's data. A failing call never blocks the removal. */
+typedef mv_status(MV_CALL* mv_addon_removed_fn)(const char* data_dir_utf8, uint32_t keep_data);
+#define MV_ADDON_REMOVED_SYMBOL "mv_addon_removed"
 
 /* ---------------------------------------------------------------------------
  * Host-side management, exported by the Windows core DLL for the C# chrome
@@ -1206,7 +1226,10 @@ MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out
 
 /* Unloads if loaded, then removes every version; keep_data = 0 also deletes
  * the add-on's data (import.db) and first calls its MV_ADDON_FORGET_SYMBOL,
- * if it has one. Locked files are removed at next start. */
+ * if it has one. Every removal but a reinstall first calls its
+ * MV_ADDON_REMOVED_SYMBOL. keep_data = 2 (0.43): removed to install again at
+ * once, its data kept and that call skipped. Locked files are removed at next
+ * start. */
 MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
 
 /* Re-verifies, loads the native library, and returns the named interface
@@ -1477,8 +1500,9 @@ MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, 
  * 11 `editor_items`, the Video Editor's bar (2026-11-02);
  * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04);
  * 13 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04);
- * 14 a progress bar's "detail" and "timed" (2026-11-05). */
-#define MV_ADDON_CONTRIBUTION_API 14
+ * 14 a progress bar's "detail" and "timed" (2026-11-05);
+ * 15 a `text_field` with "secure" (2026-11-14, the Phone access add-on). */
+#define MV_ADDON_CONTRIBUTION_API 15
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

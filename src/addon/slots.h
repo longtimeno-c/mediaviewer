@@ -337,6 +337,24 @@ class slot_registry {
     bool operator==(const menu_row&) const = default;
   };
   status keep_menu(const std::string& addon_id, std::string_view menu_json);
+  // docs/plans/self-hosted.md "Tray": a kept entry that is the app's own, not
+  // an add-on's: the host's section of the menu-bar / notification-area menu
+  // while `driftwire host` runs (until Phone access is an add-on, which then
+  // calls keep_alive / keep_menu itself). In notices_json's "keep" after the
+  // add-ons', with "shell": true: the hosts' Open <title> row opens the app's
+  // own Settings at `screen` (not an add-on screen). A row picked goes to
+  // `on_menu` (any thread; it must not block). nullopt removes it.
+  struct shell_keep {
+    bool kept = false;   // the process is kept and the entry drawn (the host runs)
+    bool login = false;  // the app's login item is wanted (the host starts at login)
+    std::string screen, title, label;
+    std::vector<menu_row> menu;  // keep_menu's kinds and limits
+    std::function<void(const std::string& item_id, const std::string& value_json)> on_menu;
+  };
+  status set_shell_keep(const std::string& id, std::optional<shell_keep> k);
+  // The app's login item is wanted (#452's, `--background`): an add-on keeps
+  // the process, or a shell keep starts at login. notices_json's "login".
+  [[nodiscard]] bool wants_login_item() const;
   // #510 (host table busy_post): "" ends it. In notices_json's "busy".
   status post_busy(const std::string& addon_id, std::string what);
 
@@ -433,6 +451,7 @@ class slot_registry {
   std::map<std::pair<std::string, std::string>, notice_state> notices_;  // (addon, notice)
   std::map<std::string, std::pair<std::string, std::string>> keep_;    // addon -> (screen, label)
   std::map<std::string, std::vector<menu_row>> keep_menu_;              // addon -> its menu rows
+  std::map<std::string, shell_keep> shell_keep_;                        // id -> the app's own entry ("Tray")
   std::map<std::string, std::string> busy_;                            // addon -> what (#510)
   std::uint64_t notice_asks_ = 0;
   std::uint64_t notice_revision_ = 0;

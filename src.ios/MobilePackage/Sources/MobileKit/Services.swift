@@ -15,6 +15,13 @@ public protocol LibraryStore: Sendable {
   /// Empty unless the Mac has named people; the People tab appears only when it is not.
   func people() async throws -> [Person]
   func details(for item: MediaItem) async throws -> MediaDetails
+  /// The server's folders whose drive is not connected now, for the top level to show beside its own
+  /// folders. Empty when none is, or the server can't be asked.
+  func offlineFolders() async -> [Folder]
+}
+
+extension LibraryStore {
+  public func offlineFolders() async -> [Folder] { [] }
 }
 
 /// One step of the §10 ladder.
@@ -88,6 +95,13 @@ public protocol ConnectionService: Sendable {
   func pair(code: String, confirmed: LibraryIdentity) -> AsyncThrowingStream<PairingEvent, Error>
   func retry() async
   func forget() async
+  /// The sample library's stand-in for a server whose mirror lost a drive (docs/plans/self-host-drives.md
+  /// §4; owner 2026-11-12: every phone feature demoable in SAMPLE). Sample mode only; a no-op otherwise.
+  func showSampleLostDrive(_ lost: Bool) async
+}
+
+public extension ConnectionService {
+  func showSampleLostDrive(_ lost: Bool) async {}
 }
 
 public protocol CatalogueSync: Sendable {

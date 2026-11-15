@@ -29,8 +29,7 @@
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
-#include "abi/phone_source.h"
-#include "phone/app.h"
+#include "addon/catalogue_port.h"
 #include "shell/addons_mac.h"
 
 #include <mediaviewer/mediaviewer_ai.h>
@@ -706,7 +705,7 @@ void unload_ai() {
   }
   s.ai.chrome = nil;
   s.ai.table = nullptr;
-  mv::phone::set_app_source({});  // nothing calls the pack's phone entries from here
+  mv::addon::catalogue::set_provider({});  // nothing calls the pack's phone entries from here
   // #398: other add-ons' locations_of_index stop reading the pack's index now
   // (a walk in flight stops at its next row). The wait for it to leave the
   // pack runs on addon_queue(), ahead of the retire queued there: never on
@@ -776,8 +775,9 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::addon::publish_ai_faces(mv::addon::ai_faces(static_cast<const mv_ai_api*>(table)));  // edit-refresh S10
   mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(static_cast<const mv_ai_api*>(table)));  // Faces donors
-  // Phone access's catalogue (docs/plans/phone-in-the-app.md): the writer only.
-  if (!s.reader) mv::phone::set_app_source(mv::abi::ai_catalogue_source(static_cast<const mv_ai_api*>(table)));
+  // The phone's catalogue for the Phone access add-on (host table catalogue_*,
+  // docs/plans/phone-access-addon.md §2): the writer only.
+  if (!s.reader) mv::addon::catalogue::set_provider(mv::addon::catalogue::from_ai(static_cast<const mv_ai_api*>(table)));
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.
@@ -1262,6 +1262,9 @@ void MvAddonsQuit() {
   const bool backup_idle = !g_import_unload_hook || g_import_unload_hook(0);
   mac_addons& s = state();
   g_quitting.store(true, std::memory_order_relaxed);
+  // Phone access's link reaches Local search through the host table: nothing
+  // calls the pack from here on (waits out a call in flight), before it stops.
+  mv::addon::catalogue::set_provider({});
   MvSlotAddonsQuit();
   MvScriptsQuit();
   g_quit_at = std::chrono::steady_clock::now();
@@ -2296,6 +2299,7 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
     if (ensure_store()) {
       mac_addons& st = state();
       std::lock_guard<std::mutex> lock(st.store_writes);
+      mv::addon::tell_removed(*st.store, s, keep_data);
       if (!keep_data) mv::addon::forget_outside_data(*st.store, s);
       (void)st.store->remove(s, keep_data);
     }

@@ -18,9 +18,13 @@
 #include <utility>
 
 #include <ftxui/dom/elements.hpp>
+#include <sodium.h>
 
+#include "addons/driftwire/cli/args.h"
 #include "addons/driftwire/cli/complete.h"
+#include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
+#include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/cli/inline_view.h"
 #include "addons/driftwire/cli/keys.h"
 #include "addons/driftwire/cli/line_editor.h"
@@ -1396,6 +1400,8 @@ struct session::impl {
       say(tone::info, *on ? "Driftwire checks once a day for a newer version." : "Driftwire no longer checks for updates.",
           {*on ? "It asks its site, which sees this computer's address and nothing else."
                : "driftwire update still updates it when you ask."});
+    } else if (name == "/host") {
+      run_host_command(rest);
     } else if (name == "/settings") {
       list_settings();
     } else if (name == "/help") {
@@ -1403,6 +1409,109 @@ struct session::impl {
     } else if (name == "/quit") {
       quitting = true;
     }
+  }
+
+  // /host …: `driftwire host …` inside the session (docs/plans/self-hosted.md
+  // §2). What only prints runs here and its words go in the transcript; what
+  // asks (setup, name duckdns) or draws a QR (pair) gets the terminal as a
+  // shell leaves it, then the session takes it back.
+  void run_host_command(std::string_view rest) {
+    std::vector<std::string> argv{"host"};
+    std::string first;
+    {
+      const auto sp = rest.find_first_of(" \t");
+      first = std::string(rest.substr(0, sp));
+      std::string_view more = sp == std::string_view::npos ? std::string_view() : trim(rest.substr(sp));
+      if (first.empty()) first = "status";
+      argv.push_back(first);
+      if (first == "share") {
+        // The path may hold spaces: the options come off its end.
+        bool backup = false;
+        std::string label;
+        if (const auto at = more.rfind(" --backup"); at != std::string_view::npos && at + 9 == more.size()) {
+          backup = true;
+          more = trim(more.substr(0, at));
+        }
+        if (const auto at = more.find(" --label "); at != std::string_view::npos) {
+          label = std::string(trim(more.substr(at + 9)));
+          more = trim(more.substr(0, at));
+        }
+        const parsed_paths p = parse_paths(more, o.paths);
+        if (p.paths.size() + p.missing.size() != 1) {
+          flash("/host share takes one folder: /host share PATH [--label L] [--backup]");
+          return;
+        }
+        argv.push_back(p.paths.empty() ? p.missing[0] : p.paths[0]);
+        if (!label.empty()) argv.insert(argv.end(), {"--label", label});
+        if (backup) argv.emplace_back("--backup");
+      } else if (first == "unshare") {
+        // A label is the rest of the line ("My Photos"), quotes around it taken off.
+        std::string label(more);
+        if (label.size() >= 2 && (label.front() == '"' || label.front() == '\'') && label.back() == label.front()) {
+          label = label.substr(1, label.size() - 2);
+        }
+        if (!label.empty()) argv.push_back(std::move(label));
+      } else {
+        while (!more.empty()) {
+          const auto e = more.find_first_of(" \t");
+          argv.emplace_back(more.substr(0, e));
+          more = e == std::string_view::npos ? std::string_view() : trim(more.substr(e));
+        }
+      }
+    }
+    parsed_args parsed = parse_args(argv, false);  // never the test build's own options here
+    if (!parsed.error.empty()) {
+      flash("/host: " + parsed.error);
+      return;
+    }
+    args a = std::move(parsed.a);
+    a.data = o.data_dir;
+    a.no_color = o.plain;
+    a.test_loopback = o.test_hooks;  // the test build's session: never a real router or duckdns.org
+    if (a.host == host_action::run || a.host == host_action::child) {
+      say(tone::info, "The host runs on its own, not inside this session",
+          {"driftwire host in a terminal of its own, or /host start-at-login on so it starts when you log in."});
+      return;
+    }
+    const bool asks = a.host == host_action::setup || a.host == host_action::pair ||
+                      (a.host == host_action::name && a.on);
+    if (asks) {
+      mouse_reporting(false);
+      if (!o.plain) live.erase();
+      int code = 0;
+      const bool ran = term.run_cooked([&] {
+        code = run_host(a, o.test_hooks, o.version.c_str());
+        print("\n");
+      });
+      if (!o.plain) live.invalidate();
+      prompt_on_line = false;
+      if (!ran) {
+        flash("This one asks at the terminal: run driftwire host " + first + " in a terminal of its own.");
+      } else if (code != 0) {
+        flash("driftwire host " + first + " did not finish.");
+      }
+      return;
+    }
+    std::string out;
+    int code = 0;
+    {
+      const print_capture capture(out);
+      code = run_host(a, o.test_hooks, o.version.c_str());
+    }
+    std::vector<std::string> lines;
+    for (std::size_t at = 0; at < out.size();) {
+      const auto nl = out.find('\n', at);
+      std::string line = out.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+      if (line.rfind("driftwire host: ", 0) == 0) line = line.substr(16);
+      if (!line.empty()) lines.push_back(std::move(line));
+      if (nl == std::string::npos) break;
+      at = nl + 1;
+    }
+    sodium_memzero(out.data(), out.size());  // `host vpn on`'s relay line holds the relay's key
+    if (lines.empty()) lines.emplace_back(code == 0 ? "Done." : "That did not work.");
+    const std::string head = lines.front();
+    lines.erase(lines.begin());
+    say(code == 0 ? tone::info : tone::warning, head, std::move(lines));
   }
 
   void list_files() {

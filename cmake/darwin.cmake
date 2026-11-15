@@ -524,8 +524,11 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 # The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
 # build/addons/driftwire, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
-# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+# The Phone access add-on (docs/plans/phone-access-addon.md): libmv_phone_access.dylib
+# in build/addons/phone-access, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/phone.cmake")
+# Another desktop opens the host's drives (docs/plans/desktop-client.md): part of the app.
+include("${CMAKE_CURRENT_LIST_DIR}/remote.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -734,6 +737,9 @@ set(MV_MAC_HOST_SOURCES
   src/shell/addons_mac.h
   # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
   src/shell/slots_mac.mm
+  # docs/plans/self-hosted.md "Tray": the host's rows in the menu-bar item.
+  src/abi/host_tray_glue.cpp
+  src/abi/host_tray_glue.h
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
@@ -760,7 +766,10 @@ function(mv_mac_host target)
     mv_image
     mv_canvas
     mv_shell
+    # Only the server menu's objects (host_tray, self_host): the rest of
+    # Phone access is the add-on's.
     mv_phone
+    mv_remote
     mv_io
     mv_player
     imgui::imgui
@@ -942,6 +951,8 @@ if(MV_BUILD_TESTS)
     # docs/design/26: virtual items in a result list (the Photos library as a folder).
     tests/test_folder_virtual_mac.cpp
     src/shell/folder_model_mac.cpp
+    # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
+    tests/test_desktop_client.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp
@@ -1058,6 +1069,8 @@ if(MV_BUILD_TESTS)
     tests/test_places.cpp
   )
   target_link_libraries(mv_tests PRIVATE
+    mv_remote
+    mv_wire
     mv_core
     mv_io
     mv_gfx

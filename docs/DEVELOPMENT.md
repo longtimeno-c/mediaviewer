@@ -395,29 +395,67 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
-### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-in-the-app.md`)
+### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-access-addon.md`)
 
-Part of the app since 2026-11-12, with or without Local search: Settings → Phone access on both hosts
-(`PhoneAccessView.swift` in MediaViewerChrome, `IslandHost.Phone.cs` in MediaViewer.Chrome; words in
-`src.managed/Shared/PhoneWords.cs`, the Windows QR in `Shared/QrCode.cs`). The work is `src/phone`
-(`link.*` the state machine, `desk.*` claim/codes/devices/nearby, `app.*` the one link per process) over
-`src/wire` (Driftwire's protocol) and `src/catalogue` (keys, `library.json`, current.json, delivery);
-hosts reach it through `mv_phone_*` (ABI 0.41) and the Mac bridge `mv_chrome_phone_*`. Local search,
-when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only the first window's process
-runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
-on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".
+An add-on since 2026-11-14 (`phone-access`, `src/addons/phone`, built as `build/addons/phone-access/
+libmv_phone_access.dylib` / `mv_phone_access.dll`; packed by `tools/package/addon-pack.py --addon phone-access`).
+Not installed by default: Settings → Phone access offers it (Mac `PhoneAccess.swift`, Windows
+`IslandHost.PhoneAccess.cs`) and, once loaded, draws its card, which is the add-on's own view tree
+(`screens.*`, its QR `qr.*` as a surface). The work is `link.*` (the state machine), `desk.*`
+(claim/codes/devices/nearby), `service.*` (the one link per process; the first window's process holds
+`instance.lock` in the feature's folder) and `self_host.*` (this computer as the server), over `src/wire`
+(Driftwire's protocol) and `src/catalogue`. Local search's catalogue reaches it through the host table's
+`catalogue_*` rows. Keys stay in the OS store under "MediaViewer Phone access"; the library's folder stays
+where the app kept it (`~/Library/Application Support/MediaViewer/Phone Access`,
+`%LocalAppData%\MediaViewer\phone-access`), so a library set up before the add-on keeps its id.
+`MV_PHONE_ACCESS_DIR` points the add-on at another folder (the tests use it).
 
-Tests, always filtered by tag: `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+**This computer** (Set up the service…, [self-hosted.md](plans/self-hosted.md) §16) needs the
+`driftwire` program installed (`brew install longtimeno-c/tap/driftwire`, or `install.ps1`); the add-on finds
+it and runs its `host` commands. To try the card against a local build, put `build/bin/driftwire` on one of
+the places it looks (`~/.local/bin/driftwire`); remove the login entry afterwards with
+`driftwire host start-at-login off`. A local build cannot load its own unsigned add-on in the app; sideload it
+as the AI pack's recipe does (a build with `MV_ADDON_DEV_PUBLIC_KEY`).
+
+Tests, always filtered by tag: `mv_import_tests "[phone-addon]"` (the card's trees against the core's
+vocabulary, the secure field, the catalogue rows, the manifest, the module through a signed store in a
+folder of the test's own), `mv_import_tests "[phone-qr]"` (the encoder against the matrices the C# encoder
+had, read by a phone scanner), `mv_import_tests "[phone-self-host]"` (the setup against the test build of
+`driftwire host` on loopback), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
 claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
-machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the app's link over
-a Local search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`),
-and `dotnet test src.managed/MediaViewer.Chrome.Tests` (QR, words against the Swift). To try it without a
-Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that
-machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
+machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the link over a Local
+search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`). To try it
+without a Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the
+card that machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
 
-Not done: either card seen running (the Windows one is compiled only; the Mac one built, not driven), the
-phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
+Not done: the add-on's card seen running in the app on either host (the Windows chrome is compiled only;
+the Mac app built, the card drawn only through the core's registry in `[phone-addon]`), the add-on published
+on a release channel, the phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
 run against a real Synology or phone.
+
+### Another computer's folders (plan: `docs/plans/desktop-client.md`, #686)
+
+Another desktop pairs with a self-hosted computer or a Synology from its code (the phone's code, no
+password) and sees its folders pinned at the top of the folder tree, read-only. The core is `src/remote`
+(`key.*` the `remote:` keys, `cache.*` originals by content identity, `library.*` servers, pairing,
+listings, tiles and fetches) over the phone's own link (`src/mobile/link.*`, shared through the
+`mv_mobile_route` OBJECT library in `cmake/remote.cmake`, so `libmv_mobile_link.a` keeps its contents for
+the iOS project). The Mac host is `main_mac.mm` (File → Connect to a Server…, `mv_chrome_remote_*`) with the
+rows in `FolderTreeView.swift`; Windows is the core's session (`abi/abi.cpp`, `abi/remote_abi.cpp`,
+`mv_remote_*`, ABI 0.44) with the rows in `IslandHost.Remote.cs`. Servers are in `servers.json`
+(Mac `~/Library/Application Support/MediaViewer/Remote Folders`, Windows `%LocalAppData%\MediaViewer\remote`);
+their keys in the OS store ("MediaViewer Driftwire", `remote_<id>`); the cache in
+`~/Library/Caches/MediaViewer/Remote` / `%LocalAppData%\MediaViewer\remote-cache`.
+
+To try it on one Mac: run `driftwire host` (or `driftwire serve` with a `serve.json`) with a folder shared,
+take the code from `driftwire host pair` or the Phone access card, and paste it in File → Connect to a Server….
+
+```bash
+build/bin/mv_tests "[desktop-client]"          # loopback: pairing, listing, tiles, fetches, unreachable / offline / revoked
+build/bin/mv_tests "[.desktop-client-perf]"    # remote first pixel, full resolution, arrow-to-next over loopback
+```
+
+`MV_REMOTE_BENCH_JSON=path` writes the timings. They are also in `"[.perf-bench]"`.
 
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
 
@@ -524,6 +562,62 @@ cmake --build build-cli && ctest --test-dir build-cli --output-on-failure
 ```
 
 Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
+
+#### Hosting from this computer (`driftwire host`, plan: `docs/plans/self-hosted.md`)
+
+The service and a relay in one process on your own PC or Mac (slice 2; [docs/design/28](design/28-driftwire.md#on-your-own-computer-driftwire-host)).
+Its folder is `<data dir>/host`; `--data DIR` uses `DIR/host` instead.
+
+```sh
+build/bin/driftwire host setup                               # the guided run: DuckDNS, a folder, the router, a phone's QR, the VPN
+build/bin/driftwire host share ~/Pictures --label Photos     # what phones see; --backup lets them back up into it
+build/bin/driftwire host                                     # runs until Ctrl-C: the service on 7878, the relay on 47614
+build/bin/driftwire host status                              # from another terminal
+build/bin/driftwire host start-at-login on                   # LaunchAgent / systemd --user / Scheduled Task, no admin
+build/bin/driftwire host stay-awake off                      # a laptop: let it sleep
+build/bin/driftwire host name duckdns                        # asks for the subdomain and the token (never arguments)
+build/bin/driftwire host pair                                # a phone's pairing QR (needs a window ~100 columns wide)
+build/bin/driftwire host vpn on                              # prints the relay line for the laptop's Relay (your own server)
+build/bin/mv_import_tests "[host]"                           # loopback only; the supervisor case spawns mv_driftwire_cli_test
+build/bin/mv_import_tests "[host-setup]"                     # setup, pairing redeemed, DuckDNS and router keepers, the VPN through the relay
+build/bin/driftwire host pause                               # Hosting off (the server menu's toggle); resume, quit (start at login stays)
+build/bin/driftwire host status --watch                      # usage today, phones connected, again on each change; Ctrl-C ends it
+build/bin/mv_import_tests "[host-tray]"                      # the server menu, its numbers, the registry entry, the watcher, pause/quit on loopback
+```
+
+While a host runs, MediaViewer shows its own server menu-bar item / notification-area icon
+(plan "Tray"); the app must be running (the host's start at login also turns on the app's own
+login item, hidden). A soak or harness run of the Mac app never starts the watcher.
+
+Try the guided run without the internet or a router with the test build:
+`printf '%s\n' ~/Pictures "" "" "" "" n n n | build/bin/mv_driftwire_cli_test host setup --test-data /tmp/hs --test-loopback`
+(it never reaches duckdns.org or asks a router, and refuses start at login).
+
+#### Users and the LAN share (`driftwire host users`, plan: `docs/plans/self-host-users-smb.md`)
+
+```bash
+build/bin/driftwire host users                               # the list: names and roles (no sign-in)
+build/bin/driftwire host users add anna --role view          # asks the admin passphrase, then anna's password (echo off)
+build/bin/driftwire host users role anna change --folders all
+build/bin/driftwire host users password anna
+build/bin/driftwire host users remove anna
+build/bin/driftwire host users apply                         # a user still waiting for an administrator
+build/bin/mv_import_tests "[host-users]"                     # stand-in OS port; loopback only
+```
+
+Each change ends in one elevated step (`driftwire host smb-apply`, never typed): sudo at a terminal
+or the authorization dialog from the app on macOS, UAC on Windows. It makes sharing-only accounts
+and SMB3-encrypted shares with no guest access, and never changes an account or share it did not
+make. Linux says it is not offered yet (Samba later). The ports (`host_smb_mac.cpp`,
+`host_smb_win.cpp`) have never been run against a real OS: the tests use a recording stand-in and
+never make an account or a share. The Windows C++ only compiles in CI. `host_ports` refuses to
+forward 137–139, 445 and 3389, a test proves it, and `host status` shows the share's addresses and
+the users.
+
+`start-at-login on` from a build of your own points the entry at that build; turn it off before
+deleting the build (`host start-at-login off`). The test build refuses it. The running host asks the
+router for its ports and keeps a DuckDNS name updated; neither has been run against a real router or
+duckdns.org yet (the tests use stand-ins).
 
 ### The phone's library and search (`src/mobile`, `MobileCore`; plan: `docs/plans/mobile.md` M5, M6)
 

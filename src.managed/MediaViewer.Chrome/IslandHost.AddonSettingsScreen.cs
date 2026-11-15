@@ -13,8 +13,10 @@ namespace MediaViewer.Chrome;
 /// tree drawn on its page in Settings → Add-ons, under the add-on's card, with
 /// the screens' renderer (its cards are siblings of that card, never inside
 /// it). Opened while the page shows and Settings is up, closed when either
-/// goes; never a window. Driftwire's is the window's settings. The Mac's twin
-/// is AddonSettingsScreen in AddonListView.swift.
+/// goes; never a window. Driftwire's is the window's settings. Phone access's
+/// is drawn in Settings → Phone access instead, while no add-on page shows
+/// (IslandHost.PhoneAccess.cs): one settings screen is open at a time. The
+/// Mac's twin is AddonSettingsScreen in AddonListView.swift.
 /// </summary>
 public static partial class IslandHost
 {
@@ -24,6 +26,13 @@ public static partial class IslandHost
     private static ScreenAt? _settingsScreenAt;
     private static long _settingsScreenRevision = -1;
     private static ContentControl? _addonPageSettings;
+    // Contribution API 15: what is typed in a secure field, by screen and node,
+    // until the screen closes (IslandHost.Screens.cs); never in a tree.
+    private static readonly Dictionary<string, string> ScreenSecrets = new(StringComparer.Ordinal);
+
+    // Where the open settings screen is drawn: its add-on page, or Phone access's section.
+    private static ContentControl? SettingsScreenHost =>
+        _settingsScreenAt?.Addon == PhoneAccessId ? _phoneAccessScreen : _addonPageSettings;
 
     // From NoteSlotWindowScreens: the contributions' settings screens.
     private static void NoteSlotSettingsScreens(JsonElement root)
@@ -55,17 +64,31 @@ public static partial class IslandHost
     private static void SyncAddonSettingsScreen(bool reopen = false)
     {
         ScreenAt? want = null;
-        if (_settingsVisible && _slotPageId is { } id && SlotSettingsScreens.TryGetValue(id, out string? screen))
+        if (_settingsVisible && _slotPageId is { } id)
         {
-            want = new ScreenAt(id, screen);
+            if (id != PhoneAccessId && SlotSettingsScreens.TryGetValue(id, out string? screen)) want = new ScreenAt(id, screen);
+        }
+        else if (_settingsVisible && SlotSettingsScreens.TryGetValue(PhoneAccessId, out string? phone))
+        {
+            // Settings' list shows, and with it Phone access's section.
+            want = new ScreenAt(PhoneAccessId, phone);
         }
         if (_settingsScreenAt == want && !reopen) return;
-        if (_settingsScreenAt is { } was && was != want) SlotNative.CloseScreen(was.Addon, was.Screen);
+        if (_settingsScreenAt is { } was && was != want)
+        {
+            SlotNative.CloseScreen(was.Addon, was.Screen);
+            string prefix = $"{was.Addon}/{was.Screen}/";
+            foreach (string k in ScreenSecrets.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                ScreenSecrets.Remove(k);
+            }
+        }
         if (_settingsScreenAt != want)
         {
+            if (SettingsScreenHost is { } host) host.Content = null;
             _settingsScreenAt = want;
             _settingsScreenRevision = -1;
-            if (_addonPageSettings is not null) _addonPageSettings.Content = null;
+            if (SettingsScreenHost is { } next) next.Content = null;
         }
         if (want is { } at) SlotNative.OpenScreen(at.Addon, at.Screen, "", SlotTheme(), 0, 0, (float)SlotScale());
     }
@@ -75,7 +98,7 @@ public static partial class IslandHost
     // tree goes until the add-on is back.
     private static void SyncSettingsScreen(JsonElement list)
     {
-        if (_settingsScreenAt is not { } at || _addonPageSettings is null) return;
+        if (_settingsScreenAt is not { } at || SettingsScreenHost is not { } host) return;
         foreach (JsonElement s in list.EnumerateArray())
         {
             if (JStr(s, "addon") == at.Addon && JStr(s, "id") == at.Screen)
@@ -84,20 +107,20 @@ public static partial class IslandHost
                 return;
             }
         }
-        _addonPageSettings.Content = null;
+        host.Content = null;
         _settingsScreenRevision = -1;
     }
 
     private static void DrawSettingsScreen(JsonElement s, ScreenAt at)
     {
-        if (_addonPageSettings is null) return;
+        if (SettingsScreenHost is not { } host) return;
         long revision = (long)JNum(s, "revision", 0);
         if (revision == _settingsScreenRevision || ScreenPressed.Contains(at)) return;
         if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) return;
-        ScreenPlace? kept = NoteScreenPlace(_addonPageSettings.Content as UIElement);
+        ScreenPlace? kept = NoteScreenPlace(host.Content as UIElement);
         FrameworkElement content = BuildSettingsScreenContent(tree, at);
         if (kept is { } k) RestoreScreenPlace(content, k);
-        _addonPageSettings.Content = content;
+        host.Content = content;
         _settingsScreenRevision = revision;
     }
 

@@ -36,7 +36,7 @@ a { color: var(--accent); }
 <body>
 <main>
 <h1>Privacy</h1>
-<p class="lead">MediaViewer for NAS, for iPhone and iPad. Last changed 12 November 2026.</p>
+<p class="lead">MediaViewer for NAS, for iPhone and iPad. Last changed 14 November 2026.</p>
 
 <p><strong>The app collects no data.</strong> There is no account to make, no analytics, no
 advertising, no tracking and no crash reports sent anywhere. Nothing you do in the app, and
@@ -44,16 +44,16 @@ nothing about your photos and videos, is sent to Oakforge Studios LTD, the app's
 anyone else. We run no server for this app.</p>
 
 <h2>Who the app talks to</h2>
-<p>Only the MediaViewer service on your own NAS, at the addresses in the code you scanned from
+<p>Only the MediaViewer service on your own server, at the addresses in the code you scanned from
 MediaViewer on your computer: its address on its own network and, if you set one up, its name on
 the internet. Every connection is encrypted end to end, and the app checks that the service is the
 one it paired with before it asks for anything. The service only lets in phones you paired, and
 only reads the folders you chose to share with them.</p>
 <p>Over that connection the app copies your library's catalogue and fetches thumbnails, photos and
-clips as you look at them. It writes to your NAS only if you turn on phone backup: then it copies
+clips as you look at them. It writes to your server only if you turn on phone backup: then it copies
 this phone's photos and videos into the one backup folder set up for phones on your computer, under
-the storage limit set there. It never replaces or deletes a file on your NAS.</p>
-<p>During setup, on a phone with mobile data, the app tries once to reach your NAS's internet name
+the storage limit set there. It never replaces or deletes a file on your server.</p>
+<p>During setup, on a phone with mobile data, the app tries once to reach your server's internet name
 over mobile data, so it can tell you whether the app will work away from home. Looking up that
 name goes through your network's or carrier's name service, as any app's connection does.</p>
 
@@ -61,13 +61,13 @@ name goes through your network's or carrier's name service, as any app's connect
 <ul>
 <li><strong>Camera.</strong> Only to scan the code MediaViewer shows on your computer. The picture
 is read on the phone to find the code; it is not saved or sent.</li>
-<li><strong>Local network.</strong> To reach your NAS on the network you are on.</li>
+<li><strong>Local network.</strong> To reach your server on the network you are on.</li>
 <li><strong>Photos, add only.</strong> Asked for the first time you tap Save to Photos, and used
 only to add the copy you asked for. Add-only access cannot see or read anything already in your
 Photos library.</li>
 <li><strong>Photos, read.</strong> Asked only when you turn on phone backup, and used only to copy
-your photos and videos, as they were shot, to the backup folder on your own NAS. You can allow all
-of them or only the ones you choose. With the sample library the "NAS" is a folder inside the app on
+your photos and videos, as they were shot, to the backup folder on your own server. You can allow all
+of them or only the ones you choose. With the sample library your server is a folder inside the app on
 this phone, so nothing leaves the phone. Backup never deletes anything from Photos.</li>
 </ul>
 <p>You can turn any of these off in the Settings app. Without the camera you cannot pair a new
@@ -75,7 +75,7 @@ library; without Photos you cannot save copies or back up; everything else keeps
 
 <h2>What is kept on your phone</h2>
 <ul>
-<li><strong>The catalogue</strong> of your library, copied from your NAS so that search works
+<li><strong>The catalogue</strong> of your library, copied from your server so that search works
 without a connection: file names, folders, dates, places, camera details, the names of people you
 named in MediaViewer on your computer, words found in pictures and words said in clips, small
 thumbnails, and the model the app searches with.</li>
@@ -83,12 +83,12 @@ thumbnails, and the model the app searches with.</li>
 quickly. iOS may clear it when the phone needs space.</li>
 <li><strong>Your recent searches</strong> (the last 20), which you can remove one by one or clear
 on the search screen.</li>
-<li><strong>The pairing keys</strong> that let the phone into your NAS, in the iOS Keychain, kept on
+<li><strong>The pairing keys</strong> that let the phone into your server, in the iOS Keychain, kept on
 this device only.</li>
 <li><strong>The app's settings</strong>, such as its appearance.</li>
 <li><strong>The backup record</strong>, if you use phone backup: for each photo backed up, which one
 it was (iCloud Photos' identifier for it), its file name, size and checksum, and where it went. A
-copy is kept in the backup folder on your NAS so a reinstall or a new phone need not copy everything
+copy is kept in the backup folder on your server so a reinstall or a new phone need not copy everything
 again. With the sample library, the photos it backed up are also kept, in a folder inside the app.</li>
 </ul>
 <p>The catalogue, the cache and your recent searches are kept out of iCloud and computer backups,
@@ -98,9 +98,9 @@ iOS's data protection, locked until you first unlock the phone after it starts.<
 <h2>Removing it</h2>
 <p><strong>Settings &rarr; Forget this library</strong> removes everything the app keeps about the
 library: the catalogue, the cache, your recent searches, the pairing keys, the backup record and,
-with the sample library, its backup folder. Nothing on your NAS changes: photos already backed up
+with the sample library, its backup folder. Nothing on your server changes: photos already backed up
 there stay. You can also remove the phone from MediaViewer on your computer, after which the service
-on your NAS no longer lets it in. Deleting the app removes its files with it.</p>
+on your server no longer lets it in. Deleting the app removes its files with it.</p>
 
 <h2>Children</h2>
 <p>The app is not aimed at children and collects nothing from anyone.</p>

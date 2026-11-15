@@ -60,7 +60,8 @@ struct session_options {
   // (rich mode only; the program sets it when the terminal takes sequences).
   bool mouse = false;
   std::string version;
-  std::string data_dir;  // "" : none (shown in /settings)
+  std::string data_dir;  // "" : none (shown in /settings); /host's --data
+  bool test_hooks = false;  // the test build: /host runs as `driftwire host` does there
   std::string name_note; // "this run" when --name was given
   path_options paths;    // the current folder, home, the platform's rules
   // --save-to: the Save to kept before this run, put back at the end unless

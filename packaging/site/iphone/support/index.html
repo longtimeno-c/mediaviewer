@@ -36,35 +36,35 @@ a { color: var(--accent); }
 <body>
 <main>
 <h1>MediaViewer for NAS</h1>
-<p class="lead">Your NAS library, searched from your phone. Support for the iPhone and iPad app.</p>
+<p class="lead">Your own library, searched from your phone. Support for the iPhone and iPad app.</p>
 
 <h2>What you need</h2>
 <p>The app shows a library that MediaViewer on your computer has already indexed. On its own it has
 nothing to show. You need:</p>
 <ul>
 <li><strong>MediaViewer on a Mac or Windows PC</strong>, with Local search and Driftwire installed,
-and your library on the NAS indexed by Local search. MediaViewer is free:
+and your library on your server indexed by Local search. MediaViewer is free:
 <a href="https://github.com/longtimeno-c/mediaviewer/releases/latest">download it here</a>.</li>
-<li><strong>A Synology NAS</strong> running the MediaViewer service, which serves the library to
-your phone. Your computer claims the service and adds phones to it.</li>
+<li><strong>A Synology NAS, or your own computer</strong> that stays on, running the MediaViewer
+service, which serves the library to your phone. Your computer claims the service and adds phones to it.</li>
 <li><strong>To use it away from home:</strong> a public IPv4 address with one port forwarded to the
 service, or a public IPv6 address with that port open. Without either, the app works only on the
-NAS's own network. Forward that one port only: never the NAS's file sharing or admin page.</li>
+server's own network. Forward that one port only: never the server's file sharing or admin page.</li>
 </ul>
 <p>Your computer does not need to be on once the phone is paired. Search runs on the phone, so it
-works with no connection at all; photos and clips come from the NAS.</p>
+works with no connection at all; photos and clips come from your server.</p>
 
 <h2>Pairing a phone</h2>
 <ol>
 <li>In MediaViewer on your computer, open Settings &rarr; Local search &rarr; Phone access. Claim
-the service on your NAS once, from the NAS's own network.</li>
+the service on your server once, from the server's own network.</li>
 <li>Choose <strong>Add a phone</strong> &rarr; <strong>Show code</strong>. A code appears, with your
 library's name and a check code.</li>
 <li>In the app, tap <strong>Scan code</strong> and point the camera at it. No camera? Choose a
 picture of the code, or paste the link MediaViewer shows next to it.</li>
 <li>Check that the phone shows the same library name and check code as the computer, and pair only
 if they match.</li>
-<li>The app connects to the NAS, tests the route from outside over mobile data (an iPad without
+<li>The app connects to your server, tests the route from outside over mobile data (an iPad without
 mobile data skips this and says so), and copies the catalogue. A large library can be hundreds of
 megabytes: the app shows the size first, and waits for Wi-Fi unless you tap to copy now.</li>
 </ol>
@@ -72,13 +72,13 @@ megabytes: the app shows the size first, and waits for Wi-Fi unless you tap to c
 
 <h2>Common problems</h2>
 
-<h3>&ldquo;Can't reach your Synology.&rdquo;</h3>
-<p>The app lists each address it tried and why it failed. Check that the NAS is on and the
+<h3>&ldquo;Can't reach your server.&rdquo;</h3>
+<p>The app lists each address it tried and why it failed. Check that the server is on and the
 MediaViewer service is running, and, away from home, that the port is still forwarded. You can
 keep searching what is on the phone meanwhile, and tap <strong>Try again</strong> in Settings.</p>
 
-<h3>&ldquo;Your Synology can't be reached from the internet.&rdquo;</h3>
-<p>The phone reached the NAS at home but not from outside. Your provider may not give that building
+<h3>&ldquo;Your server can't be reached from the internet.&rdquo;</h3>
+<p>The phone reached the server at home but not from outside. Your provider may not give that building
 a public address (many share one address between customers), or the port is not forwarded. Ask
 your provider for a public IPv4 address, or use IPv6 if your provider offers it.</p>
 
@@ -88,18 +88,22 @@ MediaViewer itself.</p>
 
 <h3>&ldquo;Last updated &hellip; days ago.&rdquo;</h3>
 <p>The phone has the last catalogue your computer published. Open MediaViewer on your computer
-with the NAS reachable so it publishes a new one; the phone picks it up the next time it connects.</p>
+with your server reachable so it publishes a new one; the phone picks it up the next time it connects.</p>
 
-<h3>&ldquo;This one hasn't reached your Synology yet.&rdquo;</h3>
-<p>The catalogue knows the item but the file is not on the NAS yet, for example straight after an
+<h3>&ldquo;This one hasn't reached your server yet.&rdquo;</h3>
+<p>The catalogue knows the item but the file is not on the server yet, for example straight after an
 import. Try again once it has copied.</p>
 
-<h3>&ldquo;Your Synology isn't sharing the folder this came from.&rdquo;</h3>
-<p>Add that folder to the service in MediaViewer on your computer, named the same as its shared
-folder on the NAS.</p>
+<h3>&ldquo;Your server isn't sharing the folder this came from.&rdquo;</h3>
+<p>Add that folder to the service in MediaViewer on your computer, under Phone access, named the
+same as the folder on your server.</p>
 
-<h3>&ldquo;The MediaViewer service on your Synology needs updating.&rdquo;</h3>
-<p>The app is newer than the service on the NAS. Update the service, then open the app again.</p>
+<h3>A folder says &ldquo;Not connected&rdquo;</h3>
+<p>The drive that holds it is not plugged into your server, or the share is not mounted. Connect it
+again; the folder comes back by itself the next time the phone looks.</p>
+
+<h3>&ldquo;The MediaViewer service on your server needs updating.&rdquo;</h3>
+<p>The app is newer than the service on your server. Update the service, then open the app again.</p>
 
 <h3>&ldquo;This phone was removed from your library on your computer.&rdquo;</h3>
 <p>Someone removed this phone in Phone access. Scan a new code to use it again.</p>
@@ -118,7 +122,7 @@ read your Photos library.</p>
 
 <h3>Starting again</h3>
 <p>Settings &rarr; <strong>Forget this library</strong> removes everything the app keeps on the phone.
-Nothing on your NAS changes. Scan a new code to connect again.</p>
+Nothing on your server changes. Scan a new code to connect again.</p>
 
 <h2>Still stuck?</h2>
 <p>Open an issue at

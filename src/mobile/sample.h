@@ -57,6 +57,13 @@ inline constexpr std::string_view kGuestCode = "GUEST";
 inline constexpr std::string_view kGuestLink = "mediaviewer://sample-guest";
 inline constexpr std::int64_t kGuestSeconds = 600;
 
+// One folder whose drive is not connected (docs/plans/self-hosted.md §6), so the phone's
+// "Not connected" can be seen with no server: roots() adds it after the published ones, offline.
+// It is not in files.json and holds nothing; every read of it answers not_found, as a service does
+// for an offline folder. Nothing in the published folder changes.
+inline constexpr std::string_view kOfflineRootID = "7d7e7d7e7d7e7d7e";
+inline constexpr std::string_view kOfflineRootLabel = "Travel drive";
+
 // Whether `text` is the sample code or its link.
 [[nodiscard]] bool is_code(std::string_view text);
 // Whether `text` is the guest sample code or its link.

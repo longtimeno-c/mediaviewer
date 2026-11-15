@@ -7,7 +7,10 @@
 
 #include "driftwire_fixture.h"
 
+#include <algorithm>
 #include <ctime>
+#include <string>
+#include <vector>
 
 #include "core/json.h"
 
@@ -15,13 +18,14 @@
 #include "catalogue/catalog_chain.h"
 #include "catalogue/publisher.h"
 #include "core/json.h"
-#include "phone/desk.h"
-#include "phone/link.h"
+#include "addons/phone/desk.h"
+#include "addons/phone/link.h"
 #include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/pair_check.h"
 #include "wire/serve.h"
 #include "wire/serve_client.h"
+#include "wire/share_users.h"
 #include "io/content_hash.h"
 
 #if defined(__APPLE__)
@@ -78,7 +82,10 @@ struct nas {
   std::mutex saved_m;
   std::unique_ptr<serve::server> srv;
 
-  nas() {
+  // `real_network`: the service decides what its own network is, as it does
+  // on a NAS or a PC (loopback is the same machine), instead of the test's switch.
+  bool real_network = false;
+  explicit nas(bool real = false) : real_network(real) {
     fs::create_directories(share);
     bool made = false;
     REQUIRE(serve::set_up(*store, identity, access, made));
@@ -93,7 +100,7 @@ struct nas {
     o.loopback_only = true;
     o.per_minute = 100000;
     o.claimable = true;
-    o.own_network = [this](const sp::net::address&) { return own.load(); };
+    if (!real_network) o.own_network = [this](const sp::net::address&) { return own.load(); };
     o.now_unix = [this] {
       const auto t = fake_now.load();
       return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
@@ -191,6 +198,18 @@ TEST_CASE("phone pairing: a desktop that can write the share claims the service"
   std::lock_guard lock(n.saved_m);
   REQUIRE(n.saved.size() == 1);
   CHECK(n.saved[0].roots.size() == 2);
+}
+
+TEST_CASE("phone pairing: a desktop on the same computer claims the service over loopback", "[phone-pairing]") {
+  // Self-hosting (docs/plans/self-hosted.md): the service and the desktop on
+  // one PC. The service's own rule for its network, not the test's, admits it.
+  nas n(true);
+  desktop pc("Home PC");
+  REQUIRE(pc.d->claim(utf8(n.share), n.local(), "home.duckdns.org:7878"));
+  const auto s = pc.d->service();
+  REQUIRE(s);
+  CHECK(s->identity == n.identity);
+  CHECK(n.store->exists(serve::kOwnerName));
 }
 
 TEST_CASE("phone pairing: a service is claimed once", "[phone-pairing]") {
@@ -2167,4 +2186,381 @@ TEST_CASE("phone pairing: a guest code's phone backs nothing up, and the grant k
   serve::client::write_refused why;
   CHECK_FALSE(backup_write(*c, root, "x.jpg", why));
   CHECK(why.why == serve::kWhyNotAllowed);
+}
+
+// ---- This computer as the server (docs/plans/self-hosted.md slice 6) --------------------------
+
+#if !defined(_WIN32)
+#include "io/child_process.h"
+#include "addons/phone/self_host.h"
+
+namespace {
+
+// The card's setup run against the test build of the program: `host share`
+// as the person's would run it, and the host itself started here on loopback
+// in place of `host start-at-login on` (a test never registers a login entry).
+struct this_computer {
+  scratch_dir dir{"phone_self_host"};
+  fs::path data = dir.root() / "driftwire";
+  fs::path photos = dir.root() / "Photos";
+  fs::path backup = dir.root() / "Backup";
+  std::unique_ptr<mv::io::child_process> host;
+  int starts = 0;
+  mv::phone::self_host::where where() const {
+    mv::phone::self_host::where w;
+    w.program = MV_DRIFTWIRE_CLI_TEST_PATH;
+    w.data_dir = utf8(data);
+    w.data_args = {"--test-data", utf8(data)};
+    return w;
+  }
+  this_computer() {
+    fs::create_directories(data / "host" / "serve");
+    fs::create_directories(photos);
+    fs::create_directories(backup);
+    fs::permissions(data, fs::perms::owner_all, fs::perm_options::replace);
+    fs::permissions(data / "host", fs::perms::owner_all, fs::perm_options::replace);
+    fs::permissions(data / "host" / "serve", fs::perms::owner_all, fs::perm_options::replace);
+    // Port 0 (the test build takes it): never the real 7878 in a test.
+    std::ofstream(data / "host" / "serve" / "serve.json", std::ios::binary) << R"({"port":0,"name":"Test host","roots":[]})";
+  }
+  ~this_computer() {
+    if (host) {
+      host->close_stdin();
+      host->kill();
+      (void)host->wait();
+    }
+  }
+  mv::expected start() {
+    ++starts;
+    if (host) return {};
+    host = std::make_unique<mv::io::child_process>();
+    const std::vector<std::string> args = {"host", "--test-loopback", "--test-quick", "--test-data", utf8(data)};
+    return host->start(MV_DRIFTWIRE_CLI_TEST_PATH, args);
+  }
+};
+
+struct host_link {
+  scratch_dir dir{"phone_link_host"};
+  std::unique_ptr<sp::secrets::store> keys = folder_store(dir.root() / "keys");
+  std::unique_ptr<mv::phone::link> l;
+  host_link(desktop& mac, this_computer& pc) {
+    mv::phone::link::options o;
+    o.data_dir = utf8(dir.root() / "phone");
+    o.key_store = [this]() { return sp::secrets::file_store(utf8(dir.root() / "keys")); };
+    o.route = [&mac](const char* method, const std::string& json) {
+      return desk::route_request(*mac.d, "phone", method, json);
+    };
+    o.tick_s = 3600;
+    o.self_host = [&pc] { return pc.where(); };
+    o.start_host = [&pc](const mv::phone::self_host::where&) { return pc.start(); };
+    o.lan_address = [] { return std::string("::1"); };  // the test build listens on ::1 alone
+    o.host_wait_ms = 20000;
+    l = std::make_unique<mv::phone::link>(std::move(o));
+  }
+  mv::json::value done() {
+    mv::json::value v;
+    REQUIRE(eventually([&] {
+      auto t = mv::json::parse(l->state_json(), 6);
+      if (!t || !t->str("busy") || !t->str("busy")->empty()) return false;
+      v = *t;
+      return true;
+    }, 40));
+    return v;
+  }
+  mv::json::value ask(const std::string& request) {
+    REQUIRE(l->request(request));
+    return done();
+  }
+};
+
+std::string setup_request(const this_computer& pc, const std::string& duckdns = {}, const std::string& token = {}) {
+  mv::json::writer w;
+  w.begin_object().key("do").string("host_setup").key("folders").begin_array();
+  w.begin_object().key("path").string(utf8(pc.photos)).end_object();
+  w.begin_object().key("path").string(utf8(pc.backup)).key("label").string("Phone backup").key("backup").boolean(true).end_object();
+  w.end_array();
+  if (!duckdns.empty()) w.key("duckdns").string(duckdns).key("duckdns_token").string(token);
+  w.end_object();
+  return w.str();
+}
+
+}  // namespace
+
+TEST_CASE("phone pairing: This computer shares, starts, claims over loopback and shows a code", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+
+  // Before: installed (the program is there), nothing shared, not running.
+  auto v = app.ask(R"({"do":"host_status"})");
+  const auto* h = v.find("host");
+  REQUIRE(h);
+  CHECK(h->boolean("installed") == true);
+  CHECK(h->boolean("set_up") == false);
+  CHECK(h->boolean("running") == false);
+
+  v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  CHECK(pc.starts == 1);
+  CHECK(v.boolean("claimed") == true);
+  CHECK(*v.str("folder") == utf8(pc.photos));  // the library is in the folder phones read
+  CHECK(*v.str("host_step") == "");
+  h = v.find("host");
+  REQUIRE(h);
+  CHECK(h->boolean("running") == true);
+  CHECK(h->boolean("set_up") == true);
+  const auto port = h->integer("service_port").value_or(0);
+  CHECK(port > 0);
+  CHECK(*h->str("name") == "Test host");
+  CHECK(*v.str("local") == "[::1]:" + std::to_string(port));
+  CHECK(*v.str("public") == "");
+  // Both folders shared by the program, the backup one as a backup folder, plus the catalogue's.
+  bool photos = false, backup = false;
+  for (const auto& f : v.find("folders")->a) {
+    photos = photos || *f.str("label") == "Photos";
+    backup = backup || (*f.str("label") == "Phone backup" && f.boolean("backup") == true);
+  }
+  CHECK(photos);
+  CHECK(backup);
+  // The code for the first phone follows by itself, with this computer's address in it.
+  REQUIRE(*v.str("qr") != "");
+  const auto qr = mv::json::parse(qr_payload(*v.str("qr")), 4);
+  REQUIRE(qr);
+  CHECK(qr->str("code"));
+
+  // Run again: nothing shared twice, the same host, claimed again by its owner.
+  v = app.ask(R"({"do":"pair_stop"})");
+  v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  CHECK(*v.str("error") == "");
+  CHECK(v.boolean("claimed") == true);
+  // Nothing shared twice: each label once. (The host's count in `state.json`
+  // takes the claim's Catalogue only once the host has rewritten it, so it is
+  // 2 or 3 depending on timing; the folder list is the answer itself.)
+  std::vector<std::string> labels;
+  for (const auto& f : v.find("folders")->a) labels.push_back(*f.str("label"));
+  CHECK(std::count(labels.begin(), labels.end(), "Photos") == 1);
+  CHECK(std::count(labels.begin(), labels.end(), "Phone backup") == 1);
+  std::sort(labels.begin(), labels.end());
+  CHECK(std::adjacent_find(labels.begin(), labels.end()) == labels.end());
+  const auto counted = v.find("host")->integer("folders").value_or(0);
+  CHECK((counted == 2 || counted == 3));
+}
+
+TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code and the token in the host's store", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  const std::string token = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+  auto v = app.ask(setup_request(pc, "Home.duckdns.org", token));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  const auto port = v.find("host")->integer("service_port").value_or(0);
+  CHECK(*v.str("public") == "home.duckdns.org:" + std::to_string(port));
+  CHECK(*v.find("host")->str("duckdns") == "home");
+  // Where `host name duckdns` keeps them: host.json's "ddns", the token in the host's own store.
+  std::ifstream in(pc.data / "host" / "host.json", std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  const auto settings = mv::json::parse(text.str(), 4);
+  REQUIRE(settings);
+  CHECK(*settings->str("ddns") == "home");
+  CHECK(settings->integer("ddns_stamp").value_or(0) > 0);
+  CHECK(text.str().find(token) == std::string::npos);  // never in a file anyone reads
+  auto store = sp::secrets::file_store(utf8(pc.data / "host" / "secrets"));
+  REQUIRE(store);
+  const auto kept = store->get(mv::phone::self_host::kTokenSecret);
+  REQUIRE(kept);
+  CHECK(std::string(kept->begin(), kept->end()) == token);
+  // Nothing the card shows holds it.
+  CHECK(app.l->state_json().find(token) == std::string::npos);
+}
+
+TEST_CASE("phone pairing: This computer says what is wrong before anything runs", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  auto v = app.ask(R"({"do":"host_setup","folders":[]})");
+  CHECK(*v.str("error") == "host_no_folders");
+  v = app.ask(R"({"do":"host_setup","folders":[{"path":"/x","backup":true}]})");
+  CHECK(*v.str("error") == "host_no_library");
+  v = app.ask(setup_request(pc, "a.b", "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"));
+  CHECK(*v.str("error") == "host_bad_name");
+  v = app.ask(setup_request(pc, "home", "not-a-token"));
+  CHECK(*v.str("error") == "host_bad_token");
+  CHECK(pc.starts == 0);
+  // The program's own refusal is shown in its words: a folder that is not there.
+  mv::json::writer w;
+  w.begin_object().key("do").string("host_setup").key("folders").begin_array();
+  w.begin_object().key("path").string(utf8(pc.dir.root() / "gone")).end_object();
+  w.end_array().end_object();
+  v = app.ask(w.str());
+  CHECK(*v.str("error") == "host_share");
+  CHECK(v.str("host_said")->find("not a folder") != std::string::npos);
+  CHECK(pc.starts == 0);
+  CHECK_FALSE(v.boolean("claimed").value_or(false));
+}
+
+TEST_CASE("phone pairing: This computer with no driftwire says so", "[phone-pairing][phone-self-host]") {
+  desktop mac;
+  scratch_dir dir{"phone_no_driftwire"};
+  mv::phone::link::options o;
+  o.data_dir = utf8(dir.root() / "phone");
+  o.key_store = [&dir]() { return sp::secrets::file_store(utf8(dir.root() / "keys")); };
+  o.route = [&mac](const char* method, const std::string& json) { return desk::route_request(*mac.d, "phone", method, json); };
+  o.self_host = [] { return mv::phone::self_host::where{}; };
+  mv::phone::link l(std::move(o));
+  REQUIRE(l.request(R"({"do":"host_setup","folders":[{"path":"/Volumes/P"}]})"));
+  mv::json::value v;
+  REQUIRE(eventually([&] {
+    auto t = mv::json::parse(l.state_json(), 6);
+    if (!t || !t->str("busy")->empty()) return false;
+    v = *t;
+    return true;
+  }));
+  CHECK(*v.str("error") == "no_driftwire_program");
+  CHECK(v.find("host")->boolean("installed") == false);
+}
+#endif
+
+TEST_CASE("phone pairing: the host's users are read freely, added only unlocked, removed without", "[phone-pairing][host-users]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto s = m.session();
+  REQUIRE(s);
+  CHECK((*s)->caps().features.end() !=
+        std::find((*s)->caps().features.begin(), (*s)->caps().features.end(), std::string(serve::kFeatureUsers)));
+  auto list = (*s)->admin("{\"do\":\"users\"}");
+  REQUIRE(list);
+  CHECK(*list == "{\"users\":[]}");
+  const std::string add = R"({"do":"user_set","name":"anna","role":"view","folders":["Photos"]})";
+  std::string refusal;
+  CHECK_FALSE((*s)->admin(add, nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  auto added = (*s)->admin(add);
+  REQUIRE(added);
+  CHECK(added->find("\"name\":\"anna\"") != std::string::npos);
+  CHECK(added->find("\"applied\":0") != std::string::npos);
+  CHECK(added->find("password") == std::string::npos);
+  // Bad names and roles, and a password field, are refused or ignored: none is kept.
+  CHECK_FALSE((*s)->admin(R"({"do":"user_set","name":"root","role":"view"})"));
+  CHECK_FALSE((*s)->admin(R"({"do":"user_set","name":"ben","role":"boss"})"));
+  REQUIRE((*s)->admin(R"({"do":"user_set","name":"ben","role":"change","password":"never kept"})"));
+  {
+    const auto bytes = n.store->get(mv::driftwire::serve::share_users::kUsersName);
+    REQUIRE(bytes);
+    CHECK(std::string(bytes->begin(), bytes->end()).find("never kept") == std::string::npos);
+  }
+  // Locked again: removing takes access away and needs nothing.
+  REQUIRE((*s)->admin("{\"do\":\"lock\"}"));
+  CHECK((*s)->admin(R"({"do":"user_remove","name":"ben"})"));
+  CHECK_FALSE((*s)->admin(R"({"do":"user_remove","name":"ben"})"));  // gone already
+  CHECK_FALSE((*s)->admin(R"({"do":"user_set","name":"anna","role":"admin"})", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+
+  // The desktop's side: the same, through the desk's kept unlock.
+  desktop mac;
+  nas other;
+  REQUIRE(mac.d->claim(utf8(other.share), other.local(), "", kPass, true));
+  auto rows = mac.d->users("user_set", "cleo", "admin");
+  REQUIRE(rows);
+  CHECK(rows->find("\"cleo\"") != std::string::npos);
+  REQUIRE(mac.d->lock());
+  CHECK_FALSE(mac.d->users("user_set", "dan", "view"));
+  CHECK(why_desk(*mac.d) == "needs-unlock");
+  auto routed = desk::route_request(*mac.d, "phone", "users", "{}");
+  REQUIRE(routed);
+  CHECK(routed->find("cleo") != std::string::npos);
+  CHECK(desk::route_request(*mac.d, "phone", "user_remove", R"({"name":"cleo"})"));
+}
+
+TEST_CASE("phone pairing: a device's role is in its caps; a desktop starts view-only; only change may write",
+          "[phone-pairing][host-users]") {
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  auto owner_session = m.session();
+  REQUIRE(owner_session);
+  CHECK((*owner_session)->caps().role == "admin");
+  REQUIRE((*owner_session)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  const fs::path folder = n.dir.root() / "role-backup";
+  fs::create_directories(folder);
+  mv::json::writer add;
+  add.begin_object().key("do").string("add_root").key("label").string("Phone backup").key("path").string(utf8(folder));
+  add.key("backup").begin_object().key("limit").integer(8000000).key("reserve").integer(0).end_object().end_object();
+  auto added = (*owner_session)->admin(add.str());
+  REQUIRE(added);
+  const std::string root = *mv::json::parse(*added, 4)->str("id");
+  const auto code_request = [](char c) {
+    return "{\"do\":\"pair_code\",\"code\":\"" + std::string(32, c) + "\",\"ttl_ms\":60000}";
+  };
+
+  // A phone by a plain code: unlimited, "change", may write.
+  REQUIRE((*owner_session)->admin(code_request('a')));
+  const key32 phone = random_key();
+  auto p = n.phone(phone, std::string(32, 'a'));
+  REQUIRE(p);
+  CHECK((*p)->caps().role == "change");
+  CHECK(n.has_device(phone));
+
+  // A desktop by a plain code: "view", on the grants (not the paired list), no guest, no write.
+  REQUIRE((*owner_session)->admin(code_request('b')));
+  const key32 desk_key = random_key();
+  serve::client::options o;
+  o.access_key = n.access;
+  o.device_key = desk_key;
+  o.service_key = n.identity;
+  o.id = "cccccccccccccccc";
+  o.pair_code = std::string(32, 'b');
+  o.device_name = "Studio Mac";
+  o.device_kind = serve::kDeviceDesktop;
+  o.ops = serve::kAllOps | serve::kWriteOp;
+  auto d = serve::client::open(n.connect(), o);
+  REQUIRE(d);
+  CHECK((*d)->caps().role == "view");
+  CHECK_FALSE(n.has_device(desk_key));
+  std::vector<serve::grants::grant> limited;
+  REQUIRE(serve::grants::load(*n.store, limited));
+  REQUIRE(limited.size() == 1);
+  CHECK_FALSE(limited[0].backup);
+  CHECK_FALSE(limited[0].guest);
+  CHECK(limited[0].expires == 0);
+  {
+    auto w = writer(n, desk_key);
+    CHECK(w->caps().role == "view");
+    serve::client::write_refused why;
+    CHECK_FALSE(backup_write(*w, root, "desk.jpg", why));
+    CHECK(why.why == serve::kWhyNotAllowed);
+  }
+  const std::string desk_hex = mv::driftwire::key_hex(public_of(desk_key));
+  // "change" adds access: refused locked, then given unlocked; the next session says so and writes.
+  REQUIRE((*owner_session)->admin("{\"do\":\"lock\"}"));
+  std::string refusal;
+  CHECK_FALSE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"change\"}", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  CHECK_FALSE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"boss\"}"));
+  CHECK_FALSE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"view\",\"backup\":true}"));
+  REQUIRE((*owner_session)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"change\"}"));
+  {
+    auto w = writer(n, desk_key);
+    CHECK(w->caps().role == "change");
+    serve::client::write_refused why;
+    CHECK(backup_write(*w, root, "desk.jpg", why));
+  }
+  // Back to "view": takes access away, no unlock needed.
+  REQUIRE((*owner_session)->admin("{\"do\":\"lock\"}"));
+  REQUIRE((*owner_session)->admin("{\"do\":\"grant\",\"key\":\"" + desk_hex + "\",\"role\":\"view\"}"));
+  auto w = writer(n, desk_key);
+  CHECK(w->caps().role == "view");
+  // Wire form: kind only "desktop"; anything else is a phone.
+  CHECK(serve::parse_pair(serve::pair_json(std::string(32, 'c'), "X", "desktop"))->kind == "desktop");
+  CHECK(serve::parse_pair(R"({"code":")" + std::string(32, 'c') + R"(","kind":"fridge"})")->kind.empty());
 }

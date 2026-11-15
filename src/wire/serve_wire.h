@@ -126,6 +126,7 @@ inline constexpr const char* kWhyOffset = "offset";            // `at` is not wh
 inline constexpr const char* kWhyHash = "hash";                // what reached the disk is not what was sent
 inline constexpr const char* kWhyBusy = "busy";                // this device is already writing that name
 inline constexpr const char* kWhyName = "name";                // a name too long to keep beside its unfinished copy
+inline constexpr const char* kWhyOffline = "offline";          // the folder is not there now (a drive unplugged)
 inline constexpr std::size_t kMaxWriteName = 200;              // bytes of the last part of `rel`
 // The 16 hex digits a device's files are known by in a backup folder: its unfinished
 // copies and its ledger. The first 8 bytes of BLAKE2b-256 over its public key.
@@ -155,7 +156,19 @@ struct caps_msg {
   bool has_grant = false;
   std::int64_t grant_expires = 0;
   bool grant_scoped = false;
+  // The device's role (self-host-users-smb.md §9): "view", "change" or "admin"; "" from a
+  // service older than roles (treat as "change" for a paired device: it could write).
+  std::string role;
+  // The server's combined drives, when they are not healthy (docs/plans/self-host-drives.md §4):
+  // "degraded", "rebuilding", "offline" or "failing"; "" from a service with none, or from one
+  // older than that.
+  std::string storage;
 };
+inline constexpr const char* kCapsRole = "role";
+// One of the words above.
+[[nodiscard]] bool is_storage_word(std::string_view word) noexcept;
+// What the phone says for it ("Your server's mirror lost a drive. …"); "" for none.
+[[nodiscard]] const char* storage_words(std::string_view word) noexcept;
 // `owner_fields`: members appended to the object as they are (the owner's
 // "features" and "passphrase"), or empty.
 [[nodiscard]] std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields = {});
@@ -220,6 +233,10 @@ struct root_info {
   std::string label;
   bool backup = false;    // a backup folder (1.1)
   bool writable = false;  // and this device may write there
+  // Its folder is not there right now (an external drive unplugged, a share
+  // not mounted): listed so the phone keeps it, every request on it answers
+  // not_found with {"why":"offline"} until it is back. Sent only when true.
+  bool offline = false;
 };
 [[nodiscard]] std::string roots_json(std::span<const root_info> roots);
 [[nodiscard]] std::optional<std::vector<root_info>> parse_roots(std::string_view json);
@@ -255,9 +272,14 @@ inline constexpr std::int64_t kMaxPairTtlMs = 600000;
 
 // serve_pair: the code the QR carried and what the phone calls itself.
 [[nodiscard]] std::string pair_json(std::string_view code, std::string_view name);
+// `kind`: kDeviceDesktop for a desktop opening the folders (it starts as
+// "can view files"); "" for a phone. A service from before this ignores it.
+inline constexpr const char* kDeviceDesktop = "desktop";
+[[nodiscard]] std::string pair_json(std::string_view code, std::string_view name, std::string_view kind);
 struct pair_msg {
   std::string code;
   std::string name;
+  std::string kind;  // "" or kDeviceDesktop
 };
 [[nodiscard]] std::optional<pair_msg> parse_pair(std::string_view json);
 
@@ -279,6 +301,13 @@ struct root_config {
   bool backup = false;
   std::uint64_t limit = 0;
   std::uint64_t reserve = 0;
+  // Self-hosting (docs/plans/self-hosted.md §6), set by `driftwire host share`:
+  // `mount`, the folder is a mount point (POSIX: on another device than its
+  // parent), so an unmounted one left as an empty folder reads offline;
+  // `volume`, on Windows the volume's GUID path ("\\?\Volume{...}\"), so a
+  // drive whose letter changed is found again. Neither is ever sent.
+  bool mount = false;
+  std::string volume{};
 };
 struct config {
   std::uint16_t port = 0;
@@ -299,8 +328,10 @@ struct config {
 // false for anything else (no port, port 0, spaces or control characters).
 [[nodiscard]] bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port);
 // {"port":N,"name":"...","roots":[{"id","label","path"}],"relay":"host:port"?}. `any_port`: port 0
-// is accepted (the OS picks; the test build only): a service needs a fixed one.
-[[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false);
+// is accepted (the OS picks; the test build only): a service needs a fixed one. `no_roots`: a
+// config with no folders yet is accepted (`driftwire host`, which serves nothing until one is
+// shared); the service itself needs one.
+[[nodiscard]] result<config> parse_config(std::string_view json, bool any_port = false, bool no_roots = false);
 // The same, written ("backup":{"limit","reserve"} only on a backup folder).
 [[nodiscard]] std::string config_json(const config& c);
 // The free space a backup folder keeps when the owner sets none.

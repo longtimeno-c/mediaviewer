@@ -151,6 +151,14 @@ void mv_link_close(mv_mobile_link* link);
  * Never blocks. */
 int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
 
+/* The server's combined drives (docs/plans/self-host-drives.md 4), as its caps said at connect:
+ * 0 healthy or none, 1 rebuilding, 2 degraded (a mirror lost a drive), 3 offline, 4 a drive failing;
+ * -1 when there is no live connection (keep what you had). Never blocks. */
+int32_t mv_link_storage(mv_mobile_link* link);
+/* The sentence the phone shows for a code above ("Your server's mirror lost a drive. ..."), UTF-8,
+ * static; "" for 0 or an unknown code. */
+const char* mv_link_storage_words(int32_t code);
+
 /* A direct path after the relay (docs/plans/nas-relay.md 9): once the link is through the person's
  * own relay, the core tries to punch a direct one and moves to it. On Wi-Fi always; on mobile data
  * only when `allowed_on_cellular` (Settings, "Faster direct connection on mobile data", default on).
@@ -265,9 +273,16 @@ int32_t mv_assets_list(mv_mobile_link* link, mv_listed_asset_fn fn, void* ctx);
  * A library with no catalogue yet is the NAS's named folders. Paths are a service
  * root id plus a '/'-separated path under it ("" for its top). Never logged. */
 
-typedef void (*mv_root_fn)(void* ctx, const char* id, const char* label);
-/* BLOCKS. The named folders, without the one that holds the catalogue (`.mediaviewer`). */
+/* `offline` 1: the folder's drive is not connected to the service now (an external drive unplugged,
+ * a share not mounted; docs/plans/self-hosted.md §6). Listed so the phone can say so; every
+ * request on it fails until it is back. */
+typedef void (*mv_root_fn)(void* ctx, const char* id, const char* label, int32_t offline);
+/* BLOCKS. The named folders, without the one that holds the catalogue (`.mediaviewer`). An offline
+ * folder is listed as it is, with no look inside it. */
 int32_t mv_files_roots(mv_mobile_link* link, mv_root_fn fn, void* ctx);
+/* BLOCKS. Only the offline folders (`offline` is always 1), with no look inside any folder: what a
+ * library with a catalogue shows beside its own folders. The sample library has one, "Travel drive". */
+int32_t mv_files_offline_roots(mv_mobile_link* link, mv_root_fn fn, void* ctx);
 
 typedef struct mv_file_entry {
   const char* name;
@@ -314,7 +329,7 @@ int32_t mv_file_index_counts(const mv_file_index* index, size_t* tagged, size_t*
  * The host lists Photos (newest first) with mv_backup_add_item and exports one
  * resource at a time when asked; the core keeps the ledger, files by date, and
  * writes through the service. With the sample library the "NAS" is a folder on
- * this phone, labelled "Sample NAS on this iPhone": nothing is sent anywhere. */
+ * this phone, labelled "Sample server on this iPhone": nothing is sent anywhere. */
 
 typedef struct mv_backup mv_backup;
 

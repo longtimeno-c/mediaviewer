@@ -179,13 +179,21 @@ class inhibitor final : public stay_awake {
 }  // namespace
 
 std::unique_ptr<stay_awake> hold(bool receiving) noexcept {
+  try {
+    return hold_for(reason(receiving));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+std::unique_ptr<stay_awake> hold_for(const std::string& reason_ascii) noexcept {
   int fd = -1;
   try {
     const char* address = system_bus();
     if (!address) return nullptr;
     const api* a = library();
     if (!a) return nullptr;
-    fd = inhibit(*a, address, owner(), reason(receiving));
+    fd = inhibit(*a, address, owner(), reason_ascii);
     if (fd < 0) return nullptr;
     return std::make_unique<inhibitor>(fd);
   } catch (...) {

@@ -74,7 +74,9 @@ class folder_model {
   // cache has no row for it; the result is stored under the item's key.
   using virtual_thumb_fn = std::function<result<std::vector<std::uint8_t>>(const std::string& path_utf8)>;
   // Paths starting with `prefix` are virtual items. Set before the first
-  // open_list that lists one; an empty prefix turns the provider off.
+  // open_list that lists one. One provider per prefix (the Photos library's
+  // "photos:", a remote folder's "remote:"); a null `thumb` removes that
+  // prefix's, an empty prefix removes every one.
   void set_virtual_items(std::string prefix, virtual_thumb_fn thumb) noexcept;
   [[nodiscard]] bool is_virtual_path(std::string_view path_utf8) const noexcept;
 
@@ -199,8 +201,9 @@ class folder_model {
     std::string list_title;
     bool is_list = false;
     // docs/design/26 virtual items (set once, before any list; read on pool threads).
-    std::string virtual_prefix;
-    virtual_thumb_fn virtual_thumb;
+    // One per prefix ("photos:", "remote:"), first match wins.
+    std::vector<std::pair<std::string, virtual_thumb_fn>> virtual_providers;
+    [[nodiscard]] const virtual_thumb_fn* provider_of(std::string_view path) const noexcept;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
     changed_fn notify = nullptr;

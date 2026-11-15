@@ -116,12 +116,16 @@ public struct Folder: Identifiable, Hashable, Sendable {
   /// folder in file mode, which is never walked).
   public let itemCount: Int
   public let hasSubfolders: Bool
+  /// The drive that holds it is not connected to the server now (unplugged, a share not mounted;
+  /// docs/plans/self-hosted.md §6): shown, said so, and never opened until it is back.
+  public let offline: Bool
 
-  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool) {
+  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.hasSubfolders = hasSubfolders
+    self.offline = offline
   }
 }
 
@@ -333,6 +337,11 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   /// The library has no catalogue yet, and is its NAS's folders (docs/plans/phone-in-the-app.md
   /// §4): browsed folder by folder and searched by name and tag. Ends when a catalogue arrives.
   public var fileMode = false
+  /// The server's combined drives as its caps said at the last connect (docs/plans/self-host-drives.md
+  /// §4): 0 healthy or none, 1 rebuilding, 2 degraded (a mirror lost a drive), 3 offline, 4 failing.
+  public var serverStorage: Int32 = 0
+  /// The sentence for `serverStorage` ("Your server's mirror lost a drive. …"); "" when healthy.
+  public var serverStorageWords = ""
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

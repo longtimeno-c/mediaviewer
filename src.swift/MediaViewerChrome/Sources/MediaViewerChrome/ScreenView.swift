@@ -1223,7 +1223,11 @@ private struct TextFieldNode: View {
 
   private var field: some View {
     Group {
-      if node.bool("multiline") {
+      // "secure" (contribution API 15, Phone access): dots, and nothing kept in
+      // the tree; what is typed goes to the add-on on Return or leaving the field.
+      if node.bool("secure") {
+        SecureField(node.string("placeholder") ?? node.label, text: $text)
+      } else if node.bool("multiline") {
         TextField(node.string("placeholder") ?? node.label, text: $text, axis: .vertical).lineLimit(3...8)
       } else {
         TextField(node.string("placeholder") ?? node.label, text: $text)
@@ -1240,7 +1244,11 @@ private struct TextFieldNode: View {
     }
     .accessibilityLabel(node.label)
     .onAppear { text = node.string("value") ?? "" }
-    .onChange(of: revision) { _, _ in if !focused { text = node.string("value") ?? "" } }
+    // Typed and not sent yet: a button's click sends it first (SlotStore.noteTyping).
+    .onChange(of: text) { _, now in
+      if focused { SlotStore.shared.noteTyping(address, node: node.id, text: now) }
+    }
+    .onChange(of: revision) { _, _ in if !focused && !node.bool("secure") { text = node.string("value") ?? "" } }
   }
 }
 

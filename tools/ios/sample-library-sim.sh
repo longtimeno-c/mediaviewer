@@ -15,7 +15,7 @@
 # MV_SAMPLE_FILE=1 serves it as a file:// folder instead of over loopback HTTP.
 #
 # Phone backup (1.1, §10b): Photos is granted and filled with generated pictures (never anyone's own
-# photos: solid colours made here), the test backs them up to "Sample NAS on this iPhone", and the
+# photos: solid colours made here), the test backs them up to "Sample server on this iPhone", and the
 # script checks that folder holds each picture once, whole, before Forget, and nothing after it.
 set -euo pipefail
 work="${1:?work}"; udid="${2:?udid}"; app="${3:?app}"; out="${4:?out}"

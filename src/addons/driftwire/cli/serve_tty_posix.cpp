@@ -13,6 +13,8 @@ static_assert(sizeof(termios) <= 128, "serve_echo_off keeps the termios in 128 b
 
 bool serve_stdin_is_terminal() { return ::isatty(STDIN_FILENO) != 0; }
 
+bool serve_is_privileged() { return ::geteuid() == 0; }
+
 serve_echo_off::serve_echo_off(bool hide) {
   termios before{};
   if (!hide || !::isatty(STDIN_FILENO) || ::tcgetattr(STDIN_FILENO, &before) != 0) return;

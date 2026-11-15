@@ -163,6 +163,8 @@ public static partial class IslandHost
             }
             if (args.Kind == PopupKind.Settings)
             {
+                // docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row.
+                if ((args.ModeMask & SettingsRevealPhone) != 0) _phoneRevealWanted = true;
                 ShowSettingsScreen();
                 return 0;
             }

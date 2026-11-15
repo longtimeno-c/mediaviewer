@@ -270,30 +270,6 @@ status status_of(serve::end_code code) {
 
 }  // namespace
 
-bool split_host_port(std::string_view text, std::string& host, std::uint16_t& port) {
-  if (text.empty() || text.size() > 512) return false;
-  std::string_view h, p;
-  if (text.front() == '[') {
-    const auto close = text.find(']');
-    if (close == std::string_view::npos || close + 2 >= text.size() || text[close + 1] != ':') return false;
-    h = text.substr(1, close - 1);
-    p = text.substr(close + 2);
-  } else {
-    const auto colon = text.rfind(':');
-    if (colon == std::string_view::npos || text.find(':') != colon) return false;  // a bare IPv6 needs its brackets
-    h = text.substr(0, colon);
-    p = text.substr(colon + 1);
-  }
-  if (h.empty() || h.size() > 255) return false;
-  if (p.empty() || p.size() > 5) return false;
-  unsigned v = 0;
-  const auto [stop, why] = std::from_chars(p.data(), p.data() + p.size(), v);
-  if (why != std::errc{} || stop != p.data() + p.size() || v == 0 || v > 65535) return false;
-  host.assign(h);
-  port = static_cast<std::uint16_t>(v);
-  return true;
-}
-
 expected pair_device(const service_config& c, std::string_view code, route_report& report, const cancel_flag* cancel,
                      int timeout_ms) {
   const auto targets = targets_of(c, false);
@@ -305,6 +281,7 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   auto opts_with_code = opts;
   opts_with_code.pair_code = code_copy;
   opts_with_code.device_name = name;
+  opts_with_code.device_kind = c.device_kind;
   auto done = race<std::shared_ptr<serve::client>>(
       targets, timeout_ms, cancel, report.failures, report,
       [opts_with_code](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {
@@ -632,6 +609,20 @@ int link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
   if (!live_->caps().has_grant) return 0;
   expires_unix = live_->caps().grant_expires;
   scoped = live_->caps().grant_scoped;
+  return 1;
+}
+
+int link_session::storage(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().storage;
+  return 1;
+}
+
+int link_session::role(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().role;
   return 1;
 }
 

@@ -75,7 +75,7 @@ public static partial class IslandHost
         {
             if (reinstall)
             {
-                try { AddonNative.Remove(slot.Id, keepData: true); }
+                try { AddonNative.RemoveForReinstall(slot.Id); }
                 catch (MediaViewerException ex) { LogInstall(slot, "remove", ex); }  // installed over instead
             }
             await DownloadAndInstall(slot, admit, progress).ConfigureAwait(false);

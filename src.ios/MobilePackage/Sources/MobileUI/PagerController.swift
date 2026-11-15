@@ -12,6 +12,8 @@ import UIKit
 struct PagerJump: Equatable {
   let id = UUID()
   let index: Int
+  /// A neighbour slides in. False for the filmstrip's scrub, which cuts from photo to photo.
+  var animated = true
 }
 
 enum PageState: Equatable {
@@ -201,7 +203,7 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
     prefetchAround(index)
     let offset = CGPoint(x: CGFloat(index) * collection.bounds.width, y: 0)
     // A neighbour slides in; anything further cuts, as flying past hundreds of photos would be noise.
-    if distance == 1, !UIAccessibility.isReduceMotionEnabled {
+    if distance == 1, jump.animated, !UIAccessibility.isReduceMotionEnabled {
       collection.setContentOffset(offset, animated: true)
     } else {
       collection.setContentOffset(offset, animated: false)
