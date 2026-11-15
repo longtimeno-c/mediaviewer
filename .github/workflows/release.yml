@@ -576,7 +576,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'driftwire', 'ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-large', 'ai-cuda') {
+            foreach ($addon in 'import', 'driftwire', 'phone-access', 'ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-large', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
             # Places is preferred: upload a complete pack, and publish without it

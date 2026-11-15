@@ -167,6 +167,20 @@ class ReleaseTests(unittest.TestCase):
             body = workflow.split(f'\n  {job}:\n', 1)[1].split('\n  driftwire-', 1)[0]
             self.assertIn("if: inputs.mode == 'stable' && vars.MV_DRIFTWIRE_REPO == '1'", body, job)
 
+    def test_windows_uploads_every_addon_a_stable_release_requires(self):
+        # Publish refuses a stable release missing a required add-on, but only
+        # after both builds: the Windows job's upload list must carry each one.
+        workflow = (Path(__file__).parents[2] / '.github/workflows/release.yml').read_text()
+        collect = workflow.split('- name: Collect release assets', 1)[1].split('- uses: actions/upload-artifact', 1)[0]
+        listed = re.search(r"foreach \(\$addon in ([^)]*)\)", collect)
+        self.assertIsNotNone(listed)
+        uploaded = set(re.findall(r"'([a-z0-9-]+)'", listed.group(1)))
+        with patch.dict(os.environ, {'MV_RELEASE_ADDONS': '1', 'MV_RELEASE_AI': '1'}):
+            required = {addon for addon in release.required_addons('stable')
+                        if 'win-x64' in release.addon_platforms(addon)}
+        self.assertTrue(required)
+        self.assertEqual(required - uploaded, set())
+
     def test_release_cannot_blocklist_itself(self):
         os.environ['BLOCKLIST'] = '0.1.1'
         with self.assertRaisesRegex(ValueError, 'Cannot blocklist'):
