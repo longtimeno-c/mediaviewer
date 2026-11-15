@@ -53,6 +53,7 @@ enum class serve_action : std::uint8_t { run, init, devices, add, revoke, pair_c
 // relay together (run; `child` is the supervisor's own process, never typed),
 // or change what it shares and how it starts.
 enum class host_action : std::uint8_t { run, child, share, unshare, status, start_at_login, stay_awake, setup, name, pair, vpn,
+                                        convert,  // host convert on [--helper PATH] | off (phone-clip-convert.md)
                                         // The LAN share's users (docs/plans/self-host-users-smb.md): `host users …`, and
                                         // the elevated step it starts (`host smb-apply`, never typed).
                                         users, smb_apply,
@@ -85,6 +86,8 @@ struct args {
   bool watch = false;     // host status --watch (the tray's numbers, live)
   bool on = false;        // host start-at-login / stay-awake / vpn: on or off; host name: duckdns (true) or none
   std::uint16_t tls_port = 0;  // host vpn on --tls-port N: the relay's web-site look (0: none)
+  // host convert on --helper PATH; serve --convert-helper PATH: the app's clip helper.
+  std::string convert_helper;
   // host users / smb-apply (host_users.h checks them): the words after the action,
   // --role, --folders, --input-stdin (the app's passwords as lines on stdin).
   std::vector<std::string> host_words;

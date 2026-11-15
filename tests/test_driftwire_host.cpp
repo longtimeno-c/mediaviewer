@@ -126,6 +126,18 @@ TEST_CASE("driftwire host: the arguments", "[host]") {
   CHECK_FALSE(parse({"serve", "--label", "x"}).error.empty());
   CHECK_FALSE(parse({"host", "unshare", "A", "--label", "B"}).error.empty());
   CHECK(contains(cli::help_text(), "driftwire host"));
+
+  // Clips the phone can't play (docs/plans/phone-clip-convert.md).
+  p = parse({"host", "convert", "on", "--helper", "/Applications/MediaViewer.app/Contents/Helpers/MediaViewerClipJob"});
+  REQUIRE(p.error.empty());
+  CHECK(p.a.host == cli::host_action::convert);
+  CHECK(p.a.on);
+  CHECK(p.a.convert_helper == "/Applications/MediaViewer.app/Contents/Helpers/MediaViewerClipJob");
+  CHECK_FALSE(parse({"host", "convert", "off"}).a.on);
+  CHECK_FALSE(parse({"host", "convert", "off", "--helper", "/x"}).error.empty());
+  CHECK_FALSE(parse({"host", "vpn", "on", "--helper", "/x"}).error.empty());
+  CHECK(parse({"serve", "--convert-helper", "/x"}).error.empty());
+  CHECK_FALSE(parse({"serve", "init", "--convert-helper", "/x"}).error.empty());
 }
 
 TEST_CASE("driftwire host: host.json, and what serve.json keeps of a drive", "[host]") {
@@ -143,6 +155,14 @@ TEST_CASE("driftwire host: host.json, and what serve.json keeps of a drive", "[h
   CHECK(back->vpn);
   CHECK_FALSE(back->stay_awake);
   CHECK(cli::parse_host_settings("{}"));
+  CHECK(cli::parse_host_settings("{}")->convert);  // on unless turned off
+  s.convert = false;
+  s.convert_helper = "C:\\Program Files\\MediaViewer\\MediaViewerClipJob.exe";
+  const auto conv = cli::parse_host_settings(cli::host_settings_json(s));
+  REQUIRE(conv);
+  CHECK_FALSE(conv->convert);
+  CHECK(conv->convert_helper == s.convert_helper);
+  CHECK_FALSE(cli::parse_host_settings("{\"convert\":1}"));
   CHECK_FALSE(cli::parse_host_settings("{\"relay_port\":0}"));
   CHECK_FALSE(cli::parse_host_settings("{\"vpn\":\"yes\"}"));
   CHECK_FALSE(cli::parse_host_settings("[]"));
@@ -524,5 +544,39 @@ TEST_CASE("driftwire host: the supervisor starts a crashed service again, and en
   REQUIRE(::kill(again, SIGTERM) == 0);
   CHECK(exited_within(again, 20000) == 0);
   CHECK(eventually([&] { return ::kill(static_cast<pid_t>(*third), 0) != 0; }, 15000));
+}
+#endif
+
+#if !defined(_WIN32)
+#include "addons/driftwire/cli/convert_run.h"
+
+// The converter's runner, with a stand-in for the app's clip helper: its exit codes become the
+// service's outcomes, and its check names the encoder the card shows.
+TEST_CASE("driftwire host: the clip helper's runs", "[host][convert]") {
+  scratch_dir s("host_convert_run");
+  const fs::path helper = s / "helper.sh";
+  write_text(helper, R"(#!/bin/sh
+case "$1" in
+  --convert-check) printf '{"encoder":"h264_videotoolbox","family":"Apple VideoToolbox"}' > "$2" ;;
+  --convert-plan) case "$2" in *.txt) exit 2 ;; esac
+                  printf '{"duration_ms":9000,"segment_ms":%s,"segments":3,"width":640,"height":360}' "$3" > "$4" ;;
+  --convert-segment) [ "$3" = 9 ] && exit 1; printf 'TS%s' "$3" > "$5" ;;
+esac
+)");
+  fs::permissions(helper, fs::perms::owner_all);
+  const auto found = cli::check_converter(utf8(helper), utf8(s / "scratch"));
+  REQUIRE(found.ok);
+  CHECK(found.encoder == "h264_videotoolbox");
+  CHECK(found.family == "Apple VideoToolbox");
+  CHECK_FALSE(cli::check_converter(utf8(s / "missing"), utf8(s / "scratch")).ok);
+
+  const auto run = cli::helper_runner(utf8(helper));
+  namespace cv = mv::driftwire::serve::convert;
+  CHECK(run.plan("/clips/a.avi", 4000, utf8(s / "plan.json")) == cv::ran::ok);
+  CHECK(serve::parse_convert_plan(read_text(s / "plan.json")));
+  CHECK(run.plan("/clips/notes.txt", 4000, utf8(s / "plan2.json")) == cv::ran::not_a_clip);
+  CHECK(run.segment("/clips/a.avi", 1, 4000, utf8(s / "seg.ts")) == cv::ran::ok);
+  CHECK(read_text(s / "seg.ts") == "TS1");
+  CHECK(run.segment("/clips/a.avi", 9, 4000, utf8(s / "seg9.ts")) == cv::ran::failed);
 }
 #endif
