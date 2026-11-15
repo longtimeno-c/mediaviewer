@@ -57,9 +57,10 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
           return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: data, count: count)) ? 1 : 0
         }, box.toOpaque())
       }
-      return await transportRoute(read: read, size: info.size, ext: ext)
+      if case .stream(let av) = await transportRoute(read: read, size: info.size, ext: ext) { return .stream(av) }
     }
     guard ["mp4", "mov", "m4v"].contains(ext) else {
+      if let url = await ConvertedClips.url(link: link, asset: asset) { return .converted(AVURLAsset(url: url)) }
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(info.size))
     }
     // The sample library's clips are a few megabytes, played from a copy checked whole against its
@@ -87,10 +88,16 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     guard let entry = images.files.entry(for: item.id) else { return .unavailable(.originalGone) }
     guard let link = await connection.awaitLink() else { return .unavailable(.synologyUnreachable) }
     let ext = (item.fileName as NSString).pathExtension.lowercased()
-    if Self.transportStreams.contains(ext) {
-      return await transportRoute(read: images.files.readFunction(entry, link: link, bulk: false), size: entry.size, ext: ext)
+    if Self.transportStreams.contains(ext),
+       case .stream(let av) = await transportRoute(read: images.files.readFunction(entry, link: link, bulk: false),
+                                                    size: entry.size, ext: ext) {
+      return .stream(av)
     }
     guard ["mp4", "mov", "m4v"].contains(ext) else {
+      // MPEG-2 or HEVC in TS, AVI, MKV and the rest: the server converts them, when it can.
+      if let url = await ConvertedClips.url(link: link, root: entry.path.root, rel: entry.path.rel) {
+        return .converted(AVURLAsset(url: url))
+      }
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(entry.size))
     }
     guard let (asset, loader) = images.files.clipAsset(entry, link: link) else { return .unavailable(.originalGone) }
@@ -152,7 +159,11 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
   }
 
   public func still(of item: MediaItem, at seconds: TimeInterval) async -> UIImage? {
-    guard case .stream(let asset) = await route(for: item) else { return await images.thumbnail(for: item) }
+    let asset: AVURLAsset
+    switch await route(for: item) {
+    case .stream(let a), .converted(let a): asset = a
+    default: return await images.thumbnail(for: item)
+    }
     let generator = AVAssetImageGenerator(asset: asset)
     generator.appliesPreferredTrackTransform = true
     generator.maximumSize = CGSize(width: 1024, height: 1024)

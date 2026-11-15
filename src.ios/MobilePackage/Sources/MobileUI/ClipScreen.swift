@@ -37,6 +37,8 @@ final class ClipModel {
   private(set) var download: Download?
   /// The player has been waiting for data for more than a second.
   private(set) var isWaiting = false
+  /// The server converts this clip as it plays (docs/plans/phone-clip-convert.md): a wait says so.
+  private(set) var isConverted = false
 
   let player = AVPlayer()
   private let item: MediaItem
@@ -67,8 +69,10 @@ final class ClipModel {
   }
 
   private func route(startAt: Moment?) async {
-    switch await clips.route(for: item) {
-    case .stream(let asset):
+    let route = await clips.route(for: item)
+    if case .converted = route { isConverted = true }
+    switch route {
+    case .stream(let asset), .converted(let asset):
       let playerItem = AVPlayerItem(asset: asset)
       player.replaceCurrentItem(with: playerItem)
       observe(playerItem)
@@ -367,7 +371,7 @@ private struct ClipBody: View {
       ProgressLine(verb: "Reading the clip", fraction: nil)
     case .playable:
       VStack(spacing: 8) {
-        if clip.isWaiting { ProgressLine(verb: "Waiting for the clip", fraction: nil) }
+        if clip.isWaiting { ProgressLine(verb: clip.isConverted ? FailureCopy.clipConverting : "Waiting for the clip", fraction: nil) }
         ClipTrack(clip: clip)
         transport
       }

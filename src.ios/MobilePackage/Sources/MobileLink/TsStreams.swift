@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Transport-stream clips (.mts, .m2ts, .ts) played as HLS (MobileLinkSupport/MpegTs.swift): a small
+// Transport-stream clips (.mts, .m2ts, .ts) played as HLS (MobileLinkSupport/MpegTs.swift), and clips
+// the server converts as they play (docs/plans/phone-clip-convert.md, ConvertedClip.swift): a small
 // HTTP server on 127.0.0.1 that only this app talks to serves each clip's playlist and its segments,
 // read from the NAS as AVPlayer asks for them. AVFoundation will not take HLS segments from a
 // resource loader, so this is a socket, not an AVAssetResourceLoaderDelegate. Nothing leaves the phone.
@@ -16,10 +17,15 @@ final class TsStreams: @unchecked Sendable {
   /// Clips kept playable at once; the oldest is dropped (a player still on it gets a 404 and stops).
   static let kept = 6
 
-  private struct Clip {
-    let layout: MpegTsLayout
-    let read: ClipRead
+  private enum Clip {
+    case transport(MpegTsLayout, ClipRead)
+    case converted(ConvertPlan, SegmentRead)
   }
+  /// Segment k of a converted clip, whole. Blocks; an mv_link_status.
+  typealias SegmentRead = @Sendable (_ k: UInt32, _ cancel: LinkCancel, _ sink: @escaping (Data) -> Bool) -> Int32
+  /// The converted segments last served, for AVPlayer's ranges of one it already has.
+  private var segments: [(key: String, data: Data)] = []
+  static let segmentsKept = 3
 
   private let lock = NSLock()
   private var clips: [String: Clip] = [:]
@@ -43,12 +49,25 @@ final class TsStreams: @unchecked Sendable {
 
   /// The clip's playlist URL, once the server is listening.
   func register(_ layout: MpegTsLayout, read: @escaping ClipRead) async -> URL? {
+    await register(.transport(layout, read))
+  }
+
+  /// A clip the server converts: its plan, and how to read a segment.
+  func register(converted plan: ConvertPlan, read: @escaping SegmentRead) async -> URL? {
+    await register(.converted(plan, read))
+  }
+
+  private func register(_ clip: Clip) async -> URL? {
     guard let port = await listening() else { return nil }
     let token = UUID().uuidString.lowercased()
     lock.withLock {
-      clips[token] = Clip(layout: layout, read: read)
+      clips[token] = clip
       order.append(token)
-      while order.count > Self.kept { clips[order.removeFirst()] = nil }
+      while order.count > Self.kept {
+        let gone = order.removeFirst()
+        clips[gone] = nil
+        segments.removeAll { $0.key.hasPrefix(gone) }
+      }
     }
     return URL(string: "http://127.0.0.1:\(port)/\(token)/index.m3u8")
   }
@@ -170,28 +189,65 @@ final class TsStreams: @unchecked Sendable {
     let path = parts[1].split(separator: "/").map(String.init)
     guard path.count == 2, let clip = lock.withLock({ clips[path[0]] }) else { return respond(connection, status: "404 Not Found") }
     let range = lines.dropFirst().first { $0.lowercased().hasPrefix("range:") }.flatMap(Self.byteRange)
+    if case .converted(let plan, let read) = clip {
+      return answerConverted(token: path[0], name: path[1], plan: plan, read: read, range: range, headOnly: headOnly,
+                             on: connection)
+    }
+    guard case .transport(let layout, let read) = clip else { return }
     if path[1] == "index.m3u8" {
-      let body = Data(MpegTs.playlist(clip.layout) { "\($0).ts" }.utf8)
+      let body = Data(MpegTs.playlist(layout) { "\($0).ts" }.utf8)
       return respond(connection, type: "application/vnd.apple.mpegurl", body: body, range: range, headOnly: headOnly)
     }
-    guard path[1].hasSuffix(".ts"), let k = Int(path[1].dropLast(3)), k >= 0, k < MpegTs.segmentCount(clip.layout)
+    guard path[1].hasSuffix(".ts"), let k = Int(path[1].dropLast(3)), k >= 0, k < MpegTs.segmentCount(layout)
     else { return respond(connection, status: "404 Not Found") }
     if headOnly {
-      return respond(connection, type: "video/mp2t", length: MpegTs.servedLength(of: k, in: clip.layout), range: range)
+      return respond(connection, type: "video/mp2t", length: MpegTs.servedLength(of: k, in: layout), range: range)
     }
     let cancel = LinkCancel()
     connection.stateUpdateHandler = { state in
       if case .failed = state { cancel.fire() } else if case .cancelled = state { cancel.fire() }
     }
-    var body = k == 0 ? Data() : clip.layout.tables
-    var repacker = MpegTs.Repacker(packetSize: clip.layout.packetSize)
-    let (offset, length) = MpegTs.fileRange(of: k, in: clip.layout)
-    let status = clip.read(offset, length, cancel) { chunk in
+    var body = k == 0 ? Data() : layout.tables
+    var repacker = MpegTs.Repacker(packetSize: layout.packetSize)
+    let (offset, length) = MpegTs.fileRange(of: k, in: layout)
+    let status = read(offset, length, cancel) { chunk in
       body.append(repacker.push(chunk))
       return true
     }
     guard status == 0 else { return respond(connection, status: "502 Bad Gateway") }
     respond(connection, type: "video/mp2t", body: body, range: range, headOnly: false)
+  }
+
+  /// A converted clip's playlist, or one of its segments: read from the server whole (it is a few
+  /// megabytes), then sliced for AVPlayer's range. The last few are kept for the ranges that follow.
+  private func answerConverted(token: String, name: String, plan: ConvertPlan, read: SegmentRead,
+                               range: (Int, Int?)?, headOnly: Bool, on connection: NWConnection) {
+    if name == "index.m3u8" {
+      let body = Data(plan.playlist { "\($0).ts" }.utf8)
+      return respond(connection, type: "application/vnd.apple.mpegurl", body: body, range: range, headOnly: headOnly)
+    }
+    guard name.hasSuffix(".ts"), let k = Int(name.dropLast(3)), k >= 0, k < Int(plan.segments)
+    else { return respond(connection, status: "404 Not Found") }
+    let key = "\(token)/\(k)"
+    if let kept = lock.withLock({ segments.first { $0.key == key }?.data }) {
+      return respond(connection, type: "video/mp2t", body: kept, range: range, headOnly: headOnly)
+    }
+    let cancel = LinkCancel()
+    connection.stateUpdateHandler = { state in
+      if case .failed = state { cancel.fire() } else if case .cancelled = state { cancel.fire() }
+    }
+    var body = Data()
+    let status = read(UInt32(k), cancel) { chunk in
+      body.append(chunk)
+      return true
+    }
+    guard status == 0, !body.isEmpty else { return respond(connection, status: "502 Bad Gateway") }
+    lock.withLock {
+      segments.removeAll { $0.key == key }
+      segments.append((key, body))
+      while segments.count > Self.segmentsKept { segments.removeFirst() }
+    }
+    respond(connection, type: "video/mp2t", body: body, range: range, headOnly: headOnly)
   }
 
   /// "bytes=a-b", "bytes=a-": the first range only.

@@ -69,6 +69,8 @@ public enum FailureCopy {
   public static let fileModeTop = "Choose a folder."
   public static let fileModeSettings = "Folders, searched by name and tag"
   public static let clipStopped = "This clip stopped playing."
+  /// A clip the phone can't play, converted by the server as it plays, while the first part is on its way.
+  public static let clipConverting = "Converting on your server"
   // Offline folders (docs/plans/self-hosted.md §6): a drive unplugged from the server.
   public static let notConnected = "Not connected"
   public static func driveNotConnected(_ folder: String) -> String {

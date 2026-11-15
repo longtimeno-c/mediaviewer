@@ -532,13 +532,20 @@ public final class LinkFiles: @unchecked Sendable {
       return await posters.run { [self] in
         guard !Task.isCancelled else { return nil }
         let read = readFunction(file, link: link, bulk: false)
-        guard let layout = await onLinkQueue({ TsStreams.layout(read: read, size: file.size) }),
-              let url = await TsStreams.shared.register(layout, read: read),
-              let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels) else { return nil }
-        return UIImage(cgImage: frame)
+        if let layout = await onLinkQueue({ TsStreams.layout(read: read, size: file.size) }) {
+          guard let url = await TsStreams.shared.register(layout, read: read),
+                let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels) else { return nil }
+          return UIImage(cgImage: frame)
+        }
+        return await convertedPoster(of: file, link: link)  // MPEG-2, HEVC or LPCM in TS
       }
     }
-    guard ["mp4", "mov", "m4v"].contains(ext) else { return nil }
+    guard ["mp4", "mov", "m4v"].contains(ext) else {
+      return await posters.run { [self] in
+        guard !Task.isCancelled else { return nil }
+        return await convertedPoster(of: file, link: link)
+      }
+    }
     return await posters.run { [self] in
       guard !Task.isCancelled, let (asset, loader) = clipAsset(file, link: link) else { return nil }
       let generator = AVAssetImageGenerator(asset: asset)
@@ -547,6 +554,14 @@ public final class LinkFiles: @unchecked Sendable {
       let image = try? await generator.image(at: .zero).image
       return withExtendedLifetime(loader) { image.map { UIImage(cgImage: $0) } }
     }
+  }
+
+  /// A clip the phone can't play: the first frame of the server's conversion (its first segment,
+  /// which then waits in the server's cache for the clip to be opened). nil when it converts nothing.
+  private func convertedPoster(of file: FileEntry, link: LinkHandle) async -> UIImage? {
+    guard let url = await ConvertedClips.url(link: link, root: file.path.root, rel: file.path.rel),
+          let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels, timeout: .seconds(20)) else { return nil }
+    return UIImage(cgImage: frame)
   }
 
   private static func readAll(link: LinkHandle, file: FileEntry) async -> Data? {
