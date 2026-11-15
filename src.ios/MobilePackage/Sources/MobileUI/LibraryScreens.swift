@@ -18,6 +18,16 @@ struct LibraryScreen: View {
   private var content: some View {
     if model.library.isLoading {
       GridSkeleton().background(Theme.ground)
+    } else if model.library.sections.isEmpty, !model.library.subfolders.isEmpty {
+      // A folder of folders (a year, an archive, the top of a server): its folders are the page.
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          noticeSlot
+          FolderGrid(folders: model.library.subfolders)
+        }
+      }
+      .background(Theme.ground)
+      .id(model.library.scope)
     } else if model.library.sections.isEmpty {
       // Centred while it fits; scrolls at the largest text sizes rather than cut its words short.
       GeometryReader { space in
@@ -32,7 +42,10 @@ struct LibraryScreen: View {
       }
       .background(Theme.ground)
     } else {
-      MediaGrid(sections: model.library.sections, entries: model.library.entries, context: "library") { noticeSlot }
+      MediaGrid(sections: model.library.sections, entries: model.library.entries, context: "library") {
+        noticeSlot
+        if !model.library.subfolders.isEmpty { FolderShelf(folders: model.library.subfolders) }
+      }
         // A new folder starts at its top, not at the last folder's scroll position.
         .id(model.library.scope)
     }
@@ -72,8 +85,8 @@ struct LibraryScreen: View {
   }
 }
 
-/// Fixed at the top while the photos scroll under it: where you are, each step of it a way back,
-/// and the folders you can go into from here.
+/// Fixed at the top while the photos scroll under it: where you are, each step of it a way back.
+/// The folders you can go into are tiles in the page (FolderTiles.swift).
 private struct PlaceBar: View {
   private static let pathEnd = "path-end"
 
@@ -91,14 +104,10 @@ private struct PlaceBar: View {
         }
       }
       .padding(.trailing, Theme.inset)
-      if !library.subfolders.isEmpty {
-        subfolders(library)
-      }
     }
     .padding(.bottom, 4)
     .background(Theme.ground.ignoresSafeArea(edges: .top))
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: library.trail)
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: library.subfolders)
   }
 
   private func path(_ library: LibraryModel) -> some View {
@@ -143,36 +152,6 @@ private struct PlaceBar: View {
     .allowsHitTesting(!isCurrent)
     .accessibilityAddTraits(isCurrent ? .isHeader : [])
     .accessibilityHint(isCurrent ? "" : "Goes back to this folder")
-  }
-
-  private func subfolders(_ library: LibraryModel) -> some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        ForEach(library.subfolders) { folder in
-          Button { library.enter(folder) } label: { chip(folder) }
-            .buttonStyle(TileButtonStyle())
-            .accessibilityLabel(folder.offline ? "\(folder.name), \(FailureCopy.notConnected.lowercased())"
-                                : folder.itemCount >= 0 ? "\(folder.name), \(folder.itemCount) items" : folder.name)
-        }
-      }
-      .padding(.horizontal, Theme.inset)
-    }
-    .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
-    // A new folder's list starts from its first entry.
-    .id(library.trail.last?.id ?? "")
-  }
-
-  private func chip(_ folder: Folder) -> some View {
-    ChipLabel {
-      // A drive unplugged from the server: its own icon, and the words in place of a count.
-      Image(systemName: folder.offline ? "externaldrive.badge.xmark" : "folder.fill").font(.footnote).foregroundStyle(Theme.body)
-      Text(folder.name).font(.subheadline).foregroundStyle(folder.offline ? Theme.body : Theme.title).fixedSize()
-      if folder.offline {
-        Text(FailureCopy.notConnected).font(.caption).foregroundStyle(Theme.body).fixedSize()
-      } else if folder.itemCount >= 0 {  // a server folder in file mode has no count until it is opened (-1)
-        Text(folder.itemCount, format: .number).font(.caption.monospacedDigit()).foregroundStyle(Theme.body).fixedSize()
-      }
-    }
   }
 }
 

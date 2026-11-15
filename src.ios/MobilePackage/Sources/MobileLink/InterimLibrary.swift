@@ -29,6 +29,7 @@ public struct InterimLibrary: LibraryStore {
   }
 
   public func folders(under parent: Folder?) async throws -> [Folder] { [] }
+  public func preview(of folder: Folder, count: Int) async -> FolderPreview { .empty }
   public func people() async throws -> [Person] { [] }
   public func details(for item: MediaItem) async throws -> MediaDetails {
     MediaDetails(place: nil, camera: nil, lens: nil, exposure: nil, folderPath: "", formatName: (item.fileName as NSString).pathExtension.uppercased(), fileBytes: 0)

@@ -65,7 +65,7 @@ public enum FailureCopy {
   public static let smartSearchNeedsLocalSearch =
     "Smart search (words, faces, places and sounds) needs Local search. Install it on your Mac or PC and index this library."
   public static let fileSearchNoFolder = "Open a folder in Library to search it."
-  public static let fileSearchHint = "File search looks at the names and tags of the files in this folder."
+  public static let fileSearchHint = "Search looks at the names and tags of the files in this folder only, not the folders inside it."
   public static let fileModeTop = "Choose a folder."
   public static let fileModeSettings = "Folders, searched by name and tag"
   public static let clipStopped = "This clip stopped playing."

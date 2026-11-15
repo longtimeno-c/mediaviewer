@@ -18,10 +18,22 @@ public protocol LibraryStore: Sendable {
   /// The server's folders whose drive is not connected now, for the top level to show beside its own
   /// folders. Empty when none is, or the server can't be asked.
   func offlineFolders() async -> [Folder]
+  /// A folder's tile: up to `count` pictures that stand for it, newest first, and what it holds when
+  /// that is known. Off the main thread, after what is on screen; never changes what the library or
+  /// search show. `.empty` when nothing can be had.
+  func preview(of folder: Folder, count: Int) async -> FolderPreview
 }
 
 extension LibraryStore {
   public func offlineFolders() async -> [Folder] { [] }
+}
+
+extension FolderPreview {
+  /// The first `count` of a folder's own list (newest first), for a store whose folder list has no
+  /// side effects (a catalogue's; not file mode's, which moves search to that folder).
+  public static func newest(of list: any MediaList, count: Int) -> FolderPreview {
+    FolderPreview(items: (0..<min(count, list.count)).map { list.item(at: $0) }, files: nil, folders: nil)
+  }
 }
 
 /// One step of the §10 ladder.
