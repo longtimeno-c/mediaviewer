@@ -1,6 +1,6 @@
 # Clips the phone can't play, converted by the server
 
-Status: built (draft PR). Mac verified in the Simulator; Windows compiles in CI, not run.
+Status: built (draft PR). Mac verified in the Simulator; Windows written to compile, not run.
 
 The owner's library lives on their own computer (`docs/plans/self-hosted.md`) and the phone reads it
 in file mode. AVFoundation opens MP4/MOV/M4V, and (since `TsStreams`) H.264 transport streams as
@@ -21,7 +21,7 @@ server (driftwire host / serve):  serve_convert.h  ── cache hit? send the fi
                                    one worker, a queue  ── miss: run the helper, then send
                                                            ▼
 helper (MediaViewerClipJob --convert-segment, low priority): FFmpeg demux + decode,
-        VideoToolbox / NVENC / QSV / AMF / Media Foundation H.264, FFmpeg's own AAC, MPEG-TS out
+        VideoToolbox / NVENC / QSV / AMF / Media Foundation H.264, the OS's AAC, MPEG-TS out
 ```
 
 ### Why HLS of fixed-time segments, not one fragmented MP4
@@ -73,10 +73,28 @@ helper runs at background priority (POSIX `nice 10` and utility QoS; Windows
 not the 3D pipeline the viewer presents with. A helper crash ends one segment (the phone sees an
 error on that segment), never the service.
 
-Output: H.264 High, long side at most 1920, about 0.1 bit per pixel per frame (8 Mbit/s for 1080p30),
-no B-frames (no negative DTS at a segment's start); AAC-LC 160 kbit/s stereo, 48 or 44.1 kHz. No
-deinterlacing yet (MPEG-2 from DVDs and old camcorders shows combing): a follow-up with the LGPL
-`bwdif` filter.
+Output: H.264 High, long side at most 1920 (square pixels, so a 16:9 PAL DVD becomes 1024×576),
+about 0.1 bit per pixel per frame (clamped to 1.5–10 Mbit/s), no B-frames (no negative DTS at a
+segment's start); AAC-LC 160 kbit/s stereo, 48 or 44.1 kHz, from the OS's encoder (`aac_at`,
+`aac_mf`: design 11 keeps FFmpeg's own `aac` out); with neither, the segment is silent. Timestamps
+are the source's plus 10 s. A tail under 250 ms joins the last segment. No deinterlacing yet
+(MPEG-2 from DVDs and old camcorders shows combing): a follow-up with the LGPL `bwdif` filter.
+
+## Measured (M-series Mac, VideoToolbox, 30–60 s samples)
+
+Over loopback, real helper behind the real service (`"[.convert-bench]"`), cold cache:
+
+| Clip | Plan | First frame (plan + segment 0) | Seek to the middle | From the cache |
+|---|---|---|---|---|
+| AVI 1080p30, MPEG-4 Part 2 + MP3 | 105 ms | 650 ms | 590–600 ms | 5–8 ms |
+| MKV 1080p30, VP9 + Opus | 107 ms | 646 ms | 640–655 ms | 5 ms |
+| MPG 720×576, MPEG-2 + MP2 | 102–111 ms | 317–322 ms | 218–222 ms | 2–3 ms |
+
+Conversion runs at 5.6–7.4× realtime for 1080p and about 19× for SD (`clip_convert`'s own runs). A
+segment made ahead for one clip delays the next clip's first frame by up to one segment's time
+(about 0.6 s at 1080p), since a running job is not interrupted. In the Simulator, all three play
+and seek (forward, back, past the end) with posters from their first segment; the first frame came
+in under a second, so the "Converting on your server…" line (after a 1 s wait) was not seen.
 
 ### Phone
 
