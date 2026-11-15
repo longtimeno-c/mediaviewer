@@ -294,9 +294,9 @@ struct watcher::state {
         // quit stands until the lock goes, or a minute has passed and it runs on.
         if (quit_ran && std::chrono::steady_clock::now() - quit_at > std::chrono::minutes(1)) quit_ran = false;
       } else if (cur.shown && !quit_ran) {
-        const auto t = std::chrono::steady_clock::now();
-        if (!gone_since) gone_since = t;
-        grace_over = t - *gone_since >= std::chrono::milliseconds(o.gone_grace_ms);
+        const auto gone_at = std::chrono::steady_clock::now();
+        if (!gone_since) gone_since = gone_at;
+        grace_over = gone_at - *gone_since >= std::chrono::milliseconds(o.gone_grace_ms);
       }
       const bool in_grace = !l.running && gone_since && !grace_over && !quit_ran;
       if (!force && l == last && !grace_over) continue;

@@ -538,7 +538,7 @@ std::optional<disk> parse_mac_disk(const json::value& info, const json::value& a
       d.volumes.push_back(std::move(f));
     }
   }
-  for (const auto& [id, uuid] : d.parts) d.identity += "|" + id + "=" + uuid;
+  for (const auto& [id, part_uuid] : d.parts) d.identity += "|" + id + "=" + part_uuid;
   return d;
 }
 
