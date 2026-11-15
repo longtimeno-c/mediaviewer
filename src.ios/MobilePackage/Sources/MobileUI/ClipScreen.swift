@@ -259,6 +259,7 @@ private struct PlayerSurface: UIViewRepresentable {
 
 struct ClipScreen: View {
   let entry: GridEntry
+  let transfer: OriginalTransfer
   let onClose: () -> Void
 
   @Environment(AppModel.self) private var model
@@ -269,7 +270,7 @@ struct ClipScreen: View {
     ZStack {
       Color.black.ignoresSafeArea()
       if let clip {
-        ClipBody(clip: clip, entry: entry, compactHeight: verticalSize == .compact, onClose: onClose)
+        ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact, onClose: onClose)
       }
     }
     .task(id: entry.id) {
@@ -284,6 +285,7 @@ struct ClipScreen: View {
 private struct ClipBody: View {
   let clip: ClipModel
   let entry: GridEntry
+  let transfer: OriginalTransfer
   let compactHeight: Bool
   let onClose: () -> Void
 
@@ -336,11 +338,19 @@ private struct ClipBody: View {
   }
 
   private var topBar: some View {
-    HStack {
-      Button(action: onClose) { Image(systemName: "xmark") }
-        .buttonStyle(ChromeIconStyle())
-        .accessibilityLabel("Close")
-      Spacer()
+    VStack(spacing: 8) {
+      HStack(spacing: 8) {
+        Button(action: onClose) { Image(systemName: "xmark") }
+          .buttonStyle(ChromeIconStyle())
+          .accessibilityLabel("Close")
+        Spacer()
+        OriginalButtons(item: entry.item, transfer: transfer)
+      }
+      if transfer.state(for: entry.item) != nil {
+        OriginalProgress(item: entry.item, transfer: transfer)
+          .padding(Theme.inset)
+          .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(Theme.surface))
+      }
     }
   }
 
@@ -540,7 +550,7 @@ private struct ClipTrack: View {
       HStack {
         Text(String.clockFrom(clip.seconds))
         Spacer()
-        Text(String.clockFrom(clip.length))
+        Text(clip.length > 0 ? String.clockFrom(clip.length) : "–:––")
       }
       .font(.caption.monospacedDigit())
       .foregroundStyle(Theme.body)
