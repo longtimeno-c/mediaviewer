@@ -517,7 +517,7 @@ TEST_CASE("link race: a dead local address loses to the named public route", "[m
 }
 
 TEST_CASE("sync: copy, hash check, install, resume, signatures and generations", "[mobile-link]") {
-  rig r(6 * 1024 * 1024);  // bigger than the stream window, so a drop can land mid-file
+  rig r(16 * 1024 * 1024);  // bigger than a whole-file pull's 8 MB window, so a drop can land mid-file
   r.pair_now();
   mob::link_session s(r.config());
   mob::route_report rep;
