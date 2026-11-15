@@ -20,13 +20,14 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 7> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 8> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
                                                              {op::admin, "admin"},
                                                              {op::upgrade, "upgrade"},
-                                                             {op::write, "write"}}};
+                                                             {op::write, "write"},
+                                                             {op::convert, "convert"}}};
 
 bool lower_hex64(std::string_view s) noexcept {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
@@ -186,6 +187,7 @@ std::vector<std::uint8_t> encode_open(const open_request& r) {
     w.key("size").integer(static_cast<std::int64_t>(r.size));
     w.key("hash").string(r.hash);
   }
+  if (r.kind == op::convert) w.key("seg").integer(r.segment);
   if (r.meta) w.key("meta").boolean(true);
   if (r.credit != 0) w.key("credit").integer(static_cast<std::int64_t>(r.credit));
   w.end_object();
@@ -243,6 +245,11 @@ std::optional<open_request> parse_open(std::span<const std::uint8_t> body, bool&
     r.at = static_cast<std::uint64_t>(*at);
     r.size = static_cast<std::uint64_t>(*size);
     r.hash = *hash;
+  }
+  if (r.kind == op::convert) {
+    const auto seg = doc->integer("seg");
+    if (!in_range(seg, -1, kMaxConvertSegments - 1) || r.rel.empty()) return std::nullopt;
+    r.segment = *seg;
   }
   if (const json::value* m = doc->find("meta")) {
     if (m->k != json::kind::boolean) return std::nullopt;
@@ -626,6 +633,39 @@ std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& acc
   std::array<std::uint8_t, 16> out{};
   crypto_generichash(out.data(), out.size(), m.data(), m.size(), access_key.data(), access_key.size());
   return out;
+}
+
+std::string convert_plan_json(const convert_plan& p) {
+  json::writer w;
+  w.begin_object()
+      .key("duration_ms").integer(p.duration_ms)
+      .key("segment_ms").integer(p.segment_ms)
+      .key("segments").integer(p.segments)
+      .key("width").integer(p.width)
+      .key("height").integer(p.height)
+      .end_object();
+  return w.take();
+}
+
+std::optional<convert_plan> parse_convert_plan(std::string_view text) {
+  if (text.size() > kMaxRequestBytes) return std::nullopt;
+  const auto doc = json::parse(text, 2);
+  if (!doc || doc->k != json::kind::object) return std::nullopt;
+  const auto d = doc->integer("duration_ms"), s = doc->integer("segment_ms"), n = doc->integer("segments");
+  const auto w = doc->integer("width"), h = doc->integer("height");
+  if (!in_range(d, 1, std::int64_t{1} << 40) || !in_range(s, 500, 60000) || !in_range(n, 1, kMaxConvertSegments) ||
+      !in_range(w, 1, 16384) || !in_range(h, 1, 16384)) {
+    return std::nullopt;
+  }
+  // The segments cover the duration, and no more than one past it.
+  if (*n != (*d + *s - 1) / *s) return std::nullopt;
+  convert_plan p;
+  p.duration_ms = *d;
+  p.segment_ms = static_cast<std::uint32_t>(*s);
+  p.segments = static_cast<std::uint32_t>(*n);
+  p.width = static_cast<std::uint32_t>(*w);
+  p.height = static_cast<std::uint32_t>(*h);
+  return p;
 }
 
 }  // namespace mv::driftwire::serve

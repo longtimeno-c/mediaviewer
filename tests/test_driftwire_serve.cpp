@@ -8,6 +8,7 @@
 // nothing here touches the network beyond 127.0.0.1.
 #include <sodium.h>
 
+#include <condition_variable>
 #include <mutex>
 
 #include "driftwire_fixture.h"
@@ -94,6 +95,7 @@ struct service_fixture {
   int max_sessions = 8;
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
   std::function<std::string()> storage;  // options::storage (the host's drives keeper)
+  std::shared_ptr<serve::convert::service> converter;  // options::converter
 
   explicit service_fixture(int per_minute = 10000, int pending_per_source = 2, int pending_all = 16, int sessions = 8,
                            std::function<std::unique_ptr<sp::net::listener>()> listener_maker = {})
@@ -155,6 +157,7 @@ struct service_fixture {
     o.max_sessions = max_sessions;
     o.make_listener = make_listener;
     o.storage = storage;
+    o.converter = converter;
     auto started = serve::server::start(o);
     REQUIRE(started);
     srv = std::move(*started);
@@ -1634,4 +1637,378 @@ TEST_CASE("serve: the devices with a session up now (the tray names them)", "[dr
     const auto after = s.srv->usage();
     return after.size() == 1 && after[0].read == 50000 && !after[0].connected;
   }));
+}
+
+// ---- convert (docs/plans/phone-clip-convert.md) ------------------------------------------------
+
+namespace {
+
+namespace cv = serve::convert;
+
+// A runner that converts nothing: the plan is 10 s in 4 s segments; a segment is its number and
+// the source's first bytes. `gate`, when set, holds every run until opened.
+struct fake_runner {
+  std::atomic<int> plans{0}, segments{0};
+  std::mutex m;
+  std::condition_variable c;
+  bool held = false;
+  std::vector<std::uint32_t> order;  // segments, in the order they ran
+  bool not_a_clip = false;
+  std::atomic<bool> fail{false};
+
+  void hold() {
+    std::lock_guard g(m);
+    held = true;
+  }
+  void open() {
+    {
+      std::lock_guard g(m);
+      held = false;
+    }
+    c.notify_all();
+  }
+  void wait_open() {
+    std::unique_lock g(m);
+    c.wait(g, [&] { return !held; });
+  }
+
+  cv::runner make() {
+    cv::runner r;
+    r.plan = [this](const std::string& src, std::uint32_t seg_ms, const std::string& out) {
+      wait_open();
+      ++plans;
+      if (not_a_clip) return cv::ran::not_a_clip;
+      serve::convert_plan p{10000, seg_ms, (10000 + seg_ms - 1) / seg_ms, 1280, 720};
+      std::ofstream(fs::path(std::u8string(reinterpret_cast<const char8_t*>(out.data()), out.size())), std::ios::binary)
+          << serve::convert_plan_json(p);
+      (void)src;
+      return cv::ran::ok;
+    };
+    r.segment = [this](const std::string& src, std::uint32_t k, std::uint32_t, const std::string& out) {
+      wait_open();
+      ++segments;
+      {
+        std::lock_guard g(m);
+        order.push_back(k);
+      }
+      if (fail) return cv::ran::failed;
+      std::ifstream in(fs::path(std::u8string(reinterpret_cast<const char8_t*>(src.data()), src.size())), std::ios::binary);
+      std::string head(8, '\0');
+      in.read(head.data(), 8);
+      head.resize(static_cast<std::size_t>(in.gcount()));
+      std::ofstream(fs::path(std::u8string(reinterpret_cast<const char8_t*>(out.data()), out.size())), std::ios::binary)
+          << "SEG" << k << ":" << head;
+      return cv::ran::ok;
+    };
+    return r;
+  }
+};
+
+struct waited_plan {
+  std::mutex m;
+  std::condition_variable c;
+  std::optional<std::pair<cv::outcome, serve::convert_plan>> got;
+  cv::service::plan_cb cb() {
+    return [this](cv::outcome o, const serve::convert_plan& p) {
+      std::lock_guard g(m);
+      got = {o, p};
+      c.notify_all();
+    };
+  }
+  std::pair<cv::outcome, serve::convert_plan> wait() {
+    std::unique_lock g(m);
+    REQUIRE(c.wait_for(g, std::chrono::seconds(kSlowSeconds), [&] { return got.has_value(); }));
+    return *got;
+  }
+};
+
+struct waited_segment {
+  std::mutex m;
+  std::condition_variable c;
+  std::optional<std::pair<cv::outcome, std::string>> got;
+  cv::service::segment_cb cb() {
+    return [this](cv::outcome o, const std::string& f) {
+      std::lock_guard g(m);
+      got = {o, f};
+      c.notify_all();
+    };
+  }
+  std::pair<cv::outcome, std::string> wait() {
+    std::unique_lock g(m);
+    REQUIRE(c.wait_for(g, std::chrono::seconds(kSlowSeconds), [&] { return got.has_value(); }));
+    return *got;
+  }
+};
+
+std::string file_text(const std::string& path) {
+  std::ifstream f(fs::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// Until the service has nothing running or queued (bounded).
+void settle(cv::service& s, fake_runner& r, int segments) {
+  for (int i = 0; i < kSlowSeconds * 100 && (r.segments.load() < segments || s.now().busy); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+}  // namespace
+
+TEST_CASE("serve convert: the request and the plan on the wire", "[driftwire-serve][convert]") {
+  serve::open_request r;
+  r.id = 7;
+  r.kind = serve::op::convert;
+  r.root = kRootA;
+  r.rel = "clips/a.avi";
+  r.segment = 3;
+  r.credit = 65536;
+  bool unknown = true;
+  auto back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK_FALSE(unknown);
+  CHECK(back->kind == serve::op::convert);
+  CHECK(back->segment == 3);
+  CHECK(back->rel == "clips/a.avi");
+  r.segment = -1;
+  back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK(back->segment == -1);
+
+  auto raw = [](std::string_view json) {
+    std::vector<std::uint8_t> b{1, 0, 0, 0};
+    b.insert(b.end(), json.begin(), json.end());
+    return b;
+  };
+  CHECK_FALSE(serve::parse_open(raw(R"({"op":"convert","root":"a1a1a1a1a1a1a1a1","rel":"a.avi"})"), unknown));  // no seg
+  CHECK_FALSE(serve::parse_open(raw(R"({"op":"convert","root":"a1a1a1a1a1a1a1a1","rel":"a.avi","seg":-2})"), unknown));
+  CHECK_FALSE(serve::parse_open(raw(R"({"op":"convert","root":"a1a1a1a1a1a1a1a1","seg":0})"), unknown));  // no file
+  CHECK(serve::parse_op("convert") == serve::op::convert);
+  CHECK(serve::op_bit(serve::op::convert) == serve::kConvertOp);
+  CHECK((serve::kAllOps & serve::kConvertOp) == 0);  // never granted with the reads
+
+  serve::convert_plan p{10001, 4000, 3, 1920, 1080};
+  const auto parsed = serve::parse_convert_plan(serve::convert_plan_json(p));
+  REQUIRE(parsed);
+  CHECK(parsed->duration_ms == 10001);
+  CHECK(parsed->segments == 3);
+  CHECK(parsed->width == 1920);
+  CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":10001,"segment_ms":4000,"segments":4,"width":1,"height":1})"));
+  CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":0,"segment_ms":4000,"segments":0,"width":1,"height":1})"));
+  CHECK_FALSE(serve::parse_convert_plan("[]"));
+}
+
+TEST_CASE("serve convert: a segment is made once, kept, and the next ones are made ahead", "[driftwire-serve][convert]") {
+  scratch_dir dir{"serve_convert_cache"};
+  write_file(dir.root() / "clip.avi", "RIFFclipbytes");
+  fake_runner run;
+  cv::service::options o;
+  o.cache_dir = utf8(dir.root() / "cache");
+  o.run = run.make();
+  auto svc = cv::service::start(o);
+  cv::source src{utf8(dir.root() / "clip.avi"), kRootA, "clip.avi", 13, 1000};
+
+  waited_plan p1;
+  svc->plan(src, p1.cb());
+  const auto [po, plan] = p1.wait();
+  REQUIRE(po == cv::outcome::ok);
+  CHECK(plan.segments == 3);
+  waited_plan p2;
+  svc->plan(src, p2.cb());
+  CHECK(p2.wait().first == cv::outcome::ok);
+  CHECK(run.plans == 1);  // the second from the cache
+
+  waited_segment s0;
+  svc->segment(src, 0, s0.cb());
+  const auto [so, file] = s0.wait();
+  REQUIRE(so == cv::outcome::ok);
+  CHECK(file_text(file) == "SEG0:RIFFclip");
+  // Segments 1 and 2 follow by themselves (ahead), and are then hits.
+  settle(*svc, run, 3);
+  CHECK(run.segments == 3);
+  waited_segment s2;
+  svc->segment(src, 2, s2.cb());
+  CHECK(s2.wait().first == cv::outcome::ok);
+  CHECK(run.segments == 3);
+  CHECK(svc->now().hits >= 2);
+  // Nothing beside the original, and nothing named after it in the cache.
+  CHECK(fs::exists(dir.root() / "clip.avi"));
+  int beside = 0;
+  for (const auto& e : fs::directory_iterator(dir.root())) beside += e.is_regular_file() ? 1 : 0;
+  CHECK(beside == 1);
+  for (const auto& e : fs::recursive_directory_iterator(dir.root() / "cache")) {
+    CHECK(utf8(e.path().filename()).find("clip") == std::string::npos);
+  }
+
+  // The file changed (another mtime): converted again.
+  cv::source changed = src;
+  changed.mtime = 2000;
+  CHECK(cv::cache_key(changed) != cv::cache_key(src));
+  waited_segment s0b;
+  svc->segment(changed, 0, s0b.cb());
+  CHECK(s0b.wait().first == cv::outcome::ok);
+  CHECK(run.segments >= 4);
+}
+
+TEST_CASE("serve convert: what a phone asks goes first, and a seek drops what was queued ahead", "[driftwire-serve][convert]") {
+  scratch_dir dir{"serve_convert_order"};
+  write_file(dir.root() / "a.mkv", "matroska");
+  fake_runner run;
+  cv::service::options o;
+  o.cache_dir = utf8(dir.root() / "cache");
+  o.run = run.make();
+  o.ahead = 2;
+  auto svc = cv::service::start(o);
+  cv::source src{utf8(dir.root() / "a.mkv"), kRootA, "a.mkv", 8, 1};
+  waited_plan p;
+  svc->plan(src, p.cb());
+  REQUIRE(p.wait().first == cv::outcome::ok);  // 3 segments: 0, 1, 2
+
+  run.hold();
+  waited_segment s0, s2;
+  svc->segment(src, 0, s0.cb());  // runs (held), 1 and 2 queued ahead
+  for (int i = 0; i < 1000 && !svc->now().busy; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  svc->segment(src, 2, s2.cb());  // a seek: asked, and 1 (ahead of 0) dropped
+  run.open();
+  CHECK(s0.wait().first == cv::outcome::ok);
+  CHECK(s2.wait().first == cv::outcome::ok);
+  settle(*svc, run, 2);
+  std::lock_guard g(run.m);
+  REQUIRE(run.order.size() == 2);
+  CHECK(run.order[0] == 0);
+  CHECK(run.order[1] == 2);
+}
+
+TEST_CASE("serve convert: the cache keeps to its bound, failures are not kept, purge empties it", "[driftwire-serve][convert]") {
+  scratch_dir dir{"serve_convert_bound"};
+  write_file(dir.root() / "a.mpg", "mpegbytes");
+  write_file(dir.root() / "b.mpg", "otherbyt");
+  fake_runner run;
+  cv::service::options o;
+  o.cache_dir = utf8(dir.root() / "cache");
+  o.run = run.make();
+  o.ahead = 0;
+  o.max_bytes = 200;  // plans (~80 B each) and a few 13-byte segments
+  auto svc = cv::service::start(o);
+  cv::source a{utf8(dir.root() / "a.mpg"), kRootA, "a.mpg", 9, 1};
+  for (std::uint32_t k = 0; k < 3; ++k) {
+    for (int file = 0; file < 4; ++file) {
+      cv::source s = a;
+      s.mtime = file;  // four sources' worth of segments
+      waited_segment w;
+      svc->segment(s, k, w.cb());
+      REQUIRE(w.wait().first == cv::outcome::ok);
+    }
+  }
+  CHECK(svc->now().cached_bytes <= 200);
+
+  run.fail = true;
+  cv::source b{utf8(dir.root() / "b.mpg"), kRootA, "b.mpg", 8, 1};
+  waited_segment bad;
+  svc->segment(b, 0, bad.cb());
+  CHECK(bad.wait().first == cv::outcome::failed);
+  run.fail = false;
+  waited_segment again;
+  svc->segment(b, 0, again.cb());
+  CHECK(again.wait().first == cv::outcome::ok);  // tried again, not remembered
+
+  run.not_a_clip = true;
+  cv::source c = b;
+  c.rel = "c.mpg";
+  waited_plan np;
+  svc->plan(c, np.cb());
+  CHECK(np.wait().first == cv::outcome::not_a_clip);
+  const int plans = run.plans;
+  waited_plan np2;
+  svc->plan(c, np2.cb());
+  CHECK(np2.wait().first == cv::outcome::not_a_clip);
+  CHECK(run.plans == plans);  // remembered: not run again
+
+  svc->purge();
+  CHECK(svc->now().cached_bytes == 0);
+  CHECK(fs::is_empty(dir.root() / "cache"));
+}
+
+TEST_CASE("serve convert: the op is offered only with a converter, and streams a segment", "[driftwire-serve][convert]") {
+  service_fixture s;
+  write_file(s.library / "clips" / "old.avi", "RIFFavidata");
+  fs::create_directories(s.library / "clips" / "folder.avi");
+  write_file(s.outside / "secret.avi", "nope");
+
+  // No converter: not in the caps, and the client never asks.
+  {
+    auto opts = s.client_options();
+    opts.ops |= serve::kConvertOp;
+    auto c = serve::client::open(s.connect(), opts);
+    REQUIRE(c);
+    CHECK(((*c)->caps().ops & serve::kConvertOp) == 0);
+    CHECK((*c)->convert_plan_of(kRootA, "clips/old.avi").error() == mv::status::unsupported_format);
+  }
+
+  fake_runner run;
+  scratch_dir cache{"serve_convert_server_cache"};
+  cv::service::options o;
+  o.cache_dir = utf8(cache.root());
+  o.run = run.make();
+  s.srv->set_converter(cv::service::start(o));
+
+  // A phone from before `convert` does not list it, and is not given it.
+  CHECK((s.open_client()->caps().ops & serve::kConvertOp) == 0);
+
+  auto opts = s.client_options();
+  opts.ops |= serve::kConvertOp;
+  auto c = serve::client::open(s.connect(), opts);
+  REQUIRE(c);
+  REQUIRE(((*c)->caps().ops & serve::kConvertOp) != 0);
+  auto plan = (*c)->convert_plan_of(kRootA, "clips/old.avi");
+  REQUIRE(plan);
+  CHECK(plan->segments == 3);
+  CHECK(plan->width == 1280);
+  auto seg = (*c)->convert_segment(kRootA, "clips/old.avi", 1, 4096);
+  REQUIRE(seg);
+  CHECK(read_all(**seg) == "SEG1:RIFFavid");
+  CHECK((*seg)->code() == serve::end_code::ok);
+
+  // Outside the folders, a folder, and a link out are refused, never converted.
+  const int before = run.segments;
+  CHECK_FALSE((*c)->convert_plan_of(kRootA, "../outside/secret.avi"));
+  CHECK((*c)->convert_plan_of(kRootA, "clips/folder.avi").error() == mv::status::permission_denied);
+#if !defined(_WIN32)
+  fs::create_symlink(s.outside / "secret.avi", s.library / "clips" / "link.avi");
+  CHECK_FALSE((*c)->convert_plan_of(kRootA, "clips/link.avi"));
+#endif
+  CHECK((*c)->convert_plan_of(kRootA, "clips/missing.avi").error() == mv::status::not_found);
+
+  // Turned off since the caps: said so.
+  s.srv->set_converter(nullptr);
+  std::string why;
+  CHECK((*c)->convert_plan_of(kRootA, "clips/old.avi", &why).error() == mv::status::unsupported_format);
+  CHECK(why == serve::kWhyConvertOff);
+  CHECK(run.segments >= before);
+}
+
+TEST_CASE("serve convert: a stream cancelled while it converts ends, and the session goes on", "[driftwire-serve][convert]") {
+  service_fixture s;
+  write_file(s.library / "b.webm", "webmwebm");
+  fake_runner run;
+  scratch_dir cache{"serve_convert_cancel_cache"};
+  cv::service::options o;
+  o.cache_dir = utf8(cache.root());
+  o.run = run.make();
+  o.ahead = 0;
+  s.srv->set_converter(cv::service::start(o));
+  auto opts = s.client_options();
+  opts.ops |= serve::kConvertOp;
+  auto c = serve::client::open(s.connect(), opts);
+  REQUIRE(c);
+  REQUIRE((*c)->convert_plan_of(kRootA, "b.webm"));
+  run.hold();
+  auto seg = (*c)->convert_segment(kRootA, "b.webm", 0);
+  REQUIRE(seg);
+  (*seg)->cancel();
+  run.open();
+  // The session still answers, and the segment was kept for the next ask.
+  auto again = (*c)->convert_segment(kRootA, "b.webm", 0);
+  REQUIRE(again);
+  CHECK(read_all(**again) == "SEG0:webmwebm");
+  CHECK((*c)->stat(kRootA, "b.webm"));
 }

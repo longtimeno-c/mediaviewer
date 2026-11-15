@@ -93,6 +93,19 @@ struct stream {
   std::size_t body_at = 0;
   std::uint64_t count = 0;
   bool truncated = false;
+  // convert: waiting for the converter, then a segment's file (as read_range) or an end of
+  // its own (the plan, a refusal), sent by the pump.
+  bool waiting = false;
+  bool has_end = false, end_sent = false;
+  end_code end = end_code::ok;
+  std::string end_json;
+};
+
+// Where the converter's answers find a session that may have ended since it asked.
+class session_state;
+struct convert_inbox {
+  std::mutex m;
+  session_state* s = nullptr;  // under m; null once the session stops
 };
 
 // A file a phone is writing into a backup folder (serve_backup.h).
@@ -360,6 +373,12 @@ struct server::state {
   std::function<void()> before_gather;  // the tests
   std::function<bool(const root_config&)> root_present;  // the host's (options::root_present)
   std::function<std::string()> storage;  // options::storage
+  std::mutex conv_m;
+  std::shared_ptr<convert::service> conv;  // under conv_m (options::converter)
+  std::shared_ptr<convert::service> converter() {
+    std::lock_guard lock(conv_m);
+    return conv;
+  }
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -475,11 +494,48 @@ class session_state {
   using upgrade_fn = std::function<std::optional<std::pair<end_code, std::string>>(std::uint32_t, std::string_view)>;
   // Phone backup: whether this session's device may write into a backup folder (its grant).
   using write_fn = std::function<bool(const root_config&)>;
+  using converter_fn = std::function<std::shared_ptr<convert::service>()>;
   session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {}, upgrade_fn upgrade = {},
                 backup::book* book = nullptr, const std::array<std::uint8_t, 32>& device = {}, write_fn may_write = {})
       : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)), upgrade_(std::move(upgrade)),
-        book_(book), device_(device), device_id_(device_folder_id(device)), may_write_(std::move(may_write)) {}
-  ~session_state() { join_commits(); }
+        book_(book), device_(device), device_id_(device_folder_id(device)), may_write_(std::move(may_write)) {
+    inbox_->s = this;
+  }
+  ~session_state() {
+    leave_inbox();
+    join_commits();
+  }
+  // The server's converter, asked at each convert request (it may be turned off).
+  void set_converter(converter_fn fn) { converter_ = std::move(fn); }
+
+  // The converter's answer for stream `id` (its worker's thread, or the pump's on a hit).
+  void converted(std::uint32_t id, convert::outcome o, const std::string& file, const convert_plan* plan) {
+    io::file_reader reader;
+    bool opened = false;
+    if (o == convert::outcome::ok && !plan) opened = reader.open(file, io::read_mode::sequential).has_value();
+    std::lock_guard lock(m_);
+    for (auto& t : streams_) {
+      if (t->id != id || t->kind != op::convert || !t->waiting) continue;
+      t->waiting = false;
+      if (plan && o == convert::outcome::ok) {
+        t->has_end = true;
+        t->end_json = convert_plan_json(*plan);
+      } else if (opened && reader.size() > 0) {
+        t->reader = std::move(reader);
+        t->at = 0;
+        t->remaining = t->reader.size();
+      } else {
+        t->has_end = true;
+        t->end = o == convert::outcome::not_a_clip ? end_code::unsupported
+                 : o == convert::outcome::off      ? end_code::unsupported
+                                                   : end_code::error;
+        if (o == convert::outcome::not_a_clip) t->end_json = why_json(kWhyNotAClip);
+        if (o == convert::outcome::off) t->end_json = why_json(kWhyConvertOff);
+      }
+      cv_.notify_all();
+      break;
+    }
+  }
   // "Tray": file bytes sent and written are added here (the conn's own).
   void count_into(std::atomic<std::uint64_t>* read, std::atomic<std::uint64_t>* written) {
     read_ctr_ = read;
@@ -591,6 +647,7 @@ class session_state {
   }
 
   void stop() {
+    leave_inbox();
     {
       std::lock_guard lock(m_);
       stopping_ = true;
@@ -657,14 +714,20 @@ class session_state {
 
  private:
   [[nodiscard]] bool can_run(const stream& s) const noexcept {
-    if (s.busy || s.cancelled || finished(s)) return false;
-    return s.credit > 0;
+    if (s.busy || s.cancelled || s.waiting || finished(s)) return false;
+    return s.has_end || s.credit > 0;
   }
   [[nodiscard]] bool runnable() const noexcept {
     return std::any_of(streams_.begin(), streams_.end(), [&](const auto& s) { return can_run(*s); });
   }
   [[nodiscard]] static bool finished(const stream& s) noexcept {
+    if (s.kind == op::convert) return !s.waiting && (s.has_end ? s.end_sent : s.remaining == 0);
     return s.kind == op::read_range ? s.remaining == 0 : s.body_at >= s.body.size();
+  }
+
+  void leave_inbox() {
+    std::lock_guard lock(inbox_->m);
+    inbox_->s = nullptr;
   }
   stream* pick() {
     const std::size_t n = streams_.size();
@@ -769,6 +832,7 @@ class session_state {
     // The meta folder: only a backup folder's, only to a device that may write there.
     if (r.meta && !may_write(*root)) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
     if (r.kind == op::write) return open_write(r, *root);
+    if (r.kind == op::convert) return r.meta ? send_end(r.id, end_code::refused) : open_convert(r, *root);
     const std::string rel = r.meta ? (r.rel.empty() ? std::string(kBackupMetaFolder) : std::string(kBackupMetaFolder) + "/" + r.rel) : r.rel;
     if (r.kind == op::read_range && rel.empty()) return send_end(r.id, end_code::refused);
     if (r.kind == op::stat) {
@@ -830,6 +894,56 @@ class session_state {
       }
     }
     return duplicate ? send_end(r.id, end_code::bad_request) : true;
+  }
+
+  // ---- convert (docs/plans/phone-clip-convert.md) -------------------------------------------
+
+  bool open_convert(const open_request& r, const root_config& root) {
+    const auto conv = converter_ ? converter_() : nullptr;
+    if (!conv) return send_end(r.id, end_code::unsupported, why_json(kWhyConvertOff));
+    // The same walk as a read: no link at any part. The helper gets the path it checked.
+    auto st = io::stat_beneath(root.path, r.rel);
+    if (!st) return send_failed(r.id, root, st.error());
+    if (st->is_directory) return send_end(r.id, end_code::refused);
+    convert::source src;
+    src.path = root.path;
+    if (!src.path.empty() && src.path.back() != '/' && src.path.back() != '\\') src.path += '/';
+    src.path += r.rel;
+    src.root_id = root.id;
+    src.rel = r.rel;
+    src.size = st->size;
+    src.mtime = st->mtime_unix;
+    auto s = std::make_unique<stream>();
+    s->id = r.id;
+    s->kind = op::convert;
+    s->credit = r.credit;
+    s->waiting = true;
+    bool duplicate = false;
+    {
+      std::lock_guard lock(m_);
+      opening_ = 0;
+      if (opening_cancelled_) return true;
+      s->credit = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(std::uint64_t{s->credit} + opening_credit_, kMaxStreamCredit));
+      duplicate = std::any_of(streams_.begin(), streams_.end(), [&](const auto& t) { return t->id == r.id; });
+      if (!duplicate) streams_.push_back(std::move(s));
+    }
+    if (duplicate) return send_end(r.id, end_code::bad_request);
+    // Registered first: a cache hit answers on this thread, before these return.
+    const auto inbox = inbox_;
+    const std::uint32_t id = r.id;
+    if (r.segment < 0) {
+      conv->plan(src, [inbox, id](convert::outcome o, const convert_plan& p) {
+        std::lock_guard lock(inbox->m);
+        if (inbox->s) inbox->s->converted(id, o, {}, &p);
+      });
+    } else {
+      conv->segment(src, static_cast<std::uint32_t>(r.segment), [inbox, id](convert::outcome o, const std::string& file) {
+        std::lock_guard lock(inbox->m);
+        if (inbox->s) inbox->s->converted(id, o, file, nullptr);
+      });
+    }
+    return true;
   }
 
   // ---- writes (phone backup) ----------------------------------------------------------------
@@ -1142,7 +1256,14 @@ class session_state {
 
   // One chunk of `s`. False ends the session.
   bool step(stream& s, std::vector<std::uint8_t>& buf) {
-    if (s.kind == op::read_range) {
+    if (s.kind == op::convert && s.has_end) {
+      {
+        std::lock_guard lock(m_);
+        s.end_sent = true;
+      }
+      return send_end(s.id, s.end, s.end_json);
+    }
+    if (s.kind == op::read_range || s.kind == op::convert) {
       const std::size_t chunk = s.bulk ? kBulkChunk : kInteractiveChunk;
       std::size_t want = 0;
       {
@@ -1206,6 +1327,8 @@ class session_state {
   send_fn send_;
   config_fn cfg_;
   std::function<bool(const root_config&)> root_present_;
+  converter_fn converter_;
+  std::shared_ptr<convert_inbox> inbox_ = std::make_shared<convert_inbox>();
   const std::uint32_t ops_;
   admin_fn admin_;
   upgrade_fn upgrade_;
@@ -1286,7 +1409,8 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       // (A punched one is direct already: not offered again.) Writes (phone
       // backup) to any device but the owner's session; each folder asks its grant.
       const bool punched = c.source.starts_with("punch:");
-      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0));
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0) |
+                          (converter() ? kConvertOp : 0));
     }
   }
   std::string extra = (ops & kAdminOp) != 0 ? owner_fields() : std::string();
@@ -1334,6 +1458,7 @@ void server::state::session(conn& c, std::optional<message> first_message) {
                   [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler), std::move(upgrade_handler),
                   &book, c.device, [this, &c](const root_config& root) { return device_may_write(c, root); });
   s.set_root_present(root_present);
+  s.set_converter([this] { return converter(); });
   s.count_into(&c.bytes_read, &c.bytes_written);
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
@@ -2832,6 +2957,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.before_gather = o.before_gather;
   st.root_present = o.root_present;
   st.storage = o.storage;
+  st.conv = o.converter;
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
@@ -3211,6 +3337,11 @@ bool server::replace_config(config next) {
   std::lock_guard lock(st_->cfg_m);
   st_->cfg_now = std::move(made);
   return true;
+}
+
+void server::set_converter(std::shared_ptr<convert::service> c) {
+  std::lock_guard lock(st_->conv_m);
+  st_->conv = std::move(c);
 }
 
 void server::recheck_devices() noexcept {
