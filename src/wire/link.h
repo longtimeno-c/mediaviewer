@@ -36,6 +36,9 @@ class link {
   // #472 PR 3: a stream on a hole punched after meeting on the DHT
   // (udp_hub), for the window's picture of the path.
   [[nodiscard]] virtual bool punched() const noexcept { return false; }
+  // A TCP link whose small writes leave at once (TCP_NODELAY), as the socket
+  // itself reports it; false for every other bearer.
+  [[nodiscard]] virtual bool no_delay() const noexcept { return false; }
 };
 
 // A link that says it is another bearer than its own (#472 PR 2: a TCP link
@@ -49,6 +52,7 @@ class bearer_as final : public link {
   }
   void shutdown() noexcept override { inner_->shutdown(); }
   [[nodiscard]] transport via() const noexcept override { return via_; }
+  [[nodiscard]] bool no_delay() const noexcept override { return inner_->no_delay(); }
   [[nodiscard]] const char* through() const noexcept override { return inner_->through(); }
   [[nodiscard]] bool punched() const noexcept override { return inner_->punched(); }
 
