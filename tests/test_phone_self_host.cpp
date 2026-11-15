@@ -121,6 +121,44 @@ TEST_CASE("phone self host: state.json and host.json are read as the host writes
   CHECK(std::string(sh::kTokenSecret) == mv::driftwire::ddns::kTokenSecret);
 }
 
+TEST_CASE("phone self host: the VPN is read as `host vpn` writes it, and its relay line found in what it printed",
+          "[phone-self-host]") {
+  // host.json as the program writes it (host_settings_json): what is asked for.
+  cli::host_settings hs;
+  CHECK_FALSE(sh::parse_vpn(cli::host_settings_json(hs)).on);
+  hs.vpn = true;
+  hs.tls_port = 443;
+  auto v = sh::parse_vpn(cli::host_settings_json(hs));
+  CHECK(v.on);
+  CHECK(v.tls_port == 443);
+  hs.tls_port = 0;
+  CHECK(sh::parse_vpn(cli::host_settings_json(hs)).tls_port == 0);
+  CHECK_FALSE(sh::parse_vpn("not json").on);
+  // state.json: what the running relay does, and the router's outside port for it.
+  const auto st = sh::parse_state(R"({"relay_port":47614,"vpn":true,"tls_failed":true,"relay_outside_port":47615})");
+  REQUIRE(st);
+  CHECK(st->vpn);
+  CHECK(st->tls_failed);
+  CHECK(st->relay_outside_port == 47615);
+
+  // `host vpn on`'s own words (host_setup.cpp host_vpn): the indented line.
+  const std::string printed =
+      "The VPN is on: this computer carries your laptop's web traffic (TCP 80 and 443, and DNS) out to the internet, "
+      "never into your home network.\n"
+      "On the laptop, in Driftwire's Relay (your own server), put this line once. It holds the relay's key: keep it "
+      "to yourself.\n\n  home.duckdns.org:47614#k3yk3yk3yk3yk3yk3y\r\n\n"
+      "Then turn on the Tunnel or All traffic (VPN); sites see this home's address.\n";
+  CHECK(sh::relay_line_in(printed) == "home.duckdns.org:47614#k3yk3yk3yk3yk3yk3y");
+  CHECK(sh::relay_line_in("  [::1]:47614#abc\n") == "[::1]:47614#abc");
+  // Nothing else that has a '#' in it.
+  CHECK(sh::relay_line_in("The VPN is off: the relay forwards nothing.\n").empty());
+  CHECK(sh::relay_line_in("see issue #12 for more\n").empty());
+  CHECK(sh::relay_line_in("  home.duckdns.org#key\n").empty());     // no port
+  CHECK(sh::relay_line_in("  home.duckdns.org:port#key\n").empty());
+  CHECK(sh::relay_line_in("  home:1#\n").empty());                  // no key
+  CHECK(sh::relay_line_in("").empty());
+}
+
 TEST_CASE("phone self host: a name and a token are read by DuckDNS's rules", "[phone-self-host]") {
   namespace ddns = mv::driftwire::ddns;
   const char* names[] = {"home", " home.duckdns.org ", "HOME.DuckDNS.org.", "a.b", "-x", "x-", "", "home.duckdns.org.uk",

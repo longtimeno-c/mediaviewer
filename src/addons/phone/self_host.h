@@ -94,6 +94,12 @@ struct host_status {
   // connected, in the menu's words (host_tray::usage_lines).
   bool paused = false;
   std::vector<std::string> stats;
+  // The VPN (`host vpn on|off`, docs/design/28 "Self-hosting"): `vpn` is what
+  // host.json asks for, `vpn_on` what the running host's relay does now (it
+  // takes host.json within 2 s); the web-site look's port (0: none) and whether
+  // it could listen; the relay's port as the router maps it from outside.
+  bool vpn = false, vpn_on = false, tls_failed = false;
+  std::uint16_t tls_port = 0, relay_outside_port = 0;
 };
 [[nodiscard]] host_status read_status(const where& w);
 
@@ -108,6 +114,7 @@ struct running_state {
   // The tray (docs/plans/self-hosted.md "Tray"):
   bool paused = false;             // `host pause`
   bool tls_failed = false;         // the web-site look could not listen
+  std::uint16_t relay_outside_port = 0;  // the router keeper's for the relay, once mapped
   // The phones connected now (state.json "clients"): the paired name, how
   // ("home", "internet", "relay"), since when (unix s), today's bytes, the rate.
   struct client {
@@ -137,6 +144,16 @@ struct running_state {
 [[nodiscard]] std::string tidy_keeper_line(std::string_view line);
 // host.json's DuckDNS subdomain ("ddns"), "" when none or not that shape.
 [[nodiscard]] std::string parse_duckdns(std::string_view host_json);
+// host.json's VPN ("vpn") and the web-site look's port ("tls_port", 0: none).
+struct vpn_wanted {
+  bool on = false;
+  std::uint16_t tls_port = 0;
+};
+[[nodiscard]] vpn_wanted parse_vpn(std::string_view host_json);
+// The relay line `host vpn on` prints for the laptop ("name.duckdns.org:PORT#KEY",
+// indented on a line of its own), "" when the output has none. It holds the
+// relay's key: for the person's own screen, never logged.
+[[nodiscard]] std::string relay_line_in(std::string_view output);
 
 // ---- running the program ------------------------------------------------------------------
 

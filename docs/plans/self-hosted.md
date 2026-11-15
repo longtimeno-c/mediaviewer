@@ -529,6 +529,25 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   if DHCP moves it (the card's address field still changes it); a host set up from the terminal shows its
   status row but the card offers no unshare or rename (the terminal does).
 
+## 18. The VPN switch on the desktop card, as built (2026-11-15)
+
+Ask: the VPN that slice 7 built for the command line (`host vpn on|off`), available from Phone access too.
+- **Settings → Add-ons → Phone access**, this computer's server: a **VPN through this Mac/PC** row with a
+  **Use as VPN** switch, its status and **Relay line…** ([28](../design/28-driftwire.md#the-vpn-exit-driftwire-host-vpn-onoff-slice-7-2026-11-14)).
+  The switch runs the installed program's own `host vpn on|off`, so the CLI's forwarding rules, ports and
+  words are the only ones (no second implementation); the line is the one `vpn on` prints. Drawn by the
+  add-on's own tree: both chromes, no chrome code. Built on PR #706 (the add-on page).
+- **Phones**: unchanged. The iPhone app has no VPN yet ([phone-vpn.md](phone-vpn.md), plan only, its owner
+  calls open), and the code carries no relay route for a host. Turning the VPN on does not change how a
+  phone reaches the library; the test pairs a phone and reads a photo with it on.
+- **Tests**: `"[phone-addon]"` (the row's states, the switch's requests, the line copyable and hidden, the
+  error), `"[phone-self-host]"` (host.json and state.json read as the program writes them, the line found in
+  its output and nothing else), and the switch end to end against the test build of the program
+  (on, the running relay taking it, the line, hidden, asked again, a phone paired and reading, off).
+- **Measured**: `"[.phone-host-bench]"`, below in DEVELOPMENT.md; numbers in the PR.
+- **Not done**: the card driven on screen on either host (the tree is tested, the chromes draw its node
+  types already); the web-site look's port from the card (`--tls-port`: the terminal only; the card shows it).
+
 ## Tray: the server menu while hosting (issue #686 §4, owner 2026-11-14)
 
 Owner's calls: **yes, a tray / menu-bar icon while the computer hosts, through the app's existing
