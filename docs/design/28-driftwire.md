@@ -568,7 +568,8 @@ elevated on Windows, it refuses to start** (except the test build).
 **The protocol.** Message ids 25–31, 33–34 (`wire.h`) plus ident, ping, cancel. `serve_hello`
 (versions, operation names) → `serve_caps` (intersection); unknown operation →
 `end_code::unsupported`. Streams with client ids: `roots`, `list` (NDJSON), `stat`, `read_range`
-(`file_reader::read_at`). Credit per stream (≤ 8 MiB); interactive chunks ≤ 64 KiB, bulk ≤ 256 KiB,
+(`file_reader::read_at`). Credit per stream (≤ 8 MiB; the phone opens a viewer's read with 1 MiB and
+a whole-file pull with all 8, since one window per round trip caps a download); interactive chunks ≤ 64 KiB, bulk ≤ 256 KiB,
 one bulk per four interactive. `stream_cancel`; seek = cancel + new `read_range`. No rejoin or
 replay; reads are idempotent.
 
