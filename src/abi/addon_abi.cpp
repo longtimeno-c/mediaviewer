@@ -170,6 +170,7 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
   out.shutter_den = f.shutter_den;
   out.shutter_us = f.shutter_us;
   put(out.label_utf8, sizeof(out.label_utf8), f.label);
+  out.duration_ms = f.duration_ms;  // a clip's length from its header (the phone's catalogue)
   return true;
 }
 

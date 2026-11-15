@@ -4,10 +4,13 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <optional>
 
 #include "io/file_port.h"
+#include "io/pairing.h"
 #include "io/paths.h"
 
 namespace mv::meta {
@@ -16,7 +19,12 @@ namespace {
 // Bump to throw every row away (a column change). kSearchFactsVersion covers
 // what search_facts_of extracts; this covers the table's shape.
 // 2 (#405): rating, label and the exposure numbers.
-constexpr const char* kSchema = "2";
+// 3 (2026-11-15): duration_ms, added in place (kSchema3Step) so a library's
+// rows are kept: -1 on a row from before it, which a clip reads again.
+constexpr const char* kSchema = "3";
+constexpr const char* kSchema3Step =
+    "BEGIN; ALTER TABLE files ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT -1;"
+    "UPDATE meta SET value = '3' WHERE key = 'schema'; COMMIT;";
 
 constexpr const char* kCreate =
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -27,12 +35,12 @@ constexpr const char* kCreate =
     " has_where INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL,"
     " has_alt INTEGER NOT NULL, alt REAL NOT NULL, rating INTEGER NOT NULL, label TEXT NOT NULL,"
     " iso INTEGER NOT NULL, aperture INTEGER NOT NULL, focal INTEGER NOT NULL,"
-    " shutter_den INTEGER NOT NULL, shutter_us INTEGER NOT NULL);"
+    " shutter_den INTEGER NOT NULL, shutter_us INTEGER NOT NULL, duration_ms INTEGER NOT NULL DEFAULT -1);"
     "CREATE INDEX IF NOT EXISTS files_dir ON files(dir);";
 
 constexpr const char* kCols =
     "path, size, mtime, fields, folded, camera, lens, made_with, ai, taken, has_where, lat, lon, has_alt, alt,"
-    " rating, label, iso, aperture, focal, shutter_den, shutter_us";
+    " rating, label, iso, aperture, focal, shutter_den, shutter_us, duration_ms";
 
 class stmt {
  public:
@@ -116,6 +124,9 @@ cached_facts row_of(const stmt& s) {
   r.facts.focal_mm = static_cast<std::int32_t>(s.col_i64(19));
   r.facts.shutter_den = static_cast<std::int32_t>(s.col_i64(20));
   r.facts.shutter_us = s.col_i64(21);
+  const std::int64_t duration = s.col_i64(22);
+  r.facts.duration_ms = std::max<std::int64_t>(duration, 0);
+  r.duration_unread = duration < 0;
   return r;
 }
 
@@ -154,9 +165,17 @@ meta_cache::open_result meta_cache::open_locked(const std::string& db_path) {
     const int primary = rc & 0xFF;
     out = (primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB) ? open_result::damaged : open_result::failed;
   } else {
-    stmt q(db, "SELECT value FROM meta WHERE key='schema'");
-    if (q.row()) {
-      if (q.col_text(0) != kSchema) out = open_result::damaged;  // another shape: a cache, so make it again
+    std::optional<std::string> was;
+    {
+      stmt q(db, "SELECT value FROM meta WHERE key='schema'");
+      if (q.row()) was = q.col_text(0);
+    }  // finalised before the step changes the table's shape
+    if (was) {
+      if (*was == "2") {
+        if (sqlite3_exec(db, kSchema3Step, nullptr, nullptr, nullptr) != SQLITE_OK) out = open_result::damaged;
+      } else if (*was != kSchema) {
+        out = open_result::damaged;  // another shape: a cache, so make it again
+      }
     } else {
       stmt w(db, "INSERT OR IGNORE INTO meta(key, value) VALUES('schema', ?1)");
       w.text(1, kSchema);
@@ -245,9 +264,9 @@ expected meta_cache::store(std::span<const cached_facts> rows) {
     stmt s(db_,
            "INSERT OR REPLACE INTO files(path, dir, size, mtime, version, fields, folded, camera, lens,"
            " made_with, ai, taken, has_where, lat, lon, has_alt, alt, rating, label, iso, aperture, focal,"
-           " shutter_den, shutter_us)"
+           " shutter_den, shutter_us, duration_ms)"
            " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,"
-           " ?21, ?22, ?23, ?24)");
+           " ?21, ?22, ?23, ?24, ?25)");
     ok = s.ok();
     for (const cached_facts& r : rows) {
       if (!ok) break;
@@ -276,6 +295,7 @@ expected meta_cache::store(std::span<const cached_facts> rows) {
       s.i64(22, f.focal_mm);
       s.i64(23, f.shutter_den);
       s.i64(24, f.shutter_us);
+      s.i64(25, std::max<std::int64_t>(f.duration_ms, 0));
       ok = s.run();
     }
   }
@@ -353,7 +373,11 @@ std::string joined_fields(const std::vector<std::string>& fields, std::size_t ca
 
 result<cached_facts> cached_or_read(meta_cache& cache, std::string_view path) {
   MV_TRY(io::file_stat st, io::stat_path(path));
-  if (auto hit = cache.lookup(path, st.size, st.mtime_unix)) return std::move(*hit);
+  if (auto hit = cache.lookup(path, st.size, st.mtime_unix)) {
+    // A clip's row from before schema 3 has no length: read once more. A
+    // still's has nothing to add, so the library's photos are not read again.
+    if (!hit->duration_unread || !io::is_video_name(path)) return std::move(*hit);
+  }
   MV_TRY(search_facts facts, read_search_facts(path));
   cached_facts row;
   row.path.assign(path);

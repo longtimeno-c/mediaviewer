@@ -204,10 +204,16 @@ typedef struct mv_addon_tag_facts {
   int32_t reserved;
   int64_t shutter_us;       /* the exposure time in microseconds */
   char label_utf8[64];      /* the colour label as written: "Red" */
+  /* (appended 2026-11-15): a clip's or an audio file's length from its
+   * container header, read in the same bounded open as the rest (no decode);
+   * 0 for a still, or when the header does not say. A host that knows it
+   * returns a struct_size of MV_ADDON_TAG_FACTS_V3_SIZE. */
+  int64_t duration_ms;
 } mv_addon_tag_facts;
 /* The size before #405's fields: what an older host or add-on passes. */
 #define MV_ADDON_TAG_FACTS_V1_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, rating))
-#define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
+#define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, duration_ms))
+#define MV_ADDON_TAG_FACTS_V3_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
 
 /* #297 (Enhance, slice 4): a file's sound at full quality, and a new file
  * beside it with sound the add-on made (sound_open ... sound_write_close). */

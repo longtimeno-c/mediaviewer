@@ -62,6 +62,11 @@ struct search_facts {
   std::int32_t focal_mm = 0;    // focal length, whole millimetres
   std::int32_t shutter_den = 0; // N when the exposure time is 1/N s, else 0
   std::int64_t shutter_us = 0;  // the exposure time in microseconds (2 s -> 2000000)
+  // A clip's or an audio file's length from its container header (the same
+  // bounded open as the rest), 0 for a still or when the header does not say.
+  // The AI pack's index takes it from here, so the phone's catalogue knows a
+  // clip's length before the content pass opens it.
+  std::int64_t duration_ms = 0;
 };
 
 // #405: the summary's printed exposure values as numbers (pure; exposed for
