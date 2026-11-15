@@ -112,6 +112,31 @@ TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[dri
   CHECK_FALSE(sp::safe_relative(std::string(1100, 'a')));
 }
 
+TEST_CASE("driftwire: a TCP link sends a small write at once, on both ends", "[driftwire]") {
+  // Nagle would hold a small request, or a reply's last short packet, for the
+  // peer's delayed ack: tens of milliseconds on every thumbnail and seek.
+  auto l = sp::net::listen(true);
+  REQUIRE(l);
+  auto dialled = sp::net::connect({"127.0.0.1", (*l)->port()}, 5000);
+  REQUIRE(dialled);
+  auto accepted = (*l)->accept(5000);
+  REQUIRE(accepted);
+  CHECK((*dialled)->no_delay());
+  CHECK((*accepted)->no_delay());
+
+  // The listener a NAS or a code's place uses: ::1, or 127.0.0.1 on a machine
+  // with no IPv6.
+  auto li = sp::net::listen_internet(0, true);
+  REQUIRE(li);
+  auto dialled_in = sp::net::connect({"::1", (*li)->port()}, 5000);
+  if (!dialled_in) dialled_in = sp::net::connect({"127.0.0.1", (*li)->port()}, 5000);
+  REQUIRE(dialled_in);
+  auto accepted_in = (*li)->accept(5000);
+  REQUIRE(accepted_in);
+  CHECK((*dialled_in)->no_delay());
+  CHECK((*accepted_in)->no_delay());
+}
+
 TEST_CASE("driftwire: an offer is refused whole for one bad path or wrong sums", "[driftwire]") {
   CHECK(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"../b.jpg","size":3}]})"));

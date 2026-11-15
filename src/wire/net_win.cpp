@@ -124,6 +124,10 @@ class tcp_link final : public link {
     no_inherit(s_);
     BOOL one = TRUE;
     (void)::setsockopt(s_, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&one), sizeof one);
+    // Every write is one whole frame, so there is nothing for Nagle to join:
+    // it would only hold a small request, or a reply's last short packet,
+    // for the peer's delayed ack.
+    (void)::setsockopt(s_, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof one);
   }
   ~tcp_link() override {
     shutdown();
@@ -197,6 +201,12 @@ class tcp_link final : public link {
   }
 
   transport via() const noexcept override { return transport::wifi; }
+
+  bool no_delay() const noexcept override {
+    BOOL on = FALSE;
+    int len = sizeof on;
+    return ::getsockopt(s_, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char*>(&on), &len) == 0 && on != FALSE;
+  }
 
  private:
   SOCKET s_;

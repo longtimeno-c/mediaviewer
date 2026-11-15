@@ -253,7 +253,9 @@ add-on asks the host to keep its process (`keep_alive`).
 
 ## The wire
 
-`wire.h`, `noise.h`, `channel.h`. The bearer only moves bytes. A client speaks the peer's announced
+`wire.h`, `noise.h`, `channel.h`. The bearer only moves bytes. Every TCP link sets `TCP_NODELAY`
+(each write is one whole frame, so Nagle would only delay small requests and a reply's last
+packet; `link::no_delay`). A client speaks the peer's announced
 `"p"`; a receiver answers any hello, so protocol 1 peers still work (no rejoin or bearer moves).
 
 **Protocol 2 and 3**: `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`. Protocol 3 adds the server's
