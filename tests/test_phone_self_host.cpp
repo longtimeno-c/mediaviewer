@@ -94,6 +94,14 @@ TEST_CASE("phone self host: state.json and host.json are read as the host writes
   CHECK(sh::tidy_keeper_line("router      port 7878 not mapped\n            forward TCP 7878 by hand") ==
         "router: port 7878 not mapped\nforward TCP 7878 by hand");
   CHECK(sh::parse_state(R"({"service_port":7878,"service_outside_port":17878})")->service_outside_port == 17878);
+  // Converting (docs/plans/phone-clip-convert.md), as the host writes it.
+  const auto conv = sh::parse_state(R"({"convert":{"on":true,"available":true,"encoder":"VideoToolbox","busy":true}})");
+  REQUIRE(conv);
+  CHECK(conv->convert_on);
+  CHECK(conv->convert_available);
+  CHECK(conv->convert_busy);
+  CHECK(conv->convert_encoder == "VideoToolbox");
+  CHECK_FALSE(sh::parse_state(R"({"service_port":7878})")->convert_available);
   // Out of range ports are none; a broken file is nothing.
   CHECK(sh::parse_state(R"({"service_port":70000})")->service_port == 0);
   CHECK_FALSE(sh::parse_state("[1]"));

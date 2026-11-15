@@ -516,3 +516,29 @@ TEST_CASE("phone access: users ask for the admin first, and a password is sent o
   CHECK(tree.find("Unlock as admin") != std::string::npos);
   CHECK(tree.find(screen::row_id("us", "anna")) == std::string::npos);
 }
+
+// docs/plans/phone-clip-convert.md: the server's row says whether it converts clips for the phone,
+// with what, and the switch asks the host to change it.
+TEST_CASE("phone access: the server row says whether clips are converted, and the switch changes it", "[phone-addon][convert]") {
+  const auto tree_for = [](const std::string& convert) {
+    screen c(mv::phone::card::computer::mac);
+    const std::string state = R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878,)" + convert + "}}";
+    const std::string tree = c.build(state, kNow);
+    require_valid(tree);
+    return tree;
+  };
+  CHECK(tree_for(R"("convert_on":true,"convert_available":true,"convert_encoder":"VideoToolbox","convert_helper":true)")
+            .find("graphics hardware (VideoToolbox) as your phone plays them") != std::string::npos);
+  CHECK(tree_for(R"("convert_on":true,"convert_available":true,"convert_encoder":"NVENC","convert_busy":true,"convert_helper":true)")
+            .find("Converting now.") != std::string::npos);
+  CHECK(tree_for(R"("convert_on":true,"convert_available":false,"convert_helper":true)")
+            .find("has no hardware video encoder") != std::string::npos);
+  CHECK(tree_for(R"("convert_on":false)").find("Off. Your phone offers the download") != std::string::npos);
+
+  screen c(mv::phone::card::computer::pc);
+  (void)c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"convert_on":true}})", kNow);
+  const auto asked = c.on_event("host_convert", kChange, "false", kNow);
+  REQUIRE(asked.size() == 1);
+  CHECK(asked[0].find(R"("do":"host_convert")") != std::string::npos);
+  CHECK(asked[0].find(R"("on":false)") != std::string::npos);
+}

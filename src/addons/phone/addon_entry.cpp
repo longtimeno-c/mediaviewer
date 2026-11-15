@@ -74,6 +74,8 @@ void install_bundled(const std::string& feature) {
   auto got = mv::phone::bundled::install(source, mv::phone::bundled::bin_dir(feature), MV_PHONE_ACCESS_VERSION,
                                          mv::phone::bundled::rename_aside_here());
   if (got) mv::phone::self_host::set_bundled(got->program);
+  // The server converts clips for phones with the app's clip helper (docs/plans/phone-clip-convert.md).
+  mv::phone::self_host::set_clip_helper(mv::phone::module_self::app_clip_helper());
   // A build without the program (a developer's): the card finds an installed one.
 }
 
