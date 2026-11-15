@@ -129,9 +129,6 @@ struct GalleryView: View {
       let shownItems = search.items.map { $0.filter { $0 < store.names.count } } ?? store.itemIndices
       let shownFolders = search.folders.map { $0.filter { $0 < store.folders.count } } ?? store.folderIndices
       let filteredEmpty = search.items != nil && shownItems.isEmpty && shownFolders.isEmpty
-      // Issue #413: one share icon for the grid's selection; issue #444: it
-      // opens the share menu (Driftwire, then the system's targets).
-      let shareShown = !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty)
       let photosHeader = mixed && !shownItems.isEmpty
       VStack(spacing: 0) {
         // Fades in and out over the grid (docs/design/20 "Craft rules": nothing
@@ -160,25 +157,17 @@ struct GalleryView: View {
             .padding(.vertical, MVTheme.space(8))
         }
         // The photos' row, right over them (Windows' photosRow): the section's
-        // name in a mixed folder, and Share. The count of a range is said once,
-        // by Share ("Share 12"), not again beside it.
-        if shareShown || photosHeader {
+        // name in a mixed folder. Share is the command bar's one button
+        // (BarShareButton), not a second one over the grid.
+        if photosHeader {
           HStack(spacing: MVTheme.space(8)) {
-            if photosHeader {
-              Text("Photos and videos  \(shownItems.count)")
-                .font(MVTheme.font(12))
-                .fontWeight(.semibold)
-                .foregroundStyle(MVTheme.body)
-                .monospacedDigit()
-                .lineLimit(1)
-            }
+            Text("Photos and videos  \(shownItems.count)")
+              .font(MVTheme.font(12))
+              .fontWeight(.semibold)
+              .foregroundStyle(MVTheme.body)
+              .monospacedDigit()
+              .lineLimit(1)
             Spacer(minLength: 0)
-            if shareShown {
-              // A control has a surface at rest; the bar's flat style adds its
-              // hover and press washes over it.
-              GalleryShareButton()
-                .background(RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(MVTheme.surface2))
-            }
           }
           .padding(.horizontal, inset)
           .padding(.top, MVTheme.space(8))
@@ -378,6 +367,7 @@ private struct FolderTile: View {
       }
       .frame(width: size)
     }
+    .contextMenu { FolderShareMenu(path: path) }
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
 }
@@ -472,6 +462,7 @@ private struct FolderChip: View {
         .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isCursor)
+    .contextMenu { FolderShareMenu(path: path) }
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
 }
