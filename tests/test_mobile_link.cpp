@@ -677,9 +677,18 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     CHECK(fs::exists(fs::path(cfg.library_dir) / "gen" / installed->dir / "catalog.db"));
     mv_link_close(l);
   }
-  SECTION("a folder labelled something else is said to be missing, not gone") {
+  SECTION("a folder labelled something else that holds the file is found by its path") {
     rig r(300000, "Pictures");
     auto* l = open_synced(r);
+    CHECK(mv_asset_folder_check(l, 1) == MV_LINK_OK);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_OK);
+    CHECK(got == std::string(70000, 'p'));
+    mv_link_close(l);
+  }
+  SECTION("a file in no folder the service shares is said to be missing, not gone") {
+    rig r(300000, "Pictures");
+    auto* l = open_synced(r);
+    fs::remove(r.photos / "2024" / "pic.bin");
     CHECK(mv_asset_folder_check(l, 1) == MV_LINK_NO_FOLDER);
     CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_NO_FOLDER);
     CHECK(got.empty());
@@ -2540,5 +2549,26 @@ TEST_CASE("file mode is never a guess: a folder that did not answer is unreachab
   SECTION("a current.json that is not one: refused") {
     nas.files["c2/current.json"] = "not signed";
     CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::rejected);
+  }
+}
+
+TEST_CASE("link: where a catalogue folder may be when no service folder has its share's name", "[mobile-link]") {
+  namespace mf = mv::mobile::files;
+  const std::vector<mf::served_root> roots{{"a", "FamilyNas"}, {"b", "Media"}};
+  const auto got = mf::places_for("photo", "Media/1.Hill Photos", roots);
+  REQUIRE(got.size() >= 3);
+  // A folder named in the share's path comes first: "Media" holds "1.Hill Photos".
+  CHECK(got[0] == mf::place{"b", "1.Hill Photos"});
+  // Then each folder as the share itself, deeper in it, or holding it.
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", "Media/1.Hill Photos"}) != got.end());
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", "photo/Media/1.Hill Photos"}) != got.end());
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", ""}) != got.end());
+  // The share's own label stays first when there is one.
+  const std::vector<mf::served_root> named{{"x", "Other"}, {"y", "photo"}};
+  CHECK(mf::places_for("photo", "Media", named)[0] == mf::place{"y", "Media"});
+  // No duplicates.
+  const auto top = mf::places_for("photo", "", roots);
+  for (std::size_t i = 0; i < top.size(); ++i) {
+    for (std::size_t j = i + 1; j < top.size(); ++j) CHECK_FALSE(top[i] == top[j]);
   }
 }
