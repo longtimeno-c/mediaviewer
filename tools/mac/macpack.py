@@ -28,6 +28,7 @@ the executable.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import gzip
 import hashlib
 import io
@@ -506,13 +507,33 @@ def codesign(path: Path, identity: str, hardened: bool, entitlements: Path | Non
 # The app's own entitlements (hardened runtime): Photos library access for
 # Local search (issue #72). The file says why.
 APP_ENTITLEMENTS = REPO_ROOT / "packaging" / "macos" / "MediaViewer.entitlements"
-# Driftwire keeps this Mac's identity and its remembered devices in the data
-# protection keychain, under an app group of the signing team (#501, owner
-# 2026-10-20): "<team>.<bundle id>.driftwire". A team-prefixed app group needs
-# no provisioning profile; it is added at signing, since the team is CI's
-# secret (APPLE_TEAM_ID), not the repo's.
+# Driftwire keeps this Mac's identity, its remembered devices and a desktop's
+# paired servers in the data protection keychain, under a group of the signing
+# team (#501, owner 2026-10-20): "<team>.<bundle id>.driftwire". It is added at
+# signing, since the team is CI's secret (APPLE_TEAM_ID), not the repo's. The
+# app group alone does not open the keychain: SecItemAdd answers -34018
+# (errSecMissingEntitlement) with or without a profile, measured 2026-11-15 on
+# a copy signed as v0.1.43 was. The same name as keychain-access-groups does,
+# and that entitlement is restricted: only with a profile that grants it
+# (Apple's Developer ID profiles grant "<team>.*"), so app_entitlements claims
+# it only when one is embedded.
 DRIFTWIRE_GROUP_SUFFIX = ".driftwire"
 APP_GROUPS = "com.apple.security.application-groups"
+KEYCHAIN_GROUPS = "keychain-access-groups"
+
+
+def driftwire_group(team_id: str, bundle_id: str) -> str:
+    return f"{team_id}.{bundle_id}{DRIFTWIRE_GROUP_SUFFIX}"
+
+
+def keychain_group_problem(profile: dict, group: str) -> str | None:
+    """Why `profile` does not let the app claim `group` as a keychain access
+    group, or None. A profile's list may hold wildcards ("<team>.*"). Pure; tested."""
+    name = repr(profile.get("Name", "the profile"))
+    granted = (profile.get("Entitlements") or {}).get(KEYCHAIN_GROUPS)
+    if isinstance(granted, list) and any(isinstance(g, str) and fnmatch.fnmatchcase(group, g) for g in granted):
+        return None
+    return f"{name} does not grant {KEYCHAIN_GROUPS} {group}: remake the profile for the App ID"
 
 
 def tunnel_sysexts(app: Path) -> list[Path]:
@@ -604,7 +625,10 @@ def check_profiles(app: Path, team_id: str | None, app_profile: Path | None,
                                 (tunnel_profile, sysexts[0], TUNNEL_PROFILE_NEEDS)):
         if not path.is_file():
             raise SystemExit(f"macpack: {path} not found")
-        problem = profile_problem(read(path), team_id, bundle_id_of(bundle), needs)
+        profile = read(path)
+        problem = profile_problem(profile, team_id, bundle_id_of(bundle), needs)
+        if not problem and bundle == app:
+            problem = keychain_group_problem(profile, driftwire_group(team_id, bundle_id_of(app)))
         if problem:
             raise SystemExit(f"macpack: {path.name}: {problem}")
 
@@ -626,7 +650,8 @@ def app_entitlements(app: Path, team_id: str | None, into: Path, profiled: bool 
     Driftwire's app group when the team is known (written to `into`), and
     with the VPN's system extension inside, the right to install it and the
     packet tunnel's Network Extension value. `profiled`: a profile is embedded,
-    so the App ID and team it grants are claimed too."""
+    so the App ID and team it grants are claimed too, and Driftwire's group as
+    a keychain group (a restricted entitlement: only with a profile)."""
     if not team_id:
         return APP_ENTITLEMENTS
     if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
@@ -635,13 +660,17 @@ def app_entitlements(app: Path, team_id: str | None, into: Path, profiled: bool 
         bundle_id = plistlib.load(f)["CFBundleIdentifier"]
     with open(APP_ENTITLEMENTS, "rb") as f:
         ent = plistlib.load(f)
-    ent[APP_GROUPS] = [f"{team_id}.{bundle_id}{DRIFTWIRE_GROUP_SUFFIX}"]
+    ent[APP_GROUPS] = [driftwire_group(team_id, bundle_id)]
     if tunnel_sysexts(app):
         ent[SYSEXT_INSTALL] = True
         ent[NETWORK_EXTENSION] = [PACKET_TUNNEL]
     if profiled:
         ent[APP_ID_KEY] = f"{team_id}.{bundle_id}"
         ent[TEAM_ID_KEY] = team_id
+        # The same group, claimed as a keychain group: the data protection
+        # keychain refuses an app group as an access group (-34018), and
+        # secrets_mac.cpp takes keychain-access-groups first.
+        ent[KEYCHAIN_GROUPS] = [driftwire_group(team_id, bundle_id)]
     with open(into, "wb") as f:
         plistlib.dump(ent, f)
     return into
@@ -659,7 +688,8 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
     keeps the ones it already carries. lipo_merge copies it untouched (arm64
     only), so the assemble signature and its entitlements survive to the
     release. The search agent is the app's own executable, signed with it.
-    `team_id`: the app also gets Driftwire's app group (app_entitlements).
+    `team_id`: the app also gets Driftwire's app group (app_entitlements), and
+    with `app_profile` the same group as its keychain access group.
     `app_profile` / `tunnel_profile` (checked by check_profiles first): each is
     embedded in its bundle before that bundle is signed, with its App ID."""
     frameworks = app / "Contents" / "Frameworks"
@@ -887,7 +917,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     team_id = getattr(args, "team_id", None)
     if args.identity != "-" and not team_id:
         raise SystemExit("macpack: a Developer ID build needs --team-id (or $APPLE_TEAM_ID): without "
-                         "Driftwire's app group it has no keychain, and cannot remember devices (#501)")
+                         "Driftwire's keychain group it has no keychain, and cannot remember devices (#501)")
     app = Path(args.app)
     if not app.exists():
         raise SystemExit(f"macpack: {app} not found; build the mediaviewer_app target first")

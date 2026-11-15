@@ -287,6 +287,28 @@ TEST_CASE("a desktop pairs from the code alone and is listed with the phones", "
   CHECK(d.lib->server(*id)->role == "view");
 }
 
+// v0.1.43 on the Mac: the keychain refused every write (-34018, signed without
+// its keychain group), after the service had taken the code, and the app said
+// "Can't reach" a server it had just reached.
+TEST_CASE("a desktop whose OS store refuses the keys says so, not unreachable", "[desktop-client]") {
+  struct refusing final : dw::secrets::store {
+    bool put(const std::string&, std::span<const std::uint8_t>) override { return false; }
+    std::optional<std::vector<std::uint8_t>> get(const std::string&) override { return std::nullopt; }
+    bool erase(const std::string&) override { return false; }
+  } keys;
+  host h;
+  scratch_dir dir{"desktop_refused"};
+  rm::library lib(desktop_config(dir.root(), &keys));
+  REQUIRE(lib.load());
+  auto id = lib.pair(h.code(), std::time(nullptr));
+  REQUIRE_FALSE(id);
+  CHECK(id.error() == mv::status::internal);
+  CHECK(lib.servers().empty());
+  const std::string words = rm::pair_problem_words(id.error(), "Home");
+  CHECK(words.find("Can't reach") == std::string::npos);
+  CHECK(words.find("could not keep the keys") != std::string::npos);
+}
+
 TEST_CASE("the host's folders list as remote keys, the Catalogue hidden", "[desktop-client]") {
   host h;
   put_file(h.photos / "2024" / "a.jpg", photo(64, 48, 1));
