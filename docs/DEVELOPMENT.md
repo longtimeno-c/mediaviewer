@@ -469,7 +469,9 @@ them. `MediaViewer` is the real one and links no stand-in data (`App/MediaViewer
 Clips: AVPlayer opens MP4/MOV/M4V directly. Transport streams (`.mts`, `.m2ts`, `.m2t`, `.ts`) with
 H.264 video play as HLS from a loopback server in the app (`MobileLink/TsStreams.swift`, parser and
 segmenter in `MobileLinkSupport/MpegTs.swift`); iOS opens none of them as files. MPEG-2 video, HEVC in
-TS, LPCM sound, MKV, WebM, AVI and MPG stay "can't play here", with the download. Folders show as
+TS, LPCM sound, MKV, WebM, AVI and MPG play when the server converts them (`docs/plans/phone-clip-convert.md`:
+the service lists `convert`, and `MobileLink/ConvertedClips.swift` serves its 4 s segments through the same
+loopback server); a server without it leaves them "can't play here", with the download. Folders show as
 tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`).
 
 The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
@@ -502,6 +504,16 @@ stops it. The code lasts 15 minutes and works once. With `DEMO_FILE_MODE=1` the 
 `library.json`, so the phone opens the library in file mode (`docs/plans/phone-in-the-app.md` §4);
 `mv_publish_test_library photos nas work 2` in that folder then publishes a catalogue with the same
 key, which the phone takes on its next sync. File mode's core tests: `mv_mobile_link_tests "[mobile-files]"`.
+
+The demo's `photos/Tapes` holds an AVI (MPEG-4 Part 2, MP3), an MKV (VP9, Opus) and an MPG (MPEG-2,
+MP2) that the phone can't play itself. With the desktop build's `bin/MediaViewerClipJob` there, the
+service converts them on this Mac's hardware encoder as the phone plays them (`DEMO_CONVERT=0` leaves
+them as downloads). The conversion's own timings, with the real helper behind the real service:
+
+```bash
+MV_CONVERT_BENCH_HELPER=$PWD/build/bin/MediaViewerClipJob MV_CONVERT_BENCH_DIR=<folder of clips> \
+  build/bin/mv_import_tests "[.convert-bench]"
+```
 
 The fixtures app:
 

@@ -207,6 +207,23 @@ std::string bundled() {
 }
 
 namespace {
+std::string& clip_helper_program() {
+  static std::string p;
+  return p;
+}
+}  // namespace
+
+void set_clip_helper(std::string program) {
+  std::lock_guard lock(bundled_m());
+  clip_helper_program() = std::move(program);
+}
+
+std::string clip_helper() {
+  std::lock_guard lock(bundled_m());
+  return clip_helper_program();
+}
+
+namespace {
 
 // The task's XML is UTF-16LE with a BOM (cli/autostart_win.cpp); the plist and the unit are UTF-8.
 std::string as_utf8(const std::string& raw) {
@@ -353,6 +370,12 @@ std::optional<running_state> parse_state(std::string_view text) {
     }
   }
   if (doc->find("drives_sets")) s.drives_health = static_cast<int>(doc->integer("drives_health").value_or(-1));
+  if (const json::value* c = doc->find("convert"); c && c->k == json::kind::object) {
+    s.convert_on = c->boolean("on").value_or(false);
+    s.convert_available = c->boolean("available").value_or(false);
+    s.convert_busy = c->boolean("busy").value_or(false);
+    if (const std::string* e = c->str("encoder"); e && e->size() <= 64) s.convert_encoder = *e;
+  }
   if (const json::value* k = doc->find("keepers"); k && k->k == json::kind::array) {
     for (const auto& line : k->a) {
       if (line.k != json::kind::string || !line.s.starts_with("drives ")) continue;
@@ -420,7 +443,13 @@ host_status read_status(const where& w) {
       s.name = c->name;
     }
   }
-  if (const auto text = read_small(host + "/host.json")) s.duckdns = parse_duckdns(*text);
+  if (const auto text = read_small(host + "/host.json")) {
+    s.duckdns = parse_duckdns(*text);
+    if (const auto doc = json::parse(*text, 4); doc && doc->k == json::kind::object) {
+      s.convert_on = doc->boolean("convert").value_or(true);
+      if (const std::string* h = doc->str("convert_helper")) s.convert_helper = *h;
+    }
+  }
   s.at_login = is_file(w.login_entry);
   std::error_code ec;
   if (!fs::is_directory(fs_path(host), ec)) return s;
@@ -438,6 +467,9 @@ host_status read_status(const where& w) {
       s.keepers = st->keepers;
       s.paused = st->paused;
       s.stats = host_tray::usage_lines(*st);
+      s.convert_available = st->convert_available;
+      s.convert_busy = st->convert_busy;
+      s.convert_encoder = st->convert_encoder;
     }
   }
   return s;

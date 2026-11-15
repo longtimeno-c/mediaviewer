@@ -135,6 +135,9 @@ public enum ClipRoute {
   /// AVPlayer can have it; the asset's loader reads from the NAS.
   case stream(AVURLAsset)
   case tooBigToStream(neededMbps: Int, availableMbps: Int, fileBytes: Int64)
+  /// A clip the phone can't play that the server converts as it plays (docs/plans/phone-clip-convert.md):
+  /// played as `.stream`, and the first wait says it is the server converting.
+  case converted(AVURLAsset)
   /// MKV, WebM, AVI, TS, MPEG-2: moments as stills, and the file.
   case notPlayableHere(containerName: String, fileBytes: Int64)
   case unavailable(MediaFailure)

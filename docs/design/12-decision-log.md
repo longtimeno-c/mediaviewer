@@ -2260,6 +2260,13 @@ at every login while hosting is too much (then the icon appears only once the ap
 when Phone access becomes an add-on (#686 §1), which takes this entry over with `keep_alive` /
 `keep_menu`.
 
+**The server converts phone clips with the app's clip helper, not FFmpeg in the add-on (owner,
+2026-11-15; docs/plans/phone-clip-convert.md).** An exception to "add-ons carry their own code"
+(2026-10-11): `driftwire host` runs the app's `MediaViewerClipJob` (`--convert-*`), which already
+holds FFmpeg, the hardware encoder port and the OS's AAC, rather than the Phone access add-on
+carrying a second FFmpeg (~40 MB) for the same code. The add-on tells the host where the helper is.
+Reopen if the host must convert on a computer without MediaViewer installed.
+
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
 anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,

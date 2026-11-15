@@ -381,6 +381,59 @@ result<std::vector<root_info>> client::roots(end_code* code) {
   return *parsed;
 }
 
+result<convert_plan> client::convert_plan_of(const std::string& root, const std::string& rel, std::string* why) {
+  if ((st_->caps.ops & kConvertOp) == 0) return err(status::unsupported_format);
+  open_request r;
+  r.kind = op::convert;
+  r.root = root;
+  r.rel = rel;
+  r.segment = -1;
+  auto slot = st_->open_slot(r);
+  if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  auto done = finish(st_, slot, r.id, nullptr);
+  st_->remove(r.id);
+  if (!done) return err(done.error());
+  if (*done == end_code::unsupported) {
+    if (why) {
+      const auto doc = json::parse(slot->end_json, 2);
+      const std::string* w = doc ? doc->str("why") : nullptr;
+      *why = w ? *w : std::string();
+    }
+    return err(status::unsupported_format);
+  }
+  if (*done == end_code::not_found) return err(status::not_found);
+  if (*done != end_code::ok) return err(*done == end_code::error ? status::io : status::permission_denied);
+  auto parsed = parse_convert_plan(slot->end_json);
+  if (!parsed) return err(status::corrupt);
+  return *parsed;
+}
+
+result<std::unique_ptr<client::read_stream>> client::convert_segment(const std::string& root, const std::string& rel,
+                                                                     std::uint32_t k, std::uint32_t window) {
+  if ((st_->caps.ops & kConvertOp) == 0) return err(status::unsupported_format);
+  open_request r;
+  r.kind = op::convert;
+  r.root = root;
+  r.rel = rel;
+  r.segment = k;
+  r.credit = std::min(window, kMaxStreamCredit);
+  auto slot = st_->open_slot(r);
+  slot->window = r.credit;
+  if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  std::unique_ptr<read_stream> rs(new read_stream());
+  rs->st_ = std::make_shared<read_stream::state>();
+  rs->st_->c = st_;
+  rs->st_->slot = std::move(slot);
+  rs->st_->id = r.id;
+  return rs;
+}
+
 result<stat_info> client::stat(const std::string& root, const std::string& rel, end_code* code, bool meta) {
   if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;

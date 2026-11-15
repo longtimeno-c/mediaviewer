@@ -22,6 +22,11 @@ void pin() noexcept;
 // `name` in `dir`, with the OS's separator.
 [[nodiscard]] std::string join(const std::string& dir, const char* name);
 
+// The app's clip helper (MediaViewerClipJob, in Contents/Helpers on the Mac, beside the app's
+// program on Windows and Linux), which the server runs to convert clips for phones
+// (docs/plans/phone-clip-convert.md). "" when it is not there.
+[[nodiscard]] std::string app_clip_helper();
+
 // A UTF-8 path as the OS's (wide on Windows).
 [[nodiscard]] std::filesystem::path fs_path(const std::string& utf8);
 

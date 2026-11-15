@@ -154,6 +154,14 @@ class link_session final : public remote_file {
   // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
   // folder's meta folder. status::unsupported_format: the service is from before 1.1.
   [[nodiscard]] result<bool> can_write();
+  // Clips this phone can't play (docs/plans/phone-clip-convert.md): whether the service offers
+  // `convert`, a clip's plan (status::unsupported_format: not offered, or not a clip), and one
+  // segment's MPEG-TS. A segment's first bytes wait for the server's encoder (kConvertStallMs).
+  [[nodiscard]] result<bool> can_convert();
+  [[nodiscard]] result<driftwire::serve::convert_plan> convert_plan(const std::string& root, const std::string& rel,
+                                                                    const cancel_flag* cancel);
+  [[nodiscard]] expected convert_read(const std::string& root, const std::string& rel, std::uint32_t segment,
+                                      const byte_sink& sink, const cancel_flag* cancel);
   [[nodiscard]] result<driftwire::serve::client::write_done> write(
       const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,

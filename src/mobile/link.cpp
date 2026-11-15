@@ -28,6 +28,7 @@ namespace {
 
 constexpr int kConnectEachMs = 2500;  // a dead address, at most
 constexpr int kStallMs = 15000;       // a read that has stopped moving
+constexpr int kConvertStallMs = 60000;  // a converted segment's first bytes: behind the server's queue
 // The relay starts this long after the direct routes (Driftwire's own race
 // delay), so a working direct path always wins and costs the relay nothing.
 constexpr int kRelayDelayMs = 1500;
@@ -45,7 +46,7 @@ serve::client::options options_for(const service_config& c) {
   o.id = c.device_id;
   o.name = c.device_name;
   // Backup (1.1) as well: a service from before it leaves `write` out of its caps.
-  o.ops = serve::kAllOps | serve::kWriteOp;
+  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp;
   if (c.upgrade) o.ops |= serve::kUpgradeOp;  // granted only on a relayed link
   return o;
 }
@@ -759,6 +760,69 @@ expected link_session::read_range(const std::string& root, const std::string& re
       if (code == serve::end_code::ok) return {};
       return err(status_of(code));
     }
+    last_data = clock::now();
+    if (!sink((*chunk)->offset, (*chunk)->bytes)) {
+      (*stream)->cancel();
+      return err(status::cancelled);
+    }
+  }
+}
+
+result<bool> link_session::can_convert() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return ((*c)->caps().ops & serve::kConvertOp) != 0;
+}
+
+result<serve::convert_plan> link_session::convert_plan(const std::string& root, const std::string& rel,
+                                                       const cancel_flag* cancel) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  auto p = (*c)->convert_plan_of(root, rel);
+  if (!p && p.error() == status::io) dropped(*c);
+  return p;
+}
+
+expected link_session::convert_read(const std::string& root, const std::string& rel, std::uint32_t segment,
+                                    const byte_sink& sink, const cancel_flag* cancel) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  if (cancel && cancel->stopped()) return err(status::cancelled);
+  auto stream = (*c)->convert_segment(root, rel, segment, serve::kMaxStreamCredit / 8);
+  if (!stream) {
+    if (stream.error() != status::unsupported_format) dropped(*c);
+    return err(stream.error());
+  }
+  auto last_data = clock::now();
+  bool any = false;
+  for (;;) {
+    if (cancel && cancel->stopped()) {
+      (*stream)->cancel();
+      return err(status::cancelled);
+    }
+    auto chunk = (*stream)->next(250);
+    if (!chunk) {
+      if (chunk.error() == status::timeout) {
+        if (clock::now() - last_data > std::chrono::milliseconds(any ? kStallMs : kConvertStallMs)) {
+          (*stream)->cancel();
+          return err(status::io);  // the server's encoder, not the link: the link stays
+        }
+        continue;
+      }
+      dropped(*c);
+      return err(status::io);
+    }
+    if (!*chunk) {
+      const auto code = (*stream)->code();
+      if (code == serve::end_code::ok) return {};
+      if (code == serve::end_code::unsupported) return err(status::unsupported_format);
+      return err(status_of(code));
+    }
+    any = true;
     last_data = clock::now();
     if (!sink((*chunk)->offset, (*chunk)->bytes)) {
       (*stream)->cancel();

@@ -42,6 +42,9 @@ struct host_row {
   std::string name, duckdns;
   std::vector<std::string> keepers;
   std::vector<std::string> stats;  // today's usage and the phones connected, in the menu's words
+  // Clips the phone can't play (docs/plans/phone-clip-convert.md): the switch, and what the host found.
+  bool convert_on = true, convert_available = false, convert_busy = false, convert_helper = false;
+  std::string convert_encoder;
 };
 struct user_row {
   std::string name, role;
@@ -226,6 +229,11 @@ view parse(std::string_view text) {
     r.keepers = strings_of(*h, "keepers");
     r.paused = b_of(*h, "paused");
     r.stats = strings_of(*h, "stats");
+    r.convert_on = h->find("convert_on") ? b_of(*h, "convert_on") : true;
+    r.convert_available = b_of(*h, "convert_available");
+    r.convert_busy = b_of(*h, "convert_busy");
+    r.convert_helper = b_of(*h, "convert_helper");
+    r.convert_encoder = s_of(*h, "convert_encoder");
     s.host = r;
   }
   s.host_step = s_of(o, "host_step");
@@ -932,6 +940,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "set_passphrase") busy_text = "Setting the passphrase";
   else if (s.busy == "grant") busy_text = "Changing the phone's access";
   else if (s.busy == "host_start") busy_text = "Starting the server";
+  else if (s.busy == "host_convert") busy_text = "Changing the server's setting";
   else if (s.busy == "host_stop") busy_text = "Stopping the server";
   else if (s.busy == "host_name") busy_text = "Naming it on DuckDNS";
   else if (s.busy == "user_set" || s.busy == "user_remove" || s.busy == "users_apply")
@@ -973,6 +982,26 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     if (!h.running) button(w, "host_start", "Start", busy, "plain", "Start the server on " + me);
     else button(w, "host_stop", "Stop", busy, "plain", "Stop the server on " + me + " and don't start it at login");
     end_row(w);
+    // Clips the phone can't play, converted on this computer's graphics hardware as it plays them.
+    {
+      std::string detail;
+      if (!h.convert_on) {
+        detail = "Off. Your phone offers the download for clips it can't play.";
+      } else if (!h.running || h.paused) {
+        detail = "AVI, MKV, MPG and other clips your phone can't play are converted on " + me +
+                 "'s graphics hardware while it hosts.";
+      } else if (h.convert_available) {
+        detail = "Converted on " + me + "'s graphics hardware (" + h.convert_encoder + ") as your phone plays them: AVI, MKV, MPG and more.";
+        if (h.convert_busy) detail += " Converting now.";
+      } else if (h.convert_helper) {
+        detail = Me + " has no hardware video encoder, so your phone offers the download for these clips instead.";
+      } else {
+        detail = "Waiting for " + me + "'s server to find its video encoder.";
+      }
+      row(w, "host_convert_row", "Clips your phone can't play", detail);
+      toggle(w, "host_convert", "Convert them for your phone", h.convert_on, busy);
+      end_row(w);
+    }
     // Its DuckDNS name, changed after setup (setup's form is gone once it is claimed).
     if (s.claimed) {
       row(w, "duck_now", "DuckDNS name",
@@ -1420,6 +1449,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_share") e = s.host_said.empty() ? "The folder couldn't be shared." : "Couldn't share it: " + s.host_said;
   else if (r == "host_name") e = s.host_said.empty() ? "DuckDNS didn't take the name." : "DuckDNS: " + s.host_said;
   else if (r == "host_start") e = s.host_said.empty() ? "The server didn't start." : "The server didn't start: " + s.host_said;
+  else if (r == "host_convert") e = s.host_said.empty() ? "The server's setting wasn't changed." : "The server's setting wasn't changed: " + s.host_said;
   else if (r == "host_stop") e = s.host_said.empty() ? "The server didn't stop." : "The server didn't stop: " + s.host_said;
   else if (r == "host_not_listening") e = "The server started but isn't answering yet. Another program may be using its port.";
   else if (r == "host_no_network") e = "Claimed, but " + me + " isn't on a network, so a phone can't reach it yet.";
@@ -1578,6 +1608,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       edit_limit_ = v;
     } else if (node == "edit_reserve") {
       edit_reserve_ = v;
+    } else if (node == "host_convert") {
+      out.push_back(req("host_convert").b("on", value_bool(value_json)).done());
     } else if (node == "new_backup") {
       new_backup_ = value_bool(value_json);
       // A suggestion the owner changes; the service refuses past what is really free.

@@ -47,4 +47,21 @@ std::filesystem::path fs_path(const std::string& utf8) {
   return std::filesystem::path(w);
 }
 
+std::string app_clip_helper() {
+  std::wstring buf(32768, L'\0');
+  const DWORD n = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+  if (n == 0 || n >= buf.size()) return {};
+  buf.resize(n);
+  const auto slash = buf.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return {};
+  buf.resize(slash + 1);
+  buf += L"MediaViewerClipJob.exe";
+  const DWORD attrs = ::GetFileAttributesW(buf.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) return {};
+  const int len = ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), nullptr, 0, nullptr, nullptr);
+  std::string out(static_cast<std::size_t>(len > 0 ? len : 0), '\0');
+  if (len > 0) (void)::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), out.data(), len, nullptr, nullptr);
+  return out;
+}
+
 }  // namespace mv::phone::module_self

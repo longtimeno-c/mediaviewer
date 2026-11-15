@@ -106,6 +106,8 @@ template <class OnFrame, class OnOther>
   return {};
 }
 
+}  // namespace
+
 // Supported software pixel formats of an encoder, in its own order.
 [[nodiscard]] std::vector<AVPixelFormat> encoder_formats(const AVCodec* enc) {
   std::vector<AVPixelFormat> out;
@@ -149,6 +151,8 @@ template <class OnFrame, class OnOther>
   if (enc->capabilities & (AV_CODEC_CAP_HARDWARE | AV_CODEC_CAP_HYBRID)) return true;
   return allow_software && enc->id != AV_CODEC_ID_HEVC;
 }
+
+namespace {
 
 // Receives every packet an encoder has ready and writes it.
 [[nodiscard]] expected drain_encoder(AVCodecContext* enc, AVFormatContext* out, AVStream* ost,

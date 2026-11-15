@@ -8,11 +8,14 @@
 # DEMO_LIBRARY=<id> publishes under another library id (pair one library over another).
 # DEMO_FILE_MODE=1 leaves only library.json on the share: the phone opens it in file mode.
 #
-# Makes a small sample library (generated pictures and two clips), publishes a signed catalogue
+# Makes a small sample library (generated pictures, two MP4 clips and, in Tapes/, an AVI, an MKV and an
+# MPG the phone can't play itself), publishes a signed catalogue
 # with the test publisher, and runs `driftwire serve --test-loopback` on 127.0.0.1:18452. Writes the
 # pairing link to <folder>/pair-link.txt and as a QR picture to <folder>/pair-code.png; add that to
 # the Simulator's Photos (`xcrun simctl addmedia booted <folder>/pair-code.png`) to pair through
 # "Choose a picture", or open the link (`xcrun simctl openurl booted "$(cat <folder>/pair-link.txt)"`).
+# With the desktop build's bin/MediaViewerClipJob there, the service converts the Tapes clips for the
+# phone on this Mac's hardware encoder (docs/plans/phone-clip-convert.md; DEMO_CONVERT=0 turns it off).
 # Needs the desktop build's bin/mv_publish_test_library and bin/mv_driftwire_cli_test. Never
 # contacts the public DHT. The pairing code is single-use and lasts 15 minutes.
 set -euo pipefail
@@ -80,6 +83,18 @@ if [[ ! -f $out/photos/2026/MVI_4200.mp4 ]]; then
   touch -t 202610021200 "$out/photos/2026/MVI_4200.mp4"; touch -t 202507141200 "$out/photos/2025/MVI_4201.mp4"
 fi
 
+# Clips the phone can't play (30 s each, so seeking has somewhere to go): MPEG-4 Part 2 and MP3 in AVI,
+# VP9 and Opus in MKV, MPEG-2 and MP2 in MPG.
+if [[ ! -f $out/photos/Tapes/tape.mpg ]]; then
+  mkdir -p "$out/photos/Tapes"
+  src=(-f lavfi -i "testsrc2=size=1920x1080:rate=30:duration=30" -f lavfi -i "sine=frequency=440:duration=30")
+  /opt/homebrew/bin/ffmpeg -y -loglevel error "${src[@]}" -c:v mpeg4 -q:v 4 -c:a libmp3lame -b:a 160k "$out/photos/Tapes/holiday.avi"
+  /opt/homebrew/bin/ffmpeg -y -loglevel error "${src[@]}" -c:v libvpx-vp9 -b:v 3M -deadline realtime -cpu-used 8 -c:a libopus "$out/photos/Tapes/party.mkv"
+  /opt/homebrew/bin/ffmpeg -y -loglevel error -f lavfi -i "testsrc2=size=720x576:rate=25:duration=30" -f lavfi -i "sine=frequency=550:duration=30" \
+    -c:v mpeg2video -b:v 5M -c:a mp2 -b:a 192k "$out/photos/Tapes/tape.mpg"
+  touch -t 200807011200 "$out/photos/Tapes/"*
+fi
+
 cd "$out"
 rm -rf nas work data; mkdir -p nas work data; chmod 700 data
 "$pub" photos nas work 1 "library=${DEMO_LIBRARY:-e2e-library-1}" > publish.txt
@@ -128,7 +143,9 @@ xcrun swift work/qr.swift pair-link.txt pair-code.png
 
 # The listener only, not the app connected to it.
 stale="$(lsof -ti tcp:$port -sTCP:LISTEN || true)"; if [[ -n $stale ]]; then kill $stale; sleep 1; fi
-nohup "$cli" serve --data data --test-loopback > serve.log 2>&1 &
+convert=(); helper="$build/bin/MediaViewerClipJob"
+if [[ ${DEMO_CONVERT:-1} == 1 && -x $helper ]]; then convert=(--convert-helper "$helper"); fi
+nohup "$cli" serve --data data --test-loopback "${convert[@]+"${convert[@]}"}" > serve.log 2>&1 &
 echo $! > serve.pid
 sleep 1
 echo "service on 127.0.0.1:$port (pid $(cat serve.pid))"

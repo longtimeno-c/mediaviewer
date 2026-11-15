@@ -190,6 +190,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         want_users_opts = true;
       } else if (t.name == "--watch" && flag) {
         a.watch = true;
+      } else if (t.name == "--helper" || t.name == "--convert-helper") {
+        if (!value(a.convert_helper, "a program")) return out;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -334,6 +336,9 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
           out.error = "--passphrase-stdin goes with serve init or serve passphrase, --no-passphrase with serve init alone";
         }
       }
+      if (out.error.empty() && !a.convert_helper.empty() && a.serve != serve_action::run) {
+        out.error = "--convert-helper goes with serve (running it)";
+      }
       return out;
     }
     case command::host: {
@@ -361,6 +366,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (what == "start-at-login" && on_off(host_action::start_at_login)) {
       } else if (what == "stay-awake" && on_off(host_action::stay_awake)) {
       } else if (what == "vpn" && on_off(host_action::vpn)) {
+      } else if (what == "convert" && on_off(host_action::convert)) {
       } else if (what == "setup" && words.size() == 1) {
         a.host = host_action::setup;
       } else if (what == "pair" && words.size() == 1) {
@@ -384,12 +390,17 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         // pause, resume, quit: the tray's control (host_control.h)
       } else {
         out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
-                    "name duckdns|none, vpn on [--tls-port N]|off, start-at-login on|off, stay-awake on|off, "
+                    "name duckdns|none, vpn on [--tls-port N]|off, convert on [--helper PATH]|off, "
+                    "start-at-login on|off, stay-awake on|off, "
                     "users …, drives …, pause, resume or quit";
         return out;
       }
       if (a.watch && a.host != host_action::status) {
         out.error = "--watch goes with host status";
+        return out;
+      }
+      if (!a.convert_helper.empty() && !(a.host == host_action::convert && a.on)) {
+        out.error = "--helper goes with host convert on";
         return out;
       }
       if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {
@@ -415,6 +426,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
     case command::help:
     case command::version:
       break;
+  }
+  if (!a.convert_helper.empty() && !(a.cmd == command::host || (a.cmd == command::serve && a.serve == serve_action::run))) {
+    out.error = "--convert-helper goes with serve (running it)";
+    return out;
   }
   if (a.tls_port != 0 && a.cmd != command::host) {
     out.error = "--tls-port goes with host vpn on";

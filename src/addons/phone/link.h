@@ -257,6 +257,7 @@ class link {
   std::condition_variable cv_;
   std::thread thread_;              // under m_
   std::atomic<bool> stopping_{false};
+  std::atomic<bool> told_helper_{false};  // read_host: the host was given this app's clip helper
   bool state_read_ = false;         // the link thread's
   bool tick_seen_ = false;          // the link thread's
   std::vector<std::string> before_; // the link thread's: keys when the code went up

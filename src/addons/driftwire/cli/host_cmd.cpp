@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/convert_run.h"
 #include "addons/driftwire/cli/host_drives.h"
 
 #include <sodium.h>
@@ -212,6 +213,10 @@ std::string state_json(const host_snapshot& s, const std::vector<std::string>& k
   w.key("vpn").boolean(s.vpn).key("awake").boolean(s.awake);
   w.key("folders").integer(static_cast<std::int64_t>(s.folders)).key("offline").integer(static_cast<std::int64_t>(s.offline));
   if (s.paused) w.key("paused").boolean(true);
+  w.key("convert").begin_object().key("on").boolean(s.convert_on).key("available").boolean(s.convert_available);
+  if (!s.convert_encoder.empty()) w.key("encoder").string(s.convert_encoder);
+  if (s.convert_busy) w.key("busy").boolean(true);
+  w.end_object();
   if (!s.clients.empty()) {
     w.key("clients").begin_array();
     for (const auto& c : s.clients) {
@@ -303,6 +308,16 @@ std::optional<host_settings> parse_host_settings(std::string_view text) {
     if (!v || *v < 0) return std::nullopt;
     s.quit_stamp = *v;
   }
+  if (doc->find("convert")) {
+    const auto v = doc->boolean("convert");
+    if (!v) return std::nullopt;
+    s.convert = *v;
+  }
+  if (doc->find("convert_helper")) {
+    const std::string* v = doc->str("convert_helper");
+    if (!v || v->size() > 4096) return std::nullopt;
+    s.convert_helper = *v;
+  }
   return s;
 }
 
@@ -315,6 +330,8 @@ std::string host_settings_json(const host_settings& s) {
   if (!s.library_id.empty()) w.key("library_id").string(s.library_id);
   if (s.paused) w.key("paused").boolean(true);
   if (s.quit_stamp != 0) w.key("quit_stamp").integer(s.quit_stamp);
+  if (!s.convert) w.key("convert").boolean(false);
+  if (!s.convert_helper.empty()) w.key("convert_helper").string(s.convert_helper);
   w.end_object();
   return w.take();
 }
@@ -432,6 +449,11 @@ struct host_service::state {
   std::unique_ptr<serve::server> srv;
   std::unique_ptr<relay::server> rel;
   std::unique_ptr<power::stay_awake> awake;
+  // Converting (docs/plans/phone-clip-convert.md): the service, and what was checked last.
+  std::shared_ptr<serve::convert::service> conv;
+  std::string conv_helper;  // the helper `conv` (or the failed check) was made for
+  bool conv_checked = false;
+  convert_check conv_found;
   std::chrono::steady_clock::time_point serve_retry{}, relay_retry{}, next_roots{};
   std::size_t offline = 0;
   bool tls_failed = false;
@@ -529,6 +551,7 @@ struct host_service::state {
       std::lock_guard g(storage_m);
       return storage;
     };
+    so.converter = conv;
     auto s = serve::server::start(so);
     if (!s) {
       serve_retry = std::chrono::steady_clock::now() + std::chrono::milliseconds(o.retry_ms);
@@ -670,6 +693,7 @@ struct host_service::state {
       print("driftwire host: asked to quit\n");
     }
     settings = next;
+    apply_convert_locked();
     if (pause_changed) {
       // Paused: nothing for phones or the laptop, and the computer may sleep;
       // the keepers hear the ports are gone (the router's mapping goes).
@@ -695,6 +719,31 @@ struct host_service::state {
       ports_changed_locked();  // the DuckDNS keeper takes the new name (and token)
     }
     set_awake_locked();
+  }
+
+  // On with a helper: checked once per helper, then given to the service. Off: gone, and the
+  // cache emptied (what was converted is not kept for a feature turned off).
+  void apply_convert_locked() {
+    const bool want = settings.convert && !settings.convert_helper.empty();
+    if (!want) {
+      if (conv) {
+        if (srv) srv->set_converter(nullptr);
+        conv->purge();
+        conv.reset();
+      }
+      conv_checked = false;
+      conv_helper.clear();
+      return;
+    }
+    if (conv_checked && conv_helper == settings.convert_helper) return;
+    if (srv) srv->set_converter(nullptr);
+    conv.reset();
+    conv_helper = settings.convert_helper;
+    conv_checked = true;
+    conv = start_converter(conv_helper, o.where.serve + "/convert-cache", &conv_found);
+    if (srv) srv->set_converter(conv);
+    print(conv ? "driftwire host: converting clips for phones with " + conv_found.family + "\n"
+               : std::string("driftwire host: no hardware video encoder found; phones keep the download\n"));
   }
 
   // Each folder's drive: offline counted, a new letter taken (and written).
@@ -755,6 +804,10 @@ struct host_service::state {
     s.folders = cfg.roots.size();
     s.offline = offline;
     s.paused = settings.paused;
+    s.convert_on = settings.convert;
+    s.convert_available = conv != nullptr;
+    s.convert_encoder = conv ? conv_found.family : std::string();
+    s.convert_busy = conv && conv->now().busy;
     s.clients = clients;
     s.day = usage.day;
     s.read_today = usage.total.read;
@@ -1052,6 +1105,28 @@ int run_unshare(const args& a, const host_layout& l, bool test_hooks) {
 host_settings load_settings(const host_layout& l) {
   const auto text = read_small(l.settings, 16 * 1024);
   return text ? parse_host_settings(*text).value_or(host_settings{}) : host_settings{};
+}
+
+int run_host_convert(const args& a, const host_layout& l) {
+  if (!make_host_folders(l)) return fail("its folder must be this user's alone (mode 700).", 1);
+  host_settings s = load_settings(l);
+  s.convert = a.on;
+  if (a.on && !a.convert_helper.empty()) {
+    std::error_code ec;
+    if (!to_path(a.convert_helper).is_absolute() || !fs::is_regular_file(to_path(a.convert_helper), ec)) {
+      return fail("--helper must name the app's clip helper by its full path.", 1);
+    }
+    s.convert_helper = a.convert_helper;
+  }
+  if (!write_whole(l.settings, host_settings_json(s))) return fail("could not write host.json.", 1);
+  if (!a.on) {
+    print("Phones get the download for clips they can't play; nothing is converted.\n");
+  } else if (s.convert_helper.empty()) {
+    print("On, but no clip helper is known yet: MediaViewer's Phone access card names it.\n");
+  } else {
+    print("Clips a phone can't play are converted on this computer's graphics hardware as it watches.\n");
+  }
+  return 0;
 }
 
 int run_stay_awake(const args& a, const host_layout& l) {
@@ -1511,6 +1586,8 @@ int run_host(const args& a, bool test_hooks, const char* version) {
       return run_host_pair(a, l, test_hooks);
     case host_action::vpn:
       return run_host_vpn(a, l, test_hooks);
+    case host_action::convert:
+      return run_host_convert(a, l);
     case host_action::users:
       return run_host_users(a, l, test_hooks);
     case host_action::smb_apply:

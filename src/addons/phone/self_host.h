@@ -66,6 +66,10 @@ struct where {
 // takes it before every other place. "" for none (a build without it).
 void set_bundled(std::string program);
 [[nodiscard]] std::string bundled();
+// The app's clip helper (module_self::app_clip_helper), set at the add-on's load: what the host is
+// told to convert clips for phones with (docs/plans/phone-clip-convert.md). "" for none.
+void set_clip_helper(std::string program);
+[[nodiscard]] std::string clip_helper();
 // The person's: the add-on's copy, else the first candidate that is a file, and
 // the default data folder.
 [[nodiscard]] where find();
@@ -94,6 +98,10 @@ struct host_status {
   // connected, in the menu's words (host_tray::usage_lines).
   bool paused = false;
   std::vector<std::string> stats;
+  // Clips the phone can't play (docs/plans/phone-clip-convert.md): host.json's switch and the
+  // helper it was given, and what the running host found ("VideoToolbox"; "" for none).
+  bool convert_on = true, convert_available = false, convert_busy = false;
+  std::string convert_helper, convert_encoder;
 };
 [[nodiscard]] host_status read_status(const where& w);
 
@@ -130,6 +138,9 @@ struct running_state {
   // 1 rebuilding, 2 degraded, 3 offline, 4 failing; -1: no set).
   std::vector<std::string> drive_lines;  // "Photos (mirror): healthy", the advice after ';' left out
   int drives_health = -1;
+  // Converting (state.json "convert"): on, a hardware encoder found (its name), a job running now.
+  bool convert_on = false, convert_available = false, convert_busy = false;
+  std::string convert_encoder;
 };
 // The keepers' lines are tidied for a card: "DuckDNS     home…" becomes
 // "DuckDNS: home…", each line of a line trimmed.

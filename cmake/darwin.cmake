@@ -482,6 +482,8 @@ add_library(mv_clip STATIC
   src/edit/clip_sample.cpp
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
+  src/edit/clip_convert.cpp
+  src/edit/clip_convert.h
   src/edit/clip_picture_io.cpp
   src/edit/clip_look_run.cpp
   src/edit/clip_sample.h

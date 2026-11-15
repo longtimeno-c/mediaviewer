@@ -27,6 +27,7 @@ extern "C" {
 #include "core/sound_envelope.h"
 #include "edit/clip.h"
 #include "gfx/adjust_kernel.h"
+#include "edit/clip_convert.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
 #include "edit/clip_sample.h"
@@ -1112,4 +1113,136 @@ TEST_CASE("Export exact at 2x and 0.5x: half and double the length, in sync", "[
   // Speed is not something packet copy can carry.
   r.ranges_exact = false;
   CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);
+}
+
+// ---- the phone's conversion (docs/plans/phone-clip-convert.md) --------------------------
+
+namespace {
+
+struct ts_look {
+  std::string video, audio;
+  double first_video_s = -1;  // the first video packet's pts, seconds
+  double first_audio_s = -1;
+};
+
+ts_look look_at(const fs::path& p) {
+  ts_look out;
+  AVFormatContext* in = nullptr;
+  if (avformat_open_input(&in, utf8(p).c_str(), nullptr, nullptr) < 0) return out;
+  if (avformat_find_stream_info(in, nullptr) >= 0) {
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+      const AVCodecParameters* c = in->streams[i]->codecpar;
+      if (c->codec_type == AVMEDIA_TYPE_VIDEO) out.video = avcodec_get_name(c->codec_id);
+      if (c->codec_type == AVMEDIA_TYPE_AUDIO) out.audio = avcodec_get_name(c->codec_id);
+    }
+    AVPacket* pkt = av_packet_alloc();
+    while ((out.first_video_s < 0 || (out.first_audio_s < 0 && !out.audio.empty())) && av_read_frame(in, pkt) >= 0) {
+      const AVStream* st = in->streams[pkt->stream_index];
+      const double t = pkt->pts == AV_NOPTS_VALUE ? -1 : pkt->pts * av_q2d(st->time_base);
+      if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && out.first_video_s < 0) out.first_video_s = t;
+      if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && out.first_audio_s < 0) out.first_audio_s = t;
+      av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+  }
+  avformat_close_input(&in);
+  return out;
+}
+
+bool os_aac_here() {
+  return avcodec_find_encoder_by_name("aac_at") != nullptr || avcodec_find_encoder_by_name("aac_mf") != nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("convert: square pixels, long side at most 1920, even", "[clip][convert]") {
+  std::uint32_t w = 0, h = 0;
+  clip::convert::detail::output_size(720, 576, 64, 45, w, h);  // a 16:9 PAL DVD
+  CHECK(w == 1024);
+  CHECK(h == 576);
+  clip::convert::detail::output_size(3840, 2160, 1, 1, w, h);
+  CHECK(w == 1920);
+  CHECK(h == 1080);
+  clip::convert::detail::output_size(321, 241, 0, 1, w, h);
+  CHECK(w == 322);
+  CHECK(h == 242);
+}
+
+TEST_CASE("convert: the plan cuts fixed segments and folds a short tail", "[clip][convert]") {
+  scratch_dir d("clip_convert_plan");
+  fx::spec s;
+  s.muxer = "avi";
+  s.frames = 300;  // 10 s: 4 + 4 + 2
+  REQUIRE(fx::make(utf8(d / "ten.avi"), s));
+  auto p = clip::convert::plan(utf8(d / "ten.avi"), 4000);
+  REQUIRE(p);
+  CHECK(std::abs(p->duration_ms - 10000) < 100);
+  CHECK(p->segments == 3);
+  CHECK(p->width == 320);
+  CHECK(p->height == 240);
+  CHECK(p->video_codec == "mpeg4");
+  CHECK(clip::convert::plan_json(*p).find("\"segments\":3") != std::string::npos);
+
+  s.frames = 243;  // 8.1 s: the 0.1 s goes with the second segment
+  REQUIRE(fx::make(utf8(d / "eight.avi"), s));
+  auto q = clip::convert::plan(utf8(d / "eight.avi"), 4000);
+  REQUIRE(q);
+  CHECK(q->segments == 2);
+
+  REQUIRE(fx::make_audio(utf8(d / "sound.m4a"), 2.0));
+  auto none = clip::convert::plan(utf8(d / "sound.m4a"), 4000);
+  REQUIRE(!none);
+  CHECK(none.error() == mv::status::unsupported_format);
+}
+
+TEST_CASE("convert: each segment is its own TS, on the source's timeline", "[clip][convert]") {
+  scratch_dir d("clip_convert_segment");
+  fx::spec s;
+  s.muxer = "avi";
+  s.frames = 300;
+  s.gop = 45;  // a keyframe every 1.5 s: segment 1 starts mid-GOP
+  const fs::path src = d / "clip.avi";
+  REQUIRE(fx::make(utf8(src), s));
+  const auto before = read_bytes(src);
+  clip::convert::detail::encoders soft{{"mpeg4"}, true};
+  for (std::uint32_t k : {0u, 1u, 2u}) {
+    const fs::path out = d / ("seg-" + std::to_string(k) + ".ts");
+    REQUIRE(clip::convert::detail::segment_with(utf8(src), k, 4000, utf8(out), nullptr, soft));
+    fx::decoded dec;
+    REQUIRE(fx::decode_all(utf8(out), dec));
+    REQUIRE(!dec.luma.empty());
+    // Frame 120 k is the segment's first, whatever keyframe the decode began at.
+    CHECK(frame_of(dec.luma.front()) == static_cast<int>(120 * k) % 50);
+    CHECK(dec.luma.size() == (k < 2 ? 120u : 60u));
+    const ts_look l = look_at(out);
+    CHECK(std::abs(l.first_video_s - (clip::convert::kTimestampOffsetMs / 1000.0 + 4.0 * k)) < 0.002);
+    if (os_aac_here()) {
+      CHECK(l.audio == "aac");
+      // After the first, sound starts at the segment's start, not before it (no overlap).
+      if (k > 0) CHECK(std::abs(l.first_audio_s - l.first_video_s) < 0.002);
+    } else {
+      CHECK(l.audio.empty());  // never FLAC, never FFmpeg's own AAC: silent instead
+    }
+  }
+  CHECK(!clip::convert::detail::segment_with(utf8(src), 3, 4000, utf8(d / "past.ts"), nullptr, soft));
+  CHECK(read_bytes(src) == before);
+}
+
+TEST_CASE("convert: the product path uses a hardware H.264 encoder", "[clip][convert]") {
+  auto found = clip::convert::check();
+  if (!found) {
+    CHECK(found.error() == mv::status::not_found);
+    SKIP("no hardware H.264 encoder on this machine");
+  }
+  CHECK(!found->family.empty());
+  scratch_dir d("clip_convert_hw");
+  fx::spec s;
+  s.muxer = "matroska";
+  s.frames = 150;
+  const fs::path src = d / "clip.mkv";
+  REQUIRE(fx::make(utf8(src), s));
+  REQUIRE(clip::convert::segment(utf8(src), 1, 2000, utf8(d / "seg.ts")));
+  const ts_look l = look_at(d / "seg.ts");
+  CHECK(l.video == "h264");
+  CHECK(std::abs(l.first_video_s - (clip::convert::kTimestampOffsetMs / 1000.0 + 2.0)) < 0.002);
 }

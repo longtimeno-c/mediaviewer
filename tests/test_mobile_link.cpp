@@ -2464,6 +2464,58 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   mv_link_close(l);
 }
 
+TEST_CASE("file mode through the C ABI: a clip the phone can't play, converted by the service",
+          "[mobile-link][mobile-files][convert]") {
+  rig r(300000, "Photos", false);
+  write_file(r.photos / "Old" / "tape.avi", "RIFFtapebytes");
+  r.pair_now();
+  mv_mobile_link* l = open_link((r.dir.root / "thumbs").string(), r.sync_config(), r.config());
+  REQUIRE(l);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  // No converter: said so, and nothing is asked.
+  int32_t can = 1;
+  REQUIRE(mv_link_can_convert(l, &can) == MV_LINK_OK);
+  CHECK(can == 0);
+  mv_convert_plan plan{};
+  CHECK(mv_files_convert_plan(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", &plan) == MV_LINK_UNSUPPORTED);
+
+  // A converter (a stand-in for the helper), and a new session hears of it.
+  namespace cv = serve::convert;
+  cv::service::options o;
+  o.cache_dir = (r.dir.root / "convert-cache").string();
+  o.ahead = 0;
+  o.run.plan = [](const std::string&, std::uint32_t seg, const std::string& out) {
+    std::ofstream(out, std::ios::binary) << serve::convert_plan_json({9000, seg, 3, 640, 360});
+    return cv::ran::ok;
+  };
+  o.run.segment = [](const std::string&, std::uint32_t k, std::uint32_t, const std::string& out) {
+    std::ofstream(out, std::ios::binary) << std::string(200000, static_cast<char>('a' + k));
+    return cv::ran::ok;
+  };
+  r.srv->set_converter(cv::service::start(o));
+  mv_link_close(l);
+  l = open_link((r.dir.root / "thumbs").string(), r.sync_config(), r.config());
+  REQUIRE(l);
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  REQUIRE(mv_link_can_convert(l, &can) == MV_LINK_OK);
+  CHECK(can == 1);
+  REQUIRE(mv_files_convert_plan(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", &plan) == MV_LINK_OK);
+  CHECK(plan.segments == 3);
+  CHECK(plan.duration_ms == 9000);
+  CHECK(plan.width == 640);
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+  REQUIRE(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", 2, nullptr, collect, &got) == MV_LINK_OK);
+  CHECK(got == std::string(200000, 'c'));
+  CHECK(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "Old/gone.avi", 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
+  CHECK(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "../x.avi", 0, nullptr, collect, &got) == MV_LINK_INVALID);
+  mv_link_close(l);
+}
+
 TEST_CASE("file mode: what a folder shows, by the D5 table", "[mobile-files]") {
   using mob::files::kind;
   CHECK(mob::files::kind_of("a.JPG") == kind::photo);

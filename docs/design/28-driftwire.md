@@ -618,6 +618,26 @@ writes hidden `.<name>.<device id>.mvpart`, then flushes, hashes and renames wit
 `.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`) are ever replaced. Phone side
 `src/mobile/backup.*`.
 
+### Clips the phone can't play: `convert` (2026-11-15)
+
+`src/wire/serve_convert.*`, `cli/convert_run.*`, `src/edit/clip_convert.*`; plan
+`docs/plans/phone-clip-convert.md`. Op 7 `convert` (bit `1u << 7`, not in `kAllOps`): listed in
+`serve_caps` only while the server has a converter (`server::options::converter`,
+`set_converter`); afterwards a request is `unsupported {"why":"off"}`. `{"seg":-1}` is the plan
+(`{"duration_ms","segment_ms","segments","width","height"}` in `stream_end`); `{"seg":k}` streams
+segment k's MPEG-TS (H.264 + AAC) exactly as a `read_range` once it is made. The path walks
+`stat_beneath` first, as a read does.
+
+`convert::service`: one worker for all sessions; asked segments first, then two ahead of a clip's
+second (or later) asked segment, only for the clip asked last; a seek drops what was ahead. Cache
+`serve/convert-cache/<BLAKE2b(folder id, rel, size, mtime, format)>/plan.json, seg-k.ts`, 2 GiB,
+oldest-used segments out; off empties it. Each job is one run of the app's clip helper
+(`MediaViewerClipJob --convert-plan|--convert-segment`, exit 0/1/2 not a clip/3 no encoder), which
+lowers its own priority and encodes on the hardware encoder only. `driftwire host convert on
+[--helper PATH]|off` (host.json `convert`, `convert_helper`; on by default, the Phone access add-on
+names the helper); state.json `"convert":{"on","available","encoder","busy"}`; `driftwire serve
+--convert-helper PATH` for a bare service. Tests `"[convert]"`; timings `"[.convert-bench]"`.
+
 ### Through the person's own relay
 
 Plan [nas-relay.md](../plans/nas-relay.md). No public relay: away from home a phone reaches the NAS

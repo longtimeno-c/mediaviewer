@@ -740,6 +740,8 @@ add_library(mv_clip STATIC
   src/edit/clip_sample.cpp
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
+  src/edit/clip_convert.cpp
+  src/edit/clip_convert.h
   src/edit/clip_picture_io.cpp
   src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
@@ -797,7 +799,7 @@ file(GENERATE
 # (docs/design/08 "Execution & UX"; docs/design/12 2026-09-25). Beside MediaViewer.exe; no
 # mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
 add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
-target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options shell32)  # shell32: CommandLineToArgvW (the phone's conversion)
 target_include_directories(MediaViewerClipJob PRIVATE src)
 mv_asan_runtime_beside(MediaViewerClipJob)
 

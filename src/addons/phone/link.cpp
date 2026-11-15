@@ -1088,6 +1088,23 @@ void link::run(const std::string& request) {
     host_drives(what, request);
     return;
   }
+  if (what == "host_convert") {
+    // docs/plans/phone-clip-convert.md: on, with this app's clip helper; or off (the cache goes).
+    const auto doc = json::parse(request, 2);
+    const bool on = doc && doc->boolean("on").value_or(false);
+    const auto w = host_where();
+    std::vector<std::string> args{"convert", on ? "on" : "off"};
+    const std::string helper = self_host::clip_helper();
+    if (on && !helper.empty()) args.insert(args.end(), {"--helper", helper});
+    const auto r = self_host::run_host(w, args);
+    if (!r || r->code != 0) {
+      std::lock_guard lock(m_);
+      v_.host_said = r ? first_line(r->output) : std::string();
+      v_.error = "host_convert";
+    }
+    read_host();
+    return;
+  }
   if (what == "host_start") {
     const auto w = host_where();
     if (w.program.empty()) {
@@ -1491,6 +1508,15 @@ void link::users_apply(std::span<const self_host::user_password> passwords) {
 void link::read_host() {
   const auto w = host_where();
   auto st = self_host::read_status(w);
+  // The host converts with this app's clip helper: told once per run of the app, and again when
+  // the app has moved (an update to another place). Never when its owner turned it off.
+  if (st.set_up && st.convert_on && !told_helper_.exchange(true)) {
+    const std::string helper = self_host::clip_helper();
+    if (!helper.empty() && helper != st.convert_helper) {
+      (void)self_host::run_host(w, {"convert", "on", "--helper", helper});
+      st = self_host::read_status(w);
+    }
+  }
   std::lock_guard lock(m_);
   v_.host = std::move(st);
   v_.host_read = true;
@@ -1863,6 +1889,9 @@ std::string link::state_json() const {
     w.key("configured_port").integer(h.configured_port).key("outside_port").integer(h.outside_port);
     w.key("folders").integer(static_cast<std::int64_t>(h.folders)).key("offline").integer(static_cast<std::int64_t>(h.offline));
     w.key("name").string(h.name).key("duckdns").string(h.duckdns);
+    w.key("convert_on").boolean(h.convert_on).key("convert_available").boolean(h.convert_available);
+    w.key("convert_busy").boolean(h.convert_busy).key("convert_encoder").string(h.convert_encoder);
+    w.key("convert_helper").boolean(!h.convert_helper.empty());
     w.key("paused").boolean(h.paused).key("stats").begin_array();
     for (const auto& k : h.stats) w.string(k);
     w.end_array();

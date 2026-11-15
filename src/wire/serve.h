@@ -42,6 +42,7 @@
 
 #include "wire/net.h"
 #include "wire/secrets.h"
+#include "wire/serve_convert.h"
 #include "wire/serve_wire.h"
 #include "core/result.h"
 
@@ -159,6 +160,9 @@ class server {
     // or none), sent to every session in serve_caps "storage" so a phone can say
     // "Your server's mirror lost a drive". Any thread; never blocks.
     std::function<std::string()> storage;
+    // Clips the phone can't play (docs/plans/phone-clip-convert.md): the host's converter, or
+    // none. With one, every session's caps list `convert`. set_converter changes it later.
+    std::shared_ptr<convert::service> converter;
   };
 
   // Listens and returns. status::not_found when the store has no usable
@@ -196,6 +200,9 @@ class server {
   // process, a drive's new letter). Taken as they are, not saved again; requests already
   // open keep the view they opened with. False for a config with no folders.
   bool replace_config(config next);
+  // The converter turned on or off: sessions that start from now see the change in their
+  // caps; one already listing `convert` is answered unsupported {"why":"off"} without one.
+  void set_converter(std::shared_ptr<convert::service> c);
   void stop() noexcept;
 
  private:
