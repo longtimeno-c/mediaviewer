@@ -60,8 +60,11 @@ cf_ptr<CFStringRef> first_entitlement(SecTaskRef task, CFStringRef key) {
 }
 
 // This app's keychain access group: its keychain-access-groups entitlement,
-// else its first app group (on macOS a team-prefixed app group is also a
-// keychain access group). nullptr when it was signed with neither.
+// else its first app group. nullptr when it was signed with neither. The
+// data protection keychain answers -34018 to an app group alone (measured
+// 2026-11-15), so a release claims the same name as keychain-access-groups
+// too (macpack.py, with its profile); the fallback names the group a build
+// signed without one tries, and fails in.
 cf_ptr<CFStringRef> access_group() {
   cf_ptr<SecTaskRef> task(SecTaskCreateFromSelf(nullptr));
   if (!task) return nullptr;

@@ -159,6 +159,9 @@ std::string pair_problem_words(status st, std::string_view server) {
       return name + " did not take the code: it was used already, has expired, or is another server's. Make a new one there.";
     case status::unsupported_format:
       return name + " runs an older driftwire than this app needs. Update it there.";
+    case status::internal:
+      return "This computer could not keep the keys to open " + name + " in its keychain. If " + name +
+             " lists this computer, remove it there before connecting again.";
     case status::cancelled:
       return {};
     default:
@@ -378,6 +381,9 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   auto p = mobile::parse_pair_payload(trim(code_text));
   if (!p) return err(status::invalid_arg);
   if (p->expires <= now_unix) return err(status::timeout);
+  // No OS store (a build signed without a keychain group, Linux without a
+  // keyring): nothing could be kept, so the code is not spent.
+  if (!cfg_.store && !own_store_) return err(status::internal);
   auto s = std::make_shared<server_rt>();
   s->id = id_of(p->identity);
   s->name = p->library_name.empty() ? std::string("Server") : p->library_name;
@@ -414,7 +420,10 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   std::memcpy(secret.data() + 32, s->access_key.data(), 32);
   const bool kept = store().put(kSecretPrefix + s->id, secret);
   sodium_memzero(secret.data(), secret.size());
-  if (!kept) return err(status::io);
+  // The service has taken the code and lists this desktop by now: not "can't
+  // reach" (the Mac's keychain refused a release signed without the
+  // keychain group, 2026-11-15).
+  if (!kept) return err(status::internal);
   s->link = make_link(cfg_, s->local, s->public_name, s->relay, s->identity, s->access_key, s->device_key);
   s->state = reach::online;  // it just answered
   std::shared_ptr<server_rt> old;

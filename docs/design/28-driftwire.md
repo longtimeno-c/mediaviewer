@@ -429,9 +429,12 @@ still applies. (`secrets.*`, `known.*`.) The question stays until the next send 
 
 - **Identity**: X25519 key in the OS secret store (`secrets.h`):
   - **Mac**: data protection keychain, generic password "MediaViewer Driftwire",
-    `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, app group
+    `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, access group
     `<team>.io.github.longtimeno-c.mediaviewer.driftwire` (`macpack.py release --team-id`,
-    `APPLE_TEAM_ID`); unsigned builds have no store.
+    `APPLE_TEAM_ID`), claimed as an app group and, with the Developer ID profile embedded, as
+    `keychain-access-groups`: the keychain refuses the app group alone (-34018,
+    [12](12-decision-log.md), 2026-11-15). Unsigned builds, and releases without a profile, have no
+    working store.
   - **Windows**: Credential Manager, values sealed with DPAPI (`CryptProtectData`, own entropy);
     plain items refused.
   - **Linux**: Secret Service via run-time libsecret (`secrets_linux.cpp`), schema
