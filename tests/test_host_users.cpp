@@ -199,7 +199,7 @@ struct host_fixture {
   }
   std::string all_said() const {
     std::string s;
-    for (const auto& l : said) s += l + "\n";
+    for (const auto& line : said) s += line + "\n";
     return s;
   }
 };
