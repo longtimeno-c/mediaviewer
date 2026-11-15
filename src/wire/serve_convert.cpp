@@ -156,9 +156,11 @@ struct service::state {
   }
 
   void ahead_locked(const source& src, const std::string& key, std::uint32_t k) {
-    // A seek: what was queued ahead of the old place goes.
+    // Segment 0 alone is a poster as often as a start: ahead only once a second one is asked.
+    if (k == 0) return;
+    // A seek, or another clip: what was queued ahead of anything else goes.
     std::erase_if(queue, [&](const job& j) {
-      return j.key == key && !j.is_plan && !j.asked && (j.k <= k || j.k > k + static_cast<std::uint32_t>(o.ahead));
+      return !j.is_plan && !j.asked && (j.key != key || j.k <= k || j.k > k + static_cast<std::uint32_t>(o.ahead));
     });
     const auto p = cached_plan_locked(key);
     if (!p) return;

@@ -775,6 +775,82 @@ int32_t mv_files_read(mv_mobile_link* l, const char* root, const char* rel, uint
   });
 }
 
+// ---- convert (docs/plans/phone-clip-convert.md) ---------------------------------------------------
+
+namespace {
+
+int32_t convert_status(status s) { return s == status::unsupported_format ? MV_LINK_UNSUPPORTED : status_of_read(s); }
+
+int32_t convert_plan_at(mv_mobile_link* l, const std::string& root, const std::string& rel, mv_convert_plan* out) {
+  if (!l->session) return MV_LINK_UNSUPPORTED;  // the sample library converts nothing
+  auto p = l->session->convert_plan(root, rel, nullptr);
+  if (!p) return convert_status(p.error());
+  *out = mv_convert_plan{p->duration_ms, p->segment_ms, p->segments, p->width, p->height};
+  return MV_LINK_OK;
+}
+
+int32_t convert_read_at(mv_mobile_link* l, const std::string& root, const std::string& rel, uint32_t segment,
+                        mv_cancel* cancel, mv_sink_fn sink, void* ctx) {
+  if (!l->session) return MV_LINK_UNSUPPORTED;
+  auto done = l->session->convert_read(
+      root, rel, segment,
+      [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
+      cancel ? cancel->flag.get() : nullptr);
+  return done ? MV_LINK_OK : convert_status(done.error());
+}
+
+}  // namespace
+
+int32_t mv_link_can_convert(mv_mobile_link* l, int32_t* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    *out = 0;
+    if (!l->session) return MV_LINK_OK;
+    auto can = l->session->can_convert();
+    if (!can) return status_of_read(can.error());
+    *out = *can ? 1 : 0;
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_convert_plan(mv_mobile_link* l, const char* root, const char* rel, mv_convert_plan* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel || !out) return MV_LINK_INVALID;
+    const std::string p = rel;
+    if (p.empty() || !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    return convert_plan_at(l, root, p, out);
+  });
+}
+
+int32_t mv_asset_convert_plan(mv_mobile_link* l, int64_t asset, mv_convert_plan* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    std::string root, rel;
+    if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
+    return convert_plan_at(l, root, rel, out);
+  });
+}
+
+int32_t mv_files_convert_read(mv_mobile_link* l, const char* root, const char* rel, uint32_t segment, mv_cancel* cancel,
+                              mv_sink_fn sink, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel || !sink) return MV_LINK_INVALID;
+    const std::string p = rel;
+    if (p.empty() || !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    return convert_read_at(l, root, p, segment, cancel, sink, ctx);
+  });
+}
+
+int32_t mv_asset_convert_read(mv_mobile_link* l, int64_t asset, uint32_t segment, mv_cancel* cancel, mv_sink_fn sink,
+                              void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !sink) return MV_LINK_INVALID;
+    std::string root, rel;
+    if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
+    return convert_read_at(l, root, rel, segment, cancel, sink, ctx);
+  });
+}
+
 int32_t mv_files_fields(const char* make, const char* model, const char* lens, const char* comment, const mv_file_tag* tags,
                         size_t count, mv_text_fn fn, void* ctx) {
   return catch_all([&]() -> int32_t {

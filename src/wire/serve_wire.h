@@ -280,7 +280,9 @@ inline constexpr const char* kWhyNotAClip = "not-a-clip";
 inline constexpr const char* kWhyConvertOff = "off";
 struct convert_plan {
   std::int64_t duration_ms = 0;
-  std::uint32_t segment_ms = 0;  // every segment's length but the last's
+  // Every segment's length but the last's, which runs to the end (a tail too short to stand
+  // alone joins it: segments is ceil(duration / segment_ms) or one fewer).
+  std::uint32_t segment_ms = 0;
   std::uint32_t segments = 0;
   std::uint32_t width = 0, height = 0;  // the converted picture's
 };

@@ -6,8 +6,9 @@
 // in what order, and where it is kept.
 //
 // One job at a time across every session. A segment a phone asks for goes before the ones
-// made ahead (the next `ahead` after it), and asking for another segment of the same clip
-// drops what was queued ahead of the old position (a seek). The cache is a folder of
+// made ahead (the next `ahead` after it, from the second segment asked: the first alone is
+// as often a poster), and asking for another segment drops what was queued ahead of the old
+// position or for another clip (a seek, or the next clip). The cache is a folder of
 // folders named by a hash of the source (its folder id, relative path, size and mtime and
 // kFormat), so an edited file converts again and the names say nothing of the library.
 // Oldest-used segments go past `max_bytes`. Nothing is ever written beside an original.

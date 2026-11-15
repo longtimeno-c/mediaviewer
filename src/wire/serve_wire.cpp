@@ -657,8 +657,9 @@ std::optional<convert_plan> parse_convert_plan(std::string_view text) {
       !in_range(w, 1, 16384) || !in_range(h, 1, 16384)) {
     return std::nullopt;
   }
-  // The segments cover the duration, and no more than one past it.
-  if (*n != (*d + *s - 1) / *s) return std::nullopt;
+  // The segments cover the duration; a short tail may join the segment before it.
+  const std::int64_t whole = (*d + *s - 1) / *s;
+  if (*n != whole && *n != whole - 1) return std::nullopt;
   convert_plan p;
   p.duration_ms = *d;
   p.segment_ms = static_cast<std::uint32_t>(*s);

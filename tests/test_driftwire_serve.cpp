@@ -1645,7 +1645,7 @@ namespace {
 
 namespace cv = serve::convert;
 
-// A runner that converts nothing: the plan is 10 s in 4 s segments; a segment is its number and
+// A runner that converts nothing: the plan is 40 s in 4 s segments; a segment is its number and
 // the source's first bytes. `gate`, when set, holds every run until opened.
 struct fake_runner {
   std::atomic<int> plans{0}, segments{0};
@@ -1678,7 +1678,7 @@ struct fake_runner {
       wait_open();
       ++plans;
       if (not_a_clip) return cv::ran::not_a_clip;
-      serve::convert_plan p{10000, seg_ms, (10000 + seg_ms - 1) / seg_ms, 1280, 720};
+      serve::convert_plan p{40000, seg_ms, (40000 + seg_ms - 1) / seg_ms, 1280, 720};
       std::ofstream(fs::path(std::u8string(reinterpret_cast<const char8_t*>(out.data()), out.size())), std::ios::binary)
           << serve::convert_plan_json(p);
       (void)src;
@@ -1793,6 +1793,8 @@ TEST_CASE("serve convert: the request and the plan on the wire", "[driftwire-ser
   CHECK(parsed->segments == 3);
   CHECK(parsed->width == 1920);
   CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":10001,"segment_ms":4000,"segments":4,"width":1,"height":1})"));
+  CHECK(serve::parse_convert_plan(R"({"duration_ms":8100,"segment_ms":4000,"segments":2,"width":1,"height":1})"));  // a 100 ms tail joined
+  CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":8100,"segment_ms":4000,"segments":1,"width":1,"height":1})"));
   CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":0,"segment_ms":4000,"segments":0,"width":1,"height":1})"));
   CHECK_FALSE(serve::parse_convert_plan("[]"));
 }
@@ -1811,24 +1813,31 @@ TEST_CASE("serve convert: a segment is made once, kept, and the next ones are ma
   svc->plan(src, p1.cb());
   const auto [po, plan] = p1.wait();
   REQUIRE(po == cv::outcome::ok);
-  CHECK(plan.segments == 3);
+  CHECK(plan.segments == 10);
   waited_plan p2;
   svc->plan(src, p2.cb());
   CHECK(p2.wait().first == cv::outcome::ok);
   CHECK(run.plans == 1);  // the second from the cache
 
+  // Segment 0 alone (a poster): nothing made ahead.
   waited_segment s0;
   svc->segment(src, 0, s0.cb());
   const auto [so, file] = s0.wait();
   REQUIRE(so == cv::outcome::ok);
   CHECK(file_text(file) == "SEG0:RIFFclip");
-  // Segments 1 and 2 follow by themselves (ahead), and are then hits.
-  settle(*svc, run, 3);
-  CHECK(run.segments == 3);
-  waited_segment s2;
-  svc->segment(src, 2, s2.cb());
-  CHECK(s2.wait().first == cv::outcome::ok);
-  CHECK(run.segments == 3);
+  settle(*svc, run, 1);
+  CHECK(run.segments == 1);
+  // Segment 1 (playing): 2 and 3 follow by themselves, and are then hits.
+  waited_segment s1;
+  svc->segment(src, 1, s1.cb());
+  CHECK(s1.wait().first == cv::outcome::ok);
+  settle(*svc, run, 4);
+  CHECK(run.segments == 4);
+  waited_segment s3;
+  svc->segment(src, 3, s3.cb());
+  CHECK(s3.wait().first == cv::outcome::ok);
+  settle(*svc, run, 6);  // 3 asked: 4 and 5 ahead
+  CHECK(run.segments == 6);
   CHECK(svc->now().hits >= 2);
   // Nothing beside the original, and nothing named after it in the cache.
   CHECK(fs::exists(dir.root() / "clip.avi"));
@@ -1843,15 +1852,17 @@ TEST_CASE("serve convert: a segment is made once, kept, and the next ones are ma
   cv::source changed = src;
   changed.mtime = 2000;
   CHECK(cv::cache_key(changed) != cv::cache_key(src));
+  const int before = run.segments;
   waited_segment s0b;
   svc->segment(changed, 0, s0b.cb());
   CHECK(s0b.wait().first == cv::outcome::ok);
-  CHECK(run.segments >= 4);
+  CHECK(run.segments == before + 1);
 }
 
 TEST_CASE("serve convert: what a phone asks goes first, and a seek drops what was queued ahead", "[driftwire-serve][convert]") {
   scratch_dir dir{"serve_convert_order"};
   write_file(dir.root() / "a.mkv", "matroska");
+  write_file(dir.root() / "b.mkv", "matroskb");
   fake_runner run;
   cv::service::options o;
   o.cache_dir = utf8(dir.root() / "cache");
@@ -1861,21 +1872,40 @@ TEST_CASE("serve convert: what a phone asks goes first, and a seek drops what wa
   cv::source src{utf8(dir.root() / "a.mkv"), kRootA, "a.mkv", 8, 1};
   waited_plan p;
   svc->plan(src, p.cb());
-  REQUIRE(p.wait().first == cv::outcome::ok);  // 3 segments: 0, 1, 2
+  REQUIRE(p.wait().first == cv::outcome::ok);  // 10 segments
 
   run.hold();
-  waited_segment s0, s2;
-  svc->segment(src, 0, s0.cb());  // runs (held), 1 and 2 queued ahead
+  waited_segment s1, s6;
+  svc->segment(src, 1, s1.cb());  // runs (held); 2 and 3 queued ahead
   for (int i = 0; i < 1000 && !svc->now().busy; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  svc->segment(src, 2, s2.cb());  // a seek: asked, and 1 (ahead of 0) dropped
+  svc->segment(src, 6, s6.cb());  // a seek: asked; 2 and 3 dropped, 7 and 8 ahead
   run.open();
-  CHECK(s0.wait().first == cv::outcome::ok);
-  CHECK(s2.wait().first == cv::outcome::ok);
-  settle(*svc, run, 2);
+  CHECK(s1.wait().first == cv::outcome::ok);
+  CHECK(s6.wait().first == cv::outcome::ok);
+  settle(*svc, run, 4);
+  {
+    std::lock_guard g(run.m);
+    REQUIRE(run.order.size() == 4);
+    CHECK(run.order == std::vector<std::uint32_t>{1, 6, 7, 8});
+  }
+
+  // Another clip: what was ahead for the first goes.
+  cv::source other{utf8(dir.root() / "b.mkv"), kRootA, "b.mkv", 8, 1};
+  waited_plan p2;
+  svc->plan(other, p2.cb());
+  REQUIRE(p2.wait().first == cv::outcome::ok);
+  run.hold();
+  waited_segment a2, b5;
+  svc->segment(src, 2, a2.cb());  // runs (held); 3 and 4 of a ahead
+  for (int i = 0; i < 1000 && !svc->now().busy; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  svc->segment(other, 5, b5.cb());
+  run.open();
+  CHECK(a2.wait().first == cv::outcome::ok);
+  CHECK(b5.wait().first == cv::outcome::ok);
+  settle(*svc, run, 8);
   std::lock_guard g(run.m);
-  REQUIRE(run.order.size() == 2);
-  CHECK(run.order[0] == 0);
-  CHECK(run.order[1] == 2);
+  REQUIRE(run.order.size() == 8);
+  CHECK(std::vector<std::uint32_t>(run.order.begin() + 4, run.order.end()) == std::vector<std::uint32_t>{2, 5, 6, 7});
 }
 
 TEST_CASE("serve convert: the cache keeps to its bound, failures are not kept, purge empties it", "[driftwire-serve][convert]") {
@@ -1961,7 +1991,7 @@ TEST_CASE("serve convert: the op is offered only with a converter, and streams a
   REQUIRE(((*c)->caps().ops & serve::kConvertOp) != 0);
   auto plan = (*c)->convert_plan_of(kRootA, "clips/old.avi");
   REQUIRE(plan);
-  CHECK(plan->segments == 3);
+  CHECK(plan->segments == 10);
   CHECK(plan->width == 1280);
   auto seg = (*c)->convert_segment(kRootA, "clips/old.avi", 1, 4096);
   REQUIRE(seg);
