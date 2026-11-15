@@ -211,6 +211,11 @@ struct FixtureStore: LibraryStore {
     FixtureLibrary.folders[parent?.id ?? ""] ?? []
   }
 
+  func preview(of folder: Folder, count: Int) async -> FolderPreview {
+    guard !folder.offline, let list = try? await list(in: .folder(folder)) else { return .empty }
+    return .newest(of: list, count: count)
+  }
+
   /// One folder whose drive is unplugged from the server, as the sample library has.
   func offlineFolders() async -> [Folder] {
     [Folder(id: "travel drive", name: "Travel drive", itemCount: -1, hasSubfolders: false, offline: true)]

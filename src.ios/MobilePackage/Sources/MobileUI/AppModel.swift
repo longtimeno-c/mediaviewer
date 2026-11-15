@@ -239,6 +239,7 @@ public final class AppModel {
 
   /// Reloads behind the grid: what is on screen stays until the new list is ready.
   private func reload() {
+    library.forgetPreviews()  // a new catalogue: its items are other ids
     Task {
       await loadLibrary()
       await search.prepare()  // file search and the catalogue's answer differently
@@ -511,6 +512,10 @@ public final class LibraryModel {
   private var offlineCheck: Task<Void, Never>?
   /// Where the newest load is going. `trail` follows only once it has arrived.
   private var requested: [Folder] = []
+  /// Folder tiles' pictures by folder id, so a folder gone back to shows its tiles at once. Not
+  /// observed: a tile asks for its own and keeps it.
+  @ObservationIgnored private var previews: [String: FolderPreview] = [:]
+  static let previewCount = 3
 
   init(store: LibraryStore) { self.store = store }
 
@@ -536,7 +541,22 @@ public final class LibraryModel {
     Task { await load() }
   }
 
+  /// A folder tile's preview, known or asked for (LibraryStore.preview). Cancellable: a tile
+  /// scrolled away stops asking.
+  public func preview(of folder: Folder) async -> FolderPreview {
+    if let known = previews[folder.id] { return known }
+    let got = await store.preview(of: folder, count: Self.previewCount)
+    // Nothing at all (the server could not be asked, a tile cancelled) is asked again next time.
+    if !Task.isCancelled, got != .empty { previews[folder.id] = got }
+    return got
+  }
+
+  public func knownPreview(of folder: Folder) -> FolderPreview? { previews[folder.id] }
+
+  func forgetPreviews() { previews = [:] }
+
   func reset() {
+    previews = [:]
     loading?.cancel()
     offlineCheck?.cancel()
     requested = []

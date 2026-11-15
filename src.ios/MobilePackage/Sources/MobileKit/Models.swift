@@ -129,6 +129,24 @@ public struct Folder: Identifiable, Hashable, Sendable {
   }
 }
 
+/// A folder's tile (LibraryStore.preview): the pictures on it and, in file mode, what the folder
+/// holds directly (a catalogue's folders carry their count in `Folder.itemCount`).
+public struct FolderPreview: Equatable, Sendable {
+  public let items: [MediaItem]
+  /// Photos and clips directly inside; nil when not known.
+  public let files: Int?
+  /// Folders directly inside; nil when not known.
+  public let folders: Int?
+
+  public init(items: [MediaItem], files: Int?, folders: Int?) {
+    self.items = items
+    self.files = files
+    self.folders = folders
+  }
+
+  public static let empty = FolderPreview(items: [], files: nil, folders: nil)
+}
+
 public struct Person: Identifiable, Hashable, Sendable {
   public let id: String
   public let name: String

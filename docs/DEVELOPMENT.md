@@ -466,6 +466,12 @@ them. `MediaViewer` is the real one and links no stand-in data (`App/MediaViewer
 `MobileFixtures` package does not compile outside Debug, so it cannot reach a release. Backup
 (release 1.1) is compiled only with the Swift condition `MV_BACKUP`, which no build sets.
 
+Clips: AVPlayer opens MP4/MOV/M4V directly. Transport streams (`.mts`, `.m2ts`, `.m2t`, `.ts`) with
+H.264 video play as HLS from a loopback server in the app (`MobileLink/TsStreams.swift`, parser and
+segmenter in `MobileLinkSupport/MpegTs.swift`); iOS opens none of them as files. MPEG-2 video, HEVC in
+TS, LPCM sound, MKV, WebM, AVI and MPG stay "can't play here", with the download. Folders show as
+tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`).
+
 The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
 `DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git
 ignores it), for example `DEVELOPMENT_TEAM = ABCDE12345`. Build a Simulator copy with signing on

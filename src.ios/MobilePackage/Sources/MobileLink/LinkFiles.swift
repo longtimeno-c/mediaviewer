@@ -46,6 +46,8 @@ public final class LinkFiles: @unchecked Sendable {
   private let memory = ScopedCache<UIImage>(totalCostLimit: 96 << 20)
   private let heads = HeadReads()
   private let posters = OneAtATimeGate(limit: 1)
+  /// Folder tiles' listings: two at a time.
+  private let previews = OneAtATimeGate(limit: 2)
   private let wholeReads = OneAtATimeGate(limit: 2)
   /// The viewer's ±2 and the like: two at a time, and a fast scroll drops what it cannot start.
   private let prefetches = OneAtATimeGate(limit: 2)
@@ -143,11 +145,13 @@ public final class LinkFiles: @unchecked Sendable {
     }
   }
 
-  func list(_ folder: FilePath) async throws -> FolderListing {
+  /// `priority` only for a listing not already running: a folder tile's asks at .utility, and the
+  /// library going into that folder then waits on the same read (awaiting raises its priority).
+  func list(_ folder: FilePath, priority: TaskPriority = .userInitiated) async throws -> FolderListing {
     let key = folder.id
     let task: Task<FolderListing, Error> = lock.withLock {
       if let running = listing[key] { return running }
-      let task = Task.detached(priority: .userInitiated) { [self] in try await readListing(folder) }
+      let task = Task.detached(priority: priority) { [self] in try await readListing(folder) }
       listing[key] = task
       return task
     }
@@ -203,6 +207,35 @@ public final class LinkFiles: @unchecked Sendable {
         for id in knownByFolder.removeValue(forKey: gone) ?? [] { known[id] = nil }  // a file is in one folder
       }
     }
+  }
+
+  /// A folder's tile: its newest photos (its clips when it has none) or, for a folder that holds only
+  /// folders, those of the first folder down that has any, at most `previewListings` listings deep.
+  /// Behind its own small gate, so tiles never crowd out the folder on screen.
+  func preview(_ folder: FilePath, count: Int) async -> FolderPreview {
+    await previews.run { [self] () -> FolderPreview in
+      guard !Task.isCancelled, let top = try? await list(folder, priority: .utility) else { return .empty }
+      var items = Self.pick(top.files, count: count)
+      var next = top.folders
+      var listed = 1
+      while items.isEmpty, !next.isEmpty, listed < Self.previewListings, !Task.isCancelled {
+        let folder = next.removeFirst()
+        guard !folder.offline, let path = FilePath(id: folder.id),
+              let inner = try? await list(path, priority: .utility) else { continue }
+        listed += 1
+        items = Self.pick(inner.files, count: count)
+        next.insert(contentsOf: inner.folders, at: 0)  // down the first branch before across
+      }
+      return FolderPreview(items: items, files: top.files.count, folders: top.folders.count)
+    }
+  }
+
+  static let previewListings = 5
+
+  /// Photos first, newest first: a clip's first frame is a heavier read than a photo's head.
+  static func pick(_ files: [FileEntry], count: Int) -> [MediaItem] {
+    let photos = files.lazy.filter { $0.kind != 2 }.prefix(count).map(\.item)
+    return photos.isEmpty ? Array(files.prefix(count).map(\.item)) : Array(photos)
   }
 
   static func failure(_ status: Int32) -> MediaFailure {
@@ -495,6 +528,16 @@ public final class LinkFiles: @unchecked Sendable {
   /// A clip's first frame, one clip at a time: AVFoundation reads what it needs over the link.
   private func poster(of file: FileEntry, link: LinkHandle) async -> UIImage? {
     let ext = (file.path.name as NSString).pathExtension.lowercased()
+    if LinkClips.transportStreams.contains(ext) {
+      return await posters.run { [self] in
+        guard !Task.isCancelled else { return nil }
+        let read = readFunction(file, link: link, bulk: false)
+        guard let layout = await onLinkQueue({ TsStreams.layout(read: read, size: file.size) }),
+              let url = await TsStreams.shared.register(layout, read: read),
+              let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels) else { return nil }
+        return UIImage(cgImage: frame)
+      }
+    }
     guard ["mp4", "mov", "m4v"].contains(ext) else { return nil }
     return await posters.run { [self] in
       guard !Task.isCancelled, let (asset, loader) = clipAsset(file, link: link) else { return nil }
@@ -573,14 +616,16 @@ public final class LinkFiles: @unchecked Sendable {
   }
 
   /// Reads a range of the file over the link: what a clip's loader and a whole-file copy use.
-  func readFunction(_ file: FileEntry, link: LinkHandle) -> ClipRead {
+  /// `bulk` false: a clip being watched, ahead of downloads on the link.
+  func readFunction(_ file: FileEntry, link: LinkHandle, bulk: Bool = true) -> ClipRead {
     let root = file.path.root, rel = file.path.rel
+    let lane: Int32 = bulk ? 1 : 0
     return { start, length, cancel, sink in
       let box = Unmanaged.passRetained(BlockBox(sink))
       defer { box.release() }
       return root.withCString { r in
         rel.withCString { p in
-          mv_files_read(link.raw, r, p, start, length, 1, cancel.raw, { ctx, _, bytes, count in
+          mv_files_read(link.raw, r, p, start, length, lane, cancel.raw, { ctx, _, bytes, count in
             guard let ctx, let bytes else { return 0 }
             return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: bytes, count: count)) ? 1 : 0
           }, box.toOpaque())
@@ -769,6 +814,11 @@ public struct FileModeLibrary: LibraryStore {
   }
 
   public func offlineFolders() async -> [Folder] { await files.offlineRoots() }
+
+  public func preview(of folder: Folder, count: Int) async -> FolderPreview {
+    guard !folder.offline, let path = FilePath(id: folder.id) else { return .empty }
+    return await files.preview(path, count: count)
+  }
 
   public func people() async throws -> [Person] { [] }
 

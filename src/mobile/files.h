@@ -83,4 +83,20 @@ class index {
   std::size_t tagged_ = 0;
 };
 
+// Where a catalogue folder's files may be among the service's folders, most likely first, when no
+// folder is labelled with its share's name: the catalogue was made where the library sat then (a
+// NAS share, a disk), and the folder served now may be the share under another label, a folder
+// inside it, or the disk above it. Each is a service folder and the path inside it that the
+// catalogue's relative paths go under ("" for its top); the caller keeps the first that holds a file.
+struct place {
+  std::string root;    // the service's folder id
+  std::string prefix;  // '/'-separated, may be empty
+  bool operator==(const place&) const = default;
+};
+struct served_root {
+  std::string id;
+  std::string label;
+};
+[[nodiscard]] std::vector<place> places_for(std::string_view share, std::string_view sub, std::span<const served_root> roots);
+
 }  // namespace mv::mobile::files

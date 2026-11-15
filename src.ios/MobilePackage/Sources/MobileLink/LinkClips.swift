@@ -48,6 +48,17 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     // Before AVPlayer gets it: a player error could not say which folder is missing.
     if await onLinkQueue({ mv_asset_folder_check(link.raw, asset) }) == 18 { return .unavailable(.folderNotOnNAS) }
     let ext = (item.fileName as NSString).pathExtension.lowercased()
+    if Self.transportStreams.contains(ext) {
+      let read: ClipRead = { start, length, cancel, sink in
+        let box = Unmanaged.passRetained(BlockBox(sink))
+        defer { box.release() }
+        return mv_file_read(link.raw, asset, start, length, 0, cancel.raw, { ctx, _, data, count in
+          guard let ctx, let data else { return 0 }
+          return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: data, count: count)) ? 1 : 0
+        }, box.toOpaque())
+      }
+      return await transportRoute(read: read, size: info.size, ext: ext)
+    }
     guard ["mp4", "mov", "m4v"].contains(ext) else {
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(info.size))
     }
@@ -76,6 +87,9 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
     guard let entry = images.files.entry(for: item.id) else { return .unavailable(.originalGone) }
     guard let link = await connection.awaitLink() else { return .unavailable(.synologyUnreachable) }
     let ext = (item.fileName as NSString).pathExtension.lowercased()
+    if Self.transportStreams.contains(ext) {
+      return await transportRoute(read: images.files.readFunction(entry, link: link, bulk: false), size: entry.size, ext: ext)
+    }
     guard ["mp4", "mov", "m4v"].contains(ext) else {
       return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(entry.size))
     }
@@ -87,6 +101,18 @@ public final class LinkClips: NSObject, ClipService, @unchecked Sendable {
       while fileLoaderOrder.count > Self.fileLoadersKept { fileLoaders[fileLoaderOrder.removeFirst()] = nil }
     }
     return .stream(asset)
+  }
+
+  /// AVCHD and broadcast clips: no AVPlayer opens them as files, but H.264 ones play as HLS
+  /// (TsStreams). The rest (MPEG-2 video, LPCM sound) are the download.
+  static let transportStreams: Set<String> = ["mts", "m2ts", "m2t", "ts"]
+
+  private func transportRoute(read: @escaping ClipRead, size: UInt64, ext: String) async -> ClipRoute {
+    let layout = await onLinkQueue { TsStreams.layout(read: read, size: size) }
+    guard let layout, let url = await TsStreams.shared.register(layout, read: read) else {
+      return .notPlayableHere(containerName: ext.uppercased(), fileBytes: Int64(size))
+    }
+    return .stream(AVURLAsset(url: url))
   }
 
   /// What a clip can count on: measured once per connection, from the file itself, on the first play.

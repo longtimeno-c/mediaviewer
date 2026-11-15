@@ -73,7 +73,7 @@ struct MainTabs: View {
       }
     }
     .tabViewStyle(.sidebarAdaptable)
-    .modifier(TabBarShrinks())
+    .modifier(TabBarShrinks(searching: model.tab == .search))
     .transferAccessory(model)
     .environment(\.viewerNamespace, viewerNamespace)
     .fullScreenCover(item: $model.viewer) { request in
@@ -85,11 +85,14 @@ struct MainTabs: View {
   }
 }
 
-/// Scrolling down gives the photos the room the tab bar was using (iOS 26 and later).
+/// Scrolling down gives the photos the room the tab bar was using (iOS 26 and later). Not on Search:
+/// results arriving under the field while someone types must not fold the bar the field belongs to.
 private struct TabBarShrinks: ViewModifier {
+  let searching: Bool
+
   func body(content: Content) -> some View {
     if #available(iOS 26.0, *) {
-      content.tabBarMinimizeBehavior(.onScrollDown)
+      content.tabBarMinimizeBehavior(searching ? .never : .onScrollDown)
     } else {
       content
     }

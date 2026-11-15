@@ -104,4 +104,5 @@ private struct OfflineStore: LibraryStore {
   func folders(under parent: Folder?) async throws -> [Folder] { [] }
   func people() async throws -> [Person] { [] }
   func details(for item: MediaItem) async throws -> MediaDetails { throw MediaFailure.synologyUnreachable }
+  func preview(of folder: Folder, count: Int) async -> FolderPreview { .empty }
 }

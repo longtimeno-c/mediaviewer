@@ -261,6 +261,12 @@ private struct CoreLibrary: LibraryStore {
     return out
   }
 
+  /// A catalogue folder's list is everything beneath it, newest first: its first items stand for it.
+  func preview(of folder: Folder, count: Int) async -> FolderPreview {
+    guard let list = try? await list(in: .folder(folder)), !Task.isCancelled else { return .empty }
+    return .newest(of: list, count: count)
+  }
+
   func people() async throws -> [Person] {
     let g = try await catalogue.generation()
     return try peopleRows(g).map { row in

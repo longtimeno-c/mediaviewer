@@ -94,7 +94,7 @@ cat > data/serve.json <<JSON
 {"port":$port,"name":"Demo NAS","roots":[{"id":"a1a1a1a1a1a1a1a1","label":"Photos","path":"$out/photos"},{"id":"c2c2c2c2c2c2c2c2","label":"Catalogue","path":"$out/nas/.mediaviewer"}]}
 JSON
 chmod 600 data/serve.json
-"$cli" serve --data data --test-loopback init > init.txt
+"$cli" serve --data data --test-loopback init --no-passphrase > init.txt
 code="$("$cli" serve --data data --test-loopback pair-code)"
 identity="$(awk '/identity/{print $2}' init.txt)"; access="$(awk '/access-key/{print $2}' init.txt)"
 python3 -I - "$publisher" "$identity" "$access" "$code" "$port" "$library" > pair-link.txt <<'PY'
