@@ -137,7 +137,7 @@ plan make_plan(const plan_input& in) {
     }
     if (e.kind == entry_kind::link) {
       ++out.links_skipped;
-      links.push_back({action_kind::skip_link, e.path});
+      links.push_back({action_kind::skip_link, e.path, ""});
       continue;
     }
     if (e.kind == entry_kind::folder) continue;  // the copier makes folders as it copies into them
@@ -289,7 +289,7 @@ std::string next_id(const bin& b, std::int64_t now) {
   const std::int64_t d = doy - (153 * mp + 2) / 5 + 1;
   const std::int64_t m = mp < 10 ? mp + 3 : mp - 9;
   const std::int64_t y = yoe + era * 400 + (m <= 2 ? 1 : 0);
-  char stamp[32];
+  char stamp[128];  // room for any int64 in every field, so -Wformat-truncation has nothing to say
   std::snprintf(stamp, sizeof stamp, "%04lld%02lld%02lld-%02lld%02lld%02lld", static_cast<long long>(y),
                 static_cast<long long>(m), static_cast<long long>(d), static_cast<long long>(secs / 3600),
                 static_cast<long long>(secs / 60 % 60), static_cast<long long>(secs % 60));
