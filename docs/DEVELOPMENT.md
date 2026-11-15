@@ -399,7 +399,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 An add-on since 2026-11-14 (`phone-access`, `src/addons/phone`, built as `build/addons/phone-access/
 libmv_phone_access.dylib` / `mv_phone_access.dll`; packed by `tools/package/addon-pack.py --addon phone-access`).
-Not installed by default: Settings → Phone access offers it (Mac `PhoneAccess.swift`, Windows
+Not installed by default: Settings → Add-ons → Phone access offers it (Mac `PhoneAccess.swift`, Windows
 `IslandHost.PhoneAccess.cs`) and, once loaded, draws its card, which is the add-on's own view tree
 (`screens.*`, its QR `qr.*` as a surface). The work is `link.*` (the state machine), `desk.*`
 (claim/codes/devices/nearby), `service.*` (the one link per process; the first window's process holds

@@ -600,7 +600,7 @@ over SMB with owner operations over the channel; library rejoin; the phone's `re
 
 `src/wire/serve_backup.*`, `src/wire/grants.*`; plan `docs/plans/mobile.md` §10b, M11. A backup
 folder is `"backup":{"limit","reserve"}` in `serve.json` (owner's `add_root` / `set_backup`;
-Settings → Phone access). A phone listing `write` gets the op (bit `1u << 6`).
+Settings → Add-ons → Phone access). A phone listing `write` gets the op (bit `1u << 6`).
 
 **Who may write is a phone's grant** (`backup`): the paired list holds only unlimited devices with
 backup; others live in `library_grants`. Guest codes give backup off. Turning backup on needs the
@@ -730,7 +730,7 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
   5, then every 15 minutes, a plain refusal three times at most), and the router keeper the outside ports a phone and the laptop
   dial (`service_outside_port`, `relay_outside_port`, `tls_outside_port`). In the test build
   (`loopback_only`) both stay idle and say so, unless built for a stand-in.
-- **From the desktop** (slice 6, [plan](../plans/self-hosted.md) §17): Settings → Phone access →
+- **From the desktop** (slice 6, [plan](../plans/self-hosted.md) §17): Settings → Add-ons → Phone access →
   Set up the service… → **This computer** runs the installed program's `host share` and
   `host start-at-login on` on the phone link's thread, writes the DuckDNS name where slice 5's
   `host name duckdns` does, claims the host over loopback and shows a code; its status row reads `state.json` and

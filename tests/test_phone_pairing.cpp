@@ -2206,6 +2206,7 @@ struct this_computer {
   fs::path backup = dir.root() / "Backup";
   std::unique_ptr<mv::io::child_process> host;
   int starts = 0;
+  int login_offs = 0;
   mv::phone::self_host::where where() const {
     mv::phone::self_host::where w;
     w.program = MV_DRIFTWIRE_CLI_TEST_PATH;
@@ -2253,6 +2254,10 @@ struct host_link {
     o.tick_s = 3600;
     o.self_host = [&pc] { return pc.where(); };
     o.start_host = [&pc](const mv::phone::self_host::where&) { return pc.start(); };
+    o.login_off = [&pc](const mv::phone::self_host::where&) -> mv::expected {
+      ++pc.login_offs;
+      return {};
+    };
     o.lan_address = [] { return std::string("::1"); };  // the test build listens on ::1 alone
     o.host_wait_ms = 20000;
     l = std::make_unique<mv::phone::link>(std::move(o));
@@ -2348,6 +2353,23 @@ TEST_CASE("phone pairing: This computer shares, starts, claims over loopback and
   CHECK((counted == 2 || counted == 3));
 }
 
+TEST_CASE("phone pairing: This computer's Stop takes it off login and stops the running host", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  auto v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  REQUIRE(v.find("host")->boolean("running") == true);
+
+  v = app.ask(R"({"do":"host_stop"})");
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  CHECK(*v.str("error") == "");
+  CHECK(pc.login_offs == 1);
+  CHECK(v.find("host")->boolean("running") == false);  // `host quit` waited for it
+  CHECK(v.find("host")->boolean("set_up") == true);    // its folders and pairings stay
+}
+
 TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code and the token in the host's store", "[phone-pairing][phone-self-host]") {
   this_computer pc;
   desktop mac;
@@ -2374,6 +2396,35 @@ TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code 
   REQUIRE(kept);
   CHECK(std::string(kept->begin(), kept->end()) == token);
   // Nothing the card shows holds it.
+  CHECK(app.l->state_json().find(token) == std::string::npos);
+}
+
+TEST_CASE("phone pairing: This computer's DuckDNS name is changed after setup, and phones' outside address with it", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  auto v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  REQUIRE(v.boolean("claimed") == true);
+  CHECK(*v.find("host")->str("duckdns") == "");
+  const std::string token = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+  // Checked before anything is kept.
+  v = app.ask(R"({"do":"host_name","duckdns":"not a name!","duckdns_token":")" + token + "\"}");
+  CHECK(*v.str("error") == "host_bad_name");
+  v = app.ask(R"({"do":"host_name","duckdns":"home","duckdns_token":"nope"})");
+  CHECK(*v.str("error") == "host_bad_token");
+  CHECK(*v.find("host")->str("duckdns") == "");
+
+  v = app.ask(R"({"do":"host_name","duckdns":"Home.duckdns.org","duckdns_token":")" + token + "\"}");
+  CHECK(*v.str("error") == "");
+  CHECK(*v.find("host")->str("duckdns") == "home");
+  const auto port = v.find("host")->integer("service_port").value_or(0);
+  REQUIRE(eventually([&] {
+    auto t = mv::json::parse(app.l->state_json(), 6);
+    return t && *t->str("public") == "home.duckdns.org:" + std::to_string(port);
+  }, 40));
   CHECK(app.l->state_json().find(token) == std::string::npos);
 }
 

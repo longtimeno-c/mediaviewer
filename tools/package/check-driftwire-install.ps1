@@ -132,6 +132,10 @@ if ($onWindows) {
 
 $installDir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'Driftwire'
 $dataDir = Join-Path $env:LOCALAPPDATA 'Driftwire'
+# A file of the check's own in the data folder: uninstall must leave it. The
+# folder may be there already and hold anything (the program makes it the
+# first time it runs, as earlier unit tests on a CI runner do).
+$dataMarker = Join-Path $dataDir 'driftwire-check-kept.json'
 if (Test-Path -LiteralPath $installDir) { throw "check: driftwire is already installed in $installDir; not touching it" }
 $originalPath = Get-RawUserPath
 $madeData = $false
@@ -164,9 +168,9 @@ try {
     $startKind = (Get-RawUserPath).Kind
     if (-not (Test-Path -LiteralPath $dataDir)) {
         New-Item -ItemType Directory -Path $dataDir | Out-Null
-        Set-Content -LiteralPath (Join-Path $dataDir 'driftwire.json') -Value '{}'
         $madeData = $true
     }
+    Set-Content -LiteralPath $dataMarker -Value '{}'
 
     # ---- the site ----
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -277,7 +281,7 @@ try {
     $after = Get-RawUserPath
     Check ($after.Value -ceq $startValue) "and keeps the user's other entries as they were ($sentinel unexpanded)"
     Check ("$($after.Kind)" -eq "$startKind") "and the Path value's kind ($startKind)"
-    Check (Test-Path -LiteralPath (Join-Path $dataDir 'driftwire.json')) 'and leaves the data folder'
+    Check (Test-Path -LiteralPath $dataMarker) 'and leaves the data folder'
     Check (Test-NotOursKept) 'and the folders beside it that it did not make'
     foreach ($name in $notOurs) { Remove-Item -LiteralPath (Join-Path $programs $name) -Recurse -Force }
     $run = Invoke-Installer "& ([scriptblock]::Create((irm $url/install.ps1))) -Uninstall"
@@ -305,6 +309,7 @@ try {
     }
     Set-RawUserPath $originalPath
     if ($madeData) { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
+    else { Remove-Item -LiteralPath $dataMarker -Force -ErrorAction SilentlyContinue }
     foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Phone access → Set up the service… → This computer
+// Settings → Add-ons → Phone access → Set up the service… → This computer
 // (docs/plans/self-hosted.md §8, slice 6): this computer as the phones'
 // server, set up from the card with no terminal. The app does not host
 // anything itself and does not reimplement the host: it runs the installed

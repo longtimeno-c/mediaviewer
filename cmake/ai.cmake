@@ -28,7 +28,7 @@
 # Expects, already defined by the includer:
 #   mv_project_options, MV_SQLITE_TARGET, mv_addon (cmake/import.cmake)
 
-# mv_download: every includer needs it, not only the Windows root.
+# mv_download, from here: cmake/portable includes this file without the root.
 include("${CMAKE_CURRENT_LIST_DIR}/download.cmake")
 
 set(MV_AI_VERSION "1.0.0" CACHE STRING "AI pack version (its manifest's)")
