@@ -167,6 +167,50 @@ struct publisher {
   }
 };
 
+// The service's side of each connection, counting what it sends: how far a read's window lets it
+// run ahead of the phone.
+class counting_link final : public dw::link {
+ public:
+  counting_link(std::unique_ptr<dw::link> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
+      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  mv::expected write_all(std::span<const std::uint8_t> bytes) override {
+    *sent_ += bytes.size();
+    return inner_->write_all(bytes);
+  }
+  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  dw::transport via() const noexcept override { return inner_->via(); }
+
+ private:
+  std::unique_ptr<dw::link> inner_;
+  std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+};
+
+class counting_listener final : public dw::net::listener {
+ public:
+  counting_listener(std::unique_ptr<dw::net::listener> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
+      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  std::uint16_t port() const noexcept override { return inner_->port(); }
+  mv::result<std::unique_ptr<dw::link>> accept(int timeout_ms) override { return wrap(inner_->accept(timeout_ms)); }
+  mv::result<std::unique_ptr<dw::link>> accept_from(int timeout_ms, dw::net::address& from) override {
+    return wrap(inner_->accept_from(timeout_ms, from));
+  }
+  mv::result<std::unique_ptr<dw::link>> accept_endpoint(int timeout_ms, dw::net::address& from, std::uint16_t& peer_port) override {
+    return wrap(inner_->accept_endpoint(timeout_ms, from, peer_port));
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+
+ private:
+  mv::result<std::unique_ptr<dw::link>> wrap(mv::result<std::unique_ptr<dw::link>> l) {
+    if (!l) return l;
+    return std::unique_ptr<dw::link>(std::make_unique<counting_link>(std::move(*l), sent_));
+  }
+  std::unique_ptr<dw::net::listener> inner_;
+  std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+};
+
 struct rig {
   scratch dir;
   fs::path data = dir.root / "data", photos = dir.root / "photos", catalogue_home = dir.root / "nas";
@@ -177,6 +221,7 @@ struct rig {
   std::uint16_t port = 0;
   std::string payload;
   std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
+  std::shared_ptr<std::atomic<std::uint64_t>> served = std::make_shared<std::atomic<std::uint64_t>>(0);  // bytes the service sent
 
   std::string photos_label = "Photos";
   std::string relay_address;  // the person's own relay, for start(): the service waits there
@@ -216,7 +261,11 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.cfg.relay = relay_address;
-    o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.make_listener = [sent = served]() -> std::unique_ptr<dw::net::listener> {
+      auto l = dw::net::listen_internet(0, true, 32);
+      REQUIRE(l);
+      return std::make_unique<counting_listener>(std::move(*l), sent);
+    };
     o.now_unix = [this] {
       const auto t = fake_now.load();
       return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
@@ -468,7 +517,7 @@ TEST_CASE("link race: a dead local address loses to the named public route", "[m
 }
 
 TEST_CASE("sync: copy, hash check, install, resume, signatures and generations", "[mobile-link]") {
-  rig r(6 * 1024 * 1024);  // bigger than the stream window, so a drop can land mid-file
+  rig r(16 * 1024 * 1024);  // bigger than a whole-file pull's 8 MB window, so a drop can land mid-file
   r.pair_now();
   mob::link_session s(r.config());
   mob::route_report rep;
@@ -719,6 +768,29 @@ TEST_CASE("link: a live link is kept on connect, and a reconnect lets reads fini
     CHECK(done);
     CHECK(got.load() == expected_size);
   }
+}
+
+TEST_CASE("link: a whole-file pull lets the service run further ahead than a viewer's read", "[mobile-link]") {
+  // A download's speed is its window over the round trip: with 1 MB, Wi-Fi's 20 ms caps it near
+  // 30 MB/s. Held on its first chunk, a bulk read must let the service send well past 1 MB.
+  rig r(24 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  const std::uint64_t before = r.served->load();
+  std::uint64_t ahead = 0;
+  auto done = s.read_range("c2c2c2c2c2c2c2c2", "gen/000001/extra.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+    // No credit goes back while this chunk is held: what arrives is what the opening window allowed.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (r.served->load() - before < 4u * 1024 * 1024 && std::chrono::steady_clock::now() < until) {
+      std::this_thread::yield();
+    }
+    ahead = r.served->load() - before;
+    return false;
+  }, nullptr, true);
+  CHECK_FALSE(done);  // stopped by the sink
+  CHECK(ahead >= 4u * 1024 * 1024);
 }
 
 TEST_CASE("link: readers after a drop share one new connection", "[mobile-link]") {

@@ -9,6 +9,8 @@
 #include <sodium.h>
 
 #include <mutex>
+#include <condition_variable>
+#include <deque>
 
 #include "driftwire_fixture.h"
 
@@ -1634,4 +1636,93 @@ TEST_CASE("serve: the devices with a session up now (the tray names them)", "[dr
     const auto after = s.srv->usage();
     return after.size() == 1 && after[0].read == 50000 && !after[0].connected;
   }));
+}
+
+namespace {
+
+// Bench only: the client's writes (its credit, its requests) reach the service
+// `rtt_ms` late, so a stream's window has a round trip to cover, as on Wi-Fi.
+class late_link final : public sp::link {
+ public:
+  late_link(std::shared_ptr<sp::link> inner, int rtt_ms) : inner_(std::move(inner)), rtt_(rtt_ms) {
+    thread_ = std::thread([this] { run(); });
+  }
+  ~late_link() override {
+    {
+      std::lock_guard l(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+  }
+  mv::expected write_all(std::span<const std::uint8_t> bytes) override {
+    std::lock_guard l(m_);
+    q_.push_back({std::chrono::steady_clock::now() + std::chrono::milliseconds(rtt_), {bytes.begin(), bytes.end()}});
+    cv_.notify_all();
+    return {};
+  }
+  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  sp::transport via() const noexcept override { return inner_->via(); }
+
+ private:
+  struct item {
+    std::chrono::steady_clock::time_point due;
+    std::vector<std::uint8_t> bytes;
+  };
+  void run() {
+    std::unique_lock l(m_);
+    for (;;) {
+      cv_.wait(l, [&] { return stop_ || !q_.empty(); });
+      if (stop_) return;
+      const auto due = q_.front().due;
+      if (cv_.wait_until(l, due, [&] { return stop_; })) return;
+      item it = std::move(q_.front());
+      q_.pop_front();
+      l.unlock();
+      (void)inner_->write_all(it.bytes);
+      l.lock();
+    }
+  }
+  std::shared_ptr<sp::link> inner_;
+  int rtt_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  std::deque<item> q_;
+  bool stop_ = false;
+  std::thread thread_;
+};
+
+}  // namespace
+
+TEST_CASE("serve bench: a whole-file read's speed by window and round trip", "[.serve-bench]") {
+  service_fixture s;
+  const std::uint64_t size = 256ull << 20;
+  {
+    std::ofstream f(s.library / "clip.mov", std::ios::binary);
+    std::vector<char> block(1 << 20, 7);
+    for (std::uint64_t i = 0; i < size; i += block.size()) f.write(block.data(), static_cast<std::streamsize>(block.size()));
+  }
+  for (const int rtt : {0, 5, 20, 50}) {
+    for (const std::uint32_t window : {serve::kMaxStreamCredit / 8, serve::kMaxStreamCredit}) {
+      auto c = serve::client::open(std::make_shared<late_link>(s.connect(), rtt), s.client_options());
+      REQUIRE(c);
+      const auto t0 = std::chrono::steady_clock::now();
+      auto r = (*c)->read_range(kRootA, "clip.mov", 0, UINT64_MAX, window, true);
+      REQUIRE(r);
+      std::uint64_t got = 0;
+      for (;;) {
+        auto n = (*r)->next(10000);
+        REQUIRE(n);
+        if (!*n) break;
+        got += (*n)->bytes.size();
+      }
+      const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      CHECK(got == size);
+      std::printf("rtt %3d ms  window %5u KB  %7.1f MB/s\n", rtt, window / 1024, size / 1e6 / sec);
+      (*c)->close();
+    }
+  }
 }
