@@ -423,6 +423,12 @@ void end_row(writer& w) {
   end(w);  // row
 }
 
+// A folder path the server takes (wire/serve.cpp add_root): /… on a NAS or a
+// Mac, X:\… or X:/… on a Windows server.
+bool server_path(std::string_view p) {
+  return !p.empty() && (p.front() == '/' || (p.size() > 2 && p[1] == ':' && (p[2] == '\\' || p[2] == '/')));
+}
+
 // A row's id from what it stands for, not its place: a click on a tree drawn
 // before the list changed still reaches that phone or folder (or none).
 std::string row_hash(const char* prefix, const std::string& of) {
@@ -728,7 +734,7 @@ std::string screen::share_label(std::string_view path) {
   std::vector<std::string> parts;
   std::string cur;
   for (char c : path) {
-    if (c == '/') {
+    if (c == '/' || c == '\\') {  // a Windows server's path too: G:\FamilyNas\Backup
       if (!cur.empty()) parts.push_back(cur);
       cur.clear();
     } else {
@@ -837,6 +843,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   phone_keys_.clear();
   phone_ends_.clear();
+  server_here_ = s.host && s.host->set_up;
+  if (!(server_here_ && s.claimed)) duck_change_ = false;
   phone_limited_.clear();
   phone_backup_.clear();
   for (const phone_row& p : s.phones) {
@@ -933,6 +941,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "grant") busy_text = "Changing the phone's access";
   else if (s.busy == "host_start") busy_text = "Starting the server";
   else if (s.busy == "host_convert") busy_text = "Changing the server's setting";
+  else if (s.busy == "host_stop") busy_text = "Stopping the server";
+  else if (s.busy == "host_name") busy_text = "Naming it on DuckDNS";
   else if (s.busy == "user_set" || s.busy == "user_remove" || s.busy == "users_apply")
     busy_text = s.host_step == "users" ? "Waiting for " + me + "'s administrator" : std::string("Changing the users");
   else if (s.busy == "host_drives") busy_text = "Reading the drives";
@@ -948,7 +958,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   if (!busy_text.empty()) progress(w, "busy", busy_text, -1);
 
-  // This computer is the server: its state, and Start when it isn't running.
+  // This computer is the server: its state, and Start or Stop.
   if (s.host && s.host->set_up) {
     const host_row& h = *s.host;
     std::string line;
@@ -970,6 +980,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     row(w, "host", h.name.empty() ? Me + " is your server" : Me + " is your server \xC2\xB7 " + h.name, line);
     if (!h.running) button(w, "host_start", "Start", busy, "plain", "Start the server on " + me);
+    else button(w, "host_stop", "Stop", busy, "plain", "Stop the server on " + me + " and don't start it at login");
     end_row(w);
     // Clips the phone can't play, converted on this computer's graphics hardware as it plays them.
     {
@@ -990,6 +1001,25 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       row(w, "host_convert_row", "Clips your phone can't play", detail);
       toggle(w, "host_convert", "Convert them for your phone", h.convert_on, busy);
       end_row(w);
+    }
+    // Its DuckDNS name, changed after setup (setup's form is gone once it is claimed).
+    if (s.claimed) {
+      row(w, "duck_now", "DuckDNS name",
+          h.duckdns.empty() ? "None: phones reach " + me + " at home only. Free at duckdns.org."
+                            : h.duckdns + ".duckdns.org: how your phone finds " + me + " away from home.");
+      if (!duck_change_) button(w, "duck_change", h.duckdns.empty() ? "Add\xE2\x80\xA6" : "Change\xE2\x80\xA6", busy, "plain",
+                                "Set the DuckDNS name of " + me);
+      end_row(w);
+      if (duck_change_) {
+        field(w, "duck_name", "DuckDNS name", duck_name_, "home.duckdns.org", busy);
+        text(w, "duck_token_note", "DuckDNS token: from your duckdns.org page. Kept by the server on " + me + ", never shown again.",
+             "secondary");
+        secure(w, sid("duck_token"), "DuckDNS token");
+        stack(w, "duck_buttons", 8, "horizontal");
+        button(w, "duck_save", "Save", busy, "primary", "Save the DuckDNS name");
+        button(w, "duck_cancel", "Cancel", false, "plain", "Don't change the DuckDNS name");
+        end(w);
+      }
     }
     drives_rows(w, s, drives_, busy, me);
     // Users of this computer's LAN share (self-host-users-smb.md §8): once it is claimed.
@@ -1239,8 +1269,13 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     text(w, "new_title", "Share another folder", "body");
     field(w, "new_label", "Name of the new shared folder", new_label_,
           new_path_.empty() ? "Label" : share_label(new_path_));
-    field(w, "new_path", "Path of the new shared folder on the server", new_path_,
-          "Folder on the server, like /volume1/Video or /Volumes/Drive/Video");
+    if (server_here_) {
+      // The server is this computer: its folders are chosen, not typed.
+      pick_folder(w, "new_path", "Folder on " + me + " to share", new_path_, "Choose a folder or drive\xE2\x80\xA6", busy);
+    } else {
+      field(w, "new_path", "Path of the new shared folder on the server", new_path_,
+            "Folder on the server, like /volume1/Video or /Volumes/Drive/Video");
+    }
     toggle(w, "new_backup", "Phones back up to this folder", new_backup_, !s.has("backup"));
     if (new_backup_) {
       stack(w, "new_sizes", 8, "horizontal");
@@ -1415,6 +1450,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_name") e = s.host_said.empty() ? "DuckDNS didn't take the name." : "DuckDNS: " + s.host_said;
   else if (r == "host_start") e = s.host_said.empty() ? "The server didn't start." : "The server didn't start: " + s.host_said;
   else if (r == "host_convert") e = s.host_said.empty() ? "The server's setting wasn't changed." : "The server's setting wasn't changed: " + s.host_said;
+  else if (r == "host_stop") e = s.host_said.empty() ? "The server didn't stop." : "The server didn't stop: " + s.host_said;
   else if (r == "host_not_listening") e = "The server started but isn't answering yet. Another program may be using its port.";
   else if (r == "host_no_network") e = "Claimed, but " + me + " isn't on a network, so a phone can't reach it yet.";
   else if (r == "host_failed") e = "The driftwire program couldn't be run.";
@@ -1673,6 +1709,26 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     out.push_back(req("host_status").done());
   } else if (node == "host_start") {
     out.push_back(req("host_start").done());
+  } else if (node == "host_stop") {
+    out.push_back(req("host_stop").done());
+  } else if (node == "duck_change") {
+    duck_change_ = true;
+    duck_name_.clear();
+    duck_token_.clear();
+  } else if (node == "duck_cancel") {
+    duck_change_ = false;
+    duck_token_.clear();
+  } else if (node == "duck_save") {
+    const std::string name = trim(duck_name_);
+    if (name.empty()) {
+      note_ = "Type the DuckDNS name you chose at duckdns.org, like home.";
+    } else if (duck_token_.empty()) {
+      note_ = "Paste the DuckDNS token too.";
+    } else {
+      out.push_back(req("host_name").s("duckdns", name).s("duckdns_token", duck_token_).done());
+      duck_token_.clear();  // handed on; the server keeps it, this computer doesn't
+      duck_change_ = false;
+    }
   } else if (node == "host_setup") {
     const bool any_library = std::any_of(host_folders_.begin(), host_folders_.end(),
                                          [](const host_folder& f) { return !f.backup; });
@@ -1773,8 +1829,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     const std::string path = trim(new_path_);
     const std::string label = new_label_.empty() ? share_label(path) : new_label_;
     const std::int64_t limit = bytes(new_limit_), reserve = bytes(new_reserve_);
-    if (path.empty() || path[0] != '/' || share_label(path).empty()) {
-      note_ = "Type the folder's path on the server, starting with /.";
+    if (!server_path(path) || share_label(path).empty()) {
+      note_ = server_here_ ? "Choose the folder to share." : "Type the folder's path on the server, starting with /.";
     } else if (new_backup_ && (limit <= 0 || reserve < 0)) {
       note_ = "Type the backup folder's limit and the space to keep free, in GB.";
     } else {

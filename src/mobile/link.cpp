@@ -32,6 +32,11 @@ constexpr int kConvertStallMs = 60000;  // a converted segment's first bytes: be
 // The relay starts this long after the direct routes (Driftwire's own race
 // delay), so a working direct path always wins and costs the relay nothing.
 constexpr int kRelayDelayMs = 1500;
+// A read's window: what the service may send before the phone's credit comes back. A viewer or a
+// seek keeps it small, so a seek's bytes are never far behind; a whole-file pull takes the most
+// the service allows, since a window covers at most one round trip (1 MB is ~30 MB/s at 20 ms).
+constexpr std::uint32_t kReadWindow = serve::kMaxStreamCredit / 8;
+constexpr std::uint32_t kBulkReadWindow = serve::kMaxStreamCredit;
 
 serve::client::options options_for(const service_config& c) {
   serve::client::options o;
@@ -726,7 +731,7 @@ expected link_session::read_range(const std::string& root, const std::string& re
   auto c = client(cancel);
   if (!c) return err(c.error());
   if (cancel && cancel->stopped()) return err(status::cancelled);
-  auto stream = (*c)->read_range(root, rel, at, length, serve::kMaxStreamCredit / 8, bulk);
+  auto stream = (*c)->read_range(root, rel, at, length, bulk ? kBulkReadWindow : kReadWindow, bulk);
   if (!stream) {
     dropped(*c);
     return err(stream.error());
@@ -878,7 +883,7 @@ expected link_session::read_meta(const std::string& root, const std::string& rel
   if (!slot.held()) return err(status::cancelled);
   auto c = client(cancel);
   if (!c) return err(c.error());
-  auto stream = (*c)->read_range(root, rel, 0, UINT64_MAX, serve::kMaxStreamCredit / 8, true, true);
+  auto stream = (*c)->read_range(root, rel, 0, UINT64_MAX, kBulkReadWindow, true, true);
   if (!stream) {
     dropped(*c);
     return err(stream.error());

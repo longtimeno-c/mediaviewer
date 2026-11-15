@@ -1129,6 +1129,47 @@ void link::run(const std::string& request) {
     if (!started) v_.error = "host_start";
     return;
   }
+  if (what == "host_stop") {
+    const auto w = host_where();
+    if (w.program.empty()) {
+      read_host();
+      return fail("no_driftwire_program");
+    }
+    {
+      std::lock_guard lock(m_);
+      v_.host_said.clear();
+    }
+    const expected stopped = stop_host_now(w);
+    read_host();
+    std::lock_guard lock(m_);
+    if (!stopped) v_.error = "host_stop";
+    return;
+  }
+  if (what == "host_name") {
+    // This computer's DuckDNS name after setup: checked as setup checks it, kept
+    // as setup keeps it (the token in the host's own store, the running host takes
+    // the name from host.json), then the address phones dial from outside follows.
+    const auto sub = self_host::parse_subdomain(text("duckdns"));
+    if (!sub) return fail("host_bad_name");
+    if (!self_host::parse_token(text("duckdns_token"))) return fail("host_bad_token");
+    const auto w = host_where();
+    if (w.program.empty()) {
+      read_host();
+      return fail("no_driftwire_program");
+    }
+    if (!self_host::set_duckdns(w, *sub, text("duckdns_token"))) return fail("host_name");
+    const auto st = self_host::read_status(w);
+    read_host();
+    std::lock_guard lock(m_);
+    if (v_.claimed) {
+      const std::uint16_t outside = st.outside_port != 0 ? st.outside_port : st.service_port;
+      json::writer a;
+      a.begin_object().key("do").string("set_addresses").key("local").string("");
+      a.key("public").string(self_host::public_route(*sub, outside)).end_object();
+      requests_.push_back(a.take());
+    }
+    return;
+  }
   if (what == "publish") {
     if (destination.empty()) return fail("no_folder");
     expected started = err(status::not_found);
@@ -1491,6 +1532,26 @@ expected link::start_host_now(const self_host::where& w) {
   std::lock_guard lock(m_);
   v_.host_said = r ? first_line(r->output) : std::string();
   return err(r ? status::io : r.error());
+}
+
+expected link::stop_host_now(const self_host::where& w) {
+  const auto said = [this](const result<self_host::ran>& r) -> expected {
+    std::lock_guard lock(m_);
+    v_.host_said = r ? first_line(r->output) : std::string();
+    return err(r ? status::io : r.error());
+  };
+  // The login entry first: a host that ends would otherwise be started again
+  // (Windows tries every 5 minutes, launchd keeps it alive). On Windows and
+  // Linux that ends the running host too; `host quit` covers the Mac and waits
+  // up to 10 s for it (nothing to do when it has gone).
+  if (o_.login_off) {
+    if (expected off = o_.login_off(w); !off) return off;
+  } else if (auto off = self_host::run_host(w, {"start-at-login", "off"}, {}, 150000); !off || off->code != 0) {
+    return said(off);
+  }
+  auto quit = self_host::run_host(w, {"quit"}, {}, 30000);
+  if (!quit || quit->code != 0) return said(quit);
+  return {};
 }
 
 void link::host_drives(const std::string& what, const std::string& request) {

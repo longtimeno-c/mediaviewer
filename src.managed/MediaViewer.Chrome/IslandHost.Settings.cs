@@ -165,9 +165,6 @@ public static partial class IslandHost
         AddTelemetrySettingsRow(view);
         // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
         AddStorageSettings(view);
-        // docs/plans/phone-access-addon.md: Phone access, an add-on: its screen, or
-        // its offer (IslandHost.PhoneAccess.cs).
-        AddPhoneAccessSettings(view);
         // #510: Add-ons is a list of rows; each add-on's install, update,
         // remove and settings are on its own page (IslandHost.AddonList.cs).
         // The pages are built here, with the rest, and refreshed in place.
@@ -603,7 +600,7 @@ public static partial class IslandHost
             RefreshFirstPartyPages();
             // #612: sizes measured again, on a worker.
             RefreshStorage();
-            OfferPhoneAccessIfWanted();  // its screen opens with Settings (SyncAddonSettingsScreen)
+            ProbePhoneAccess();  // its page's offer, asked as Settings shows
             _settingsHost.Visibility = Visibility.Visible;
             _chromeRoot.UpdateLayout();
             FocusSettings();

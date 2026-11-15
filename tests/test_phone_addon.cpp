@@ -221,6 +221,100 @@ TEST_CASE("phone access: the card's words", "[phone-addon]") {
   CHECK(screen::relative(kNow + 300, kNow) == "in 5 minutes");
 }
 
+TEST_CASE("phone access: this computer's server has Stop while it runs and Start once it has stopped", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  std::string tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"id\":\"host_stop\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"host_start\"") == std::string::npos);
+  auto r = c.on_event("host_stop", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_stop"})");
+
+  tree = c.build(R"({"busy":"host_stop","host":{"installed":true,"set_up":true,"running":true}})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("Stopping the server") != std::string::npos);
+
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":false}})", kNow);
+  CHECK(tree.find("\"id\":\"host_stop\"") == std::string::npos);
+  CHECK(tree.find("\"id\":\"host_start\"") != std::string::npos);
+  CHECK(tree.find("not set to start at login") != std::string::npos);
+
+  tree = c.build(R"({"error":"host_stop","host_said":"schtasks failed","host":{"installed":true,"set_up":true,"running":true}})",
+                 kNow);
+  CHECK(tree.find("The server didn't stop: schtasks failed") != std::string::npos);
+}
+
+TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  const char* claimed = R"({"folder":"G:\\FamilyNas","claimed":true,
+    "host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})";
+  std::string tree = c.build(claimed, kNow);
+  require_valid(tree);
+  CHECK(tree.find("None: phones reach this PC at home only") != std::string::npos);
+  CHECK(tree.find("\"id\":\"duck_change\",\"label\":\"Add\xE2\x80\xA6\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"duck_name\"") == std::string::npos);
+
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  tree = c.build(claimed, kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"id\":\"duck_name\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"duck_save\"") != std::string::npos);
+  // Both are needed.
+  (void)c.on_event("duck_name", kChange, quoted("home"), kNow);
+  CHECK(c.on_event("duck_save", kClick, "", kNow).empty());
+  CHECK(c.build(claimed, kNow).find("Paste the DuckDNS token too.") != std::string::npos);
+  const std::string token = "1a2b3c4d-0000-0000-0000-000000000000";
+  (void)c.on_event("duck_token", kChange, quoted(token), kNow);
+  CHECK(c.build(claimed, kNow).find(token) == std::string::npos);
+  auto r = c.on_event("duck_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_name","duckdns":"home","duckdns_token":"1a2b3c4d-0000-0000-0000-000000000000"})");
+  // Sent once: the fields close and a second Save has nothing to send.
+  tree = c.build(claimed, kNow);
+  CHECK(tree.find("\"id\":\"duck_name\"") == std::string::npos);
+
+  // Named: Change…, and the name.
+  tree = c.build(R"({"folder":"G:\\FamilyNas","claimed":true,
+    "host":{"installed":true,"set_up":true,"running":true,"duckdns":"home"}})", kNow);
+  CHECK(tree.find("home.duckdns.org: how your phone finds this PC away from home.") != std::string::npos);
+  CHECK(tree.find("\"id\":\"duck_change\",\"label\":\"Change\xE2\x80\xA6\"") != std::string::npos);
+  // Not this computer's server: no DuckDNS row.
+  CHECK(c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow).find("duck_change") == std::string::npos);
+}
+
+TEST_CASE("phone access: a folder is shared after setup on a Windows server, picked when it is this computer", "[phone-addon]") {
+  CHECK(screen::share_label("G:\\FamilyNas\\Backup") == "Backup");
+  CHECK(screen::share_label("D:/Video") == "Video");
+
+  screen c(mv::phone::card::computer::pc);
+  const char* here = R"({"folder":"G:\\FamilyNas","claimed":true,"nas_features":["backup"],
+    "host":{"installed":true,"set_up":true,"running":true}})";
+  std::string tree = c.build(here, kNow);
+  require_valid(tree);
+  // The folder is chosen with the OS's picker on this computer.
+  CHECK(tree.find("\"id\":\"new_path\",\"label\":\"Folder on this PC to share\"") != std::string::npos);
+  CHECK(tree.find("\"pick\":\"folder\"") != std::string::npos);
+  (void)c.on_event("new_path", kChange, quoted("G:\\FamilyNas\\Backup"), kNow);
+  (void)c.on_event("new_backup", kChange, "true", kNow);
+  (void)c.on_event("new_limit", kChange, quoted("500"), kNow);
+  (void)c.on_event("new_reserve", kChange, quoted("50"), kNow);
+  auto r = c.on_event("new_add", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"add_folder","label":"Backup","path":"G:\\FamilyNas\\Backup","backup":"1",)"
+                R"("limit":"500000000000","reserve":"50000000000"})");
+
+  // A NAS's folder is still typed, and a path the server would refuse is not sent.
+  (void)c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow);
+  (void)c.on_event("new_path", kChange, quoted("photos"), kNow);
+  CHECK(c.on_event("new_add", kClick, "", kNow).empty());
+  CHECK(c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow).find("starting with /") != std::string::npos);
+  (void)c.on_event("new_path", kChange, quoted("/volume1/Video"), kNow);
+  r = c.on_event("new_add", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"add_folder","label":"Video","path":"/volume1/Video"})");
+}
+
 TEST_CASE("phone access: Local search's catalogue through the host, and none without it", "[phone-addon]") {
   mv::addon::catalogue::set_provider({});
   CHECK(mv::addon::catalogue::publish("/x").error() == mv::status::not_found);

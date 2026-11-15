@@ -120,9 +120,9 @@ public final class MVChromeHost: NSObject {
   }
 
   /// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
-  /// row. The host has opened Settings; this brings Phone access into view.
+  /// row. The host has opened Settings; this opens Phone access's add-on page.
   @MainActor @objc public static func revealPhoneSettings() {
-    PhoneReveal.shared.reveal()
+    AddonNav.shared.show(PhoneAccessStore.addonID)
   }
 
   /// The host's MV_SCRIPT_SELFTEST rig (main_mac.mm, docs/design/25 PR 57): Settings

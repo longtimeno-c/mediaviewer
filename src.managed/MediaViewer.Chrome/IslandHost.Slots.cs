@@ -993,6 +993,7 @@ public static partial class IslandHost
         if (row.Id == PlacesChannel.Id) return PlacesChannel;
         if (row.Id == DriftwireId) return DriftwireSlot;
         if (row.Id == EnhanceId) return EnhanceSlot;
+        if (row.Id == PhoneAccessId) return PhoneAccessSlot;
         if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
         {
             slot = new AddonSlot(row.Id, row.Name, null, null);
@@ -1069,6 +1070,13 @@ public static partial class IslandHost
                 _slotSettingsPanel.Children.Add(card);
             }
         }
+        // Phone access, offered on its page while it is not installed (probed as Settings shows).
+        if (!PhoneAccessInstalled && only == PhoneAccessId)
+        {
+            (Border card, StackPanel body) = AddonCard("Phone access");
+            BuildPhoneAccessOffer(body);
+            _slotSettingsPanel.Children.Add(card);
+        }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
             if (row.Id == PlacesChannel.Id) continue;
@@ -1079,8 +1087,6 @@ public static partial class IslandHost
             }
             (Border card, StackPanel body) = AddonCard(row.Name);
             if (row.Description.Length > 0) body.Children.Add(Note(row.Description));
-            // Its page is Settings → Phone access: one view per screen.
-            if (row.Id == PhoneAccessId) body.Children.Add(Note("Its settings are in Settings \u2192 Phone access."));
             bool loaded = SlotAddonsLoaded.Contains(row.Id);
             body.Children.Add(Note(SlotStateText(row, loaded)));
             AddonSlot channel = SlotChannelFor(row);

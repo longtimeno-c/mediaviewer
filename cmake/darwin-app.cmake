@@ -15,6 +15,8 @@
 # the update archive are `macpack.py release` (README "Ship a Mac build").
 # docs/design/13 "macOS first install", docs/design/15 PR 20.
 
+include("${CMAKE_CURRENT_LIST_DIR}/download.cmake")  # mv_download, whoever includes this file
+
 set(MV_MAC_BUNDLE_ID "io.github.longtimeno-c.mediaviewer" CACHE STRING
   "CFBundleIdentifier of MediaViewer.app; the Quick Look extension appends .thumbnails")
 set(MV_MAC_BUILD_NUMBER "${PROJECT_VERSION}" CACHE STRING

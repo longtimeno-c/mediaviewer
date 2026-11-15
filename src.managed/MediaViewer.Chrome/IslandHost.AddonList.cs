@@ -14,7 +14,7 @@ namespace MediaViewer.Chrome;
 /// Update available · 1.3.0, Restart to finish updating, Not installed), and
 /// each row opens that add-on's own page: its line, Install / Update / Open /
 /// Remove, its progress and messages, and its settings. The order is Import,
-/// Local search, Places, Driftwire, Enhance, any other installed add-on of
+/// Local search, Places, Driftwire, Enhance, Phone access, any other installed add-on of
 /// MediaViewer's, then From other makers. The Mac's twin is AddonListView.swift;
 /// the words are Shared/AddonListWords.cs.
 /// </summary>
@@ -148,8 +148,10 @@ public static partial class IslandHost
         list.Add(new(DriftwireId, "Driftwire", Slot(driftwire, DriftwireSlot, "Driftwire")));
         SlotAddonRow? enhance = SlotAddonRows.FirstOrDefault(r => r.Id == EnhanceId);
         list.Add(new(EnhanceId, "Enhance", Slot(enhance, EnhanceSlot, "Enhance")));
+        SlotAddonRow? phone = SlotAddonRows.FirstOrDefault(r => r.Id == PhoneAccessId);
+        list.Add(new(PhoneAccessId, "Phone access", Slot(phone, PhoneAccessSlot, "Phone access")));
         foreach (SlotAddonRow row in SlotAddonRows.Where(r => r.Id != PlacesChannel.Id && r.Id != DriftwireId &&
-                                                              r.Id != EnhanceId)
+                                                              r.Id != EnhanceId && r.Id != PhoneAccessId)
                                                   .OrderBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             list.Add(new(row.Id, row.Name, Slot(row, SlotChannelFor(row), row.Name)));

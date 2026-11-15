@@ -103,6 +103,7 @@ set_target_properties(mv_io PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---- the add-on host and the Import add-on --------------------------------------
 set(MV_SOURCE_ROOT "${MV_ROOT}")
+include("${MV_ROOT}/cmake/download.cmake")  # mv_download, for ai.cmake's ONNX Runtime
 include("${MV_ROOT}/cmake/import.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
