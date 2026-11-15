@@ -60,7 +60,7 @@ function(mv_fetch_ort name ext sha out_dir)
       set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${name}.${ext}")  # offline / CI cache
     else()
       message(STATUS "Fetching ${name}.${ext} (ONNX Runtime, MIT)")
-      file(DOWNLOAD "${_ort_base}/${name}.${ext}" "${_dl}" EXPECTED_HASH SHA256=${sha} TLS_VERIFY ON)
+      mv_download("${_ort_base}/${name}.${ext}" "${_dl}" "${sha}")
     endif()
     file(SHA256 "${_dl}" _got)
     if(NOT _got STREQUAL sha)
@@ -90,8 +90,7 @@ if(IOS)
       set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")  # offline / CI cache
     else()
       message(STATUS "Fetching ${_ort_name}.zip (ONNX Runtime, MIT)")
-      file(DOWNLOAD "https://download.onnxruntime.ai/${_ort_name}.zip" "${_dl}"
-           EXPECTED_HASH SHA256=${_ort_sha} TLS_VERIFY ON)
+      mv_download("https://download.onnxruntime.ai/${_ort_name}.zip" "${_dl}" "${_ort_sha}")
     endif()
     file(SHA256 "${_dl}" _got)
     if(NOT _got STREQUAL _ort_sha)
@@ -139,9 +138,9 @@ if(NOT IOS AND NOT EXISTS "${MV_PDFIUM_DIR}/include/fpdf_text.h")  # iOS: pdf_no
     set(_pdfium_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")  # offline / CI cache
   else()
     message(STATUS "Fetching ${_pdfium_name}.tgz chromium/${MV_PDFIUM_RELEASE} (PDFium, BSD-3-Clause / Apache-2.0)")
-    file(DOWNLOAD
+    mv_download(
       "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${MV_PDFIUM_RELEASE}/${_pdfium_name}.tgz"
-      "${_pdfium_dl}" EXPECTED_HASH SHA256=${_pdfium_sha} TLS_VERIFY ON)
+      "${_pdfium_dl}" "${_pdfium_sha}")
   endif()
   file(SHA256 "${_pdfium_dl}" _got)
   if(NOT _got STREQUAL _pdfium_sha)

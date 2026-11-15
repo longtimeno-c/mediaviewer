@@ -41,12 +41,9 @@ if(MV_SPARKLE_PUBLIC_ED_KEY)
   set(MV_SPARKLE_DIR "${CMAKE_BINARY_DIR}/_deps/sparkle-${MV_SPARKLE_VERSION}")
   set(MV_SPARKLE_ARCHIVE "${CMAKE_BINARY_DIR}/_deps/Sparkle-${MV_SPARKLE_VERSION}.tar.xz")
   if(NOT EXISTS "${MV_SPARKLE_DIR}/Sparkle.framework")
-    file(DOWNLOAD
+    mv_download(
       "https://github.com/sparkle-project/Sparkle/releases/download/${MV_SPARKLE_VERSION}/Sparkle-${MV_SPARKLE_VERSION}.tar.xz"
-      "${MV_SPARKLE_ARCHIVE}"
-      EXPECTED_HASH SHA256=${MV_SPARKLE_SHA256}
-      TLS_VERIFY ON
-      SHOW_PROGRESS)
+      "${MV_SPARKLE_ARCHIVE}" "${MV_SPARKLE_SHA256}")
     file(ARCHIVE_EXTRACT INPUT "${MV_SPARKLE_ARCHIVE}" DESTINATION "${MV_SPARKLE_DIR}")
   endif()
   # Info.plist keys, spliced into packaging/macos/Info.plist.in. docs/design/13:

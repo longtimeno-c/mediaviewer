@@ -1,0 +1,35 @@
+# mv_download(<url> <dest> <sha256>): fetch a pinned, hash-checked file at
+# configure time. A failed transfer (a CI runner's DNS blip, a reset
+# connection) is retried with backoff; a wrong hash fails at once.
+# MV_DOWNLOAD_BACKOFF lists the seconds to wait before each retry.
+include_guard(GLOBAL)
+
+if(NOT DEFINED MV_DOWNLOAD_BACKOFF)
+  set(MV_DOWNLOAD_BACKOFF 5 15 30)
+endif()
+
+function(mv_download url dest sha256)
+  set(_tries 0)
+  foreach(_wait IN ITEMS 0 ${MV_DOWNLOAD_BACKOFF})
+    if(_wait GREATER 0)
+      message(STATUS "Download failed (${_why}); retrying in ${_wait} s: ${url}")
+      execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep "${_wait}")
+    endif()
+    math(EXPR _tries "${_tries} + 1")
+    file(DOWNLOAD "${url}" "${dest}" STATUS _st TLS_VERIFY ON)
+    list(GET _st 0 _code)
+    list(GET _st 1 _why)
+    if(_code EQUAL 0)
+      break()
+    endif()
+    file(REMOVE "${dest}")
+  endforeach()
+  if(NOT _code EQUAL 0)
+    message(FATAL_ERROR "Download failed after ${_tries} tries: ${url}\n  ${_why}")
+  endif()
+  file(SHA256 "${dest}" _got)
+  if(NOT _got STREQUAL sha256)
+    file(REMOVE "${dest}")
+    message(FATAL_ERROR "${url}: SHA-256 ${_got}, expected ${sha256}")
+  endif()
+endfunction()
