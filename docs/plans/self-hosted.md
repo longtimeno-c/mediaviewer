@@ -547,6 +547,12 @@ Ask: the VPN that slice 7 built for the command line (`host vpn on|off`), availa
 - **Measured**: `"[.phone-host-bench]"`, below in DEVELOPMENT.md; numbers in the PR.
 - **Not done**: the card driven on screen on either host (the tree is tested, the chromes draw its node
   types already); the web-site look's port from the card (`--tls-port`: the terminal only; the card shows it).
+- **Then (owner, 2026-11-15: "do it in desktop app first so my macbook can connect to a vpn host on windows /
+  synology")**: the card's line became a code (`mediaviewer://relay#…`), the MacBook's Driftwire add-on
+  gained **Connect to a VPN host…**, and a Synology became a VPN host too (`set_vpn`, the relay inside
+  `driftwire serve`, the SPK's port section), all in the same PR at the owner's choice
+  ([28](../design/28-driftwire.md) "The NAS as a VPN host", "Connect to a VPN host"). The phone's own VPN
+  stays [phone-vpn.md](phone-vpn.md)'s, after this.
 
 ## Tray: the server menu while hosting (issue #686 §4, owner 2026-11-14)
 

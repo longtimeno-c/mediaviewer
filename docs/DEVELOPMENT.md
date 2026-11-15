@@ -595,6 +595,14 @@ MV_HOST_BENCH_MB=256 MV_HOST_BENCH_ROUNDS=4 build/bin/mv_import_tests "[.phone-h
 It reads a 256 MB file whole (8 MB window bulk, and 1 MB) and 200 ranges of 256 KB at random offsets,
 from a session opened after each switch, and prints ms to the first byte, MB/s and p50/p95.
 
+**VPN host bench** (a host's relay with the VPN on and the shipped forwarding, a laptop's Tunnel proxy with
+its line, curl to a public URL through it and directly, alternated; this one reaches the internet):
+
+```sh
+MV_VPN_BENCH_ROUNDS=5 build/bin/mv_import_tests "[.vpn-host-bench]"     # MV_VPN_BENCH_URL to fetch another
+build/bin/mv_import_tests "[nas-vpn]"                                     # the NAS as a VPN host, the code, Connect
+```
+
 While a host runs, MediaViewer shows its own server menu-bar item / notification-area icon
 (plan "Tray"); the app must be running (the host's start at login also turns on the app's own
 login item, hidden). A soak or harness run of the Mac app never starts the watcher.

@@ -6,6 +6,8 @@
 #include <sodium.h>
 
 #include "driftwire_fixture.h"
+#include "tunnel_fixture.h"
+#include "addons/driftwire/tunnel.h"
 
 #include <algorithm>
 #include <random>
@@ -89,7 +91,12 @@ struct nas {
   // `real_network`: the service decides what its own network is, as it does
   // on a NAS or a PC (loopback is the same machine), instead of the test's switch.
   bool real_network = false;
-  explicit nas(bool real = false) : real_network(real) {
+  // The NAS as a VPN host (`driftwire serve`'s options::vpn): its relay may
+  // forward to this loopback site, as the shipped one never would.
+  std::uint16_t vpn_site = 0;
+  bool vpn = false;
+  explicit nas(bool real = false, bool with_vpn = false, std::uint16_t site = 0)
+      : real_network(real), vpn_site(site), vpn(with_vpn) {
     fs::create_directories(share);
     bool made = false;
     REQUIRE(serve::set_up(*store, identity, access, made));
@@ -104,6 +111,13 @@ struct nas {
     o.loopback_only = true;
     o.per_minute = 100000;
     o.claimable = true;
+    o.vpn = vpn;
+    if (vpn_site != 0) {
+      o.vpn_tweak = [site = vpn_site](mv::driftwire::relay::server::options& ro) {
+        ro.forward_ports = {site};
+        ro.forward_private = true;
+      };
+    }
     if (!real_network) o.own_network = [this](const sp::net::address&) { return own.load(); };
     o.now_unix = [this] {
       const auto t = fake_now.load();
@@ -2048,6 +2062,95 @@ TEST_CASE("phone pairing: the person's own relay is set from the desktop and car
   v = app.ask(R"({"do":"set_relay","address":"","key":""})");
   CHECK(*v.str("relay") == "");
   CHECK_FALSE(n.store->exists(serve::kRelayKeyName));
+}
+
+TEST_CASE("phone pairing: the NAS as a VPN host: Use as VPN, its code, and a laptop's Tunnel through it", "[phone-pairing][nas-vpn]") {
+  echo_server site;  // the laptop's "site", on loopback (the test lets the NAS's relay reach it)
+  nas n(false, true, site.port());
+  desktop mac;
+  app_link app(mac);
+  mv::json::writer f;
+  f.begin_object().key("do").string("folder").key("path").string(utf8(n.share)).end_object();
+  (void)app.ask(f.str());
+  mv::json::writer c;
+  c.begin_object().key("do").string("claim").key("local").string(n.local()).key("public").string("").end_object();
+  auto v = app.ask(c.str());
+  REQUIRE(v.boolean("claimed") == true);
+  // Offered by this service, off until the owner turns it on.
+  bool offered = false;
+  for (const auto& e : v.find("nas_features")->a) offered = offered || e.s == serve::kFeatureVpn;
+  CHECK(offered);
+  CHECK(v.integer("nas_vpn_port") == 0);
+  CHECK_FALSE(v.str("relay_code"));
+
+  v = app.ask(R"({"do":"nas_vpn","on":true})");
+  INFO(*v.str("error"));
+  REQUIRE(*v.str("error") == "");
+  CHECK(v.integer("nas_vpn_port") == mv::driftwire::relay::kDefaultPort);  // asked for; loopback listens where the OS says
+  CHECK(v.boolean("nas_vpn_running") == true);
+  REQUIRE(v.str("relay_code"));
+  const std::string code = *v.str("relay_code");
+  CHECK(code.rfind("mediaviewer://relay#[::1]:", 0) == 0);  // the NAS's own address, as the card has it
+  // The key: in the NAS's store and the code, nowhere in serve.json.
+  const auto kept = n.store->get(serve::kVpnKeyName);
+  REQUIRE(kept);
+  const std::string key(kept->begin(), kept->end());
+  CHECK(code.ends_with("#" + key));
+  {
+    std::lock_guard g(n.saved_m);
+    REQUIRE_FALSE(n.saved.empty());
+    CHECK(n.saved.back().vpn_port == mv::driftwire::relay::kDefaultPort);
+    CHECK(serve::config_json(n.saved.back()).find(key) == std::string::npos);
+  }
+
+  // The laptop: the code pasted (Connect to a VPN host), its Tunnel proxy, a site through the NAS.
+  const auto line = serve::parse_relay_connect_code(code);
+  REQUIRE(line);
+  mv::driftwire::tunnel::proxy::options po;
+  // The test's relay listens on IPv4 loopback alone (net::listen(true)); a NAS's on both.
+  po.relay = "127.0.0.1" + line->substr(line->find("]:") + 1);
+  auto proxy = mv::driftwire::tunnel::proxy::start(po);
+  REQUIRE(proxy);
+  bool echoed = false;
+  CHECK(connect_through((*proxy)->port(), "127.0.0.1:" + std::to_string(site.port()), &echoed) ==
+        "HTTP/1.1 200 Connection established");
+  CHECK(echoed);
+  (*proxy).reset();
+
+  // Hidden, then asked again: the same key, the same code.
+  v = app.ask(R"({"do":"host_vpn_hide"})");
+  CHECK_FALSE(v.str("relay_code"));
+  v = app.ask(R"({"do":"nas_vpn","on":true})");
+  REQUIRE(v.str("relay_code"));
+  CHECK(*v.str("relay_code") == code);
+
+  // Off: the relay is gone, so the same line reaches nothing.
+  v = app.ask(R"({"do":"nas_vpn","on":false})");
+  CHECK(*v.str("error") == "");
+  CHECK(v.integer("nas_vpn_port") == 0);
+  CHECK(v.boolean("nas_vpn_running") == false);
+  CHECK_FALSE(v.str("relay_code"));
+  auto proxy2 = mv::driftwire::tunnel::proxy::start(po);
+  REQUIRE(proxy2);
+  CHECK(connect_through((*proxy2)->port(), "127.0.0.1:" + std::to_string(site.port())).rfind("HTTP/1.1 200", 0) != 0);
+}
+
+TEST_CASE("phone pairing: a service that doesn't offer the VPN refuses it", "[phone-pairing][nas-vpn]") {
+  nas n;  // options::vpn off: as the service inside `driftwire host`, which runs its own relay
+  desktop mac;
+  app_link app(mac);
+  mv::json::writer f;
+  f.begin_object().key("do").string("folder").key("path").string(utf8(n.share)).end_object();
+  (void)app.ask(f.str());
+  mv::json::writer c;
+  c.begin_object().key("do").string("claim").key("local").string(n.local()).key("public").string("").end_object();
+  auto v = app.ask(c.str());
+  REQUIRE(v.boolean("claimed") == true);
+  for (const auto& e : v.find("nas_features")->a) CHECK(e.s != serve::kFeatureVpn);
+  v = app.ask(R"({"do":"nas_vpn","on":true})");
+  CHECK(*v.str("error") != "");
+  CHECK_FALSE(v.str("relay_code"));
+  CHECK_FALSE(n.store->exists(serve::kVpnKeyName));
 }
 
 // ---- phone backup as a phone's grant (docs/plans/mobile.md §10b.1, B2) ------------------------

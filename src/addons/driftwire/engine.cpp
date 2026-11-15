@@ -16,6 +16,7 @@
 #include "addons/driftwire/meet.h"
 #include "addons/driftwire/race.h"
 #include "core/json.h"
+#include "wire/serve_wire.h"
 #include "io/file_port.h"
 #include "addons/driftwire/presence_keys.h"
 
@@ -2137,6 +2138,64 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     proxy_retry_.store(true);
     request_reconcile();
     request_save();
+    post();
+    return;
+  }
+  // Connect to a VPN host: the code from the server's Phone access, in one step.
+  if (node == "connect_open" && kind == kClick) {
+    {
+      std::lock_guard lock(m_);
+      v_.connect_open = true;
+      v_.connect_note.clear();
+    }
+    post();
+    return;
+  }
+  if (node == "connect_cancel" && kind == kClick) {
+    {
+      std::lock_guard lock(m_);
+      v_.connect_open = false;
+      sodium_memzero(connect_typed_.data(), connect_typed_.size());
+      connect_typed_.clear();
+    }
+    post();
+    return;
+  }
+  if (node == "connect_code" && kind == kChange && text) {
+    std::lock_guard lock(m_);
+    sodium_memzero(connect_typed_.data(), connect_typed_.size());
+    connect_typed_ = *text;
+    return;
+  }
+  if ((node == "connect_go" && kind == kClick) || (node == "connect_code" && kind == kSubmit)) {
+    std::shared_ptr<internet_receiver> in;
+    std::optional<std::string> line;
+    {
+      std::lock_guard lock(m_);
+      if (node == "connect_code" && text) connect_typed_ = *text;
+      line = mv::driftwire::serve::parse_relay_connect_code(connect_typed_);
+      sodium_memzero(connect_typed_.data(), connect_typed_.size());
+      connect_typed_.clear();
+      if (!line) {
+        v_.connect_note = "That isn't a VPN code. Copy it again from Phone access on your server (VPN code\xE2\x80\xA6).";
+      } else {
+        // As the Relay (your own server) field would take it, and the Tunnel on.
+        v_.relay_server = *line;
+        v_.tunnel_relay = tunnel::relay_shown(*line);
+        v_.tunnel = true;
+        v_.connect_open = false;
+        v_.connect_note = "Connected to " + v_.tunnel_relay +
+                          ". The Tunnel is on; turn on All traffic (VPN) for every app.";
+        in = internet_;
+      }
+    }
+    if (line) {
+      if (in) in->set_relay(*line);
+      sodium_memzero(line->data(), line->size());
+      proxy_retry_.store(true);
+      request_save();
+      request_reconcile();
+    }
     post();
     return;
   }

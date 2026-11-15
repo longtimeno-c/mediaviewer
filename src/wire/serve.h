@@ -43,6 +43,7 @@
 #include "wire/net.h"
 #include "wire/secrets.h"
 #include "wire/serve_wire.h"
+#include "wire/splice.h"
 #include "core/result.h"
 
 namespace mv::driftwire::serve {
@@ -77,6 +78,11 @@ inline constexpr const char* kFeatureBackup = "backup";
 inline constexpr const char* kFeatureUsers = "users";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
+// The VPN (docs/design/28 "The NAS as a VPN host"): offered by `driftwire serve`
+// (options::vpn), the key its own relay runs on, kept apart from the person's
+// other relay's.
+inline constexpr const char* kFeatureVpn = "vpn";
+inline constexpr const char* kVpnKeyName = "vpn_relay_key";
 // Waiters at the relay, one per paired device: the relay's own per-source cap.
 inline constexpr int kMaxRelayWaiters = 4;
 
@@ -159,6 +165,12 @@ class server {
     // or none), sent to every session in serve_caps "storage" so a phone can say
     // "Your server's mirror lost a drive". Any thread; never blocks.
     std::function<std::string()> storage;
+    // The NAS as a VPN host (docs/design/28): the owner may turn on a relay of
+    // this service's own that forwards (the Tunnel/VPN exit, as `driftwire host
+    // vpn on` does). Only `driftwire serve` offers it; a host runs its own relay.
+    bool vpn = false;
+    // The tests: that relay's options before it starts (loopback, a private site).
+    std::function<void(relay::server::options&)> vpn_tweak;
   };
 
   // Listens and returns. status::not_found when the store has no usable

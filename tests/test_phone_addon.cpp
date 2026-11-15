@@ -274,16 +274,19 @@ TEST_CASE("phone access: this computer's VPN switch, its status and the relay li
   CHECK(tree.find("home network only") == std::string::npos);
   CHECK(tree.find(R"("id":"vpn_on","label":"Use as VPN","value":true)") != std::string::npos);
   CHECK(tree.find("\"id\":\"vpn_line\"") != std::string::npos);
+  CHECK(tree.find("VPN code") != std::string::npos);
   r = c.on_event("vpn_line", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"host_vpn_line"})");
 
   // The line, copyable, with what to do with it; Hide asks the link to drop it.
-  tree = c.build(R"({"relay_line":"[::1]:47614#k3y","host":{"installed":true,"set_up":true,"running":true,"vpn":true,
-    "vpn_on":true,"relay_port":47614}})",
+  tree = c.build(R"({"relay_line":"[::1]:47614#k3y","relay_code":"mediaviewer://relay#[::1]:47614#k3y","host":{"installed":true,
+    "set_up":true,"running":true,"vpn":true,"vpn_on":true,"relay_port":47614}})",
                  kNow);
   require_valid(tree);
-  CHECK(tree.find(R"("id":"vpn_line_text","text":"[::1]:47614#k3y","style":"mono","copyable":true)") != std::string::npos);
+  CHECK(tree.find(R"("id":"vpn_line_text","text":"mediaviewer://relay#[::1]:47614#k3y","style":"mono","copyable":true)") !=
+        std::string::npos);
+  CHECK(tree.find("Connect to a VPN host") != std::string::npos);  // where the laptop takes it
   CHECK(tree.find("Without a DuckDNS name it works on your home network only.") != std::string::npos);
   CHECK(tree.find("\"id\":\"vpn_line\"") == std::string::npos);
   r = c.on_event("vpn_line_hide", kClick, "", kNow);
@@ -299,6 +302,38 @@ TEST_CASE("phone access: this computer's VPN switch, its status and the relay li
   // Not this computer's server: no VPN row.
   tree = c.build(R"({"claimed":true,"folder":"/volume1/photo"})", kNow);
   CHECK(tree.find("VPN through") == std::string::npos);
+}
+
+TEST_CASE("phone access: the NAS's VPN switch, when its service offers it", "[phone-addon][nas-vpn]") {
+  screen c(mv::phone::card::computer::mac);
+  // A NAS from before (no "vpn" feature): no row.
+  std::string tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["passphrase","relay"]})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("VPN through your server") == std::string::npos);
+  const char* off = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["relay","vpn"],"nas_vpn_port":0})";
+  tree = c.build(off, kNow);
+  require_valid(tree);
+  CHECK(tree.find("VPN through your server") != std::string::npos);
+  CHECK(tree.find(R"("id":"nas_vpn_on","label":"Use as VPN","value":false)") != std::string::npos);
+  auto r = c.on_event("nas_vpn_on", kChange, "true", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"nas_vpn","on":true})");
+  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":false})", kNow);
+  CHECK(tree.find("couldn't listen on port 47614") != std::string::npos);
+  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":true})", kNow);
+  CHECK(tree.find("On \xC2\xB7 port 47614. Forward it on your router") != std::string::npos);
+  CHECK(tree.find(R"("id":"nas_vpn_on","label":"Use as VPN","value":true)") != std::string::npos);
+  r = c.on_event("nas_vpn_line", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"nas_vpn","on":true})");
+  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":true,
+    "relay_code":"mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y"})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y") != std::string::npos);
+  CHECK(tree.find("\"id\":\"nas_vpn_line\"") == std::string::npos);
+  r = c.on_event("nas_vpn_on", kChange, "false", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"nas_vpn","on":false})");
 }
 
 TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup", "[phone-addon]") {

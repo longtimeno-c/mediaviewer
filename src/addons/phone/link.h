@@ -192,6 +192,9 @@ class link {
     std::string nas_passphrase;
     std::vector<std::string> nas_features;
     std::string relay;  // the person's own relay the service waits at ("" for none)
+    // The NAS as a VPN host (owner_status): the port asked for (0: off), and whether it listens.
+    std::int64_t nas_vpn_port = 0;
+    bool nas_vpn_running = false;
     std::int64_t unlocked_s = 0, locked_until = 0;
     // When the unlock read as unlocked_s runs out: the card's countdown is the
     // time left from now, not the snapshot (state_json).

@@ -275,6 +275,7 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   o.store = &store;
   o.loopback_only = test_hooks && a.test_loopback;
   o.claimable = true;
+  o.vpn = true;  // the NAS as a VPN host, when its owner turns it on (a host runs its own relay)
   o.devices_lock = data + "/serve-devices.lock";
   o.save_config = [path = data + "/" + kConfigFile](const serve::config& c) { return write_config(path, c); };
   auto srv = serve::server::start(o);

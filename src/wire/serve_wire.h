@@ -317,6 +317,10 @@ struct config {
   // waits there for its paired phones (docs/plans/nas-relay.md). Its key is in
   // the secret store (kRelayKeyName), never here.
   std::string relay;
+  // The VPN (docs/design/28 "The NAS as a VPN host"): the port this service's
+  // own relay listens on to forward its owner's laptop traffic out (0: off).
+  // Its key is in the secret store (kVpnKeyName), never here.
+  std::uint16_t vpn_port = 0;
 };
 
 // What a paired device's waiter at the relay is called: BLAKE2b-128 keyed by
@@ -327,6 +331,17 @@ struct config {
 // The relay's "host:port" (a name, an IPv4 address or "[IPv6]:port"), split;
 // false for anything else (no port, port 0, spaces or control characters).
 [[nodiscard]] bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port);
+
+// Connecting a computer to a VPN host in one step (docs/design/28 "Connect to
+// a VPN host"): the host's relay line "host:port#KEY" (what `driftwire host vpn
+// on` prints, and the NAS's VPN answers) as a code to copy,
+// "mediaviewer://relay#host:port#KEY". It holds the relay's key.
+inline constexpr std::string_view kRelayCodePrefix = "mediaviewer://relay#";
+[[nodiscard]] std::string relay_connect_code(std::string_view relay_line);
+// The relay line in a pasted code, or in a bare line ("host:port#KEY"), spaces
+// and a trailing newline around it allowed; nullopt for anything else (no port,
+// a key shorter than the relay takes, a second '#', spaces inside).
+[[nodiscard]] std::optional<std::string> parse_relay_connect_code(std::string_view text);
 // {"port":N,"name":"...","roots":[{"id","label","path"}],"relay":"host:port"?}. `any_port`: port 0
 // is accepted (the OS picks; the test build only): a service needs a fixed one. `no_roots`: a
 // config with no folders yet is accepted (`driftwire host`, which serves nothing until one is
