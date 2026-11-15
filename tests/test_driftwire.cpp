@@ -1163,7 +1163,7 @@ TEST_CASE("driftwire: a new set to send never waits for the one still being read
   CHECK(ann.host.pair_calls.load() == 2);  // the replaced middle set was never read
 }
 
-TEST_CASE("driftwire: a set of one folder is sent whole, as Choose… sends it", "[driftwire]") {
+TEST_CASE("driftwire: a set of one folder is sent whole, as Choose... sends it", "[driftwire]") {
   // The host's Share on a gallery folder tile hands over the folder's path
   // (docs/design/16 "Share"); it is walked, housekeeping left out, never
   // dropped as "not a file".

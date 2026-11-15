@@ -141,6 +141,13 @@ bool console::is_terminal() noexcept {
          ::GetConsoleMode(::GetStdHandle(STD_OUTPUT_HANDLE), &mode) != 0;
 }
 
+bool console::redraws_in_place() noexcept {
+  HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
+  DWORD mode = 0;
+  return out != INVALID_HANDLE_VALUE && ::GetConsoleMode(out, &mode) &&
+         ::SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+}
+
 bool console::utf8() noexcept { return ::GetConsoleOutputCP() == CP_UTF8; }
 
 console::console() : console(options{}) {}

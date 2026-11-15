@@ -83,6 +83,9 @@ class console final : public terminal {
   // The terminal takes UTF-8: the locale's character set (POSIX); the
   // console's output code page, which enter_raw() sets to 65001 (Windows).
   [[nodiscard]] static bool utf8() noexcept;
+  // Standard output is a terminal that takes escapes, so a view can be redrawn
+  // in place (`host status --watch`); on Windows it turns them on (10 and later).
+  [[nodiscard]] static bool redraws_in_place() noexcept;
 
   console();
   explicit console(options o);

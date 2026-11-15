@@ -62,12 +62,14 @@ if(IOS)
 endif()
 
 if(WIN32)
-  set(_phone_io ${MV_SOURCE_ROOT}/src/io/file_port_win.cpp ${MV_SOURCE_ROOT}/src/io/child_process_win.cpp)
+  set(_phone_io ${MV_SOURCE_ROOT}/src/io/file_port_win.cpp ${MV_SOURCE_ROOT}/src/io/child_process_win.cpp
+                ${_P}/module_self_win.cpp)
 else()
-  set(_phone_io ${MV_SOURCE_ROOT}/src/io/file_port_mac.cpp ${MV_SOURCE_ROOT}/src/io/child_process_posix.cpp)
+  set(_phone_io ${MV_SOURCE_ROOT}/src/io/file_port_mac.cpp ${MV_SOURCE_ROOT}/src/io/child_process_posix.cpp
+                ${_P}/module_self_posix.cpp)
 endif()
 add_library(mv_phone_access MODULE
-  ${_P}/addon_entry.cpp
+  ${_P}/addon_entry.cpp ${_P}/module_self.h
   # The file port (the nearby copy's server reads through it) and running the
   # driftwire program, compiled in: the add-on links nothing of the core.
   ${MV_SOURCE_ROOT}/src/io/file_port.cpp

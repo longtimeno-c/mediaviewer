@@ -32,6 +32,7 @@
 #include "addons/driftwire/cli/host_users.h"
 #include "addons/driftwire/cli/nas_update.h"
 #include "addons/driftwire/cli/serve_tty.h"
+#include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/update.h"
 #include "addons/driftwire/power.h"
 #include "core/json.h"
@@ -43,13 +44,6 @@
 #include "wire/splice.h"
 
 #if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
 #include <io.h>
 #include <process.h>
 #else
@@ -1249,18 +1243,8 @@ int run_status(const host_layout& l, bool test_hooks) {
 int run_status_watch(const host_layout& l, bool test_hooks) {
   (void)std::signal(SIGINT, on_host_signal);
   (void)std::signal(SIGTERM, on_host_signal);
-#if defined(_WIN32)
-  // Redrawn in place only where the console takes the escapes (Windows 10+); else printed again.
-  bool tty = ::_isatty(1) != 0;
-  if (tty) {
-    HANDLE out = ::GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD mode = 0;
-    tty = out != INVALID_HANDLE_VALUE && ::GetConsoleMode(out, &mode) &&
-          ::SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-  }
-#else
-  const bool tty = ::isatty(1) != 0;
-#endif
+  // Redrawn in place only where the terminal takes the escapes; else printed again.
+  const bool tty = console::redraws_in_place();
   std::string shown;
   while (!g_stop.load()) {
     const std::string now = status_text(l, test_hooks);

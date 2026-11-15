@@ -13,6 +13,7 @@
 #include "catch_compat.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <chrono>
 #include <map>
@@ -893,7 +894,11 @@ TEST_CASE("host drives: PowerShell parses every script", "[host-drives]") {
     int code = 0;
     const std::string cmd = "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('" + utf8(f) +
                             "', [ref]$null, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }";
-    const auto out = drives::run_tool("powershell.exe", std::vector<std::string>{"-NoProfile", "-NonInteractive", "-Command", cmd}, code);
+    // The full path: the process runner starts a program by its path, it does not search PATH.
+    const char* root = std::getenv("SystemRoot");
+    const std::string ps = std::string(root && root[0] ? root : "C:\\Windows") +
+                           "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    const auto out = drives::run_tool(ps, std::vector<std::string>{"-NoProfile", "-NonInteractive", "-Command", cmd}, code);
     REQUIRE(out);
     INFO(*out);
     CHECK(code == 0);

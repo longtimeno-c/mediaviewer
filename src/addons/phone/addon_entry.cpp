@@ -29,19 +29,8 @@
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
 #include "addons/phone/bundled.h"
+#include "addons/phone/module_self.h"
 #include "addons/phone/qr.h"
 #include "addons/phone/screens.h"
 #include "addons/phone/self_host.h"
@@ -74,66 +63,14 @@ mv_status guard(Fn&& fn) noexcept {
 #define MV_PA_HAS(h, field) \
   ((h)->struct_size >= offsetof(mv_host_api, field) + sizeof((h)->field) && (h)->field != nullptr)
 
-// The link's thread is detached at stop (it never waits on the NAS), so this
-// library must never be unmapped under it: it holds a reference to itself
-// that is never let go. A remove takes effect at the next launch.
-void pin_self() noexcept {
-#if defined(_WIN32)
-  HMODULE self = nullptr;
-  (void)::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                             reinterpret_cast<LPCWSTR>(&pin_self), &self);
-#else
-  Dl_info info{};
-  if (::dladdr(reinterpret_cast<const void*>(&pin_self), &info) != 0 && info.dli_fname) {
-    (void)::dlopen(info.dli_fname, RTLD_NOW | RTLD_NODELETE);
-  }
-#endif
-}
-
-// The folder this library was loaded from (the add-on's verified version folder).
-std::string module_dir() {
-#if defined(_WIN32)
-  HMODULE self = nullptr;
-  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&module_dir), &self)) {
-    return {};
-  }
-  std::wstring buf(32768, L'\0');
-  const DWORD n = ::GetModuleFileNameW(self, buf.data(), static_cast<DWORD>(buf.size()));
-  if (n == 0 || n >= buf.size()) return {};
-  buf.resize(n);
-  const auto slash = buf.find_last_of(L"\\/");
-  if (slash == std::wstring::npos) return {};
-  buf.resize(slash);
-  const int len = ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), nullptr, 0, nullptr, nullptr);
-  std::string out(static_cast<std::size_t>(len > 0 ? len : 0), '\0');
-  if (len > 0) (void)::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), out.data(), len, nullptr, nullptr);
-  return out;
-#else
-  Dl_info info{};
-  if (::dladdr(reinterpret_cast<const void*>(&module_dir), &info) == 0 || !info.dli_fname) return {};
-  std::string path = info.dli_fname;
-  const auto slash = path.find_last_of('/');
-  return slash == std::string::npos ? std::string() : path.substr(0, slash);
-#endif
-}
-
-std::string join_native(const std::string& dir, const char* name) {
-#if defined(_WIN32)
-  return dir + "\\" + name;
-#else
-  return dir + "/" + name;
-#endif
-}
-
 // The add-on's own driftwire (docs/plans/phone-access-addon.md §8), installed
 // into the feature's bin folder, which survives add-on updates and is where the
 // login entry points. Copied only when this version is not there yet; a
 // running host restarts on its own (it ends 75 when its program changes).
 void install_bundled(const std::string& feature) {
-  const std::string mine = module_dir();
+  const std::string mine = mv::phone::module_self::dir();
   if (mine.empty()) return;
-  const std::string source = join_native(mine, "host");  // the program and what it loads
+  const std::string source = mv::phone::module_self::join(mine, "host");  // the program and what it loads
   auto got = mv::phone::bundled::install(source, mv::phone::bundled::bin_dir(feature), MV_PHONE_ACCESS_VERSION,
                                          mv::phone::bundled::rename_aside_here());
   if (got) mv::phone::self_host::set_bundled(got->program);
@@ -146,18 +83,6 @@ mv::phone::card::computer this_computer() {
     case mv::phone::self_host::os::windows: return mv::phone::card::computer::pc;
     default: return mv::phone::card::computer::other;
   }
-}
-
-// A UTF-8 path as the OS's (wide on Windows).
-std::filesystem::path fs_path(const std::string& utf8) {
-#if defined(_WIN32)
-  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-  std::wstring w(static_cast<std::size_t>(n > 0 ? n : 0), L'\0');
-  if (n > 0) (void)::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), w.data(), n);
-  return std::filesystem::path(w);
-#else
-  return std::filesystem::path(utf8);
-#endif
 }
 
 std::int64_t now_s() { return static_cast<std::int64_t>(std::time(nullptr)); }
@@ -235,9 +160,9 @@ struct addon_state {
   // While the screen shows: twice a second (a code showing counts down by the
   // second); the state is read from memory, nothing here waits on the network.
   void tick_loop() {
-    std::unique_lock lock(m);
+    std::unique_lock held(m);
     while (!ticker_stop) {
-      cv.wait_for(lock, std::chrono::milliseconds(500), [this] { return ticker_stop; });
+      cv.wait_for(held, std::chrono::milliseconds(500), [this] { return ticker_stop; });
       if (ticker_stop) break;
       post_locked();
     }
@@ -245,7 +170,7 @@ struct addon_state {
 
   void opened(std::uint64_t g) {
     {
-      std::lock_guard lock(m);
+      std::lock_guard held(m);
       generation = g;
       open = true;
       last_tree.clear();
@@ -261,7 +186,7 @@ struct addon_state {
   void closed() {
     std::thread t;
     {
-      std::lock_guard lock(m);
+      std::lock_guard held(m);
       open = false;
       card.forget_secrets();  // typed and never sent: gone when Settings closes
       ticker_stop = true;
@@ -337,14 +262,14 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
       return MV_ERR_UNSUPPORTED_FORMAT;
     }
     if (g) return MV_ERR_INVALID_ARG;  // one instance per process
-    pin_self();
+    mv::phone::module_self::pin();
     auto state = std::make_unique<addon_state>();
     state->host = host;
     // The feature's folder, where the app kept it before the add-on (a library
     // set up then keeps its id); the first window's process to load runs it.
     if (auto dir = mv::phone::feature_dir()) {
       std::error_code ec;
-      std::filesystem::create_directories(fs_path(*dir), ec);
+      std::filesystem::create_directories(mv::phone::module_self::fs_path(*dir), ec);
       mv::phone::set_app_dir(*dir);
 #if defined(_WIN32)
       state->lock = mv::driftwire::net::try_lock_instance(*dir + "\\" + kLockName);
