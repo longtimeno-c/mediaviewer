@@ -115,5 +115,5 @@ on|off` sets it in `host.json`; the running host writes what it found to `state.
 In the app's existing clip helper (`MediaViewerClipJob`, `src/edit`), which already carries FFmpeg,
 the hardware encoder port and the AAC encoder, and is the process that is allowed to crash in a GPU
 driver. The host is given its path by the card (`host convert on --helper PATH`). Carrying a second
-FFmpeg in the Phone access add-on would double ~40 MB for the same code; this is an exception to
-"add-ons carry their own code" for the owner to confirm.
+FFmpeg in the Phone access add-on would double ~40 MB for the same code. The owner kept it there
+(2026-11-15), an exception to "add-ons carry their own code" (decision log).
