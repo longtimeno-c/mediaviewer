@@ -3501,6 +3501,20 @@ a photo's run has no sheet since one-click, and the working glow over the photo 
 Renumbered after main's: ABI 0.36 (S5's docked screens) became 0.38, `chrome_cmd_faces` 1100 became
 1109.
 
+**The Mac keychain group is also claimed as `keychain-access-groups` (2026-11-15).** Reverses half
+of #501's "a team-prefixed app group, no profile": the data protection keychain does not take an
+app group as an access group. A copy of v0.1.43, signed with its own entitlements and profile,
+got -34018 (`errSecMissingEntitlement`) from `SecItemAdd` in `<team>.<bundle id>.driftwire`, and
+the same with the profile removed and only the app group claimed; adding the group as
+`keychain-access-groups` made it 0. So no Mac release has kept anything in that store: Driftwire's
+identity and remembered devices were this run's only, and a desktop that paired with a NAS (#686)
+was listed there but could not keep the keys, and said "Can't reach". The group's name is
+unchanged, so nothing moves. `keychain-access-groups` is restricted, so `macpack.py` claims it
+only when the app's Developer ID profile is embedded (every release with the VPN extension since
+2026-11-14; Apple's profiles grant `<team>.*`, and `check_profiles` stops a release whose profile
+does not). A release without a profile still has no working store. A refused write now says so
+(`pair_problem_words`, `status::internal`) instead of "Can't reach".
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

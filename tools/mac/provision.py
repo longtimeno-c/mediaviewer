@@ -274,8 +274,11 @@ def run(args: argparse.Namespace, api: Api, say: Callable[[str], None] = print,
         path = out / file
         path.write_bytes(content)
         profile = read_profile(path)
-        problem = macpack.profile_problem(profile, team or (profile.get("TeamIdentifier") or ["?"])[0],
-                                          ident, needs, now.replace(tzinfo=None))
+        profile_team = team or (profile.get("TeamIdentifier") or ["?"])[0]
+        problem = macpack.profile_problem(profile, profile_team, ident, needs, now.replace(tzinfo=None))
+        if not problem and bundle is app:
+            # The app also claims Driftwire's keychain group (check_profiles does the same).
+            problem = macpack.keychain_group_problem(profile, macpack.driftwire_group(profile_team, ident))
         if problem:
             raise SystemExit(f"provision: Apple's profile for {ident} fails the release's check: {problem}")
         say(f"Profile for {ident}: saved to {path}, checked")
