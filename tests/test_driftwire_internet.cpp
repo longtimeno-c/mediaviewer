@@ -12,6 +12,7 @@
 #include "addons/driftwire/mapping.h"
 
 #include <deque>
+#include <initializer_list>
 
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host_cmd.h"
@@ -969,7 +970,7 @@ TEST_CASE("host ports: the service and relay ports are mapped, renewed, and remo
 
 TEST_CASE("host ports: SMB, NetBIOS and RDP are never forwarded, and no router is asked for them",
           "[driftwire][host-ports][host-users]") {
-  for (std::uint16_t p : {137, 138, 139, 445, 3389}) {
+  for (const std::uint16_t p : std::initializer_list<std::uint16_t>{137, 138, 139, 445, 3389}) {
     INFO(p);
     CHECK_FALSE(hp::forwardable(p));
   }
