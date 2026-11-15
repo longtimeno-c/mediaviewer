@@ -203,6 +203,9 @@ class link {
     self_host::host_status host;
     bool host_read = false;
     std::string host_step, host_said;
+    // The relay line `host vpn on` printed (it holds the relay's key), shown
+    // until the card hides it, the VPN goes off or Settings closes. Screen only.
+    std::string relay_line;
     // The host's users (names and roles only) and its LAN share's addresses.
     struct user_row {
       std::string name, role;

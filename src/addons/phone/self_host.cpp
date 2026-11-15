@@ -316,6 +316,7 @@ std::optional<running_state> parse_state(std::string_view text) {
   }
   s.paused = doc->boolean("paused").value_or(false);
   s.tls_failed = doc->boolean("tls_failed").value_or(false);
+  s.relay_outside_port = port("relay_outside_port");
   const auto count = [](const json::value& v, const char* k) {
     const auto n = v.integer(k).value_or(0);
     return n > 0 ? static_cast<std::uint64_t>(n) : std::uint64_t{0};
@@ -407,6 +408,39 @@ std::string parse_duckdns(std::string_view text) {
   return sub ? *sub : std::string();
 }
 
+vpn_wanted parse_vpn(std::string_view text) {
+  vpn_wanted v;
+  const auto doc = json::parse(text, 4);
+  if (!doc || doc->k != json::kind::object) return v;
+  v.on = doc->boolean("vpn").value_or(false);
+  const auto p = doc->integer("tls_port").value_or(0);
+  if (v.on && p > 0 && p <= 65535) v.tls_port = static_cast<std::uint16_t>(p);
+  return v;
+}
+
+std::string relay_line_in(std::string_view output) {
+  while (!output.empty()) {
+    const std::size_t end = output.find('\n');
+    std::string_view line = output.substr(0, end);
+    output = end == std::string_view::npos ? std::string_view() : output.substr(end + 1);
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\r' || line.back() == '\t')) line.remove_suffix(1);
+    // "where:PORT#KEY": one word, an address before the '#', a key after it.
+    const std::size_t hash = line.find('#');
+    if (hash == std::string_view::npos || hash == 0 || hash + 1 >= line.size()) continue;
+    if (line.find(' ') != std::string_view::npos || line.find('#', hash + 1) != std::string_view::npos) continue;
+    const std::string_view where = line.substr(0, hash);
+    const std::size_t colon = where.rfind(':');
+    if (colon == std::string_view::npos || colon + 1 >= where.size()) continue;
+    if (!std::all_of(where.begin() + static_cast<std::ptrdiff_t>(colon + 1), where.end(),
+                     [](char c) { return c >= '0' && c <= '9'; })) {
+      continue;
+    }
+    return std::string(line);
+  }
+  return {};
+}
+
 host_status read_status(const where& w) {
   host_status s;
   s.installed = !w.program.empty();
@@ -420,7 +454,12 @@ host_status read_status(const where& w) {
       s.name = c->name;
     }
   }
-  if (const auto text = read_small(host + "/host.json")) s.duckdns = parse_duckdns(*text);
+  if (const auto text = read_small(host + "/host.json")) {
+    s.duckdns = parse_duckdns(*text);
+    const vpn_wanted v = parse_vpn(*text);
+    s.vpn = v.on;
+    s.tls_port = v.tls_port;
+  }
   s.at_login = is_file(w.login_entry);
   std::error_code ec;
   if (!fs::is_directory(fs_path(host), ec)) return s;
@@ -438,6 +477,9 @@ host_status read_status(const where& w) {
       s.keepers = st->keepers;
       s.paused = st->paused;
       s.stats = host_tray::usage_lines(*st);
+      s.vpn_on = st->vpn && st->relay_port != 0;
+      s.tls_failed = st->tls_failed;
+      s.relay_outside_port = st->relay_outside_port;
     }
   }
   return s;

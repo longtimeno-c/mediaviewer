@@ -45,6 +45,12 @@ std::string last_part(std::string path) {
   return at == std::string::npos ? path : path.substr(at + 1);
 }
 
+// A secret's text zeroed before it is let go (the relay line holds a key).
+void wipe_string(std::string& s) {
+  std::fill(s.begin(), s.end(), '\0');
+  s.clear();
+}
+
 // The program's first line, as it said it (the card shows why a step failed).
 std::string first_line(const std::string& out) {
   std::string l = out.substr(0, out.find('\n'));
@@ -1128,6 +1134,60 @@ void link::run(const std::string& request) {
     if (!stopped) v_.error = "host_stop";
     return;
   }
+  if (what == "host_vpn" || what == "host_vpn_line") {
+    // The VPN through this computer (docs/design/28 "Self-hosting"): the
+    // program's own `host vpn on|off`, the CLI's logic and words; never a
+    // second relay or forwarder in the app. `host_vpn_line` asks `vpn on`
+    // again for its relay line (nothing else changes: the same host.json).
+    const bool on = what == "host_vpn_line" || doc->boolean("on").value_or(false);
+    const auto w = host_where();
+    if (w.program.empty()) {
+      read_host();
+      return fail("no_driftwire_program");
+    }
+    {
+      std::lock_guard lock(m_);
+      v_.host_said.clear();
+      wipe_string(v_.relay_line);
+    }
+    auto r = self_host::run_host(w, {"vpn", on ? "on" : "off"});
+    std::string line = r && r->code == 0 && on ? self_host::relay_line_in(r->output) : std::string();
+    std::string said = r ? first_line(r->output) : std::string();
+    if (r) wipe_string(r->output);
+    // A running host takes host.json within 2 s: look for a few seconds so the
+    // switch shows what the relay does, not only what was asked.
+    self_host::host_status st;
+    for (int i = 0; r && r->code == 0 && i < 20 && !stopping_.load(); ++i) {
+      st = self_host::read_status(w);
+      if (!st.running || st.vpn_on == on) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    // The line names the port state.json had when it was printed: a relay
+    // that started again for the VPN (or a router that mapped it anew) has
+    // another by now, so the line is asked for once more with the port it has.
+    const std::uint16_t port = st.relay_outside_port != 0 ? st.relay_outside_port : st.relay_port;
+    if (!line.empty() && st.vpn_on && port != 0 && line.find(":" + std::to_string(port) + "#") == std::string::npos) {
+      wipe_string(line);
+      if (auto again = self_host::run_host(w, {"vpn", "on"}); again) {
+        if (again->code == 0) line = self_host::relay_line_in(again->output);
+        wipe_string(again->output);
+      }
+    }
+    read_host();
+    std::lock_guard lock(m_);
+    if (!r || r->code != 0) {
+      v_.error = "host_vpn";
+      v_.host_said = std::move(said);
+      return;
+    }
+    v_.relay_line = std::move(line);
+    return;
+  }
+  if (what == "host_vpn_hide") {
+    std::lock_guard lock(m_);
+    wipe_string(v_.relay_line);
+    return;
+  }
   if (what == "host_name") {
     // This computer's DuckDNS name after setup: checked as setup checks it, kept
     // as setup keeps it (the token in the host's own store, the running host takes
@@ -1863,6 +1923,8 @@ std::string link::state_json() const {
     w.key("configured_port").integer(h.configured_port).key("outside_port").integer(h.outside_port);
     w.key("folders").integer(static_cast<std::int64_t>(h.folders)).key("offline").integer(static_cast<std::int64_t>(h.offline));
     w.key("name").string(h.name).key("duckdns").string(h.duckdns);
+    w.key("vpn").boolean(h.vpn).key("vpn_on").boolean(h.vpn_on).key("tls_port").integer(h.tls_port);
+    w.key("tls_failed").boolean(h.tls_failed).key("relay_outside_port").integer(h.relay_outside_port);
     w.key("paused").boolean(h.paused).key("stats").begin_array();
     for (const auto& k : h.stats) w.string(k);
     w.end_array();
@@ -1873,6 +1935,7 @@ std::string link::state_json() const {
   }
   w.key("host_step").string(v_.host_step);
   w.key("host_said").string(v_.host_said);
+  if (!v_.relay_line.empty()) w.key("relay_line").string(v_.relay_line);
   // This computer's users (names and roles only) and its share's addresses (screen only).
   if (v_.users_read) {
     w.key("users").begin_array();

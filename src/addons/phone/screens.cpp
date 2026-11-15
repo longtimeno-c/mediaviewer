@@ -38,7 +38,9 @@ struct folder_row {
 struct host_row {
   bool installed = false, set_up = false, running = false, at_login = false;
   bool paused = false;  // "Tray": hosting turned off
+  bool vpn = false, vpn_on = false, tls_failed = false;  // host.json asks; the relay does; the look failed
   std::int64_t service_port = 0, offline = 0;
+  std::int64_t relay_port = 0, relay_outside_port = 0, tls_port = 0;
   std::string name, duckdns;
   std::vector<std::string> keepers;
   std::vector<std::string> stats;  // today's usage and the phones connected, in the menu's words
@@ -100,6 +102,7 @@ struct view {
   std::int64_t unlocked_s = 0, locked_until = 0;
   std::string relay;
   std::optional<host_row> host;
+  std::string relay_line;  // `host vpn on`'s line for the laptop, while shown
   std::string host_step, host_said;
   std::optional<std::vector<user_row>> users;
   std::vector<std::string> share_addresses;
@@ -226,10 +229,17 @@ view parse(std::string_view text) {
     r.keepers = strings_of(*h, "keepers");
     r.paused = b_of(*h, "paused");
     r.stats = strings_of(*h, "stats");
+    r.vpn = b_of(*h, "vpn");
+    r.vpn_on = b_of(*h, "vpn_on");
+    r.tls_failed = b_of(*h, "tls_failed");
+    r.relay_port = i_of(*h, "relay_port");
+    r.relay_outside_port = i_of(*h, "relay_outside_port");
+    r.tls_port = i_of(*h, "tls_port");
     s.host = r;
   }
   s.host_step = s_of(o, "host_step");
   s.host_said = s_of(o, "host_said");
+  s.relay_line = s_of(o, "relay_line");
   if (const json::value* v = o.find("users"); v && v->k == json::kind::array) {
     std::vector<user_row> list;
     for (const json::value& u : v->a) {
@@ -934,6 +944,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "host_start") busy_text = "Starting the server";
   else if (s.busy == "host_stop") busy_text = "Stopping the server";
   else if (s.busy == "host_name") busy_text = "Naming it on DuckDNS";
+  else if (s.busy == "host_vpn") busy_text = "Changing the VPN";
+  else if (s.busy == "host_vpn_line") busy_text = "Getting the relay line";
   else if (s.busy == "user_set" || s.busy == "user_remove" || s.busy == "users_apply")
     busy_text = s.host_step == "users" ? "Waiting for " + me + "'s administrator" : std::string("Changing the users");
   else if (s.busy == "host_drives") busy_text = "Reading the drives";
@@ -989,6 +1001,43 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
         stack(w, "duck_buttons", 8, "horizontal");
         button(w, "duck_save", "Save", busy, "primary", "Save the DuckDNS name");
         button(w, "duck_cancel", "Cancel", false, "plain", "Don't change the DuckDNS name");
+        end(w);
+      }
+    }
+    // The VPN through this computer (`host vpn on|off`): its relay carries the
+    // laptop's web traffic out, never into the home network (docs/design/28).
+    {
+      std::string line;
+      if (!h.vpn) {
+        line = "Off. On, your laptop's Driftwire Tunnel or All traffic (VPN) leaves through " + me +
+               " when you're away, so sites see your home's address. Never a way into your home network.";
+      } else if (!h.running) {
+        line = "On once the server runs.";
+      } else if (!h.vpn_on) {
+        line = "Turning on\xE2\x80\xA6";
+      } else {
+        const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
+        line = "On \xC2\xB7 relay port " + std::to_string(port);
+        if (h.tls_port > 0) {
+          line += h.tls_failed ? " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port)
+                               : " \xC2\xB7 looks like a web site on port " + std::to_string(h.tls_port);
+        }
+        if (h.duckdns.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
+      }
+      row(w, "vpn", "VPN through " + me, line);
+      toggle(w, "vpn_on", "Use as VPN", h.vpn, busy);
+      if (h.vpn && s.relay_line.empty()) {
+        button(w, "vpn_line", "Relay line\xE2\x80\xA6", busy, "plain", "Show the relay line for your laptop");
+      }
+      end_row(w);
+      if (h.vpn && !s.relay_line.empty()) {
+        stack(w, "vpn_line_box", 8);
+        text(w, "vpn_line_note",
+             "In Driftwire on your laptop, put this in Relay (your own server) once, then turn on the Tunnel or All "
+             "traffic (VPN). It holds the relay's key: keep it to yourself.",
+             "secondary");
+        copyable(w, "vpn_line_text", s.relay_line, "mono", "Relay line");
+        button(w, "vpn_line_hide", "Hide", false, "plain", "Hide the relay line");
         end(w);
       }
     }
@@ -1421,6 +1470,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_name") e = s.host_said.empty() ? "DuckDNS didn't take the name." : "DuckDNS: " + s.host_said;
   else if (r == "host_start") e = s.host_said.empty() ? "The server didn't start." : "The server didn't start: " + s.host_said;
   else if (r == "host_stop") e = s.host_said.empty() ? "The server didn't stop." : "The server didn't stop: " + s.host_said;
+  else if (r == "host_vpn") e = s.host_said.empty() ? "The VPN wasn't changed." : "The VPN wasn't changed: " + s.host_said;
   else if (r == "host_not_listening") e = "The server started but isn't answering yet. Another program may be using its port.";
   else if (r == "host_no_network") e = "Claimed, but " + me + " isn't on a network, so a phone can't reach it yet.";
   else if (r == "host_failed") e = "The driftwire program couldn't be run.";
@@ -1578,6 +1628,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       edit_limit_ = v;
     } else if (node == "edit_reserve") {
       edit_reserve_ = v;
+    } else if (node == "vpn_on") {
+      out.push_back(req("host_vpn").b("on", value_bool(value_json)).done());
     } else if (node == "new_backup") {
       new_backup_ = value_bool(value_json);
       // A suggestion the owner changes; the service refuses past what is really free.
@@ -1679,6 +1731,10 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     out.push_back(req("host_start").done());
   } else if (node == "host_stop") {
     out.push_back(req("host_stop").done());
+  } else if (node == "vpn_line") {
+    out.push_back(req("host_vpn_line").done());
+  } else if (node == "vpn_line_hide") {
+    out.push_back(req("host_vpn_hide").done());
   } else if (node == "duck_change") {
     duck_change_ = true;
     duck_name_.clear();

@@ -791,6 +791,20 @@ look off, and the router's relay port closes. Tested on loopback: a laptop's Tun
 (`tunnel::proxy`) with the printed line reaches a site through the host's relay, off refuses, and the
 shipped options refuse a forward to the home's own addresses (403).
 
+**From the desktop** (Settings → Add-ons → Phone access, once this computer is the server): the
+**VPN through this Mac/PC** row has a **Use as VPN** switch that runs the installed program's own
+`host vpn on|off` on the phone link's thread (`link.cpp` `host_vpn`; no second relay, forwarder or
+`host.json` writer in the app), and its status: what `host.json` asks for (`vpn`, `tls_port`) and what
+the running relay does (`state.json` `vpn` with a relay port, `relay_outside_port`, `tls_failed`): off,
+"Turning on…", "On once the server runs", or "On · relay port N" with the look's line and "home network
+only" without a DuckDNS name. The card waits up to 5 s for the running host to take the change. **Relay
+line…** asks `vpn on` again and shows the line it printed (`self_host::relay_line_in`), copyable, until
+Hide, the VPN going off or Settings closing; it is asked once more when the relay came back on another
+port than the one printed. The card's tree is the add-on's own, so the Mac and Windows chromes draw the
+row with no code of their own. **Phones do not use it yet**: the iPhone app has no VPN
+([phone-vpn plan](../plans/phone-vpn.md), not built), and the pairing code carries no relay route for a
+host (its relay is behind the same router), so a phone reaches the library as before.
+
 ### DuckDNS: a name for a home's changing address (self-hosting, 2026-11-14)
 
 For a computer that hosts the service itself ([plan](../plans/self-hosted.md) §4), `ddns.*` keeps

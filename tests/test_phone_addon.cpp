@@ -245,6 +245,62 @@ TEST_CASE("phone access: this computer's server has Stop while it runs and Start
   CHECK(tree.find("The server didn't stop: schtasks failed") != std::string::npos);
 }
 
+TEST_CASE("phone access: this computer's VPN switch, its status and the relay line", "[phone-addon]") {
+  screen c(mv::phone::card::computer::mac);
+  // Off: the switch, what it does, no line to show.
+  std::string tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("VPN through this Mac") != std::string::npos);
+  CHECK(tree.find(R"("type":"toggle","id":"vpn_on","label":"Use as VPN","value":false)") != std::string::npos);
+  CHECK(tree.find("Never a way into your home network") != std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_line\"") == std::string::npos);
+  auto r = c.on_event("vpn_on", kChange, "true", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_vpn","on":true})");
+
+  tree = c.build(R"({"busy":"host_vpn","host":{"installed":true,"set_up":true,"running":true}})", kNow);
+  CHECK(tree.find("Changing the VPN") != std::string::npos);
+
+  // Asked for, the running host not there yet; then on, with the router's port and the look.
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"vpn":true,"vpn_on":false}})", kNow);
+  CHECK(tree.find("Turning on") != std::string::npos);
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":false,"vpn":true}})", kNow);
+  CHECK(tree.find("On once the server runs.") != std::string::npos);
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,"vpn_on":true,
+    "relay_port":47614,"relay_outside_port":47700,"tls_port":443,"tls_failed":true}})",
+                 kNow);
+  require_valid(tree);
+  CHECK(tree.find("On \xC2\xB7 relay port 47700 \xC2\xB7 the web-site look couldn't listen on port 443") != std::string::npos);
+  CHECK(tree.find("home network only") == std::string::npos);
+  CHECK(tree.find(R"("id":"vpn_on","label":"Use as VPN","value":true)") != std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_line\"") != std::string::npos);
+  r = c.on_event("vpn_line", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_vpn_line"})");
+
+  // The line, copyable, with what to do with it; Hide asks the link to drop it.
+  tree = c.build(R"({"relay_line":"[::1]:47614#k3y","host":{"installed":true,"set_up":true,"running":true,"vpn":true,
+    "vpn_on":true,"relay_port":47614}})",
+                 kNow);
+  require_valid(tree);
+  CHECK(tree.find(R"("id":"vpn_line_text","text":"[::1]:47614#k3y","style":"mono","copyable":true)") != std::string::npos);
+  CHECK(tree.find("Without a DuckDNS name it works on your home network only.") != std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_line\"") == std::string::npos);
+  r = c.on_event("vpn_line_hide", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_vpn_hide"})");
+  r = c.on_event("vpn_on", kChange, "false", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_vpn","on":false})");
+
+  tree = c.build(R"({"error":"host_vpn","host_said":"could not write host.json","host":{"installed":true,"set_up":true}})",
+                 kNow);
+  CHECK(tree.find("The VPN wasn't changed: could not write host.json") != std::string::npos);
+  // Not this computer's server: no VPN row.
+  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo"})", kNow);
+  CHECK(tree.find("VPN through") == std::string::npos);
+}
+
 TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup", "[phone-addon]") {
   screen c(mv::phone::card::computer::pc);
   const char* claimed = R"({"folder":"G:\\FamilyNas","claimed":true,
