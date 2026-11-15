@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Phone access as a view tree (docs/design/25 §10), drawn by both
+// Settings → Add-ons → Phone access as a view tree (docs/design/25 §10), drawn by both
 // hosts in their Phone access section (docs/plans/phone-access-addon.md §2).
 // One copy of the card's rows and words for the Mac and Windows, where before
 // there were two (PhoneAccessView.swift, IslandHost.Phone.cs + PhoneWords.cs):
@@ -121,6 +121,8 @@ class screen {
   std::string setup_kind_ = "this";  // "this", "synology", "other"
   std::vector<host_folder> host_folders_;
   std::string duck_name_, duck_token_;  // duck_token_ secure
+  bool duck_change_ = false;  // this computer's DuckDNS name being changed, after setup
+  bool server_here_ = false;  // the server is this computer (its folders are picked, not typed)
   std::string note_;  // this screen's own line ("Choose a folder…"), until the next event
   bool seeded_local_ = false, seeded_public_ = false;
   std::string last_error_;

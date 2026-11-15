@@ -1128,6 +1128,31 @@ void link::run(const std::string& request) {
     if (!stopped) v_.error = "host_stop";
     return;
   }
+  if (what == "host_name") {
+    // This computer's DuckDNS name after setup: checked as setup checks it, kept
+    // as setup keeps it (the token in the host's own store, the running host takes
+    // the name from host.json), then the address phones dial from outside follows.
+    const auto sub = self_host::parse_subdomain(text("duckdns"));
+    if (!sub) return fail("host_bad_name");
+    if (!self_host::parse_token(text("duckdns_token"))) return fail("host_bad_token");
+    const auto w = host_where();
+    if (w.program.empty()) {
+      read_host();
+      return fail("no_driftwire_program");
+    }
+    if (!self_host::set_duckdns(w, *sub, text("duckdns_token"))) return fail("host_name");
+    const auto st = self_host::read_status(w);
+    read_host();
+    std::lock_guard lock(m_);
+    if (v_.claimed) {
+      const std::uint16_t outside = st.outside_port != 0 ? st.outside_port : st.service_port;
+      json::writer a;
+      a.begin_object().key("do").string("set_addresses").key("local").string("");
+      a.key("public").string(self_host::public_route(*sub, outside)).end_object();
+      requests_.push_back(a.take());
+    }
+    return;
+  }
   if (what == "publish") {
     if (destination.empty()) return fail("no_folder");
     expected started = err(status::not_found);

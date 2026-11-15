@@ -34,7 +34,7 @@ it, and a desktop card that sets it up on the same machine.
 
 ## 2. What the person does (target)
 
-On the PC with the drive, in `driftwire` (or Settings → Phone access → **Use this computer**):
+On the PC with the drive, in `driftwire` (or Settings → Add-ons → Phone access → **Use this computer**):
 
 ```
 driftwire host setup          one guided run: name, drive, router, phone, VPN (below)
@@ -477,7 +477,7 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
 
 ## 17. Slice 6's desktop card, as built (2026-11-14)
 
-- **Set up the service…** in Settings → Phone access (Mac `PhoneAccessView.swift`, Windows
+- **Set up the service…** in Settings → Add-ons → Phone access (Mac `PhoneAccessView.swift`, Windows
   `IslandHost.Phone.cs`, words in `Shared/PhoneWords.cs` checked against the Swift) when no folder is
   chosen and nothing is claimed: **This computer** · **A Synology** (the Package Center steps in one line,
   then the existing folder and claim rows, unchanged) · **Something else** (`driftwire serve init`, then
@@ -509,6 +509,10 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   is not running and **Stop** when it is (`host start-at-login off`, then `host quit`: it stays off
   until Start; folders and pairings stay). Read when Settings opens and at the link's 30 s tick,
   never per frame.
+- **After setup** (claimed): a **DuckDNS name** row, **Add…** / **Change…** opening the name and token
+  (`host_name`: checked and kept as setup does, then `set_addresses` points phones' outside address at
+  it); and **Share another folder** picks the folder with the OS's picker (a Windows path, `G:\…`, as
+  the service's `add_root` takes it) instead of a typed NAS path.
 - **Tests:** `"[phone-self-host]"` in `mv_import_tests` (the places against the command line's own
   constants, state.json and host.json read and written, the inputs; and against the test build of the
   program on loopback: shared, started, claimed, addresses, a code; a DuckDNS name in the code and the
@@ -544,7 +548,7 @@ Mac (an `NSStatusItem` per entry, `AddonNotices.swift`) and **its own notificati
 Windows (one `NOTIFYICONDATA` uID per entry, `main.cpp sync_tray`; the icon's uID picks its menu).
 Driftwire alone looks as before. The server menu is one more entry: until Phone access is its own
 add-on (#686 §1, PR #691) the base app holds it (`slot_registry::set_shell_keep("mediaviewer.host")`,
-`"shell": true` in notices_json, its Open row opening Settings → Phone access); then the add-on calls
+`"shell": true` in notices_json, its Open row opening Settings → Add-ons → Phone access); then the add-on calls
 `keep_alive` / `keep_menu` with the same rows and gets the same item with no host change. The Mac's
 icon is `server.rack`, Driftwire's stays the waves; Windows uses the app's icon with the entry's
 tooltip ("Hosting as home.duckdns.org").
@@ -607,7 +611,7 @@ tooltip ("Hosting as home.duckdns.org").
   "write_rate"}]` (connected now) and `"usage": {"day","read","written","read_rate","write_rate",
   "devices": [{"name","read","written"}]}` (today, every device that moved bytes). It is rewritten only
   when it changed, as before: idle, nothing is written.
-- **Read by three:** the menu (above); the This computer card's status row in Settings → Phone access
+- **Read by three:** the menu (above); the This computer card's status row in Settings → Add-ons → Phone access
   (Mac and Windows: "Running, hosting off" when off, then the same usage and phone lines from the
   core, `host_tray::usage_lines` through `self_host::host_status::stats`); and the command line:
   `driftwire host status` (`hosting on|off`, `today`, a line per device today, `connected` and a line

@@ -2399,6 +2399,35 @@ TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code 
   CHECK(app.l->state_json().find(token) == std::string::npos);
 }
 
+TEST_CASE("phone pairing: This computer's DuckDNS name is changed after setup, and phones' outside address with it", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  auto v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  REQUIRE(v.boolean("claimed") == true);
+  CHECK(*v.find("host")->str("duckdns") == "");
+  const std::string token = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+  // Checked before anything is kept.
+  v = app.ask(R"({"do":"host_name","duckdns":"not a name!","duckdns_token":")" + token + "\"}");
+  CHECK(*v.str("error") == "host_bad_name");
+  v = app.ask(R"({"do":"host_name","duckdns":"home","duckdns_token":"nope"})");
+  CHECK(*v.str("error") == "host_bad_token");
+  CHECK(*v.find("host")->str("duckdns") == "");
+
+  v = app.ask(R"({"do":"host_name","duckdns":"Home.duckdns.org","duckdns_token":")" + token + "\"}");
+  CHECK(*v.str("error") == "");
+  CHECK(*v.find("host")->str("duckdns") == "home");
+  const auto port = v.find("host")->integer("service_port").value_or(0);
+  REQUIRE(eventually([&] {
+    auto t = mv::json::parse(app.l->state_json(), 6);
+    return t && *t->str("public") == "home.duckdns.org:" + std::to_string(port);
+  }, 40));
+  CHECK(app.l->state_json().find(token) == std::string::npos);
+}
+
 TEST_CASE("phone pairing: This computer says what is wrong before anything runs", "[phone-pairing][phone-self-host]") {
   this_computer pc;
   desktop mac;

@@ -4,7 +4,7 @@
 // 5, §7.2–§7.5): the NAS folder, the publisher's identity on it, the service
 // on the NAS (claim, addresses, named folders), the pairing code and its QR,
 // the paired phones, the nearby copy, and handing the library to another
-// desktop. Settings → Phone access asks (request) and watches (state_json).
+// desktop. Settings → Add-ons → Phone access asks (request) and watches (state_json).
 //
 // Until 2026-11-12 this was Local search's (engine_phone_link.cpp): it now
 // works with no add-on installed. Local search, when it is loaded, is a
@@ -112,6 +112,8 @@ class link {
   //                        claims it over loopback, sets its addresses and shows a code
   //   host_start           starts it again (and at login)
   //   host_stop            stops it, and it no longer starts at login
+  //   host_name {duckdns, duckdns_token}   its DuckDNS name after setup, and the
+  //                        address phones dial from outside with it
   // This computer's users and its LAN share (docs/plans/self-host-users-smb.md §8), over the
   // owner session to the host's own service, then the program's elevated step:
   //   users_refresh        the list (names, roles) and the share's addresses
