@@ -78,6 +78,9 @@ class link {
     // Starts the host and keeps it starting at login. Empty: the program's own
     // `host start-at-login on` (the tests start a test build of the host instead).
     std::function<expected(const self_host::where&)> start_host;
+    // Stops it starting at login. Empty: the program's own `host start-at-login off`
+    // (the test build refuses it). `host quit` then stops a host still running.
+    std::function<expected(const self_host::where&)> login_off;
     // This computer's address on its own network, for the phone's code.
     // Empty: the address on the route to the default gateway.
     std::function<std::string()> lan_address;
@@ -108,6 +111,7 @@ class link {
   //                        (and at login), makes the first folder the library's,
   //                        claims it over loopback, sets its addresses and shows a code
   //   host_start           starts it again (and at login)
+  //   host_stop            stops it, and it no longer starts at login
   // This computer's users and its LAN share (docs/plans/self-host-users-smb.md §8), over the
   // owner session to the host's own service, then the program's elevated step:
   //   users_refresh        the list (names, roles) and the share's addresses
@@ -236,6 +240,7 @@ class link {
   void host_drives(const std::string& what, const std::string& request);
   [[nodiscard]] self_host::where host_where() const;
   [[nodiscard]] expected start_host_now(const self_host::where& w);
+  [[nodiscard]] expected stop_host_now(const self_host::where& w);
   [[nodiscard]] result<std::string> route(const char* method, const std::string& json);
   [[nodiscard]] result<std::vector<std::uint8_t>> signing_key(bool make);
   void start_thread_locked();

@@ -924,6 +924,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "set_passphrase") busy_text = "Setting the passphrase";
   else if (s.busy == "grant") busy_text = "Changing the phone's access";
   else if (s.busy == "host_start") busy_text = "Starting the server";
+  else if (s.busy == "host_stop") busy_text = "Stopping the server";
   else if (s.busy == "user_set" || s.busy == "user_remove" || s.busy == "users_apply")
     busy_text = s.host_step == "users" ? "Waiting for " + me + "'s administrator" : std::string("Changing the users");
   else if (s.busy == "host_drives") busy_text = "Reading the drives";
@@ -939,7 +940,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   if (!busy_text.empty()) progress(w, "busy", busy_text, -1);
 
-  // This computer is the server: its state, and Start when it isn't running.
+  // This computer is the server: its state, and Start or Stop.
   if (s.host && s.host->set_up) {
     const host_row& h = *s.host;
     std::string line;
@@ -961,6 +962,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     row(w, "host", h.name.empty() ? Me + " is your server" : Me + " is your server \xC2\xB7 " + h.name, line);
     if (!h.running) button(w, "host_start", "Start", busy, "plain", "Start the server on " + me);
+    else button(w, "host_stop", "Stop", busy, "plain", "Stop the server on " + me + " and don't start it at login");
     end_row(w);
     drives_rows(w, s, drives_, busy, me);
     // Users of this computer's LAN share (self-host-users-smb.md §8): once it is claimed.
@@ -1385,6 +1387,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_share") e = s.host_said.empty() ? "The folder couldn't be shared." : "Couldn't share it: " + s.host_said;
   else if (r == "host_name") e = s.host_said.empty() ? "DuckDNS didn't take the name." : "DuckDNS: " + s.host_said;
   else if (r == "host_start") e = s.host_said.empty() ? "The server didn't start." : "The server didn't start: " + s.host_said;
+  else if (r == "host_stop") e = s.host_said.empty() ? "The server didn't stop." : "The server didn't stop: " + s.host_said;
   else if (r == "host_not_listening") e = "The server started but isn't answering yet. Another program may be using its port.";
   else if (r == "host_no_network") e = "Claimed, but " + me + " isn't on a network, so a phone can't reach it yet.";
   else if (r == "host_failed") e = "The driftwire program couldn't be run.";
@@ -1641,6 +1644,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     out.push_back(req("host_status").done());
   } else if (node == "host_start") {
     out.push_back(req("host_start").done());
+  } else if (node == "host_stop") {
+    out.push_back(req("host_stop").done());
   } else if (node == "host_setup") {
     const bool any_library = std::any_of(host_folders_.begin(), host_folders_.end(),
                                          [](const host_folder& f) { return !f.backup; });

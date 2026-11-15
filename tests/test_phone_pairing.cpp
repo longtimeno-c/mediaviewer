@@ -2206,6 +2206,7 @@ struct this_computer {
   fs::path backup = dir.root() / "Backup";
   std::unique_ptr<mv::io::child_process> host;
   int starts = 0;
+  int login_offs = 0;
   mv::phone::self_host::where where() const {
     mv::phone::self_host::where w;
     w.program = MV_DRIFTWIRE_CLI_TEST_PATH;
@@ -2253,6 +2254,10 @@ struct host_link {
     o.tick_s = 3600;
     o.self_host = [&pc] { return pc.where(); };
     o.start_host = [&pc](const mv::phone::self_host::where&) { return pc.start(); };
+    o.login_off = [&pc](const mv::phone::self_host::where&) -> mv::expected {
+      ++pc.login_offs;
+      return {};
+    };
     o.lan_address = [] { return std::string("::1"); };  // the test build listens on ::1 alone
     o.host_wait_ms = 20000;
     l = std::make_unique<mv::phone::link>(std::move(o));
@@ -2346,6 +2351,23 @@ TEST_CASE("phone pairing: This computer shares, starts, claims over loopback and
   CHECK(std::adjacent_find(labels.begin(), labels.end()) == labels.end());
   const auto counted = v.find("host")->integer("folders").value_or(0);
   CHECK((counted == 2 || counted == 3));
+}
+
+TEST_CASE("phone pairing: This computer's Stop takes it off login and stops the running host", "[phone-pairing][phone-self-host]") {
+  this_computer pc;
+  desktop mac;
+  host_link app(mac, pc);
+  auto v = app.ask(setup_request(pc));
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  REQUIRE(*v.str("error") == "");
+  REQUIRE(v.find("host")->boolean("running") == true);
+
+  v = app.ask(R"({"do":"host_stop"})");
+  INFO(*v.str("error") << " / " << *v.str("host_said"));
+  CHECK(*v.str("error") == "");
+  CHECK(pc.login_offs == 1);
+  CHECK(v.find("host")->boolean("running") == false);  // `host quit` waited for it
+  CHECK(v.find("host")->boolean("set_up") == true);    // its folders and pairings stay
 }
 
 TEST_CASE("phone pairing: This computer with a DuckDNS name puts it in the code and the token in the host's store", "[phone-pairing][phone-self-host]") {

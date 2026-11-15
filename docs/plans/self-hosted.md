@@ -506,7 +506,9 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
 - **The status row** ("This Mac/PC is your server · NAME"): running or not, the service's port, the
   DuckDNS name, drives not connected, and the keepers' own lines from `state.json` (the router's and
   DuckDNS's: CGNAT and hand-forward words come from `host_ports::advice` there), with **Start** when it
-  is not running. Read when Settings opens and at the link's 30 s tick, never per frame.
+  is not running and **Stop** when it is (`host start-at-login off`, then `host quit`: it stays off
+  until Start; folders and pairings stay). Read when Settings opens and at the link's 30 s tick,
+  never per frame.
 - **Tests:** `"[phone-self-host]"` in `mv_import_tests` (the places against the command line's own
   constants, state.json and host.json read and written, the inputs; and against the test build of the
   program on loopback: shared, started, claimed, addresses, a code; a DuckDNS name in the code and the

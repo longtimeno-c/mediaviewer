@@ -221,6 +221,30 @@ TEST_CASE("phone access: the card's words", "[phone-addon]") {
   CHECK(screen::relative(kNow + 300, kNow) == "in 5 minutes");
 }
 
+TEST_CASE("phone access: this computer's server has Stop while it runs and Start once it has stopped", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  std::string tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"id\":\"host_stop\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"host_start\"") == std::string::npos);
+  auto r = c.on_event("host_stop", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_stop"})");
+
+  tree = c.build(R"({"busy":"host_stop","host":{"installed":true,"set_up":true,"running":true}})", kNow);
+  require_valid(tree);
+  CHECK(tree.find("Stopping the server") != std::string::npos);
+
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":false}})", kNow);
+  CHECK(tree.find("\"id\":\"host_stop\"") == std::string::npos);
+  CHECK(tree.find("\"id\":\"host_start\"") != std::string::npos);
+  CHECK(tree.find("not set to start at login") != std::string::npos);
+
+  tree = c.build(R"({"error":"host_stop","host_said":"schtasks failed","host":{"installed":true,"set_up":true,"running":true}})",
+                 kNow);
+  CHECK(tree.find("The server didn't stop: schtasks failed") != std::string::npos);
+}
+
 TEST_CASE("phone access: Local search's catalogue through the host, and none without it", "[phone-addon]") {
   mv::addon::catalogue::set_provider({});
   CHECK(mv::addon::catalogue::publish("/x").error() == mv::status::not_found);
