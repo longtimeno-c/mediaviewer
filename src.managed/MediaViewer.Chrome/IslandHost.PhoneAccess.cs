@@ -1,14 +1,13 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Phone access from the app's side (docs/plans/phone-access-addon.md,
-// owner 2026-11-14): Phone access is an add-on. Installed, its card is the
-// add-on's own view tree (its "settings" screen), drawn here by the screens'
-// renderer (IslandHost.AddonSettingsScreen.cs opens it while Settings' list
-// shows); not installed, this section offers it, once, the first time someone
-// opens Settings. Nothing here talks to the network except the plain GETs of
-// the add-on's fixed release assets every add-on install makes, and only when
-// the person asks. A PC set up before the move is told its phones keep
-// working through its server. The Mac twin is PhoneAccess.swift.
+// Phone access from the app's side (docs/plans/phone-access-addon.md): an
+// add-on with its own page in Settings → Add-ons, like the others. Installed,
+// the page draws its "settings" screen, the add-on's own view tree
+// (IslandHost.AddonSettingsScreen.cs); not installed, the page offers it.
+// Nothing here talks to the network except the plain GETs of the add-on's
+// fixed release assets every add-on install makes, and only when the person
+// asks. A PC set up before the move is told its phones keep working through
+// its server. The Mac twin is PhoneAccess.swift.
 using MediaViewer.Interop;
 using MediaViewer.Shared;
 using Microsoft.UI.Xaml;
@@ -26,93 +25,45 @@ public static partial class IslandHost
     // chrome; it fills a settings screen.
     private static readonly AddonSlot PhoneAccessSlot = new(PhoneAccessId, "Phone access", null, null);
 
-    private static StackPanel? _phoneAccessPanel;
-    private static ContentControl? _phoneAccessScreen;
     private static string _phoneAccessMessage = "";
     private static bool _phoneAccessBefore;  // a library set up before the move (its folder.json)
 
     private static bool PhoneAccessInstalled => SlotAddonRows.Any(r => r.Id == PhoneAccessId);
 
     // docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
-    // row opens Settings here (src/shell/chrome_host.h kSettingsRevealPhone).
+    // row opens Settings on its page (src/shell/chrome_host.h kSettingsRevealPhone).
     private const int SettingsRevealPhone = 1;
     private static bool _phoneRevealWanted;
-    private static TextBlock? _phoneSection;
 
     private static void RevealPhoneSettings()
     {
         _phoneRevealWanted = false;
-        if (_addonPage.Length > 0) CloseAddonPage();  // Phone access is on the list
-        // After layout: a page built this tick has no place to scroll to yet.
-        void Bring()
-        {
-            try
-            {
-                _phoneSection?.StartBringIntoView(new BringIntoViewOptions
-                {
-                    VerticalAlignmentRatio = 0.0,
-                    AnimationDesired = false,
-                });
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-            }
-        }
-        if (_dispatcher is not null)
-            _dispatcher.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Bring);
-        else
-            Bring();
+        OpenAddonPage(PhoneAccessId);
     }
 
-    /// <summary>Settings' Phone access section: the add-on's screen, or the offer.</summary>
-    private static void AddPhoneAccessSettings(StackPanel view)
+    /// <summary>Its page while it is not installed: the offer.</summary>
+    private static void BuildPhoneAccessOffer(StackPanel panel)
     {
-        _phoneSection = SettingsSection("Phone access");
-        view.Children.Add(_phoneSection);
-        _phoneAccessPanel = new StackPanel { Spacing = Space(8) };
-        _phoneAccessScreen = new ContentControl
-        {
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            IsTabStop = false,
-        };
-        view.Children.Add(_phoneAccessPanel);
-        RefreshPhoneAccess();
-    }
-
-    /// <summary>UI thread: Settings shows, or the add-on came or went.</summary>
-    private static void RefreshPhoneAccess()
-    {
-        if (_phoneAccessPanel is null || _phoneAccessScreen is null) return;
-        _phoneAccessPanel.Children.Clear();
-        if (SlotSettingsScreens.ContainsKey(PhoneAccessId))
-        {
-            _phoneAccessPanel.Children.Add(_phoneAccessScreen);
-            return;
-        }
-        _phoneAccessPanel.Children.Add(Note(PhoneAccessDescription));
+        panel.Children.Add(Note(PhoneAccessDescription));
         if (_phoneAccessBefore)
         {
-            _phoneAccessPanel.Children.Add(Note(
+            panel.Children.Add(Note(
                 "Your paired phones keep working through your server. Install Phone access to add phones, remove them, and keep the copy this PC serves at home."));
         }
         if (_addonsElsewhere)
         {
-            _phoneAccessPanel.Children.Add(Note(AddonsElsewhereText));
+            panel.Children.Add(Note(AddonsElsewhereText));
             return;
         }
-        if (PhoneAccessSlot.Busy && PhoneAccessSlot.Phase is { } phase)
+        if (PhoneAccessSlot.Busy && PhoneAccessSlot.Phase is not null)
         {
-            var bar = new AddonProgressView(300);
-            bar.Show(phase);
-            PhoneAccessSlot.Progress = bar;
-            _phoneAccessPanel.Children.Add(bar.Root);
+            panel.Children.Add(ProgressFor(PhoneAccessSlot, 320));
             return;
         }
         if (InstallFailureRow(PhoneAccessSlot, "Phone access", false, () => StartPhoneAccessInstall(),
                               () => StartPhoneAccessInstall(reinstall: true)) is FrameworkElement failed)
         {
-            _phoneAccessPanel.Children.Add(failed);
+            panel.Children.Add(failed);
         }
         else if (PhoneAccessSlot.Offer.Kind == OfferKind.Available)
         {
@@ -121,37 +72,34 @@ public static partial class IslandHost
             install.IsTabStop = true;
             install.HorizontalAlignment = HorizontalAlignment.Left;
             install.IsEnabled = !PhoneAccessSlot.Busy;
-            _phoneAccessPanel.Children.Add(install);
+            panel.Children.Add(install);
         }
         else
         {
-            AddOfferNote(_phoneAccessPanel, PhoneAccessSlot, "Phone access");
+            AddOfferNote(panel, PhoneAccessSlot, "Phone access");
         }
-        if (_phoneAccessMessage.Length > 0) _phoneAccessPanel.Children.Add(Note(_phoneAccessMessage));
+        if (_phoneAccessMessage.Length > 0) panel.Children.Add(Note(_phoneAccessMessage));
     }
 
-    /// <summary>UI thread, as Settings shows: offered the first time someone opens
-    /// it (owner, 2026-11-14), never at launch.</summary>
-    private static void OfferPhoneAccessIfWanted()
+    /// <summary>UI thread, as Settings shows: asks its channel, never at launch,
+    /// and looks once for a library set up before the move.</summary>
+    private static void ProbePhoneAccess()
     {
         if (PhoneAccessInstalled || _addonsElsewhere) return;
-        if (PhoneAccessSlot.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable)
+        if (PhoneAccessSlot.Offer.Kind is not (OfferKind.Unknown or OfferKind.Unreachable)) return;
+        ProbeOffer(PhoneAccessSlot);
+        _ = Task.Run(() =>
         {
-            ProbeOffer(PhoneAccessSlot);
-            _ = Task.Run(() =>
+            // One stat, off the UI thread: the folder the app kept the library in.
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            bool before = File.Exists(Path.Combine(local, "MediaViewer", "phone-access", "folder.json"));
+            DispatcherQueueControllerTryEnqueue(() =>
             {
-                // One stat, off the UI thread: the folder the app kept the library in.
-                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                bool before = File.Exists(Path.Combine(local, "MediaViewer", "phone-access", "folder.json"));
-                DispatcherQueueControllerTryEnqueue(() =>
-                {
-                    if (before == _phoneAccessBefore) return;
-                    _phoneAccessBefore = before;
-                    RefreshPhoneAccess();
-                });
+                if (before == _phoneAccessBefore) return;
+                _phoneAccessBefore = before;
+                RefreshSlotSettings();
             });
-        }
-        RefreshPhoneAccess();
+        });
     }
 
     private static void StartPhoneAccessInstall(bool reinstall = false)
@@ -159,7 +107,7 @@ public static partial class IslandHost
         if (PhoneAccessSlot.Busy || _addonsElsewhere || _folderSession is not { } session) return;
         _phoneAccessMessage = "";
         IProgress<AddonPhase> progress = BeginInstall(PhoneAccessSlot);
-        RefreshPhoneAccess();
+        RefreshSlotSettings();
         _ = Task.Run(async () =>
         {
             InstallOutcome outcome = await RunInstall(PhoneAccessSlot, progress, reinstall).ConfigureAwait(false);
@@ -189,7 +137,6 @@ public static partial class IslandHost
                 if (loaded) SlotAddonsLoaded.Add(PhoneAccessId);
                 EnsureSlotListener();
                 AfterSlotContributions();
-                RefreshPhoneAccess();
             });
         });
     }

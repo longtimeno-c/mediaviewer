@@ -19,7 +19,7 @@ catalogue's provider, the phone's file mode. Only where the feature runs changes
 | The state machine (folder, library id, epoch, takeover, revoke queue) | `src/phone/link.*` | `src/addons/phone/link.*` (`git mv`) |
 | The one link per process, its primary / secondary rule | `src/phone/app.*`, driven by `mv_phone_resume` / `_stop` from both shells | `src/addons/phone/service.*` (`git mv` of `app.*`), driven by the add-on's load and shutdown |
 | This computer as the server: finding and running the installed `driftwire`, `host share`, `host start-at-login on`, DuckDNS, reading `host status`'s files | `src/phone/self_host.*` | `src/addons/phone/self_host.*` (`git mv`) |
-| Settings → Phone access, the card | `PhoneAccessView.swift`, `IslandHost.Phone.cs`, `Shared/PhoneWords.cs`, `Shared/QrCode.cs`, `Interop/Phone.cs` (two copies of every word) | The add-on's view tree, `src/addons/phone/screens.*` (one copy, drawn by both hosts); the QR is a `surface` the add-on draws (`qr.*`) |
+| Settings → Add-ons → Phone access, the card | `PhoneAccessView.swift`, `IslandHost.Phone.cs`, `Shared/PhoneWords.cs`, `Shared/QrCode.cs`, `Interop/Phone.cs` (two copies of every word) | The add-on's view tree, `src/addons/phone/screens.*` (one copy, drawn by both hosts); the QR is a `surface` the add-on draws (`qr.*`) |
 | The Synology package and its signed updates | `tools/package/driftwire_spk.py`, the `driftwire` CLI's NAS update | Unchanged files: the SPK carries the `driftwire` program, which is the CLI's (its release, its updater). The add-on's Synology choice says how to get and install it. Owed: shipping the SPK inside the add-on's package (§7) |
 | `driftwire host` and its start at login | The CLI (`src/addons/driftwire/cli/`) | Unchanged: the CLI's. The add-on runs the installed program, as the card did |
 
@@ -36,8 +36,8 @@ catalogue's provider, the phone's file mode. Only where the feature runs changes
 ## 2. The contribution points and host-table rows
 
 The card is a **settings** screen (place `settings`, [25 §10](../design/25-open-addons.md#10-screens)),
-id `settings`, drawn by the host **in Settings → Phone access** instead of on the add-on's page in
-Settings → Add-ons (its page there says one line and points to the section). One engine, as
+id `settings`, drawn by the host on the add-on's page, **Settings → Add-ons → Phone access**, like every
+other add-on's settings (until 2026-11-15 it was a section of Settings of its own). One engine, as
 Driftwire's settings page.
 
 New in the vocabulary, **contribution API 15**: `text_field` `"secure": true`. The host draws a
@@ -114,7 +114,7 @@ Start over, which tells the NAS. `mv_addon_forget` therefore forgets nothing (it
 | | Mac | Windows |
 |---|---|---|
 | Section, offer, install | `PhoneAccess.swift` (`PhoneAccessStore`, `PhoneAccessOffer`), channel `mediaviewer-addon-phone-access-macos` | `IslandHost.PhoneAccess.cs`, channel `mediaviewer-addon-phone-access-win-x64` |
-| The card | `ScreenView` of (`phone-access`, `settings`) inside Settings → Phone access | `IslandHost.Screens` builder inside the section |
+| The card | `ScreenView` of (`phone-access`, `settings`) on its page in Settings → Add-ons | `IslandHost.Screens` builder on its page |
 | `secure` | `SecureField` | `PasswordBox` |
 | Removed | `PhoneAccessView.swift`, `PhoneAccessTests.swift`, `mv_chrome_phone_*` | `IslandHost.Phone.cs`, `Shared/PhoneWords.cs`, `Shared/QrCode.cs`, `Interop/Phone.cs`, their tests |
 
@@ -193,7 +193,7 @@ linker pulls only those objects). It runs whatever `self_host::find()` names, wh
 `bin/` first, so the menu's Pause / Resume / Quit act on the add-on's program. Removing the add-on stops the
 host (the login entry goes), so the menu goes with it. Moving it into the add-on needs two things an
 add-on keep cannot say yet: the app's login item while the host only starts at login (a "login" flag on
-`keep_alive`) and opening Settings → Phone access from the menu (a settings-place screen as the keep's).
+`keep_alive`) and opening Settings → Add-ons → Phone access from the menu (a settings-place screen as the keep's).
 
 Still owed:
 

@@ -754,7 +754,7 @@ reload after.
 
 ## Setting a phone up
 
-Owned by the Phone access add-on ([plan](../plans/phone-access-addon.md)): Settings → Phone access
+Owned by the Phone access add-on ([plan](../plans/phone-access-addon.md)): Settings → Add-ons → Phone access
 is its card (`src/addons/phone/screens.*`, drawn by both hosts), which drives `src/addons/phone/link.cpp`,
 which calls the desk (`src/addons/phone/desk.*`, [28](28-driftwire.md#claiming-and-pairing-phone-access))
 and reaches Local search through the host table's `catalogue_*` rows. Local search is the

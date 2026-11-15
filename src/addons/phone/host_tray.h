@@ -38,7 +38,7 @@ inline constexpr int kLoginEveryMs = 60000;   // the start-at-login entry looked
 inline constexpr std::size_t kMaxRows = 16;   // slots.h keep_menu's limit
 inline constexpr std::size_t kMaxNames = 4;   // phones named, then "and N more"
 inline constexpr const char* kKeepId = "mediaviewer.host";  // never an add-on's id (they have no dot)
-inline constexpr const char* kScreen = "phone_access";      // Settings → Phone access
+inline constexpr const char* kScreen = "phone_access";      // Settings → Add-ons → Phone access
 
 // What the files said.
 struct input {
