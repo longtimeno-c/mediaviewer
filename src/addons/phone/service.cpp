@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include "catalogue/publisher.h"
 #include "addons/phone/desk.h"
@@ -43,6 +44,9 @@ struct desk_holder {
 struct app_state {
   std::mutex m;
   link* l = nullptr;           // never destroyed: stop_app ends its thread
+  // Links stopped in this run, kept reachable (they are never destroyed, and
+  // the leak checker must not count them as lost).
+  std::vector<link*> retired;
   catalogue_source pending;    // a source set before the link was made
   bool stopped = false;
   // Until resume_app says: the first window's process (primary) runs Phone
@@ -153,6 +157,7 @@ void stop_app() noexcept {
   // installed again in this run, the next resume_app makes a new link. The old
   // one is never destroyed (its thread may still be tidying up).
   std::lock_guard lock(st.m);
+  if (st.l) st.retired.push_back(st.l);
   st.l = nullptr;
   st.who = app_state::role::unknown;
   st.stopped = false;

@@ -1899,6 +1899,12 @@ void engine::files_loop() {
     }
     if (files_stale(job.gen)) continue;
     try {
+      // A set of one folder (the host's Share on a folder tile, docs/design/16
+      // "Share") is sent whole, as Choose… sends one: looked at here, on the
+      // reader, never on the thread that handed it over.
+      if (job.folder.empty() && job.paths.size() == 1) {
+        if (auto st = io::stat_path(job.paths.front()); st && st->is_directory) job.folder = std::move(job.paths.front());
+      }
       if (!job.folder.empty()) {
         walk_folder(job.folder, job.gen);
       } else {

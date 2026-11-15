@@ -35,8 +35,9 @@ script add-ons still have no network. The same engine runs in a terminal as `dri
     and **OK**. Empty: **No one nearby yet** and how to fix it;
   - **Over the internet**: one toggle, then **Receive from anywhere** (Make a code, **Copy code**,
     **Copy link**), **Send to a code**, Remembered devices, **Internet options**.
-- **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click range, drag-out,
-  one share icon (Driftwire first; a one-click install when absent).
+- **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click range, drag-out;
+  Share (the bar's button, Driftwire first; a one-click install when absent) sends the range, the
+  file, or the outlined folder tile whole ([16 "Share"](16-commands.md#share-444)).
 
 ## From a terminal (`driftwire`)
 
@@ -874,7 +875,8 @@ Reach the web through one's own relay server on a filtering network. Plan
 `transfer.h`. Originals are only read (rule 5).
 
 - **Offered**: the handed-over files with pair halves (`pair_names`) and XMP sidecars, one listing
-  per folder; or a folder (`walk_files`, depth 32) minus housekeeping (`@eaDir`, `#recycle`,
+  per folder; or a folder (**Send a folder**, or a handed-over set that is one folder: the host's
+  Share on a folder tile; looked at on the reader thread) (`walk_files`, depth 32) minus housekeeping (`@eaDir`, `#recycle`,
   `$RECYCLE.BIN`, `System Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`,
   dot files, `.mvtmp`).
 - **Only the file picked is read**: identity noted at pick (`st_dev`/`st_ino`; `io::identify` on

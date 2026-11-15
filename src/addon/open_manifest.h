@@ -61,6 +61,8 @@ inline constexpr int kOpenManifestSchema = 2;
 //      Enhance tab (Enhance's tools, docs/plans/edit-refresh.md S5). No new point.
 //  14  2026-11-05: a progress bar's `detail` ("48 of 161 MB") and `timed` (the
 //      host says the time left), the one progress line (docs/design/20). No new point.
+//  15  2026-11-14: a text field's `secure` (dots; the core never keeps its value
+//      in a tree): the Phone access add-on's passphrase. No new point.
 inline constexpr std::uint32_t kContributionApi = 15;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;

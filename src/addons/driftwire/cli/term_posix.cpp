@@ -151,6 +151,8 @@ struct console::impl {
 
 bool console::is_terminal() noexcept { return ::isatty(STDIN_FILENO) == 1 && ::isatty(STDOUT_FILENO) == 1; }
 
+bool console::redraws_in_place() noexcept { return ::isatty(STDOUT_FILENO) == 1; }
+
 bool console::utf8() noexcept {
   // The locale the person chose (LC_ALL, LC_CTYPE, LANG), read and then put back.
   const char* now = std::setlocale(LC_CTYPE, nullptr);

@@ -54,6 +54,19 @@ TEST_CASE("right-click shares the selection when the clicked file is in it", "[s
   CHECK(share_stops({}, "/d/a.jpg") == std::vector<std::string>{"/d/a.jpg"});
 }
 
+TEST_CASE("the folder tile under the cursor is shared whole", "[shell][share]") {
+  // Gallery open, keyboard on tile 2 of 5, no range, nothing right-clicked.
+  CHECK(share_takes_folder(true, 2, 5, false, -1));
+  // A range is the person's own pick: it wins.
+  CHECK_FALSE(share_takes_folder(true, 2, 5, true, -1));
+  // A right-clicked file shares that file.
+  CHECK_FALSE(share_takes_folder(true, 2, 5, false, 7));
+  // No tile under the cursor, a stale cursor, or the grid closed: the files.
+  CHECK_FALSE(share_takes_folder(true, -1, 5, false, -1));
+  CHECK_FALSE(share_takes_folder(true, 5, 5, false, -1));
+  CHECK_FALSE(share_takes_folder(false, 2, 5, false, -1));
+}
+
 TEST_CASE("pair halves follow their primary", "[shell][share]") {
   const std::map<std::string, std::string, std::less<>> pairs = {
       {"/d/a.jpg", "/d/a.cr3"},

@@ -12,13 +12,14 @@ using Windows.Storage;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// Issue #444 (docs/design/16 "Share"): one share command, four ways in.
-/// Ctrl+Shift+S, the gallery's share icon, the command bar's share button
-/// (beside Home) and the right-click Share submenu all post the command
-/// table's <c>share</c> id; native picks the files (the range, else the marks,
-/// else the current file, or the right-clicked file when it is not one of
-/// them), walks the pair halves on its pool and hands them back through
-/// <see cref="ShareMenu"/>. The menu is Driftwire first (or its one-click
+/// Issue #444 (docs/design/16 "Share"): one share command, three ways in.
+/// Ctrl+Shift+S, the command bar's one share button (beside Home) and the
+/// right-click Share submenu all post the command table's <c>share</c> id;
+/// native picks the files (the range, else the outlined folder tile, else the
+/// marks, else the current file, or the right-clicked file when it is not one
+/// of them), walks the pair halves on its pool and hands them back through
+/// <see cref="ShareMenu"/>. A folder comes back as one path and no media:
+/// Driftwire sends it whole, Windows Share is off. The menu is Driftwire first (or its one-click
 /// install), then Windows Share (Mail, Phone Link, Nearby Share, apps). The
 /// sheet is a WinRT object bound to the native window through
 /// <c>IDataTransferManagerInterop</c>, the contract SMTC uses
@@ -40,6 +41,7 @@ public static partial class IslandHost
     private static FrameworkElement? _shareAnchor;
     private static Windows.Foundation.Point? _shareAt;
     private static Button? _barShareButton;
+    private static string? _barShareName;
 
     /// <summary>
     /// The island's command carries one float: (clicked + 1) * 16 + from * 4 + target,
@@ -105,12 +107,11 @@ public static partial class IslandHost
         }
     }
 
-    // The key and the bar anchor at the bar's share button; the icon at
-    // itself; a right-click where it was clicked. Fallback: the bar's island.
+    // The key and the bar anchor at the bar's share button; a right-click
+    // where it was clicked. Fallback: the bar's island.
     private static (FrameworkElement?, Windows.Foundation.Point?) ShareAnchorFor(int from)
     {
         if (from != ShareFromKey && _shareAnchor is { XamlRoot: not null } asked) return (asked, _shareAt);
-        if (from == ShareFromGallery && _galleryShare is { XamlRoot: not null } icon) return (icon, null);
         if (_barShareButton is { XamlRoot: not null, Visibility: Visibility.Visible } bar && _barPathRow?.Visibility == Visibility.Visible)
             return (bar, null);
         return (_source?.Content as FrameworkElement, null);
@@ -205,6 +206,42 @@ public static partial class IslandHost
     }
 
     /// <summary>
+    /// A folder tile's right-click menu: Share ▸ with that folder. The chrome
+    /// already holds the path, so nothing goes through native; Driftwire walks
+    /// the folder once picked, and Windows Share, which takes files, is off.
+    /// </summary>
+    private static MenuFlyout FolderContextMenuFor(FolderCardVm vm, FrameworkElement anchor, Windows.Foundation.Point? at)
+    {
+        var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
+        var sub = new MenuFlyoutSubItem
+        {
+            Text = "Share",
+            Icon = new FontIcon { Glyph = "", FontFamily = SymbolFont },
+        };
+        List<string> folder = [vm.Path];
+        foreach (MenuFlyoutItemBase item in ShareEntries(() => ShareWithDriftwire(folder, anchor, at), () => { }, false))
+        {
+            sub.Items.Add(item);
+        }
+        menu.Items.Add(sub);
+        menu.Closed += (_, _) => RestoreCanvasFocus();
+        return menu;
+    }
+
+    /// <summary>A folder tile's or chip's right-click: Share ▸ (above).</summary>
+    private static void AttachFolderContextMenu(FrameworkElement tile, FolderCardVm vm)
+    {
+        tile.ContextRequested += (_, e) =>
+        {
+            Windows.Foundation.Point? point = e.TryGetPosition(tile, out Windows.Foundation.Point at) ? at : null;
+            MenuFlyout menu = FolderContextMenuFor(vm, tile, point);
+            if (point is { } p) menu.ShowAt(tile, new FlyoutShowOptions { Position = p });
+            else menu.ShowAt(tile);
+            e.Handled = true;
+        };
+    }
+
+    /// <summary>
     /// A tile's (or the canvas's) right-click menu: the add-ons' entries, then
     /// Share. Never null: Share is always there (issue #444).
     /// </summary>
@@ -228,19 +265,39 @@ public static partial class IslandHost
     private static Button BuildBarShareButton()
     {
         Button b = PathIconButton("", () => RequestShare(ShareTargetMenu, ShareFromBar, -1, _barShareButton));
-        AutomationProperties.SetName(b, "Share");
-        ToolTipService.SetToolTip(b, "Share: Driftwire, Mail, Phone Link and more" + KeyNote(Command.Share));
         _barShareButton = b;
+        _barShareName = null;
         UpdateBarShareButton();
         return b;
     }
 
-    /// <summary>Off with nothing to share: no file on screen and no gallery selection.</summary>
+    // shell::share_takes_folder's rule, from the chrome's copy of the state.
+    private static bool ShareTakesFolder =>
+        _galleryVisible && _galleryRange.Count == 0 && _folderCursor >= 0 && _folderCursor < Folders.Count;
+
+    /// <summary>Whether Share has anything: a folder tile, the range or the file on screen.</summary>
+    private static bool ShareAvailable => ShareTakesFolder ||
+        (Items.Count > 0 && ((_selectedIndex >= 0 && _selectedIndex < Items.Count) || _galleryRange.Count > 0));
+
+    /// <summary>
+    /// The one share button's state, from what native will share: the gallery's
+    /// range, the outlined folder tile, or the file on screen. Off with none of
+    /// them. Its name says what a click sends.
+    /// </summary>
     private static void UpdateBarShareButton()
     {
         if (_barShareButton is null) return;
-        bool any = Items.Count > 0 && ((_selectedIndex >= 0 && _selectedIndex < Items.Count) || _galleryRange.Count > 0);
+        bool folder = ShareTakesFolder;
+        bool any = ShareAvailable;
         if (_barShareButton.IsEnabled != any) _barShareButton.IsEnabled = any;
+        string name = _galleryRange.Count > 1 ? $"Share {_galleryRange.Count} files"
+            : folder ? $"Share the folder {Folders[_folderCursor].Name}"
+            : "Share";
+        // Every arrow lands here: the name and tip change only when they differ.
+        if (name == _barShareName) return;
+        _barShareName = name;
+        AutomationProperties.SetName(_barShareButton, name);
+        ToolTipService.SetToolTip(_barShareButton, name + ": Driftwire, Mail, Phone Link and more" + KeyNote(Command.Share));
     }
 
     // ---- Windows Share ---------------------------------------------------------------------

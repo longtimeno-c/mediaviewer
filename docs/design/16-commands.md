@@ -214,16 +214,22 @@ clip; closing resumes it. Folder path sits in the command bar left of `?`, with 
   of marks.
 - **Drag-out** from any cell (Mac: `GalleryDrag`): a range cell drags the range, a marked cell the
   marks, else itself.
-- **One share icon** ("Share") over the grid opens the share menu.
+- Share is the command bar's one button beside Home (below); there is no second one over the grid.
 
 #### Share (#444)
 
-One command, `share` (id 149, `Ctrl+Shift+S` / `⌘⇧S`), from the key, the gallery's share icon,
-the command bar's share button beside Home, File ▸ Share… / Open ▸ Share…, and **Share ▸** on the
-right-click menu of a gallery cell, filmstrip cell and the canvas. Shared part: `shell/share_menu.h`.
+One command, `share` (id 149, `Ctrl+Shift+S` / `⌘⇧S`), from the key, the command bar's one share
+button beside Home, File ▸ Share… / Open ▸ Share…, and **Share ▸** on the right-click menu of a
+gallery cell, filmstrip cell and the canvas. Shared part: `shell/share_menu.h`.
 
-- **Files**: range, else marks, else current; right-click on an unselected file shares it alone
-  (`share_stops`).
+- **Files**: range, else the outlined folder tile, else marks, else current; right-click on an
+  unselected file shares it alone (`share_stops`). The bar button is off with none of them, and
+  its name says what it sends ("Share 12 files", "Share the folder …").
+- **A folder** (`share_takes_folder`: gallery open, keyboard on a folder tile, no range): the folder
+  path, no media. Driftwire walks and sends it whole, as its own **Send a folder** does; Windows
+  Share is greyed (it takes files) and the Mac goes straight to Driftwire. A folder tile's or chip's
+  right-click has **Share ▸ Driftwire** for that folder (the chrome holds the path). Not for a
+  Photos library album, which is no folder on disk.
 - **Menu**: [Driftwire](28-driftwire.md) first (or its install), then Windows Share
   (`DataTransferManager`) / `NSSharingServicePicker`. Picking sets `share_target`. Driftwire gets
   pair halves and XMPs; the system gets media only (`share_system_files`).

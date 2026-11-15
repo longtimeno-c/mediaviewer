@@ -22,7 +22,7 @@ public static partial class IslandHost
         flyout.Items.Add(FileItem("Move Marked To…", Command.MoveToPick, any));
         flyout.Items.Add(FileItem("Move to Recycle Bin", Command.DeleteToRecycleBin, any));
         flyout.Items.Add(Sep());
-        flyout.Items.Add(FileItem("Share…", Command.Share, any));
+        flyout.Items.Add(FileItem("Share…", Command.Share, ShareAvailable));
         flyout.Items.Add(FileItem("Copy Path", Command.CopyPath, any));
         flyout.Items.Add(FileItem("Copy Edited Image", Command.CopyFlattened, any));
         flyout.Items.Add(Sep());

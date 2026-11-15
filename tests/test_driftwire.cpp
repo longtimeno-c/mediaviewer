@@ -1163,6 +1163,30 @@ TEST_CASE("driftwire: a new set to send never waits for the one still being read
   CHECK(ann.host.pair_calls.load() == 2);  // the replaced middle set was never read
 }
 
+TEST_CASE("driftwire: a set of one folder is sent whole, as Choose... sends it", "[driftwire]") {
+  // The host's Share on a gallery folder tile hands over the folder's path
+  // (docs/design/16 "Share"); it is walked, housekeeping left out, never
+  // dropped as "not a file".
+  scratch_dir s("driftwire_share_folder");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  write_text(s / "2022" / "a.jpg", "a");
+  write_text(s / "2022" / "trip" / "b.mov", "b");
+  write_text(s / "2022" / "Thumbs.db", "x");
+  ann.eng.set_files({utf8(s / "2022")});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 2;
+  }));
+  // A folder among other paths is not this case: only the files go.
+  write_text(s / "c.jpg", "c");
+  ann.eng.set_files({utf8(s / "c.jpg"), utf8(s / "2022")});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1;
+  }));
+}
+
 TEST_CASE("driftwire: a wrong code three times ends the link, and nothing about the files leaves",
           "[driftwire]") {
   scratch_dir s("driftwire_code");

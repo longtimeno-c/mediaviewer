@@ -93,6 +93,16 @@ $allowed = [ordered]@{
     'nle'    = @('nle', 'addon', 'image', 'io', 'core')
 }
 
+# Single headers a module may include although their module is not on its list.
+# 2026-11-15: the server's menu (docs/plans/self-hosted.md "Tray") is the base
+# app's own kept entry, but its model moved into the Phone access add-on with
+# self_host (#686); mediaviewer_core links only those objects of mv_phone
+# (CMakeLists.txt). Until the tray moves back below abi, abi/ may include it and
+# nothing else of addons/.
+$allowedFiles = @{
+    'abi' = @('addons/phone/host_tray.h')
+}
+
 $SourceRoot = (Resolve-Path $SourceRoot).Path
 $violations = @()
 
@@ -115,7 +125,8 @@ foreach ($module in $allowed.Keys) {
             $target = $matches[1]
             if (-not $allowed.Contains($target)) { continue }
 
-            if ($allowed[$module] -notcontains $target) {
+            if ($allowed[$module] -notcontains $target -and
+                -not ($allowedFiles.Contains($module) -and $allowedFiles[$module] -contains $included)) {
                 $violations += [pscustomobject]@{
                     File   = $file.FullName.Substring($SourceRoot.Length + 1)
                     Line   = $lineNumber

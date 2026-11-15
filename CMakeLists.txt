@@ -73,6 +73,18 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (docs/design/09 CI configuration)" OFF)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/download.cmake")  # mv_download: retried, hash-checked
+if(MV_BUILD_TESTS AND NOT IOS)
+  foreach(_case ok bad_hash unreachable)
+    add_test(NAME cmake_download_${_case}
+             COMMAND "${CMAKE_COMMAND}" -DCASE=${_case} -DWORK=${CMAKE_BINARY_DIR}/_test_download/${_case}
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_download.cmake")
+  endforeach()
+  set_tests_properties(cmake_download_bad_hash PROPERTIES WILL_FAIL ON)
+  set_tests_properties(cmake_download_unreachable PROPERTIES
+    PASS_REGULAR_EXPRESSION "Download failed after 3 tries")
+endif()
+
 # The iPhone core (docs/plans/mobile.md): engines only, no viewer.
 if(IOS)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ios.cmake")
