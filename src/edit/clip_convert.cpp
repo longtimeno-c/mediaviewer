@@ -262,10 +262,10 @@ expected segment_with(std::string_view utf8_path, std::uint32_t k, std::uint32_t
   const std::int64_t end_sample = av_rescale(end, out_rate, 1'000'000'000);
   std::int64_t feed_from = start_sample;
   if (aenc && k > 0) {
-    const std::int64_t frame = aenc->context()->frame_size > 0 ? aenc->context()->frame_size : 1024;
+    const std::int64_t frame_size = aenc->context()->frame_size > 0 ? aenc->context()->frame_size : 1024;
     const std::int64_t pad = std::max(0, aenc->context()->initial_padding);
-    const std::int64_t frames_back = (2 * pad + frame - 1) / frame;
-    feed_from = start_sample + pad - frames_back * frame;
+    const std::int64_t frames_back = (2 * pad + frame_size - 1) / frame_size;
+    feed_from = start_sample + pad - frames_back * frame_size;
   }
   std::vector<float> pcm;
   const auto audio_sink = [&](AVPacket* p) -> expected {
