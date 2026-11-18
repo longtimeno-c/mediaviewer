@@ -130,11 +130,11 @@ if(WIN32)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_enhance_ort} "${_enhance_out}")
 elseif(APPLE)
   add_custom_command(TARGET mv_enhance POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_DIR}/lib/libonnxruntime.${MV_ORT_VERSION}.dylib"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_DIR}/lib/libonnxruntime.dylib"
             "${_enhance_out}/libonnxruntime.dylib")
 else()
   add_custom_command(TARGET mv_enhance POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_DIR}/lib/libonnxruntime.so.${MV_ORT_VERSION}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_DIR}/lib/libonnxruntime.so"
             "${_enhance_out}/libonnxruntime.so")
 endif()
 add_custom_command(TARGET mv_enhance POST_BUILD

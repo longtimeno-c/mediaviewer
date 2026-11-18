@@ -1075,7 +1075,7 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    folder's PDFs and DOCX files are read for their words (#354); the status lines then carry
    `"docs":[done,total,locked,failed]`. The pack stages PDFium beside `mv_ai` from its pinned
    download (`cmake/ai.cmake`); set `MV_ORT_ARCHIVE_DIR` to a folder holding
-   `pdfium-<platform>-8066.tgz` (and ORT's archive) to configure offline.
+   `pdfium-<platform>-8066.tgz` (and `microsoft.ml.onnxruntime.1.30.0.nupkg`) to configure offline.
 5. Quit's cost with a pack loaded: `ai-bench --addons <folder> --query dog --quit-after 1`
    quits the way both hosts do (the pack gets half a second to stop, then the exit skips static
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
