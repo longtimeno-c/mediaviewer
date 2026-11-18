@@ -35,6 +35,43 @@ struct PhotoLibrarySaver: PhotoSaver {
     }
   }
 
+  func shareable(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error> {
+    AsyncThrowingStream { continuation in
+      let task = Task.detached(priority: .userInitiated) {
+        do {
+          var file: URL?
+          for try await event in originals.original(for: item) {
+            switch event {
+            case .progress(let progress): continuation.yield(.progress(progress))
+            case .finished(let url): file = url
+            }
+          }
+          guard let file else { throw MediaFailure.synologyUnreachable }
+          continuation.yield(.finished(try Self.named(file, as: item)))
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
+      }
+      continuation.onTermination = { _ in task.cancel() }
+    }
+  }
+
+  /// The cached original has no name of its own: a hard link (a copy across volumes) under the
+  /// file's name, in one folder that the next share empties.
+  private static func named(_ file: URL, as item: MediaItem) throws -> URL {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Shared", isDirectory: true)
+    try? FileManager.default.removeItem(at: folder)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    var name = safeName(item.fileName)
+    if (name as NSString).pathExtension.isEmpty, let ext = fileType(of: file, named: item.fileName, isClip: item.kind == .clip).preferredFilenameExtension {
+      name += "." + ext
+    }
+    let target = folder.appendingPathComponent(name)
+    do { try FileManager.default.linkItem(at: file, to: target) } catch { try FileManager.default.copyItem(at: file, to: target) }
+    return target
+  }
+
   private static func add(_ file: URL, as item: MediaItem) async throws {
     // Photos refuses a resource without an extension (PHPhotosError 3302) and the cached original
     // has none, so it gets a hard link under the original's own name, gone once Photos has its copy.
