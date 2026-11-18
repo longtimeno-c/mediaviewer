@@ -1502,8 +1502,9 @@ TEST_CASE("driftwire tunnel: Use for all apps points the system proxy at it, and
 
   // Use for all apps off: back as it was; on: pointed again.
   eng.on_event("tunnel_all_apps", 2, "false");
-  REQUIRE(eventually([&] { return os->now() == before; }));
-  CHECK_FALSE(eng.snapshot().tunnel_system);
+  // The OS's proxy goes back before the engine's own state says so: wait for
+  // both, or a slow runner reads the flag in between (seen on Windows CI).
+  REQUIRE(eventually([&] { return os->now() == before && !eng.snapshot().tunnel_system; }));
   CHECK_FALSE(sysproxy::load_record(utf8(dir / sysproxy::kRecordFile)));
   CHECK_FALSE(eng.snapshot().tunnel_address.empty());  // the Tunnel itself still runs
   eng.on_event("tunnel_all_apps", 2, "true");
