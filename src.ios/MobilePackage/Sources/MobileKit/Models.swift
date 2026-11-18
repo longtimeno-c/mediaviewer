@@ -119,13 +119,16 @@ public struct Folder: Identifiable, Hashable, Sendable {
   /// The drive that holds it is not connected to the server now (unplugged, a share not mounted;
   /// docs/plans/self-hosted.md §6): shown, said so, and never opened until it is back.
   public let offline: Bool
+  /// Documents and audio a catalogue indexed in it and beneath (never grid items); 0 when unknown.
+  public let fileCount: Int
 
-  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false) {
+  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false, fileCount: Int = 0) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.hasSubfolders = hasSubfolders
     self.offline = offline
+    self.fileCount = fileCount
   }
 }
 

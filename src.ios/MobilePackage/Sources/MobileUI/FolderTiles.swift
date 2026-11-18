@@ -91,7 +91,12 @@ struct FolderTile: View {
   /// "1,204 items" from a catalogue; "12 folders · 48 items · 3 files" from a folder listed in file mode.
   private func detail(_ preview: FolderPreview?) -> String? {
     if folder.offline { return FailureCopy.notConnected }
-    if folder.itemCount >= 0 { return Self.count(folder.itemCount, "item") }
+    if folder.itemCount >= 0 {
+      // A catalogue's: everything beneath, its documents and audio counted apart from its photos.
+      let parts = [folder.itemCount > 0 || folder.fileCount == 0 ? Self.count(folder.itemCount, "item") : nil,
+                   folder.fileCount > 0 ? Self.count(folder.fileCount, "file") : nil].compactMap { $0 }
+      return parts.joined(separator: " · ")
+    }
     guard let preview, let files = preview.files, let folders = preview.folders else { return nil }
     let others = preview.others ?? 0
     let parts = [folders > 0 ? Self.count(folders, "folder") : nil, files > 0 ? Self.count(files, "item") : nil,

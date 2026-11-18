@@ -109,6 +109,11 @@ catalogue) opens in **file mode**:
   and "Show all N files" above the folder's photos, every row when it has none. A tap fetches the
   whole file (`mv_files_read`, the originals store, shown as the shared progress track) and opens it
   in Quick Look; MediaViewer decodes none of them, and search stays over the photos and clips.
+- **With a catalogue too**: the catalogue holds the documents and audio Local search indexed
+  (kinds 3 and 4, copied whole by `catalogue_build`); the phone reads them for folders and counts,
+  never grid rows, so a folder of only PDFs is still a folder. Its list comes from its place on the
+  server (`mv_files_folder_place`, the share lookup an original's read uses), which also brings the
+  files Local search does not index (saves, archives).
 - **Folder tiles are drawn as folders**: a back with a tab, up to three of the folder's pictures
   fanned out of the top (paper sheets for a folder of documents only), and the front over them, so a
   folder never reads as a photo. The tile's line counts files too ("4 items · 6 files").
