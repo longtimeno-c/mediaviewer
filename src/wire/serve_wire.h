@@ -167,8 +167,17 @@ struct caps_msg {
   // "degraded", "rebuilding", "offline" or "failing"; "" from a service with none, or from one
   // older than that.
   std::string storage;
+  // Where the service is now (kCapsAddresses), each "host:port": its address on its own network,
+  // its public name (a DuckDNS name and the router's port) and the person's relay. "" for one it
+  // has none of, and all "" from a service older than this. A paired device keeps what it has for
+  // an empty one; the Noise handshake pins the service's key, so an address can only ever lead
+  // back to this service.
+  std::string local, public_name, relay;
 };
 inline constexpr const char* kCapsRole = "role";
+inline constexpr const char* kCapsAddresses = "addresses";  // {"local","public","relay"}, each optional
+// The longest address a caps or serve.json carries.
+inline constexpr std::size_t kMaxAddressBytes = 255;  // as the pairing code's
 // One of the words above.
 [[nodiscard]] bool is_storage_word(std::string_view word) noexcept;
 // What the phone says for it ("Your server's mirror lost a drive. …"); "" for none.
@@ -342,6 +351,10 @@ struct config {
   // waits there for its paired phones (docs/plans/nas-relay.md). Its key is in
   // the secret store (kRelayKeyName), never here.
   std::string relay;
+  // Where paired devices find the service ("host:port", "" for none), as the owner's desktop last
+  // set them (serve_admin set_addresses): sent in every session's caps, so a device paired before
+  // a DuckDNS name or a new LAN address learns it without pairing again.
+  std::string local, public_name;
 };
 
 // What a paired device's waiter at the relay is called: BLAKE2b-128 keyed by
@@ -352,7 +365,7 @@ struct config {
 // The relay's "host:port" (a name, an IPv4 address or "[IPv6]:port"), split;
 // false for anything else (no port, port 0, spaces or control characters).
 [[nodiscard]] bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port);
-// {"port":N,"name":"...","roots":[{"id","label","path"}],"relay":"host:port"?}. `any_port`: port 0
+// {"port":N,"name":"...","roots":[{"id","label","path"}],"relay"?,"local"?,"public"?} (each "host:port"). `any_port`: port 0
 // is accepted (the OS picks; the test build only): a service needs a fixed one. `no_roots`: a
 // config with no folders yet is accepted (`driftwire host`, which serves nothing until one is
 // shared); the service itself needs one.

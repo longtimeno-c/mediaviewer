@@ -217,6 +217,7 @@ class library {
   // The live link, connecting when there is none; sets the server's state.
   [[nodiscard]] expected connect(server_rt& s, bool person, const mobile::cancel_flag* cancel);
   void set_state(server_rt& s, reach r);
+  void keep_addresses(server_rt& s);  // after a connect: the caps' addresses into servers.json
   [[nodiscard]] expected save_locked() const;  // m_ held
   [[nodiscard]] std::optional<identity> identity_of(std::string_view file_key);
   [[nodiscard]] std::string servers_file() const;

@@ -43,7 +43,9 @@ host card / `driftwire host pair` ──code──▶ desktop: File → Connect 
 - **The device key** is the desktop's own (X25519, made at pairing), kept in the OS store
   (`secrets::os_store(kAppService)`: Keychain, DPAPI) with the access key, under
   `remote_<server id>`. The server's name, routes and pinned identity are in `servers.json` in the
-  app's data folder; no key is in that file. The service lists the desktop with the phones under
+  app's data folder; no key is in that file. The routes start as the code's and follow what the
+  server says at each connect (a DuckDNS name or relay added later; docs/design/28-driftwire.md,
+  "Addresses after pairing"). The service lists the desktop with the phones under
   the name it gave ("MacBook Pro", the computer's name) and revokes it the same way.
 - **Read-only.** The desktop never calls the service's write op. Every `remote:` item is
   read-only through `shell/write_guard` (Move, Trash, rename, ratings and every metadata edit are

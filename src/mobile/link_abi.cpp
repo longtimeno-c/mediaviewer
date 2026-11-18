@@ -436,6 +436,24 @@ const char* mv_link_storage_words(int32_t code) {
   return mv::driftwire::serve::storage_words(kStorageWords[code]);
 }
 
+int32_t mv_link_addresses_now(mv_mobile_link* l, mv_link_addresses* out) {
+  return catch_all([&]() -> int32_t {
+    if (!out) return -1;
+    *out = {};
+    if (!l || l->fixed || !l->session) return -1;  // the sample library: no service
+    std::string local, public_name, relay;
+    l->session->addresses(local, public_name, relay);
+    // Each fits (the caps and the code carry at most 255 bytes); one that would not is left empty.
+    const auto put = [](const std::string& from, char (&into)[256]) {
+      if (from.size() < sizeof into) std::memcpy(into, from.c_str(), from.size() + 1);
+    };
+    put(local, out->local);
+    put(public_name, out->public_name);
+    put(relay, out->relay);
+    return 0;
+  });
+}
+
 int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
   return catch_all([&]() -> int32_t {
     if (expires_unix) *expires_unix = 0;

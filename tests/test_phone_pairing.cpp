@@ -212,6 +212,36 @@ TEST_CASE("phone pairing: a desktop on the same computer claims the service over
   CHECK(n.store->exists(serve::kOwnerName));
 }
 
+TEST_CASE("phone pairing: addresses set after pairing reach the service and every paired phone's caps", "[phone-pairing]") {
+  // The owner pairs a phone at home, then adds a DuckDNS name: the service learns it from the
+  // desktop and tells the phone at its next connect, so it never has to pair again.
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 device = random_key();
+  {
+    auto phone = n.phone(device, p->code);
+    REQUIRE(phone);
+    // The desktop's first session told the service its LAN address; no public name yet.
+    CHECK((*phone)->caps().local == n.local());
+    CHECK((*phone)->caps().public_name.empty());
+  }
+  REQUIRE(mac.d->set_public_name("home.duckdns.org:7878"));
+  {
+    std::lock_guard lock(n.saved_m);
+    REQUIRE_FALSE(n.saved.empty());
+    CHECK(n.saved.back().public_name == "home.duckdns.org:7878");  // into serve.json
+    CHECK(n.saved.back().local == n.local());
+    CHECK(n.saved.back().roots.size() == 2);  // the folders untouched
+  }
+  auto again = n.phone(device);
+  REQUIRE(again);
+  CHECK((*again)->caps().public_name == "home.duckdns.org:7878");
+  CHECK((*again)->caps().local == n.local());
+}
+
 TEST_CASE("phone pairing: a service is claimed once", "[phone-pairing]") {
   nas n;
   desktop first, second("Other Mac");
@@ -663,6 +693,34 @@ bool on_grants(nas& n, const key32& device) {
   REQUIRE(grants::load(*n.store, list));
   const key32 pub = public_of(device);
   return std::any_of(list.begin(), list.end(), [&](const grants::grant& g) { return g.key == pub; });
+}
+
+TEST_CASE("phone pairing: set_addresses takes host:port or nothing, and leaves out what it is not given", "[phone-pairing]") {
+  nas n;
+  claimer m(n);
+  REQUIRE(m.claim(nullptr));
+  auto owner = m.session();
+  REQUIRE(owner);
+  CHECK((*owner)->caps().local.empty());  // none set yet: none sent
+  CHECK(std::find((*owner)->caps().features.begin(), (*owner)->caps().features.end(), serve::kFeatureAddresses) !=
+        (*owner)->caps().features.end());
+  for (const char* bad : {R"({"do":"set_addresses","public":"no-port"})", R"({"do":"set_addresses","local":"a b:1"})",
+                          R"({"do":"set_addresses","public":"x:0"})", R"({"do":"set_addresses","local":5})"}) {
+    CHECK_FALSE((*owner)->admin(bad));
+  }
+  REQUIRE((*owner)->admin(R"({"do":"set_addresses","local":"192.168.1.20:7878","public":"home.duckdns.org:7878"})"));
+  REQUIRE((*owner)->admin(R"({"do":"set_addresses","local":"192.168.1.31:7878"})"));
+  {
+    std::lock_guard lock(n.saved_m);
+    REQUIRE_FALSE(n.saved.empty());
+    CHECK(n.saved.back().local == "192.168.1.31:7878");
+    CHECK(n.saved.back().public_name == "home.duckdns.org:7878");  // left out: kept
+  }
+  // Cleared by an empty one.
+  REQUIRE((*owner)->admin(R"({"do":"set_addresses","public":""})"));
+  std::lock_guard lock(n.saved_m);
+  CHECK(n.saved.back().public_name.empty());
+  CHECK(n.saved.back().local == "192.168.1.31:7878");
 }
 
 TEST_CASE("phone pairing: a guest code pairs a phone for a time, then it is cut and refused as expired", "[phone-pairing]") {

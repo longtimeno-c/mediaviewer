@@ -169,6 +169,18 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* r = doc->str(kCapsRole); r && (*r == "view" || *r == "change" || *r == "admin")) c.role = *r;
+  if (const json::value* a = doc->find(kCapsAddresses); a && a->k == json::kind::object) {
+    // Each on its own: one that is not an address is dropped, never the others.
+    const auto take = [&](const char* k, std::string& into) {
+      std::string host;
+      std::uint16_t port = 0;
+      const std::string* v = a->str(k);
+      if (v && v->size() <= kMaxAddressBytes && parse_relay_address(*v, host, port)) into = *v;
+    };
+    take("local", c.local);
+    take("public", c.public_name);
+    take("relay", c.relay);
+  }
   return c;
 }
 
@@ -510,9 +522,11 @@ result<config> parse_config(std::string_view text, bool any_port, bool no_roots)
     }
     c.roots.push_back(std::move(rc));
   }
-  if (const std::string* relay = doc->str("relay")) {
-    if (relay->size() > 300) return err(status::invalid_arg);
-    c.relay = *relay;
+  for (auto [k, into] : {std::pair{"relay", &c.relay}, std::pair{"local", &c.local}, std::pair{"public", &c.public_name}}) {
+    if (const std::string* v = doc->str(k)) {
+      if (v->size() > 300) return err(status::invalid_arg);  // as serve.json always allowed; caps carry <= kMaxAddressBytes
+      *into = *v;
+    }
   }
   return c;
 }
@@ -534,6 +548,8 @@ std::string config_json(const config& c) {
   }
   w.end_array();
   if (!c.relay.empty()) w.key("relay").string(c.relay);
+  if (!c.local.empty()) w.key("local").string(c.local);
+  if (!c.public_name.empty()) w.key("public").string(c.public_name);
   w.end_object();
   return w.take();
 }

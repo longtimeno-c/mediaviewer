@@ -152,6 +152,18 @@ void mv_link_close(mv_mobile_link* link);
  * Never blocks. */
 int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
 
+/* Where the service is (docs/design/28-driftwire.md, "Addresses after pairing"): the addresses the link was opened with,
+ * each replaced by the one the latest connect's caps gave ("host:port"; empty for none). Keep them
+ * with the pairing and pass them to mv_link_open next time, so a DuckDNS name, a relay or a new LAN
+ * address set after pairing is dialled without pairing again. Never blocks. 0, or -1 (nothing:
+ * the sample library, or no link). */
+typedef struct mv_link_addresses {
+  char local[256];
+  char public_name[256];
+  char relay[256];
+} mv_link_addresses;
+int32_t mv_link_addresses_now(mv_mobile_link* link, mv_link_addresses* out);
+
 /* The server's combined drives (docs/plans/self-host-drives.md 4), as its caps said at connect:
  * 0 healthy or none, 1 rebuilding, 2 degraded (a mirror lost a drive), 3 offline, 4 a drive failing;
  * -1 when there is no live connection (keep what you had). Never blocks. */

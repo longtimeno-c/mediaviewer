@@ -2182,3 +2182,47 @@ TEST_CASE("serve bench: a whole-file read's speed by window and round trip", "[.
     }
   }
 }
+
+TEST_CASE("serve: caps carry the service's addresses, each checked on its own", "[driftwire-serve]") {
+  // A service from before addresses: none, and nothing else changes.
+  const auto old = serve::parse_caps(serve::caps_json(1, serve::kAllOps));
+  REQUIRE(old);
+  CHECK(old->local.empty());
+  CHECK(old->public_name.empty());
+  CHECK(old->relay.empty());
+  const auto c = serve::parse_caps(serve::caps_json(
+      1, serve::kAllOps,
+      R"("addresses":{"local":"192.168.1.20:7878","public":"home.duckdns.org:7878","relay":"[2001:db8::1]:7879"})"));
+  REQUIRE(c);
+  CHECK(c->local == "192.168.1.20:7878");
+  CHECK(c->public_name == "home.duckdns.org:7878");
+  CHECK(c->relay == "[2001:db8::1]:7879");
+  // One that is not an address is dropped; the others stay, and the caps still parse.
+  const auto odd = serve::parse_caps(serve::caps_json(
+      1, serve::kAllOps, R"("addresses":{"local":"no port","public":"home.duckdns.org:7878","relay":5})"));
+  REQUIRE(odd);
+  CHECK(odd->local.empty());
+  CHECK(odd->public_name == "home.duckdns.org:7878");
+  CHECK(odd->relay.empty());
+  const auto too_long = serve::parse_caps(serve::caps_json(
+      1, serve::kAllOps, R"("addresses":{"public":")" + std::string(300, 'a') + R"(:1"})"));
+  REQUIRE(too_long);
+  CHECK(too_long->public_name.empty());
+}
+
+TEST_CASE("serve: serve.json keeps the addresses, and one from before has none", "[driftwire-serve]") {
+  serve::config c;
+  c.port = 7878;
+  c.roots = {{"0123456789abcdef", "Photos", "/photos"}};
+  c.local = "192.168.1.20:7878";
+  c.public_name = "home.duckdns.org:7878";
+  const auto back = serve::parse_config(serve::config_json(c));
+  REQUIRE(back);
+  CHECK(back->local == c.local);
+  CHECK(back->public_name == c.public_name);
+  const auto before = serve::parse_config(R"({"port":1,"roots":[{"id":"0123456789abcdef","label":"a","path":"/a"}]})");
+  REQUIRE(before);
+  CHECK(before->local.empty());
+  CHECK(before->public_name.empty());
+  CHECK(serve::config_json(before.value()).find("public") == std::string::npos);
+}

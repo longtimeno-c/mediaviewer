@@ -96,6 +96,8 @@ struct host {
   std::uint16_t port = 0;
   std::string library_id = "11111111-2222-3333-4444-555555555555";
   key32 publisher{};
+  // Where the service says it is (serve.json "local"/"public"), sent in every session's caps.
+  std::string said_local, said_public;
 
   host() {
     REQUIRE(sodium_init() >= 0);
@@ -123,6 +125,8 @@ struct host {
     o.max_pending = 64;
     o.cfg.port = want_port;
     o.cfg.name = "Home";
+    o.cfg.local = said_local;
+    o.cfg.public_name = said_public;
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", "Photos", photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", serve::kCatalogueLabel, catalogue.string()});
     o.make_listener = [want_port] {
@@ -138,11 +142,14 @@ struct host {
   void stop() { srv.reset(); }
 
   // What the host's card and `driftwire host pair` show: the code as a link.
-  std::string code(std::int64_t valid_s = 600) {
+  // `with_public`: the code names the service's public name ("localhost:port") as well; without
+  // it the LAN address is "localhost:port" (the host listens on loopback), so the code still works.
+  std::string code(std::int64_t valid_s = 600, bool with_public = true) {
     const std::string c = serve::issue_pair_code(*store, valid_s, std::time(nullptr));
     const std::string json = "{\"v\":1,\"library_id\":\"" + library_id + "\",\"library_name\":\"Home\",\"publisher_key\":\"" +
-                             hex(publisher) + "\",\"service\":{\"local\":\"127.0.0.1:" + std::to_string(port) +
-                             "\",\"public\":\"localhost:" + std::to_string(port) + "\",\"identity\":\"" + hex(identity) +
+                             hex(publisher) + "\",\"service\":{\"local\":\"" + (with_public ? "127.0.0.1:" : "localhost:") + std::to_string(port) +
+                             "\",\"public\":\"" + (with_public ? "localhost:" + std::to_string(port) : std::string()) +
+                             "\",\"identity\":\"" + hex(identity) +
                              "\"},\"access_key\":\"" + hex(access) + "\",\"code\":\"" + c +
                              "\",\"expires\":" + std::to_string(std::time(nullptr) + valid_s) + "}";
     std::string b64(sodium_base64_ENCODED_LEN(json.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
@@ -285,6 +292,47 @@ TEST_CASE("a desktop pairs from the code alone and is listed with the phones", "
   CHECK(d.lib->servers()[0].role == "view");
   REQUIRE(d.lib->server(*id));
   CHECK(d.lib->server(*id)->role == "view");
+}
+
+// The owner paired at home, then added a DuckDNS name (2026-11-18): the desktop learns it from the
+// service at its next connect and keeps it, so it reaches the server from outside without pairing
+// again. An address the service leaves out never wipes the one kept.
+TEST_CASE("a desktop learns the server's public name after pairing and keeps it", "[desktop-client]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(600, false), std::time(nullptr));
+  if (!id) FAIL("pair: " << mv::status_name(id.error()));
+  const auto servers_json = [&] {
+    auto bytes = mv::io::read_all(utf8(d.dir / "data" / "servers.json"));
+    REQUIRE(bytes);
+    return std::string(bytes->begin(), bytes->end());
+  };
+  CHECK(servers_json().find("\"public\":\"\"") != std::string::npos);
+  // The owner sets a public name on the host (the add-on's set_addresses); the service restarts.
+  const std::string pub = "[::1]:" + std::to_string(h.port);
+  h.stop();
+  h.said_public = pub;
+  h.start(h.port);
+  d.relaunch();  // a new run: it connects afresh
+  REQUIRE(d.lib->list(rm::server_key(*id)));
+  CHECK(servers_json().find("\"public\":\"" + pub + "\"") != std::string::npos);
+  CHECK(servers_json().find("\"local\":\"localhost:" + std::to_string(h.port) + "\"") != std::string::npos);
+  // A service that says nothing (older, or none set) leaves it as it is.
+  h.stop();
+  h.said_public.clear();
+  h.start(h.port);
+  d.relaunch();
+  REQUIRE(d.lib->list(rm::server_key(*id)));
+  CHECK(servers_json().find("\"public\":\"" + pub + "\"") != std::string::npos);
+  // The next run dials what was kept: with the LAN address gone, the public name still reaches it.
+  {
+    auto text = servers_json();
+    const std::string local = "\"local\":\"localhost:" + std::to_string(h.port) + "\"";
+    text.replace(text.find(local), local.size(), "\"local\":\"127.0.0.1:1\"");
+    put_file(d.dir / "data" / "servers.json", std::vector<std::uint8_t>(text.begin(), text.end()));
+  }
+  d.relaunch();
+  CHECK(d.lib->list(rm::server_key(*id)));
 }
 
 // v0.1.43 on the Mac: the keychain refused every write (-34018, signed without

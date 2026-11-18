@@ -1441,6 +1441,21 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       extra += (extra.empty() ? "" : ",") + sw.substr(1, sw.size() - 2);
     }
   }
+  {
+    // Every paired session's: where the service is now (kCapsAddresses), so a device paired
+    // before a DuckDNS name, a relay or a new LAN address learns it without pairing again.
+    const auto now = cfg();
+    if (!now->local.empty() || !now->public_name.empty() || !now->relay.empty()) {
+      json::writer w;
+      w.begin_object().key(kCapsAddresses).begin_object();
+      if (!now->local.empty()) w.key("local").string(now->local);
+      if (!now->public_name.empty()) w.key("public").string(now->public_name);
+      if (!now->relay.empty()) w.key("relay").string(now->relay);
+      w.end_object().end_object();
+      const std::string a = w.take();
+      extra += (extra.empty() ? "" : ",") + a.substr(1, a.size() - 2);
+    }
+  }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
     // Nothing in common (one side too old). The answer said so.
@@ -1944,7 +1959,8 @@ std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
   json::writer w;
-  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers).end_array();
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers);
+  w.string(kFeatureAddresses).end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
   w.key("passphrase").string(stored_name(s)).end_object();
   std::string out = w.take();
@@ -2742,6 +2758,25 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       relay_poke = true;
     }
     relay_cv.notify_all();
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "set_addresses") {
+    // Where paired devices find the service (kCapsAddresses), as the owner's desktop knows them:
+    // {"local"?,"public"?}, each "host:port" or "" for none; a member left out stays as it is.
+    // No unlock: it adds no access, and a device only ever reaches this service's key by it.
+    std::lock_guard lock(claim_m);  // one change of serve.json at a time
+    config next = *cfg();
+    for (auto [k, into] : {std::pair{"local", &next.local}, std::pair{"public", &next.public_name}}) {
+      if (!doc->find(k)) continue;
+      const std::string* v = doc->str(k);
+      std::string host;
+      std::uint16_t p = 0;
+      if (!v || v->size() > kMaxAddressBytes || (!v->empty() && !parse_relay_address(*v, host, p))) {
+        return {end_code::bad_request, {}};
+      }
+      *into = *v;
+    }
+    if (!publish_config(std::move(next))) return {end_code::error, {}};
     return {end_code::ok, "{}"};
   }
   if (*what == "remove_root") {

@@ -142,6 +142,10 @@ class link_session final : public remote_file {
   // The caps' "role" for this device (serve_wire.h kCapsRole): "view", "change" or "admin"; "" from
   // a service older than roles. -1 (as grant) with no live link.
   [[nodiscard]] int role(std::string& word) const;
+  // Where the service is (serve_wire.h kCapsAddresses): the addresses it was set up with, each
+  // replaced by the one the latest connect's caps gave; one the caps left out stays. The next
+  // race uses them, and a host keeps them so the next run does. Never blocks on a connect.
+  void addresses(std::string& local, std::string& public_name, std::string& relay) const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list(const std::string& root,
@@ -190,7 +194,7 @@ class link_session final : public remote_file {
   [[nodiscard]] std::uint32_t live_caps_ops() const;
   [[nodiscard]] bool upgrade_allowed() const noexcept;
 
-  service_config config_;
+  service_config config_;  // its addresses change under both connect_m_ and m_ (race_locked)
   std::string device_folder_id_;  // serve::device_folder_id of this phone's public key
   mutable std::mutex connect_m_;  // single-flight connect; held across the race, on a worker
   mutable std::mutex m_;          // guards live_
