@@ -272,7 +272,10 @@ error check_props(node& n, std::size_t& items) {
           ok = (key == "text" && str_max(v, kMaxText, true)) ||
                (key == "style" &&
                 one_of(v, {"body", "title", "heading", "secondary", "caption", "mono", "display"})) ||
-               (key == "copyable" && v.k == json::kind::boolean) || (key == "lines" && int_in(v, 0, 100));
+               (key == "copyable" && v.k == json::kind::boolean) || (key == "lines" && int_in(v, 0, 100)) ||
+               // "symbol" (contribution API 16, 2026-11-18): a glyph the host
+               // draws before the text, as a section heading's.
+               (key == "symbol" && v.k == json::kind::string && known_symbol(v.s));
           break;
         case node_type::image:
           ok = (key == "src" && package_image(v)) || (key == "width" && int_in(v, 0, 4096)) ||

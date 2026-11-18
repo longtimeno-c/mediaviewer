@@ -70,6 +70,11 @@ public static partial class IslandHost
         "share" => "",
         "warning" => "",
         "minus" => "",
+        "phone" => "",
+        "drive" => "",
+        "lock" => "",
+        "computer" => "",
+        "sync" => "",
         _ => "",
     };
 
@@ -269,6 +274,19 @@ public static partial class IslandHost
                     t.CharacterSpacing = 60;
                 }
                 if (JFlag(n, "copyable")) t.IsTextSelectionEnabled = true;
+                // "symbol" (contribution API 16): a glyph before the text, in its colour.
+                string glyph = JStr(n, "symbol");
+                if (glyph.Length > 0)
+                {
+                    var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+                    line.Children.Add(new FontIcon
+                    {
+                        Glyph = SlotGlyph(glyph), FontFamily = SymbolFont, FontSize = size,
+                        Foreground = t.Foreground, VerticalAlignment = VerticalAlignment.Center,
+                    });
+                    line.Children.Add(t);
+                    return line;
+                }
                 return t;
             }
             case "image":

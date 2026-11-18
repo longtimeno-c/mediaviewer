@@ -303,7 +303,8 @@ set; keymap packs native applies).
   screen through `mv_slots_*`. Host table `catalogue_publish` / `_cancel` / `_json` (after
   `thumbnail_make`) reach Local search's catalogue, `MV_ERR_NOT_FOUND` without the pack; the optional
   export `mv_addon_removed` runs on every Remove but a reinstall (`mv_addon_remove` keep_data 2).
-  Contribution API 15: a `secure` text field, never a value in the tree.
+  Contribution API 15: a `secure` text field, never a value in the tree. API 16: a text's
+  `symbol` (the card's section headings) and the glyphs phone, drive, lock, computer, sync.
 - **`mv_remote_*`** (0.44, [plan](../plans/desktop-client.md), #686): another computer's folders,
   a host or a Synology paired from its code, as a pinned remote folder; read-only until the server
   grants "change". Listings and reads run on workers; the viewer opens a remote file as a list item.

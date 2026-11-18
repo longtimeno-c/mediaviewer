@@ -220,6 +220,8 @@ public static partial class IslandHost
         // docs/plans/desktop-client.md: a pairing worked or a server was forgotten
         // (IslandHost.Remote.cs); native pins or unpins it with the folders.
         public const int RemoteChanged = 1110;
+        // Open > Home: back to the welcome card, nothing open (owner 2026-11-18).
+        public const int GoHome = 1111;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -338,7 +340,7 @@ public static partial class IslandHost
                 Rename, GalleryRange,
                 EditStripHeight, PaneEdgeState, InspectorMin,
                 CanvasTool, ToolSizeSet, ToolEraseSet,
-                Faces, RemoteChanged,
+                Faces, RemoteChanged, GoHome,
             };
             unchecked
             {
@@ -1358,6 +1360,12 @@ public static partial class IslandHost
     private static void RefreshOpenMenu(MenuFlyout flyout)
     {
         flyout.Items.Clear();
+        // Back to the start screen: whatever is open closes, and the pinned and
+        // recent folders are one click away (owner 2026-11-18). As the Mac's Open.
+        MenuFlyoutItem home = Item("Home", null, () => Send(Command.GoHome));
+        ToolTipService.SetToolTip(home, "Close what is open and go back to the start screen");
+        flyout.Items.Add(home);
+        flyout.Items.Add(Sep());
         flyout.Items.Add(Item("Media…", KeyOf(Command.Open), () => { Send(Command.Open); RestoreCanvasFocus(); }));
         flyout.Items.Add(Item("Folder…", KeyOf(Command.OpenFolder), () =>
         {

@@ -1100,6 +1100,9 @@ void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
 void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
+void editor_request_close(app_state* app);
+void stop_slideshow(app_state* app) noexcept;
+void close_workspace(app_state* app);
 void refresh_contributed_commands(app_state* app) noexcept;
 void stop_motion(app_state* app) noexcept;
 // PR 29 (docs/design/20): the Edit workspace.
@@ -6245,6 +6248,28 @@ void return_to_welcome(app_state* app) {
   refresh_welcome_recents(app);
 }
 
+// The bar's Home (owner 2026-11-18): whatever is open closes -- the Video
+// Editor, a slideshow, the Edit workspace, Settings, the folder or list -- and
+// the welcome card lists the pinned and recent folders again. Nothing on disk
+// changes. An edit not yet exported in the Video Editor asks first, and Home
+// stops there if it is kept.
+void go_home(app_state* app) {
+  if (!app || !app->session) return;
+  if (app->editor.open) {
+    editor_request_close(app);
+    if (app->editor.open) return;
+  }
+  stop_slideshow(app);
+  close_workspace(app);
+  if (app->settings_open) set_settings_open(app, false);
+  app->current_dir.clear();
+  app->siblings.clear();
+  app->sibling_index = -1;
+  app->early_open_dir.clear();
+  app->early_open_select.clear();
+  return_to_welcome(app);
+}
+
 // Milestone H: back from a result list to the folder it was opened over, on
 // the item that was open then; to the empty window when it was opened from
 // there. False when no list is open.
@@ -7596,6 +7621,9 @@ chrome_dispatch chrome_canvas_command(app_state* app, int command, float arg) {
       return chrome_dispatch::done;
     case mv::shell::chrome_cmd_remote_changed:
       remote_pins_changed(app);
+      return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_go_home:
+      go_home(app);
       return chrome_dispatch::done;
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (docs/design/12 2026-09-07), so this is

@@ -904,6 +904,19 @@ TEST_CASE("host drives: PowerShell parses every script", "[host-drives]") {
     CHECK(code == 0);
   }
 }
+
+// The listing, run for real. A PC with no Storage Spaces pool (most, and CI's) once failed it:
+// "No MSFT_StoragePool objects found" ended the script.
+TEST_CASE("host drives: this PC's drives list without an error", "[host-drives]") {
+  auto port = drives::os_port();
+  const auto all = port->list();
+  INFO(all.error);
+  CHECK(all.error.empty());
+  CHECK(!all.disks.empty());  // at least the system disk
+  const auto sets = port->sets_only();
+  INFO(sets.error);
+  CHECK(sets.error.empty());
+}
 #endif
 
 #if defined(__APPLE__)

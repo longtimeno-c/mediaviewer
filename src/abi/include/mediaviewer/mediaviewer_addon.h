@@ -1501,8 +1501,9 @@ MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, 
  * 12 a `surface` with "fill" and MV_SLOT_EVENT_RESIZE (2026-11-04);
  * 13 a screen in place "edit", MV_SLOT_PLACE_EDIT (2026-11-04);
  * 14 a progress bar's "detail" and "timed" (2026-11-05);
- * 15 a `text_field` with "secure" (2026-11-14, the Phone access add-on). */
-#define MV_ADDON_CONTRIBUTION_API 15
+ * 15 a `text_field` with "secure" (2026-11-14, the Phone access add-on);
+ * 16 a `text`'s "symbol" and five more glyphs (2026-11-18, Phone access). */
+#define MV_ADDON_CONTRIBUTION_API 16
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:
