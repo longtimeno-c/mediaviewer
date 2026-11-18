@@ -7,6 +7,7 @@
 #include <mediaviewer/mediaviewer.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -150,6 +151,8 @@ std::mutex g_pair_m;
 bool g_pair_busy = false;
 bool g_pair_ok = false;
 std::string g_pair_words;
+std::string g_pair_key;       // the server the last pairing that worked added
+std::uint64_t g_pair_seq = 0;  // pairings that worked this run
 
 }  // namespace
 
@@ -223,6 +226,10 @@ MV_API mv_status MV_CALL mv_remote_pair_start(const char* code_utf8) {
       std::lock_guard lock(g_pair_m);
       g_pair_busy = false;
       g_pair_ok = paired.has_value();
+      if (paired) {
+        g_pair_key = mv::remote::server_key(*paired);
+        ++g_pair_seq;
+      }
       g_pair_words = paired ? "Connected to " + name + ". Its folders are in the folder list."
                             : mv::remote::pair_problem_words(paired.error(), name);
     }).detach();
@@ -236,6 +243,7 @@ MV_API mv_status MV_CALL mv_remote_pair_state_json(char* utf8, uint32_t cap, uin
     {
       std::lock_guard lock(g_pair_m);
       w.begin_object().key("busy").boolean(g_pair_busy).key("ok").boolean(g_pair_ok).key("words").string(g_pair_words)
+          .key("key").string(g_pair_key).key("seq").integer(static_cast<std::int64_t>(g_pair_seq))
           .end_object();
     }
     return write_out(w.str(), utf8, cap, out_bytes);

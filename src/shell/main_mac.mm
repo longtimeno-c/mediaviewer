@@ -1855,12 +1855,6 @@ extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
   return MvCopyOut(std::string([[g_chrome_app currentFolder] UTF8String]), buf, size);
 }
-// A pinned `remote:` entry as a key: the pins keep folders without a trailing
-// separator (os_integration.h), and a server's top is `remote:<id>/`.
-static std::string remote_pin_key(const std::string& dir) {
-  return !dir.empty() && dir.back() != '/' && mv::remote::parse_key(dir + "/") ? dir + "/" : dir;
-}
-
 // docs/plans/desktop-client.md: the pinned rows. One line per paired server,
 // "name\tkey\tstate" (state: reach_name). [any-thread][no-block]
 extern "C" int32_t mv_chrome_remote_servers(char* buf, int32_t size) {
@@ -15985,7 +15979,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (std::string)remoteRowName:(const std::string&)dir {
   if (!mv::remote::is_key(dir)) return {};
   mv::remote::library* lib = mv::remote::library::shared();
-  std::string name = lib ? lib->display_name(remote_pin_key(dir)) : std::string();
+  std::string name = lib ? lib->display_name(mv::remote::server_key_of_pin(dir)) : std::string();
   return name.empty() ? std::string("Paired server") : name;
 }
 
@@ -16224,7 +16218,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
       [self noticeShow:"Paired servers are still loading. Try again in a moment."];
       return;
     }
-    [self openRemoteFolder:remote_pin_key(gone)];
+    [self openRemoteFolder:mv::remote::server_key_of_pin(gone)];
     return;
   }
   __weak MvLabApp* weakSelf = self;

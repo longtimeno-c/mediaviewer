@@ -242,6 +242,10 @@ enum chrome_command : int {
   // docs/plans/edit-refresh.md S8: the Faces panel's controls (IslandHost.Faces.cs),
   // arg = shell::pack_faces_op (op x 100000 + (face + 1) x 100 + (action + 1)).
   chrome_cmd_faces = 1109,
+  // docs/plans/desktop-client.md: a pairing worked or a server was forgotten in
+  // the tree (IslandHost.Remote.cs); native pins the new server with the
+  // folders and drops the pins of servers gone (mv_remote_pair_state_json, mv_remote_servers_json).
+  chrome_cmd_remote_changed = 1110,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -487,7 +491,7 @@ static_assert(static_cast<int>(command_id::tool_smaller) == 216 && static_cast<i
               static_cast<int>(command_id::tool_brush) == 224 && static_cast<int>(command_id::tool_red_eye) == 225 &&
               static_cast<int>(command_id::tool_extend) == 226 && static_cast<int>(command_id::tool_faces) == 227);
 static_assert(chrome_cmd_canvas_tool >= kCommandCount && chrome_cmd_tool_erase_set >= kCommandCount);
-static_assert(chrome_cmd_faces >= kCommandCount);
+static_assert(chrome_cmd_faces >= kCommandCount && chrome_cmd_remote_changed >= kCommandCount);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -528,7 +532,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
       chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min,
       chrome_cmd_canvas_tool, chrome_cmd_tool_size_set, chrome_cmd_tool_erase_set,
-      chrome_cmd_faces};
+      chrome_cmd_faces, chrome_cmd_remote_changed};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);

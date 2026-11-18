@@ -71,13 +71,21 @@ UI thread through the same call a disk folder uses (`mv_chrome_list_subdirectori
 through the same call Open Folder uses (`mv_chrome_open_folder`, `mv_folder_open`): a listing of
 its files, titled with the folder's name, the gallery, filmstrip, marks and keys of any folder.
 
-**Pinned with the folders too (Mac, owner 2026-11-18).** A server paired from File > Connect to a
-Server is also pinned like a folder (issue #617's pins, as `remote:<server id>`): the welcome card,
-the Dock menu and File > Open Recent list it by its name, "Paired server" as its place, and the
-Folders pane opens if the welcome card is up. Opening the pin opens the server's one named folder
-straight away; with several it shows the Folders pane. Forget This Server unpins it; Unpin or the
-card's x drops the pin and leaves the server paired in the tree. The Windows host does not do this
-yet.
+**Pinned with the folders too (owner 2026-11-18).** A server just paired is also pinned like a
+folder (issue #617's pins, as `remote:<server id>`), named by the server with "Paired server" as
+its place:
+- **Mac:** after File > Connect to a Server; the welcome card, the Dock menu and File > Open Recent
+  list it, and the Folders pane opens if the welcome card is up. Opening the pin opens the
+  server's one named folder straight away; with several it shows the Folders pane.
+- **Windows:** after the tree's Connect to a server. The island sends `chrome_cmd_remote_changed`
+  whenever `mv_remote_generation` moves; native reads `mv_remote_pair_state_json`'s `key` and
+  `seq` to pin each pairing once, and drops the pin of a server no longer listed. The welcome card
+  and Open > Recent folders list it; the jump list does not (its items start the exe with a disk
+  path). Opening the pin lists the server's named folders on a worker (`mv_list_subdirectories`):
+  one opens straight away; with several, the folder tree shows them under the server's row.
+
+Forget This Server unpins it; Unpin or the card's x drops the pin and leaves the server paired in
+the tree. Never treated as a disk path, so never forgotten for being away.
 
 ### First pixel (rule 3)
 

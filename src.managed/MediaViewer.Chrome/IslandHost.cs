@@ -217,6 +217,9 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S8: the Faces panel's controls
         // (IslandHost.Faces.cs), arg = shell::pack_faces_op.
         public const int Faces = 1109;  // after the Video Editor look's 1100-1108
+        // docs/plans/desktop-client.md: a pairing worked or a server was forgotten
+        // (IslandHost.Remote.cs); native pins or unpins it with the folders.
+        public const int RemoteChanged = 1110;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -335,7 +338,7 @@ public static partial class IslandHost
                 Rename, GalleryRange,
                 EditStripHeight, PaneEdgeState, InspectorMin,
                 CanvasTool, ToolSizeSet, ToolEraseSet,
-                Faces,
+                Faces, RemoteChanged,
             };
             unchecked
             {
