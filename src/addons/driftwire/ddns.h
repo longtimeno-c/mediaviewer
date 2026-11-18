@@ -88,10 +88,12 @@ inline constexpr int kTimeoutMs = 15000;
 // ---- what the person types -----------------------------------------------------------------
 
 // The DuckDNS subdomain from what was typed: "home", "Home", "home.duckdns.org"
-// and "home.duckdns.org." are all "home". One label of [a-z0-9-], 1 to 63
-// long, not starting or ending with '-'. Anything with another dot
-// ("photos.home.duckdns.org", "home.example.com", "home.duckdns.org.evil"),
-// a scheme, a space inside or a character outside the set is no subdomain.
+// "home.duckdns.org." and "https://home.duckdns.org/" (pasted from the
+// browser: http:// or https://, one trailing '/') are all "home". One label
+// of [a-z0-9-], 1 to 63 long, not starting or ending with '-'. Anything with
+// another dot ("photos.home.duckdns.org", "home.example.com",
+// "home.duckdns.org.evil"), a path, a port, another scheme, a space inside or
+// a character outside the set is no subdomain.
 [[nodiscard]] std::optional<std::string> parse_subdomain(std::string_view typed);
 // "home" -> "home.duckdns.org".
 [[nodiscard]] std::string duckdns_name(std::string_view subdomain);

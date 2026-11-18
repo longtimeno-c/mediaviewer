@@ -86,6 +86,7 @@ TEST_CASE("phone access: every state of the card is a tree the core accepts", "[
     // Each part that opens in place stays a tree the core accepts.
     for (const std::string& node : {std::string("setup_open"), std::string("unlock_open"), std::string("change_open"),
                                    std::string("relay_open"), screen::row_id("fo", "r2") + "_limit",
+                                   std::string("folder_add_open"), std::string("backup_add_open"),
                                    std::string("restart_open"), std::string("handover_open")}) {
       (void)c.on_event(node, kClick, "", kNow);
       require_valid(c.build(state, kNow));
@@ -185,8 +186,56 @@ TEST_CASE("phone access: what is typed in a secure field is sent once and never 
                 R"("duckdns":"home","duckdns_token":"1a2b3c4d-0000-0000-0000-000000000000"})");
 }
 
+TEST_CASE("phone access: the claimed card is in sections, each a heading with its glyph", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  const char* here = R"({"folder":"G:\\FamilyNas","claimed":true,"nas_features":["backup"],
+    "host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})";
+  const std::string tree = c.build(here, kNow);
+  require_valid(tree);
+  std::size_t at = 0;
+  for (const auto& [id, symbol] : std::vector<std::pair<std::string, std::string>>{
+           {"sec_server", "computer"}, {"sec_phones", "phone"}, {"sec_folders", "folder"},
+           {"sec_away", "globe"}, {"sec_drives", "drive"}, {"sec_users", "person"}}) {
+    const std::size_t h = tree.find("\"id\":\"" + id + "_heading\"");
+    INFO(id);
+    REQUIRE(h != std::string::npos);
+    CHECK(h > at);  // in this order
+    at = h;
+    CHECK(tree.find("\"symbol\":\"" + symbol + "\"", h) < tree.find("\"id\":\"" + id + "\"", h));
+  }
+  // The addresses have titles of their own, not only a field.
+  CHECK(tree.find("\"id\":\"local_row\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"public_row\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"backup_add_open\",\"label\":\"Add backup folder\xE2\x80\xA6\"") != std::string::npos);
+  // Another server (not this computer): no Drives or Users.
+  const std::string nas = c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow);
+  require_valid(nas);
+  CHECK(nas.find("sec_server_heading") != std::string::npos);
+  CHECK(nas.find("sec_drives") == std::string::npos);
+  CHECK(nas.find("sec_users") == std::string::npos);
+  // A server too old for backup folders: no backup button.
+  CHECK(nas.find("backup_add_open") == std::string::npos);
+}
+
+TEST_CASE("phone access: a text's glyph and the new glyphs (contribution API 16)", "[phone-addon][slots]") {
+  REQUIRE(MV_ADDON_CONTRIBUTION_API == 16);
+  mv::addon::screen::tree t;
+  const auto with = [](const std::string& node) {
+    return R"({"type":"stack","id":"root","children":[)" + node + "]}";
+  };
+  for (const char* g : {"phone", "drive", "lock", "computer", "sync", "folder"}) {
+    INFO(g);
+    CHECK(t.set(with(R"({"type":"text","id":"h","text":"Phones","style":"heading","symbol":")" + std::string(g) + "\"}")) ==
+          mv::addon::screen::error::none);
+    CHECK(t.set(with(R"({"type":"button","id":"b","label":"Add","symbol":")" + std::string(g) + "\"}")) ==
+          mv::addon::screen::error::none);
+  }
+  CHECK(t.set(with(R"({"type":"text","id":"h","text":"Phones","symbol":"rocket"})")) == mv::addon::screen::error::bad_prop);
+  CHECK(t.set(with(R"({"type":"text","id":"h","text":"Phones","symbol":7})")) == mv::addon::screen::error::bad_prop);
+}
+
 TEST_CASE("phone access: the vocabulary's secure field keeps no value (contribution API 15)", "[phone-addon][slots]") {
-  REQUIRE(MV_ADDON_CONTRIBUTION_API == 15);
+  REQUIRE(MV_ADDON_CONTRIBUTION_API >= 15);
   mv::addon::screen::tree t;
   const std::string base =
       R"({"type":"stack","id":"root","children":[{"type":"text_field","id":"p","label":"Passphrase","secure":true)";
@@ -274,6 +323,43 @@ TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup
   tree = c.build(claimed, kNow);
   CHECK(tree.find("\"id\":\"duck_name\"") == std::string::npos);
 
+  // Pasted from the browser: the name in it is sent.
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  (void)c.on_event("duck_name", kChange, quoted("http://ronan.duckdns.org"), kNow);
+  (void)c.on_event("duck_token", kChange, quoted(token), kNow);
+  r = c.on_event("duck_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_name","duckdns":"ronan","duckdns_token":"1a2b3c4d-0000-0000-0000-000000000000"})");
+
+  // A name or token the server would refuse: nothing sent, the form (and the
+  // pasted token) stay, and why is said by the form, not at the foot.
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  (void)c.on_event("duck_name", kChange, quoted("https://ronan.duckdns.org/photos"), kNow);
+  (void)c.on_event("duck_token", kChange, quoted(token), kNow);
+  CHECK(c.on_event("duck_save", kClick, "", kNow).empty());
+  tree = c.build(claimed, kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"id\":\"duck_name\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"duck_error\",\"text\":\"That isn't a DuckDNS name.") != std::string::npos);
+  CHECK(tree.find("\"id\":\"error\"") == std::string::npos);
+  // The name put right: the token pasted before goes with it, not pasted again.
+  (void)c.on_event("duck_name", kChange, quoted("ronan"), kNow);
+  r = c.on_event("duck_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_name","duckdns":"ronan","duckdns_token":"1a2b3c4d-0000-0000-0000-000000000000"})");
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  (void)c.on_event("duck_name", kChange, quoted("ronan"), kNow);
+  (void)c.on_event("duck_token", kChange, quoted("not-a-token"), kNow);
+  CHECK(c.on_event("duck_save", kClick, "", kNow).empty());
+  CHECK(c.build(claimed, kNow).find("That isn't a DuckDNS token.") != std::string::npos);
+  CHECK(c.on_event("duck_cancel", kClick, "", kNow).empty());
+
+  // DuckDNS refused it: said by the name, once.
+  tree = c.build(R"({"folder":"G:\\FamilyNas","claimed":true,"error":"host_name","host_said":"KO",
+    "host":{"installed":true,"set_up":true,"running":true}})", kNow);
+  CHECK(tree.find("\"id\":\"duck_error\",\"text\":\"DuckDNS: KO\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"error\"") == std::string::npos);
+
   // Named: Change…, and the name.
   tree = c.build(R"({"folder":"G:\\FamilyNas","claimed":true,
     "host":{"installed":true,"set_up":true,"running":true,"duckdns":"home"}})", kNow);
@@ -292,6 +378,14 @@ TEST_CASE("phone access: a folder is shared after setup on a Windows server, pic
     "host":{"installed":true,"set_up":true,"running":true}})";
   std::string tree = c.build(here, kNow);
   require_valid(tree);
+  // No backup folder yet: the card says so, and Add backup folder… opens the form set for one.
+  CHECK(tree.find("\"id\":\"backup_none\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"new_path\"") == std::string::npos);
+  CHECK(c.on_event("backup_add_open", kClick, "", kNow).empty());
+  tree = c.build(here, kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"id\":\"new_backup\",\"label\":\"Phones back up to this folder\",\"value\":true") != std::string::npos);
+  CHECK(tree.find("\"id\":\"new_limit\",\"label\":\"Storage limit in gigabytes\",\"value\":\"1000\"") != std::string::npos);
   // The folder is chosen with the OS's picker on this computer.
   CHECK(tree.find("\"id\":\"new_path\",\"label\":\"Folder on this PC to share\"") != std::string::npos);
   CHECK(tree.find("\"pick\":\"folder\"") != std::string::npos);
@@ -303,9 +397,12 @@ TEST_CASE("phone access: a folder is shared after setup on a Windows server, pic
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"add_folder","label":"Backup","path":"G:\\FamilyNas\\Backup","backup":"1",)"
                 R"("limit":"500000000000","reserve":"50000000000"})");
+  // Sent: the form closes.
+  CHECK(c.build(here, kNow).find("\"id\":\"new_path\"") == std::string::npos);
 
   // A NAS's folder is still typed, and a path the server would refuse is not sent.
   (void)c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow);
+  CHECK(c.on_event("folder_add_open", kClick, "", kNow).empty());
   (void)c.on_event("new_path", kChange, quoted("photos"), kNow);
   CHECK(c.on_event("new_add", kClick, "", kNow).empty());
   CHECK(c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow).find("starting with /") != std::string::npos);
@@ -395,7 +492,7 @@ TEST_CASE("phone access: the shipped manifest declares one settings screen", "[p
   REQUIRE(c.screens.size() == 1);
   CHECK(c.screens[0].id == "settings");
   CHECK(c.screens[0].place == mv::addon::screen_place::settings);
-  CHECK(c.api_min == 15);
+  CHECK(c.api_min == 16);
   CHECK(c.items.empty());
   CHECK(d.m.commands.empty());
   CHECK(d.m.chrome.empty());
