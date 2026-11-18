@@ -210,6 +210,10 @@ public struct CommandBarView: View {
         // the far right.
         HStack(spacing: 0) {
           BarFlyout(title: "Open") { close in
+            // Back to the start screen: whatever is open closes, and the pinned and
+            // recent folders are one click away (owner 2026-11-18). As the Windows Open.
+            FlyoutItem(title: "Home") { close(); mv_chrome_menu(kMenuHome) }
+            FlyoutRule()
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
             FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
             // kMenuReveal reveals the file in Finder; it does not open it (issue #187).

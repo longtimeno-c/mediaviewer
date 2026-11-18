@@ -44,6 +44,7 @@
          TextBox fail-fasts in this host). -->
     <Compile Include="..\Shared\FlatBar.cs" Link="Shared\FlatBar.cs" />
     <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
+    <Compile Include="..\Shared\KeyUpLetters.cs" Link="Shared\KeyUpLetters.cs" />
     <Compile Include="..\Shared\ByteSize.cs" Link="Shared\ByteSize.cs" />
     <!-- Correcting people: the pack's JSON parsed and the sheets' words (Chrome.Tests runs them). -->
     <Compile Include="..\Shared\PeopleWords.cs" Link="Shared\PeopleWords.cs" />

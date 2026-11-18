@@ -206,6 +206,12 @@ or "Got it" clicked it never returns (`[hints] filmstrip_t` / `mv.hint.filmstrip
 row above photos in mixed folders); `Enter` opens, `/` finds a tile. Opening the gallery pauses a
 clip; closing resumes it. Folder path sits in the command bar left of `?`, with Up and Root.
 
+**Home** (owner 2026-11-18): the first item of the bar's **Open** menu on both hosts (Mac
+`kMenuHome`, Windows `chrome_cmd_go_home`). Whatever is open closes (a slideshow, the Edit
+workspace, Settings, the folder or a list) and the welcome card lists the pinned and recent
+folders again; nothing on disk changes. The Video Editor with an edit not exported asks first,
+and Home stops if the edit is kept. No key.
+
 #### Gallery range and share (#413)
 
 - **Shift-click** selects anchor → clicked cell in grid order; the grid stays open. Arrows never

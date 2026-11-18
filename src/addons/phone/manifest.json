@@ -1,7 +1,7 @@
 {
  "description": "Reach your library from your phone, at home and away: through a Synology, through this computer as your server, or through another computer you run. Pairs a phone with one scan, and keeps the phones you paired.",
  "contributes": {
-  "api": {"min": 15, "max": 15},
+  "api": {"min": 16, "max": 16},
   "screens": [{"id": "settings", "title": "Phone access", "place": "settings"}]
  }
 }
