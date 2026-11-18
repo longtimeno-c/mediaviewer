@@ -30,10 +30,12 @@ namespace mv::addon {
 // in the Edit workspace's Enhance tab, and a `choice` option's "disabled"
 // (2026-11-04, S9: listed, never chosen), 14 = a progress bar's `detail` and
 // `timed` (2026-11-05, docs/design/20 "Craft rules"), 15 = a `text_field` with
-// "secure" (2026-11-14, the Phone access add-on). Points of an
+// "secure" (2026-11-14, the Phone access add-on), 16 = a `text`'s "symbol" (drawn
+// before it) and the glyphs phone, drive, lock, computer and sync (2026-11-18, Phone
+// access's sections). Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 15;
+inline constexpr std::uint32_t kSlotsContributionApi = 16;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".
@@ -62,10 +64,12 @@ enum class screen_place : std::uint8_t { info_section, window, pane, sheet, sett
 // The glyphs a chrome item or badge may name: each host maps them to its own
 // symbol set (SF Symbols / Segoe Fluent Icons). An add-on ships no icon file
 // for a slot, so every item looks like the rest of the chrome.
-inline constexpr std::array<std::string_view, 25> kSymbols{
+// From API 16: phone, drive, lock, computer, sync.
+inline constexpr std::array<std::string_view, 30> kSymbols{
     "map",   "pin",    "star",  "tag",    "search", "info",  "person", "camera",
     "folder", "sparkle", "check", "flag",  "heart",  "clock", "globe",  "photo",
-    "film",  "bolt",   "gear",  "plus",   "list",   "grid",  "share",  "warning", "minus"};
+    "film",  "bolt",   "gear",  "plus",   "list",   "grid",  "share",  "warning", "minus",
+    "phone", "drive",  "lock",  "computer", "sync"};
 
 [[nodiscard]] constexpr bool known_symbol(std::string_view s) noexcept {
   for (std::string_view k : kSymbols) {

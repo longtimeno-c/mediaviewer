@@ -738,6 +738,14 @@ const folder_choice* library_folder(std::span<const folder_choice> f) {
 std::optional<std::string> parse_subdomain(std::string_view typed) {
   std::string s;
   for (const char c : trim(typed)) s.push_back(lower(c));
+  // Pasted from the browser: "https://home.duckdns.org/" is "home".
+  for (const std::string_view scheme : {"https://", "http://"}) {
+    if (s.starts_with(scheme)) {
+      s.erase(0, scheme.size());
+      if (!s.empty() && s.back() == '/') s.pop_back();
+      break;
+    }
+  }
   if (!s.empty() && s.back() == '.') s.pop_back();
   static constexpr std::string_view kZone = ".duckdns.org";
   if (s.size() > kZone.size() && s.compare(s.size() - kZone.size(), kZone.size(), kZone) == 0) {

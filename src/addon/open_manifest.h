@@ -63,7 +63,9 @@ inline constexpr int kOpenManifestSchema = 2;
 //      host says the time left), the one progress line (docs/design/20). No new point.
 //  15  2026-11-14: a text field's `secure` (dots; the core never keeps its value
 //      in a tree): the Phone access add-on's passphrase. No new point.
-inline constexpr std::uint32_t kContributionApi = 15;
+//  16  2026-11-18: a text's `symbol` (a glyph before it) and the glyphs phone,
+//      drive, lock, computer and sync: Phone access's section headings. No new point.
+inline constexpr std::uint32_t kContributionApi = 16;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
