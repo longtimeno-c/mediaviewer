@@ -63,7 +63,7 @@ internal class FakeInput : ContentControl
     private int _caretAt;
     private int _anchor;
     private bool _typing;  // the last edit was a typed character: the next one joins its undo step
-    private bool _tookChar;
+    private readonly KeyUpLetters _keyUp = new();
     private string _text = "";
 
     /// <summary>Setting it is an edit, as TextBox.Text: <see cref="Changed"/> runs.
@@ -173,6 +173,7 @@ internal class FakeInput : ContentControl
             StopCaret();
             _anchor = _caretAt;
             _typing = false;
+            _keyUp.Clear();
             Paint();
         };
         PointerPressed += (_, e) =>
@@ -186,20 +187,22 @@ internal class FakeInput : ContentControl
         {
             char c = e.Character;
             if (char.IsControl(c)) return;
-            _tookChar = true;
+            _keyUp.Typed();
             Type(c.ToString());
             e.Handled = true;
         };
         KeyDown += (_, e) =>
         {
-            _tookChar = false;
-            if (OnKey(e.Key)) e.Handled = true;
+            bool took = OnKey(e.Key);
+            _keyUp.Down((int)e.OriginalKey, took || Down(VirtualKey.Control) || Down(VirtualKey.Menu));
+            if (took) e.Handled = true;
         };
         KeyUp += (_, e) =>
         {
             // This island sometimes never raises CharacterReceived on a
-            // ContentControl; letters still have to reach the field.
-            if (_tookChar) return;
+            // ContentControl; letters still have to reach the field, but only
+            // a key typed here (KeyUpLetters: never Ctrl+V's V).
+            if (!_keyUp.Up((int)e.OriginalKey)) return;
             if (!TryCharFromKey(e, out char c)) return;
             Type(c.ToString());
             e.Handled = true;
