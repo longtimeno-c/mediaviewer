@@ -269,8 +269,8 @@ void library::install(std::unique_ptr<library> lib) {
 
 library* library::shared() noexcept { return g_shared_ptr.load(std::memory_order_acquire); }
 
-driftwire::secrets::store& library::store() {
-  return cfg_.store ? *cfg_.store : *own_store_;
+driftwire::secrets::store* library::store() noexcept {
+  return cfg_.store ? cfg_.store : own_store_.get();
 }
 
 namespace {
@@ -319,7 +319,10 @@ expected library::load() {
     if (const auto* x = v.str("relay")) s->relay = *x;
     if (const auto* x = v.str("library_id")) s->library_id = *x;
     s->paired_unix = v.integer("paired").value_or(0);
-    auto secret = store().get(kSecretPrefix + s->id);
+    // A build with no store (a dev build beside a release's servers.json) lists
+    // them as needing a new pairing, and never reads through a null store.
+    std::optional<std::vector<std::uint8_t>> secret;
+    if (auto* keys = store()) secret = keys->get(kSecretPrefix + s->id);
     if (secret && secret->size() == 64) {
       std::memcpy(s->device_key.data(), secret->data(), 32);
       std::memcpy(s->access_key.data(), secret->data() + 32, 32);
@@ -339,7 +342,7 @@ expected library::load() {
   return {};
 }
 
-expected library::save_locked() const {
+std::string library::servers_json_locked() const {
   json::writer w;
   w.begin_object().key("format").integer(1).key("servers").begin_array();
   for (const auto& [id, s] : servers_) {
@@ -355,9 +358,12 @@ expected library::save_locked() const {
         .end_object();
   }
   w.end_array().end_object();
+  return w.str();
+}
+
+expected library::write_servers(const std::string& text) const {
   std::error_code ec;
   fs::create_directories(fs_path(cfg_.data_dir), ec);
-  const std::string& text = w.str();
   return write_atomic(servers_file(),
                             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
 }
@@ -383,7 +389,7 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   if (p->expires <= now_unix) return err(status::timeout);
   // No OS store (a build signed without a keychain group, Linux without a
   // keyring): nothing could be kept, so the code is not spent.
-  if (!cfg_.store && !own_store_) return err(status::internal);
+  if (!store()) return err(status::internal);
   auto s = std::make_shared<server_rt>();
   s->id = id_of(p->identity);
   s->name = p->library_name.empty() ? std::string("Server") : p->library_name;
@@ -418,7 +424,8 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   std::array<std::uint8_t, 64> secret{};
   std::memcpy(secret.data(), s->device_key.data(), 32);
   std::memcpy(secret.data() + 32, s->access_key.data(), 32);
-  const bool kept = store().put(kSecretPrefix + s->id, secret);
+  auto* keys = store();
+  const bool kept = keys && keys->put(kSecretPrefix + s->id, secret);
   sodium_memzero(secret.data(), secret.size());
   // The service has taken the code and lists this desktop by now: not "can't
   // reach" (the Mac's keychain refused a release signed without the
@@ -428,10 +435,15 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   s->state = reach::online;  // it just answered
   std::shared_ptr<server_rt> old;
   {
-    std::lock_guard lock(m_);
-    if (auto it = servers_.find(s->id); it != servers_.end()) old = it->second;
-    servers_[s->id] = s;
-    if (auto saved = save_locked(); !saved) return err(saved.error());
+    std::lock_guard saving(save_m_);
+    std::string text;
+    {
+      std::lock_guard lock(m_);
+      if (auto it = servers_.find(s->id); it != servers_.end()) old = it->second;
+      servers_[s->id] = s;
+      text = servers_json_locked();
+    }
+    if (auto saved = write_servers(text); !saved) return err(saved.error());
   }
   if (old && old->link) old->link->shut_down();
   gen_.fetch_add(1, std::memory_order_acq_rel);
@@ -441,15 +453,20 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
 expected library::forget(std::string_view server_id) {
   std::shared_ptr<server_rt> s;
   {
-    std::lock_guard lock(m_);
-    auto it = servers_.find(std::string(server_id));
-    if (it == servers_.end()) return err(status::not_found);
-    s = it->second;
-    servers_.erase(it);
-    if (auto saved = save_locked(); !saved) return err(saved.error());
+    std::lock_guard saving(save_m_);
+    std::string text;
+    {
+      std::lock_guard lock(m_);
+      auto it = servers_.find(std::string(server_id));
+      if (it == servers_.end()) return err(status::not_found);
+      s = it->second;
+      servers_.erase(it);
+      text = servers_json_locked();
+    }
+    if (auto saved = write_servers(text); !saved) return err(saved.error());
   }
   if (s->link) s->link->shut_down();
-  (void)store().erase(kSecretPrefix + s->id);
+  if (auto* keys = store()) (void)keys->erase(kSecretPrefix + s->id);
   cache_.remove_server(s->id);
   {
     std::lock_guard lock(stamps_m_);

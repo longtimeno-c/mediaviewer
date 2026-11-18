@@ -71,6 +71,14 @@ UI thread through the same call a disk folder uses (`mv_chrome_list_subdirectori
 through the same call Open Folder uses (`mv_chrome_open_folder`, `mv_folder_open`): a listing of
 its files, titled with the folder's name, the gallery, filmstrip, marks and keys of any folder.
 
+**Pinned with the folders too (Mac, owner 2026-11-18).** A server paired from File > Connect to a
+Server is also pinned like a folder (issue #617's pins, as `remote:<server id>`): the welcome card,
+the Dock menu and File > Open Recent list it by its name, "Paired server" as its place, and the
+Folders pane opens if the welcome card is up. Opening the pin opens the server's one named folder
+straight away; with several it shows the Folders pane. Forget This Server unpins it; Unpin or the
+card's x drops the pin and leaves the server paired in the tree. The Windows host does not do this
+yet.
+
 ### First pixel (rule 3)
 
 The ladder is the one docs/design/04 sets, with the network as the slow end:

@@ -1064,6 +1064,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
                gallery:(BOOL)gallery;
 - (void)closeList;
 - (void)returnToWelcome;
+// docs/plans/desktop-client.md: a paired server's pin (`remote:<id>/`) leaves
+// the card, the Dock menu and Open Recent with the server.
+- (void)forgetFolder:(const std::string&)dir;
 - (void)openNewWindow;
 // #452 (docs/design/28 "In the background"): an add-on keeps the process.
 - (void)quitFromMenu:(id)sender;
@@ -1852,6 +1855,12 @@ extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
   return MvCopyOut(std::string([[g_chrome_app currentFolder] UTF8String]), buf, size);
 }
+// A pinned `remote:` entry as a key: the pins keep folders without a trailing
+// separator (os_integration.h), and a server's top is `remote:<id>/`.
+static std::string remote_pin_key(const std::string& dir) {
+  return !dir.empty() && dir.back() != '/' && mv::remote::parse_key(dir + "/") ? dir + "/" : dir;
+}
+
 // docs/plans/desktop-client.md: the pinned rows. One line per paired server,
 // "name\tkey\tstate" (state: reach_name). [any-thread][no-block]
 extern "C" int32_t mv_chrome_remote_servers(char* buf, int32_t size) {
@@ -1893,6 +1902,7 @@ extern "C" void mv_chrome_remote_forget(const char* server_key_utf8) {
   if (![g_chrome_app remoteOpenKey].empty() && [g_chrome_app remoteOpenKey].rfind(server_key_utf8, 0) == 0) {
     [g_chrome_app returnToWelcome];
   }
+  [g_chrome_app forgetFolder:mv::remote::server_key(id)];  // its pin on the card, if it has one
   std::thread([lib, id] { (void)lib->forget(id); }).detach();
 }
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
@@ -15275,7 +15285,8 @@ class remote_clip_source final : public mv::player::byte_source {
     if (!lib) return mv::err(mv::status::unsupported_format);
     return lib->tile(key, nullptr);
   });
-  _jobs.submit_at(mv::background_generation, [data_dir, cache_dir](const mv::job_context&) -> mv::status {
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, data_dir, cache_dir](const mv::job_context&) -> mv::status {
     mv::remote::config c;
     c.data_dir = data_dir;
     c.cache_dir = cache_dir;
@@ -15293,6 +15304,10 @@ class remote_clip_source final : public mv::player::byte_source {
     auto lib = std::make_unique<mv::remote::library>(std::move(c));
     (void)lib->load();  // a damaged servers.json lists nothing; pairing again rewrites it
     mv::remote::library::install(std::move(lib));
+    // A server's pin on the welcome card was drawn before its name was known.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf refreshWelcomeRecents];
+    });
     return mv::status::ok;
   });
 }
@@ -15348,9 +15363,17 @@ class remote_clip_source final : public mv::player::byte_source {
       }
       const mv::remote::listing& l = **out;
       if (l.files.empty()) {
+        // A server's top (its pin on the welcome card) with one named folder
+        // is that folder: open it, rather than say where it is.
+        const auto top = mv::remote::parse_key(key);
+        if (!l.stale && top && top->root.empty() && l.folders.size() == 1 && !l.folders[0].offline) {
+          [strongSelf openRemoteFolder:l.folders[0].key];
+          return;
+        }
+        if (!l.stale && !l.folders.empty()) [strongSelf setTreeVisible:YES];
         [strongSelf noticeShow:l.stale ? mv::remote::stale_words(server_name)
                                : l.folders.empty() ? std::string("This folder is empty.")
-                                                   : std::string("No photos or videos here. Its folders are in the folder list.")];
+                                                   : std::string("No photos or videos here. Its folders are in the Folders pane.")];
         return;
       }
       std::vector<mv::shell::folder_model::list_entry> entries;
@@ -15545,12 +15568,20 @@ class remote_clip_source final : public mv::player::byte_source {
   _jobs.submit_at(mv::background_generation, [weakSelf, lib, code, now, name, connecting](const mv::job_context&) -> mv::status {
     auto paired = lib->pair(code, now);
     const mv::status st = paired ? mv::status::ok : paired.error();
+    const std::string top = paired ? mv::remote::server_key(*paired) : std::string();
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* s = weakSelf;
       if (!s) return;
       if ([s noticeText] == connecting) [s noticeClear];
       if (st == mv::status::ok) {
-        [s noticeShow:"Connected to " + name + ". Its folders are in the folder list."];
+        // Where it is, shown rather than described: a pin on the welcome card
+        // (and the Dock menu, File > Open Recent), and its row in the Folders pane.
+        const bool pinned = [s pinRemoteServer:top];
+        // Only over the welcome card: the pairing took a network round trip,
+        // and the pane takes the keyboard from whatever was opened meanwhile.
+        if ([s welcomeListsRecents]) [s setTreeVisible:YES];
+        [s noticeShow:"Connected to " + name + (pinned ? ". It is pinned with your folders, and in the Folders pane."
+                                                       : ". Its folders are in the Folders pane.")];
       } else if (std::string words = mv::remote::pair_problem_words(st, name); !words.empty()) {
         [s noticeShow:words];
       }
@@ -15936,6 +15967,37 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   [self refreshWelcomeRecents];
 }
 
+// A server just paired (docs/plans/desktop-client.md): its top, `remote:<id>/`,
+// pinned like a folder, so the welcome card, the Dock menu and Open Recent
+// list it. Whether it is pinned now (false: a soak, or the pins are full).
+- (BOOL)pinRemoteServer:(const std::string&)top {
+  if (top.empty()) return NO;
+  // A full list is no pin, said by the notice: not setFolder's beep after a pairing that worked.
+  if (!mv::shell::is_pinned_folder(_pinnedFolders, top) && _pinnedFolders.size() < mv::shell::kMaxPinnedFolders) {
+    [self setFolder:top pinned:YES];
+  }
+  return mv::shell::is_pinned_folder(_pinnedFolders, top) ? YES : NO;
+}
+
+// What a shown entry is called on the card and in the menus: a server's pin
+// is its name (its key means nothing to a person); a folder keeps the label
+// the shared rule gave it. "" for a folder.
+- (std::string)remoteRowName:(const std::string&)dir {
+  if (!mv::remote::is_key(dir)) return {};
+  mv::remote::library* lib = mv::remote::library::shared();
+  std::string name = lib ? lib->display_name(remote_pin_key(dir)) : std::string();
+  return name.empty() ? std::string("Paired server") : name;
+}
+
+- (void)nameRemoteWelcomeRows:(mv::shell::welcome_recents&)rows {
+  const std::vector<std::string> shown = [self shownFolders];
+  const int first = rows.icloud ? 1 : 0;
+  for (std::size_t k = 0; k < shown.size() && first + static_cast<int>(k) < rows.count; ++k) {
+    const std::string name = [self remoteRowName:shown[k]];
+    if (!name.empty()) mv::shell::set_welcome_row(rows, first + static_cast<int>(k), name, "Paired server");
+  }
+}
+
 // A folder leaves every list: the recents and, if it was pinned, the pins.
 - (void)forgetFolder:(const std::string&)dir {
   _recentFolders = mv::shell::remove_folder(std::move(_recentFolders), dir);
@@ -16008,6 +16070,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     const char* home = NSHomeDirectory().fileSystemRepresentation;
     mv::shell::fill_welcome_recents([self shownFolders], home ? home : "", next,
                                     [self photosLibraryAvailable] == YES, _pinnedFolders.size());
+    [self nameRemoteWelcomeRows:next];
   }
   // A row index survives the refresh only if the rows did not move.
   if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud &&
@@ -16122,7 +16185,10 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     icloud.image = [NSImage imageWithSystemSymbolName:@"icloud" accessibilityDescription:@"iCloud"];
     if (!shown.empty()) [menu addItem:[NSMenuItem separatorItem]];
   }
-  const std::vector<std::string> labels = mv::shell::recent_folder_labels(shown);
+  std::vector<std::string> labels = mv::shell::recent_folder_labels(shown);
+  for (std::size_t i = 0; i < shown.size() && i < labels.size(); ++i) {
+    if (std::string name = [self remoteRowName:shown[i]]; !name.empty()) labels[i] = std::move(name);
+  }
   for (std::size_t i = 0; i < shown.size(); ++i) {
     if (headers && i == 0 && pinned > 0) [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Pinned Folders"]];
     if (i == pinned && pinned > 0) [menu addItem:[NSMenuItem separatorItem]];
@@ -16150,6 +16216,17 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   [NSApp activate];
   [self.window makeKeyAndOrderFront:nil];
   const std::string gone = path.UTF8String;
+  // A paired server's pin: its folders over the network, never a disk path (and
+  // never forgotten for being away: it says it cannot reach the server).
+  if (mv::remote::is_key(gone)) {
+    // Just after launch the paired servers are still loading (startRemoteFolders).
+    if (!mv::remote::library::shared()) {
+      [self noticeShow:"Paired servers are still loading. Try again in a moment."];
+      return;
+    }
+    [self openRemoteFolder:remote_pin_key(gone)];
+    return;
+  }
   __weak MvLabApp* weakSelf = self;
   [self openEntryPaths:@[ path ]
                 failed:^{
@@ -16752,6 +16829,7 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
     const char* home = NSHomeDirectory().fileSystemRepresentation;
     mv::shell::fill_welcome_recents([self shownFolders], home ? home : "", _snap.recents,
                                     [self photosLibraryAvailable] == YES, _pinnedFolders.size());
+    [self nameRemoteWelcomeRows:_snap.recents];
   }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
