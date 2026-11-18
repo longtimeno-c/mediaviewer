@@ -228,7 +228,9 @@ class library {
   [[nodiscard]] std::optional<listing> kept_listing(std::string_view server, std::string_view folder_key);
   [[nodiscard]] expected fetch_into(server_rt& s, const key_parts& k, const identity& id,
                                     const mobile::cancel_flag* cancel, const progress_fn& progress);
-  [[nodiscard]] driftwire::secrets::store& store();
+  // Null when there is no OS store (a build signed without a keychain group,
+  // Linux without a keyring): nothing is kept, and paired servers want pairing again.
+  [[nodiscard]] driftwire::secrets::store* store();
 
   config cfg_;
   disk_cache cache_;

@@ -309,6 +309,27 @@ TEST_CASE("a desktop whose OS store refuses the keys says so, not unreachable", 
   CHECK(words.find("could not keep the keys") != std::string::npos);
 }
 
+// 2026-11-18, a dev build on a Mac with a paired server: signed without the keychain
+// group, the app has no OS store, and loading servers.json dereferenced it at launch.
+// No injected store here, so the OS's is used: none in this unsigned test binary on the
+// Mac (the crash), a real one elsewhere (nothing kept under this id). Either way the
+// server is listed as wanting pairing again, and can be forgotten.
+TEST_CASE("a paired server whose keys are out of reach loads as ended", "[desktop-client]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  d.lib.reset();
+  rm::library lib(desktop_config(d.dir.root(), nullptr));
+  REQUIRE(lib.load());
+  const auto servers = lib.servers();
+  REQUIRE(servers.size() == 1);
+  CHECK(servers[0].name == "Home");
+  CHECK(servers[0].state == rm::reach::access_ended);
+  CHECK(lib.forget(*id));
+  CHECK(lib.servers().empty());
+}
+
 TEST_CASE("the host's folders list as remote keys, the Catalogue hidden", "[desktop-client]") {
   host h;
   put_file(h.photos / "2024" / "a.jpg", photo(64, 48, 1));
