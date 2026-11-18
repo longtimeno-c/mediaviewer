@@ -441,8 +441,11 @@ result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& pa
   sqlite3_busy_timeout(d->db_, 5000);
   if (immutable) sqlite3_db_config(d->db_, SQLITE_DBCONFIG_DEFENSIVE, 1, nullptr);
   // An index this build cannot read as it is (older or newer): the app
-  // migrates it, never a reader.
-  if (d->meta("schema") != std::to_string(kSchemaVersion)) return err(status::unsupported_format);
+  // migrates it, never a reader. Schema 11 reads as it is: 11 -> 12 changed no
+  // table, only tags levels, which no search reads. A phone's catalogue comes
+  // from whichever desktop published it, so this keeps an older one searchable.
+  const std::string schema = d->meta("schema");
+  if (schema != std::to_string(kSchemaVersion) && schema != "11") return err(status::unsupported_format);
   return d;
 }
 
