@@ -82,6 +82,12 @@
 // facts say they have a route; the step leaves every non-clip row at level 3
 // so only clips are read again. An asset that goes takes its track.
 //
+// Schema 12: tags level 4 puts a clip's (and an audio file's) header length
+// in assets.duration_ms, so the phone's catalogue knows it before the content
+// pass reaches the clip. No new column; the step moves every level-3 row that
+// has nothing to add (not a clip or audio, or a length already known) to 4,
+// so only clips without a length are read again.
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -232,8 +238,9 @@ struct asset_row {
 
 // What the tag backfill has read of an asset (assets.tags): 0 nothing, 1 the
 // schema 4 facts, 2 (#405, schema 5) rating, label and exposure too, 3 (#606,
-// schema 11) a clip's telemetry route too.
-inline constexpr int kTagsLevel = 3;
+// schema 11) a clip's telemetry route too, 4 (schema 12) a clip's or an audio
+// file's length from its header too.
+inline constexpr int kTagsLevel = 4;
 // #606: the most route points a track keeps (about one a kilometre on a
 // two-hour drive), and the place search reads.
 inline constexpr std::size_t kTrackPoints = 128;
@@ -268,6 +275,10 @@ struct asset_tags {
   // #606 (level 3): the clip's route (at most kTrackPoints); empty for
   // everything else.
   std::vector<track_point> track;
+  // Level 4: a clip's or an audio file's length from its container header,
+  // so the phone's catalogue has it before the content pass opens the clip.
+  // 0 (a still, or a header that does not say) leaves assets.duration_ms be.
+  std::int64_t duration_ms = 0;
 };
 
 // One embedding to store. `emb` is float and L2-normalised; the store

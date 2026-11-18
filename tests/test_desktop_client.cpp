@@ -316,6 +316,25 @@ TEST_CASE("a desktop whose OS store refuses the keys says so, not unreachable", 
   CHECK(words.find("could not keep the keys") != std::string::npos);
 }
 
+// 2026-11-18: a local Mac build has no keychain group, so the OS store is null;
+// with a servers.json from an earlier run, the app crashed loading it at launch.
+TEST_CASE("a desktop with no keys for a server it paired lists it to pair again and can forget it",
+          "[desktop-client]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  d.lib.reset();
+  // The OS's own store (config.store null): it holds no keys for this server,
+  // and in an unsigned Mac test binary there is no store at all.
+  rm::library lib(desktop_config(d.dir.root(), nullptr));
+  REQUIRE(lib.load());
+  REQUIRE(lib.servers().size() == 1);
+  CHECK(lib.servers()[0].state == rm::reach::access_ended);
+  REQUIRE(lib.forget(*id));
+  CHECK(lib.servers().empty());
+}
+
 TEST_CASE("the host's folders list as remote keys, the Catalogue hidden", "[desktop-client]") {
   host h;
   put_file(h.photos / "2024" / "a.jpg", photo(64, 48, 1));

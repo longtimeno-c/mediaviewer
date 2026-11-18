@@ -232,9 +232,8 @@ class library {
   [[nodiscard]] std::optional<listing> kept_listing(std::string_view server, std::string_view folder_key);
   [[nodiscard]] expected fetch_into(server_rt& s, const key_parts& k, const identity& id,
                                     const mobile::cancel_flag* cancel, const progress_fn& progress);
-  // The OS store, or nullptr when this build has none (no keychain group on
-  // the Mac, no keyring on Linux): nothing is kept, and nothing read.
-  [[nodiscard]] driftwire::secrets::store* store() noexcept;
+  // The keys' store; nullptr where the OS has none (a build without its keychain group).
+  [[nodiscard]] driftwire::secrets::store* store();
 
   config cfg_;
   disk_cache cache_;

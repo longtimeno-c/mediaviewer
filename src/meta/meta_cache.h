@@ -41,6 +41,9 @@ struct cached_facts {
   std::int64_t mtime = 0;
   search_facts facts;
   std::string folded;  // folded_text(facts.fields)
+  // A row stored before schema 3 (facts.duration_ms 0): cached_or_read reads
+  // a clip's again for its length.
+  bool duration_unread = false;
 };
 
 class meta_cache {
