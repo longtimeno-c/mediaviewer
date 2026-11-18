@@ -464,10 +464,12 @@ private struct ClipBody: View {
         .padding(.top, live.insets.top)
         .padding(.bottom, live.insets.bottom)
       } else {
+        // Full screen (the viewer's controls hidden): the picture takes all but the position bar
+        // and the buttons; the moments come back with the controls.
         VStack(spacing: 0) {
           picture.frame(maxHeight: .infinity)
-          below.padding(.horizontal, 16).padding(.top, 12)
-          momentsList
+          below.padding(.horizontal, 16).padding(.top, live.chromeShown ? 12 : 4)
+          if live.chromeShown { momentsList }
         }
         .padding(.top, live.insets.top)
         .padding(.bottom, live.insets.bottom)
@@ -565,6 +567,23 @@ private struct ClipBody: View {
   }
 
   private var transport: some View {
+    ZStack {
+      transportButtons
+      HStack {
+        Spacer(minLength: 0)
+        Button(action: onTapPicture) {
+          transportIcon(live.chromeShown ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+            .font(.system(size: 17))
+        }
+        .accessibilityLabel(live.chromeShown ? "Full screen" : "Exit full screen")
+        .accessibilityShowsLargeContentViewer()
+      }
+    }
+    .foregroundStyle(Theme.title)
+    .buttonStyle(.plain)
+  }
+
+  private var transportButtons: some View {
     HStack(spacing: 28) {
       Button { clip.skip(by: -10) } label: { transportIcon("gobackward.10") }
         .accessibilityLabel("Back 10 seconds")
