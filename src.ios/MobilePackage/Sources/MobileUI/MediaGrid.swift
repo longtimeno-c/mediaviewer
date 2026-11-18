@@ -24,6 +24,8 @@ struct MediaTile: View {
   @State private var loaded: Loaded?
   /// The thumbnail could not be had: a quiet glyph says what the tile is instead of an empty square.
   @State private var missing = false
+  /// A clip's length learnt after the tile was listed (a folder's clip), and whose it is.
+  @State private var learnt: (id: MediaID, seconds: TimeInterval)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Whether the last drawing painted a picture. A box, not state: written while drawing, read
   /// when a picture arrives, and never a reason to draw again.
@@ -78,6 +80,11 @@ struct MediaTile: View {
       show(sharper, of: item.id)
     }
     if loaded?.id != item.id, !drawn.painted, !Task.isCancelled { missing = true }
+    // After the picture: a folder's clip learns its length from the header its poster read.
+    if item.kind == .clip, item.duration == nil, entry.moment == nil, learnt?.id != item.id,
+       let seconds = await images.length(for: item), !Task.isCancelled, item.id == entry.item.id {
+      learnt = (item.id, seconds)
+    }
   }
 
   /// Fades in only the first picture a tile gets (`fadesIn`); a sharper one replaces it in place.
@@ -124,8 +131,14 @@ struct MediaTile: View {
   }
 
   private var badgeText: String? {
+    Self.badgeText(entry, learnt: learnt?.id == entry.item.id ? learnt?.seconds : nil)
+  }
+
+  /// A moment's time, else the clip's length: the one it was listed with, else one learnt since.
+  /// No length known says nothing (never 0:00).
+  static func badgeText(_ entry: GridEntry, learnt: TimeInterval?) -> String? {
     if let moment = entry.moment { return .clockFrom(moment.seconds) }
-    return entry.item.duration.map { .clockFrom($0) }
+    return (entry.item.duration ?? learnt).map { .clockFrom($0) }
   }
 }
 
