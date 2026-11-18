@@ -941,9 +941,16 @@ struct rig {
         -> mv::result<std::unique_ptr<mv::addon::video_sampler>> {
       ++samplers_opened;
       // "noopen": a clip the decoder cannot open (its length still comes from the tag pass).
-      if (utf8(fs::path(path).filename()).find("noopen") != std::string::npos) return mv::err(mv::status::io);
-      return std::unique_ptr<mv::addon::video_sampler>(
-          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
+      // Spelled plainly: MSVC 14.52 hit an internal compiler error (C1001) on
+      // the one-line `if (...) return mv::err(...)` here.
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("noopen") != std::string::npos) {
+        mv::result<std::unique_ptr<mv::addon::video_sampler>> refused = mv::err(mv::status::io);
+        return refused;
+      }
+      std::unique_ptr<mv::addon::video_sampler> sampler =
+          std::make_unique<fake_sampler>(name, o.start_ms, o.min_gap_ms);
+      return sampler;
     };
     svc.video_frame = [this](const std::string& path, std::int64_t ms,
                              std::uint32_t) -> mv::result<mv::addon::rgb_image> {
@@ -5385,6 +5392,40 @@ TEST_CASE("the reader never writes: the index is byte-identical and every change
   engine none(t.api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
   CHECK_FALSE(none.start());
   CHECK_FALSE(fs::exists(empty / "data" / "index.db"));
+}
+
+TEST_CASE("a reader searches an index an older app left at schema 11 but refuses a newer one",
+          "[ai][search-agent]") {
+  // A phone opens the catalogue its desktop published, read-only and immutable:
+  // a desktop from before schema 12 publishes schema 11 (the sample library did).
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  const std::string path = utf8(r.dir / "data" / "index.db");
+  const auto set_schema = [&](const char* v) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    const std::string sql = std::string("UPDATE meta SET value = '") + v + "' WHERE key = 'schema';";
+    REQUIRE(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+
+  set_schema("11");
+  for (const bool immutable : {false, true}) {
+    INFO("immutable " << immutable);
+    auto rd = r.start_reader({.read_only = true, .immutable = immutable, .background_threads = false});
+    CHECK(ranked(*rd, "red").size() == 1);
+  }
+
+  set_schema("99");
+  engine rd(r.table->api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
+  auto started = rd.start();
+  REQUIRE_FALSE(started);
+  CHECK(started.error() == mv::status::unsupported_format);
 }
 
 TEST_CASE("the reader catches up with what the app indexes after it started", "[ai][search-agent]") {

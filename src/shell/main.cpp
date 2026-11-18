@@ -6483,7 +6483,9 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
     a.look_crop = static_cast<std::int32_t>(lk.crop);
     a.look_copyable = lk.copyable() ? 1 : 0;
-    for (std::size_t i = 0; i < lk.light.v.size(); ++i) a.look_light[i] = lk.light.v[i];
+    // PR 11's five sliders only (kLookLightParams): light.v is every photo
+    // parameter now (edit-adjust), and look_light holds five (MSVC C4789).
+    for (std::size_t i = 0; i < mv::edit::clip::kLookLightParams; ++i) a.look_light[i] = lk.light.v[i];
     a.look_mute = lk.mute ? 1 : 0;
     a.look_volume = lk.volume;
     a.look_fade_in_ms = lk.fade_in_ms;
