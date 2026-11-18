@@ -130,6 +130,7 @@ void lower_priority() {
 std::vector<std::string> utf8_args(int argc, char** argv) {
   std::vector<std::string> out;
 #if defined(_WIN32)
+  (void)argc;
   (void)argv;
   int n = 0;
   LPWSTR* wide = ::CommandLineToArgvW(::GetCommandLineW(), &n);

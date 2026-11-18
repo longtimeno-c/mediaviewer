@@ -1444,7 +1444,7 @@ if(MV_BUILD_TESTS)
   # The clip helper with its test hooks (a crash, a hang, a software encoder);
   # the product MediaViewerClipJob.exe is built without them.
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
-  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options shell32)  # shell32: CommandLineToArgvW
   target_include_directories(mv_clipjob_test PRIVATE src)
   # The hooks reach clip::detail through clip_internal.h, which includes FFmpeg;
   # mv_clip keeps those headers PRIVATE.

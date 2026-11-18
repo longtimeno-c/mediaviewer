@@ -107,7 +107,9 @@ func mediaItem(_ row: mv_mobile_row, in generation: Generation) -> MediaItem {
                    kind: row.kind == MV_MOBILE_KIND_CLIP ? .clip : .photo,
                    capturedAt: capturedDate(wallSeconds: row.wall_seconds),
                    pixelWidth: 0, pixelHeight: 0,
-                   duration: row.kind == MV_MOBILE_KIND_CLIP ? TimeInterval(row.duration_ms) / 1000 : nil,
+                   // 0: the desktop has not measured this clip yet (it learns a length when it indexes the
+                   // clip's content). Unknown, not "0:00".
+                   duration: row.kind == MV_MOBILE_KIND_CLIP && row.duration_ms > 0 ? TimeInterval(row.duration_ms) / 1000 : nil,
                    fileName: name,
                    aspectHint: row.tile_height > 0 ? Double(row.tile_width) / Double(row.tile_height) : nil)
 }

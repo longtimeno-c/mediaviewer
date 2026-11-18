@@ -1090,8 +1090,7 @@ void link::run(const std::string& request) {
   }
   if (what == "host_convert") {
     // docs/plans/phone-clip-convert.md: on, with this app's clip helper; or off (the cache goes).
-    const auto doc = json::parse(request, 2);
-    const bool on = doc && doc->boolean("on").value_or(false);
+    const bool on = doc->boolean("on").value_or(false);
     const auto w = host_where();
     std::vector<std::string> args{"convert", on ? "on" : "off"};
     const std::string helper = self_host::clip_helper();

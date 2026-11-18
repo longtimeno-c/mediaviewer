@@ -154,6 +154,8 @@ public protocol ClipService: Sendable {
 public protocol PhotoSaver: Sendable {
   /// Saves a copy to the phone's Photos library.
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error>
+  /// The original on the phone under its own name, for the share sheet: ends with `.finished`.
+  func shareable(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error>
 }
 
 /// Everything the screens need, handed in at launch.
