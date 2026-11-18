@@ -323,6 +323,43 @@ TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup
   tree = c.build(claimed, kNow);
   CHECK(tree.find("\"id\":\"duck_name\"") == std::string::npos);
 
+  // Pasted from the browser: the name in it is sent.
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  (void)c.on_event("duck_name", kChange, quoted("http://ronan.duckdns.org"), kNow);
+  (void)c.on_event("duck_token", kChange, quoted(token), kNow);
+  r = c.on_event("duck_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_name","duckdns":"ronan","duckdns_token":"1a2b3c4d-0000-0000-0000-000000000000"})");
+
+  // A name or token the server would refuse: nothing sent, the form (and the
+  // pasted token) stay, and why is said by the form, not at the foot.
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  (void)c.on_event("duck_name", kChange, quoted("https://ronan.duckdns.org/photos"), kNow);
+  (void)c.on_event("duck_token", kChange, quoted(token), kNow);
+  CHECK(c.on_event("duck_save", kClick, "", kNow).empty());
+  tree = c.build(claimed, kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"id\":\"duck_name\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"duck_error\",\"text\":\"That isn't a DuckDNS name.") != std::string::npos);
+  CHECK(tree.find("\"id\":\"error\"") == std::string::npos);
+  // The name put right: the token pasted before goes with it, not pasted again.
+  (void)c.on_event("duck_name", kChange, quoted("ronan"), kNow);
+  r = c.on_event("duck_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_name","duckdns":"ronan","duckdns_token":"1a2b3c4d-0000-0000-0000-000000000000"})");
+  CHECK(c.on_event("duck_change", kClick, "", kNow).empty());
+  (void)c.on_event("duck_name", kChange, quoted("ronan"), kNow);
+  (void)c.on_event("duck_token", kChange, quoted("not-a-token"), kNow);
+  CHECK(c.on_event("duck_save", kClick, "", kNow).empty());
+  CHECK(c.build(claimed, kNow).find("That isn't a DuckDNS token.") != std::string::npos);
+  CHECK(c.on_event("duck_cancel", kClick, "", kNow).empty());
+
+  // DuckDNS refused it: said by the name, once.
+  tree = c.build(R"({"folder":"G:\\FamilyNas","claimed":true,"error":"host_name","host_said":"KO",
+    "host":{"installed":true,"set_up":true,"running":true}})", kNow);
+  CHECK(tree.find("\"id\":\"duck_error\",\"text\":\"DuckDNS: KO\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"error\"") == std::string::npos);
+
   // Named: Change…, and the name.
   tree = c.build(R"({"folder":"G:\\FamilyNas","claimed":true,
     "host":{"installed":true,"set_up":true,"running":true,"duckdns":"home"}})", kNow);

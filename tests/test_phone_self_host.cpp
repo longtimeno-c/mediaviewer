@@ -124,7 +124,9 @@ TEST_CASE("phone self host: state.json and host.json are read as the host writes
 TEST_CASE("phone self host: a name and a token are read by DuckDNS's rules", "[phone-self-host]") {
   namespace ddns = mv::driftwire::ddns;
   const char* names[] = {"home", " home.duckdns.org ", "HOME.DuckDNS.org.", "a.b", "-x", "x-", "", "home.duckdns.org.uk",
-                         "ab_c", "1234567890123456789012345678901234567890123456789012345678901234", ".duckdns.org"};
+                         "ab_c", "1234567890123456789012345678901234567890123456789012345678901234", ".duckdns.org",
+                         "http://home.duckdns.org", "HTTPS://home.duckdns.org/", "https://home.duckdns.org/x",
+                         "https://home.duckdns.org:7878", "ftp://home", "https://"};
   for (const char* n : names) {
     INFO(n);
     CHECK(sh::parse_subdomain(n) == ddns::parse_subdomain(n));

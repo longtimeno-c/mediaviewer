@@ -14,6 +14,7 @@
 #include <functional>
 #include <optional>
 
+#include "addons/phone/self_host.h"
 #include "core/json.h"
 
 namespace mv::phone::card {
@@ -1004,6 +1005,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     end_row(w);
   };
   // Its DuckDNS name, changed after setup (setup's form is gone once it is claimed).
+  bool duck_error_drawn = false;  // DuckDNS's refusal, drawn by the name: not again at the foot
   const auto duck_rows = [&] {
     const host_row& h = *s.host;
     {
@@ -1023,6 +1025,13 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
         button(w, "duck_cancel", "Cancel", false, "plain", "Don't change the DuckDNS name");
         end(w);
       }
+      // Why it wasn't saved, here by the name rather than at the foot of the card.
+      std::string said = duck_note_;
+      if (said.empty() && s.error == "host_name") {
+        said = s.host_said.empty() ? "DuckDNS didn't take the name." : "DuckDNS: " + s.host_said;
+        duck_error_drawn = true;
+      }
+      if (!said.empty()) text(w, "duck_error", said, "secondary");
     }
   };
   // Users of this computer's LAN share (self-host-users-smb.md §8): once it is claimed.
@@ -1545,7 +1554,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
             ? "Claimed. Update the service on your server to protect it with a passphrase."
             : "Update the service on your server to use this.";
   else e = "That didn't work.";
-  if (!e.empty()) text(w, "error", e, "secondary");
+  if (!e.empty() && !(r == "host_name" && duck_error_drawn)) text(w, "error", e, "secondary");
 
   end(w);
   return w.take();
@@ -1642,6 +1651,7 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   std::vector<std::string> out;
   std::string_view rest_any;  // a row's control after its id (find_row)
   note_.clear();
+  duck_note_.clear();
   const std::string v = kind == kChange || kind == kSubmit ? value_string(value_json) : std::string();
 
   // ---- typed (the tree keeps plain ones; secure ones stay here only) ----
@@ -1795,13 +1805,18 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     duck_change_ = false;
     duck_token_.clear();
   } else if (node == "duck_save") {
-    const std::string name = trim(duck_name_);
-    if (name.empty()) {
-      note_ = "Type the DuckDNS name you chose at duckdns.org, like home.";
+    // Checked as the server checks them, so a bad paste keeps the form (and the token) open.
+    const auto name = self_host::parse_subdomain(duck_name_);
+    if (trim(duck_name_).empty()) {
+      duck_note_ = "Type the DuckDNS name you chose at duckdns.org, like home.";
+    } else if (!name) {
+      duck_note_ = "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org.";
     } else if (duck_token_.empty()) {
-      note_ = "Paste the DuckDNS token too.";
+      duck_note_ = "Paste the DuckDNS token too.";
+    } else if (!self_host::parse_token(duck_token_)) {
+      duck_note_ = "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-\xE2\x80\xA6";
     } else {
-      out.push_back(req("host_name").s("duckdns", name).s("duckdns_token", duck_token_).done());
+      out.push_back(req("host_name").s("duckdns", *name).s("duckdns_token", duck_token_).done());
       duck_token_.clear();  // handed on; the server keeps it, this computer doesn't
       duck_change_ = false;
     }
@@ -2095,6 +2110,7 @@ void screen::forget_secrets() {
   changing_ = false;
   unlock_wanted_ = false;
   note_.clear();
+  duck_note_.clear();
 }
 
 }  // namespace mv::phone::card
