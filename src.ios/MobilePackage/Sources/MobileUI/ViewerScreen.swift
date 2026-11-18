@@ -75,7 +75,7 @@ struct ViewerScreen: View {
     .statusBarHidden(!chromeShown)
     .persistentSystemOverlays(chromeShown ? .automatic : .hidden)
     .inspector(isPresented: $showDetails) {
-      DetailsScreen(item: current.item)
+      DetailsScreen(item: current.item, clip: live.index == index ? live.clip : nil)
         .presentationDetents([.medium, .large])
         .inspectorColumnWidth(min: 300, ideal: 340, max: 420)
     }
@@ -366,8 +366,11 @@ struct InfoRow: View {
 
 struct DetailsScreen: View {
   let item: MediaItem
+  /// The clip open on this page, when it is one: its stream's facts.
+  var clip: ClipModel? = nil
   @Environment(AppModel.self) private var model
   @State private var details: MediaDetails?
+  @State private var video: VideoFacts?
 
   var body: some View {
     ScrollView {
@@ -377,6 +380,7 @@ struct DetailsScreen: View {
           if let place = details?.place { InfoRow(label: "Place", value: place) }
           if let duration = item.duration { InfoRow(label: "Length", value: .clockFrom(duration)) }
         }
+        if item.kind == .clip { videoCard }
         if let details, details.camera != nil || details.lens != nil || details.exposure != nil {
           InfoCard {
             if let camera = details.camera { InfoRow(label: "Camera", value: camera) }
@@ -400,5 +404,30 @@ struct DetailsScreen: View {
     }
     .background(Theme.ground)
     .task(id: item.id) { details = try? await model.services.library.details(for: item) }
+    // The stream's facts come once it plays: asked again when its phase changes.
+    .task(id: "\(item.id.raw)|\(clip.map { "\($0.phase)" } ?? "")") { video = await clip?.videoFacts() }
+  }
+
+  @ViewBuilder
+  private var videoCard: some View {
+    InfoCard {
+      if let video {
+        if let resolution = video.resolution { InfoRow(label: "Resolution", value: resolution) }
+        if let frameRate = video.frameRate { InfoRow(label: "Frame rate", value: frameRate) }
+        if video.converted {
+          InfoRow(label: "Playing as", value: "Converted by your server for this phone")
+        } else {
+          if let codec = video.codec { InfoRow(label: "Codec", value: codec) }
+          if let range = video.dynamicRange { InfoRow(label: "Range", value: range) }
+          if let bitRate = video.bitRate { InfoRow(label: "Bit rate", value: bitRate) }
+          if let audio = video.audio { InfoRow(label: "Audio", value: audio) }
+        }
+      } else {
+        Text(clip == nil ? "Play the clip to see its resolution, frame rate and codec." : "Reading the clip…")
+          .font(.subheadline)
+          .foregroundStyle(Theme.body)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
   }
 }

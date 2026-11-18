@@ -264,6 +264,89 @@ final class ClipModel {
   }
 }
 
+/// What a clip's own stream says about it, for Details: read from the clip already open, so it
+/// costs the server nothing more. A clip the server converts reports the conversion, not the file.
+struct VideoFacts: Equatable, Sendable {
+  var resolution: String?
+  var frameRate: String?
+  var codec: String?
+  var dynamicRange: String?
+  var bitRate: String?
+  var audio: String?
+  var converted = false
+}
+
+extension ClipModel {
+  func videoFacts() async -> VideoFacts? {
+    guard phase == .playable, let asset = player.currentItem?.asset else { return nil }
+    var facts = VideoFacts(converted: isConverted)
+    if let video = try? await asset.loadTracks(withMediaType: .video).first {
+      if let (size, transform) = try? await video.load(.naturalSize, .preferredTransform) {
+        let shown = size.applying(transform)
+        let w = Int(abs(shown.width).rounded()), h = Int(abs(shown.height).rounded())
+        if w > 0, h > 0 { facts.resolution = "\(w) × \(h)" + Self.resolutionName(w, h) }
+      }
+      if let rate = try? await video.load(.nominalFrameRate), rate > 0 {
+        // 29.97 stays as it is; 14.9997 from a stream's rounding is 15.
+        facts.frameRate = abs(rate - rate.rounded()) < 0.01 ? "\(Int(rate.rounded())) fps" : String(format: "%.2f fps", rate)
+      }
+      if let formats = try? await video.load(.formatDescriptions), let first = formats.first {
+        facts.codec = Self.codecName(CMFormatDescriptionGetMediaSubType(first))
+      }
+      if let traits = try? await video.load(.mediaCharacteristics), traits.contains(.containsHDRVideo) {
+        facts.dynamicRange = "HDR"
+      }
+      if let bits = try? await video.load(.estimatedDataRate), bits > 0 {
+        facts.bitRate = String(format: "%.1f Mbit/s", Double(bits) / 1_000_000)
+      }
+    }
+    if let audio = try? await asset.loadTracks(withMediaType: .audio).first,
+       let formats = try? await audio.load(.formatDescriptions), let first = formats.first {
+      var parts = [Self.codecName(CMFormatDescriptionGetMediaSubType(first))].compactMap { $0 }
+      if let basic = CMAudioFormatDescriptionGetStreamBasicDescription(first)?.pointee {
+        let channels = Int(basic.mChannelsPerFrame)
+        parts.append(channels == 1 ? "mono" : channels == 2 ? "stereo" : "\(channels) channels")
+        if basic.mSampleRate > 0 { parts.append(String(format: "%.1f kHz", basic.mSampleRate / 1000)) }
+      }
+      if !parts.isEmpty { facts.audio = parts.joined(separator: " · ") }
+    }
+    return facts
+  }
+
+  private static func resolutionName(_ w: Int, _ h: Int) -> String {
+    switch min(w, h) {
+    case 2160...: return " (4K)"
+    case 1440..<2160: return " (1440p)"
+    case 1080..<1440: return " (1080p)"
+    case 720..<1080: return " (720p)"
+    default: return ""
+    }
+  }
+
+  private static func codecName(_ code: FourCharCode) -> String? {
+    switch code {
+    case kCMVideoCodecType_HEVC, kCMVideoCodecType_HEVCWithAlpha: return "HEVC"
+    case kCMVideoCodecType_H264: return "H.264"
+    case kCMVideoCodecType_AppleProRes422, kCMVideoCodecType_AppleProRes422HQ, kCMVideoCodecType_AppleProRes422LT,
+         kCMVideoCodecType_AppleProRes422Proxy, kCMVideoCodecType_AppleProRes4444, kCMVideoCodecType_AppleProRes4444XQ:
+      return "ProRes"
+    case kCMVideoCodecType_DolbyVisionHEVC: return "HEVC (Dolby Vision)"
+    case kCMVideoCodecType_VP9: return "VP9"
+    case kCMVideoCodecType_AV1: return "AV1"
+    case kCMVideoCodecType_MPEG2Video: return "MPEG-2"
+    case kAudioFormatMPEG4AAC, kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2: return "AAC"
+    case kAudioFormatAppleLossless: return "ALAC"
+    case kAudioFormatLinearPCM: return "PCM"
+    case kAudioFormatAC3: return "AC-3"
+    case kAudioFormatEnhancedAC3: return "E-AC-3"
+    case kAudioFormatOpus: return "Opus"
+    case kAudioFormatMPEGLayer3: return "MP3"
+    case kAudioFormatFLAC: return "FLAC"
+    default: return nil
+    }
+  }
+}
+
 private struct PlayerSurface: UIViewRepresentable {
   let player: AVPlayer
 
