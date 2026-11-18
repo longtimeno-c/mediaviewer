@@ -21,18 +21,8 @@ struct ViewerScreen: View {
   @State private var pageStates: [MediaID: PageState] = [:]
   @State private var showDetails: Bool
   @State private var playing: GridEntry?
-  @State private var save: SaveState?
-  /// The item `save` is about. Swiping away leaves the save running but out of sight.
-  @State private var saveItem: MediaItem?
-  /// The last save failed because Photos access was refused: the line offers Settings.
-  @State private var photosRefused = false
-  @Environment(\.openURL) private var openURL
-  @State private var saveToken = UUID()
-
-  private enum SaveState: Equatable {
-    case running(TransferProgress?)
-    case outcome(ProgressOutcome)
-  }
+  /// Save to Photos and Share: the original, one at a time (OriginalActions.swift).
+  @State private var transfer = OriginalTransfer()
 
   init(request: ViewerRequest, namespace: Namespace.ID) {
     self.request = request
@@ -59,7 +49,7 @@ struct ViewerScreen: View {
         chrome.transition(.opacity)
       }
       if let playing {
-        ClipScreen(entry: playing) { closeClip() }
+        ClipScreen(entry: playing, transfer: transfer) { closeClip() }
           .id(playing.id)
           .transition(.opacity)
       }
@@ -74,6 +64,7 @@ struct ViewerScreen: View {
     }
     .navigationTransition(.zoom(sourceID: "\(request.context)/\(index)", in: namespace))
     .interactiveDismissDisabled(zoomed)
+    .sharesOriginals(transfer)
     .presentationBackground(.black)
   }
 
@@ -117,11 +108,9 @@ struct ViewerScreen: View {
             .buttonStyle(ChromeIconStyle())
             .accessibilityLabel("Close")
             .accessibilityIdentifier(zoomed ? "viewer-close-zoomed" : "viewer-close")
+          ShareOriginalButton(item: current.item, transfer: transfer)
           Spacer(minLength: 0)
-          Button(action: startSave) { Image(systemName: "square.and.arrow.down") }
-            .buttonStyle(ChromeIconStyle())
-            .accessibilityLabel("Save to Photos")
-            .disabled(isSaving)
+          SaveOriginalButton(item: current.item, transfer: transfer)
           Button { showDetails = true } label: { Image(systemName: "info") }
             .buttonStyle(ChromeIconStyle())
             .accessibilityLabel("Details")
@@ -145,28 +134,10 @@ struct ViewerScreen: View {
     .padding(12)
   }
 
-  private var shownSave: SaveState? { saveItem?.id == current.item.id ? save : nil }
-
-  private var isSaving: Bool {
-    if case .running = shownSave { return true }
-    return false
-  }
-
   @ViewBuilder
   private var bottomSlot: some View {
-    if let save = shownSave {
-      slotCard {
-        switch save {
-        case .running(let progress):
-          ProgressLine(verb: "Saving to Photos",
-                       fraction: progress.map { $0.totalBytes > 0 ? Double($0.doneBytes) / Double($0.totalBytes) : 0 },
-                       detail: progress.map { ProgressWords.amounts($0.doneBytes, of: $0.totalBytes) },
-                       key: "save-\(current.item.id.raw)")
-        case .outcome(let outcome):
-          ProgressLine(verb: "Saving to Photos", fraction: nil, outcome: outcome, onRetry: retrySave,
-                       extra: photosRefused ? (title: "Open Settings", action: openSettings) : nil)
-        }
-      }
+    if transfer.state(for: current.item) != nil {
+      slotCard { OriginalProgress(item: current.item, transfer: transfer) }
     } else {
       switch pageStates[current.item.id] {
       case .refining(let done, let total):
@@ -202,41 +173,6 @@ struct ViewerScreen: View {
       .arrives(reduceMotion: reduceMotion)
   }
 
-  private func startSave() { startSave(current.item) }
-
-  private func retrySave() {
-    if let saveItem { startSave(saveItem) }
-  }
-
-  private func openSettings() {
-    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-  }
-
-  private func startSave(_ item: MediaItem) {
-    let token = UUID()
-    saveToken = token
-    saveItem = item
-    photosRefused = false
-    save = .running(nil)
-    Task {
-      do {
-        for try await progress in model.services.saver.save(item) {
-          if token == saveToken { save = .running(progress) }
-        }
-        guard token == saveToken else { return }
-        save = .outcome(.done("Saved to Photos"))
-        try? await Task.sleep(for: .seconds(2))
-        if token == saveToken, case .outcome(.done) = save { save = nil }
-      } catch let failure as MediaFailure {
-        if token == saveToken {
-          photosRefused = failure == .photosNotAllowed
-          save = .outcome(.failed(FailureCopy.line(for: failure, sample: model.connection.isSample), canRetry: false))
-        }
-      } catch {
-        if token == saveToken { save = .outcome(.failed("Couldn't save this to Photos.", canRetry: true)) }
-      }
-    }
-  }
 }
 
 // MARK: Filmstrip
