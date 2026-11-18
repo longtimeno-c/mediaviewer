@@ -229,6 +229,9 @@ A screen is a **view tree**, a vocabulary both hosts render with their own contr
   dots; the core never keeps the value in the tree (a posted tree may only give `""`; an event's
   value goes to the add-on alone). The add-on renames the field once it has used or dropped what
   was typed, so the host draws a new, empty one.
+- **Glyphs on text** (contribution API 16, Phone access's section headings): a `text` may carry a
+  `symbol` from `kSymbols`, drawn before it in its size and colour. API 16 also adds the glyphs
+  phone, drive, lock, computer and sync (SF Symbols / Segoe Fluent Icons, mapped in each host).
 - **State** lives in the add-on: it posts a tree, then diffs; the host applies them on the UI
   thread in one pass. Events post back to the add-on's worker.
 - **Keyboard-complete:** every control focusable and named; commands are table rows

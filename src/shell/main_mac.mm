@@ -5708,6 +5708,10 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // firing just as a result list opens, or the list a folder open is
   // replacing) is not what is on screen now.
   if (listing.is_list != static_cast<bool>(_listOpen)) return;
+  // Nothing is open (Home, returnToWelcome): the model closes on a worker, and
+  // its watch can fire first. That listing is the folder just left, not one
+  // asked for (-openPath: sets _currentDir before any listing can land).
+  if (!listing.is_list && _currentDir.empty()) return;
   const std::uint32_t filter = mv::io::kind_filter_mask(_kindFilter);
   // Issue #207: a cull filter (Picks, Not rejected, a colour) needs every
   // file's rating and label. Here they are only looked up (one lock, no file
@@ -7500,6 +7504,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuLast: [self navigateLast]; break;
     case kMenuHelp: [self toggleHelp]; break;
     case kMenuSettings: [self setSettingsVisible:!_settingsVisible]; break;
+    case kMenuHome: [self goHome]; break;
     case kMenuOverlay: [self runCommand:mv::shell::command_id::overlay back:mv::shell::back_target::none]; break;
     case kMenuReveal: [self runCommand:mv::shell::command_id::reveal_in_explorer back:mv::shell::back_target::none]; break;
     case kMenuMetadata: [self runCommand:mv::shell::command_id::metadata_pane back:mv::shell::back_target::none]; break;
@@ -14967,6 +14972,29 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 }
 
 - (BOOL)listOpen { return _listOpen; }
+
+// The bar's Home (owner 2026-11-18): whatever is open closes -- the Edit
+// workspace, a slideshow, Settings, the folder or list -- and the welcome card
+// lists the pinned and recent folders again. Nothing on disk changes. Work not
+// saved is never dropped here: the Video Editor asks first (an edit not yet
+// exported) and Home waits for the next press; an Edit workspace that will not
+// close (a crop draft) keeps the view as it is.
+- (void)goHome {
+  if (_editorOpen) {
+    [self editorRequestClose];
+    if (_editorOpen) return;
+  }
+  if ([self isSlideshowActive]) [self leaveSlideshow];
+  if (_ws.open) {
+    (void)[self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none];
+    if (_ws.open) return;
+  }
+  if (_settingsVisible) [self setSettingsVisible:NO];
+  if (_listOpen) [self remoteListEnding];
+  [self returnToWelcome];
+  _shownPath.clear();  // the card lists folders only with nothing shown
+  [self refreshWelcomeRecents];
+}
 
 // ---- docs/design/26: the Photos library as a folder -----------------------------------
 

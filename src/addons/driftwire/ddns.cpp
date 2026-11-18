@@ -71,6 +71,14 @@ std::string after(std::int64_t ms) {
 std::optional<std::string> parse_subdomain(std::string_view typed) {
   std::string s;
   for (const char c : trim(typed)) s.push_back(lower(c));
+  // Pasted from the browser: "https://home.duckdns.org/" is "home".
+  for (const std::string_view scheme : {"https://", "http://"}) {
+    if (s.starts_with(scheme)) {
+      s.erase(0, scheme.size());
+      if (!s.empty() && s.back() == '/') s.pop_back();
+      break;
+    }
+  }
   if (!s.empty() && s.back() == '.') s.pop_back();
   const std::string zone = std::string(".") + kDuckDnsZone;
   if (s.size() > zone.size() && s.compare(s.size() - zone.size(), zone.size(), zone) == 0) {

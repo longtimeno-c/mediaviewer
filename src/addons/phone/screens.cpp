@@ -14,6 +14,7 @@
 #include <functional>
 #include <optional>
 
+#include "addons/phone/self_host.h"
 #include "core/json.h"
 
 namespace mv::phone::card {
@@ -423,6 +424,29 @@ void end_row(writer& w) {
   end(w);  // row
 }
 
+// A section of the claimed card: its heading with a glyph (contribution API 16),
+// then a card that holds its rows (call end_section()).
+void section(writer& w, const std::string& id, const char* symbol, const std::string& title) {
+  stack(w, id + "_section", 8, "vertical");
+  w.begin_object().key("type").string("text").key("id").string(id + "_heading").key("text").string(title);
+  w.key("style").string("heading").key("symbol").string(symbol).end_object();
+  stack(w, id, 16, "vertical", "card");
+}
+void end_section(writer& w) {
+  end(w);  // card
+  end(w);  // section
+}
+
+// A button that leads with a glyph.
+void sym_button(writer& w, const std::string& id, const std::string& label, const char* symbol, bool disabled,
+                const char* style = "plain", const std::string& name = {}) {
+  w.begin_object().key("type").string("button").key("id").string(id).key("label").string(label);
+  w.key("style").string(style).key("symbol").string(symbol);
+  if (!name.empty()) w.key("help").string(name);
+  if (disabled) w.key("disabled").boolean(true);
+  w.end_object();
+}
+
 // A folder path the server takes (wire/serve.cpp add_root): /… on a NAS or a
 // Mac, X:\… or X:/… on a Windows server.
 bool server_path(std::string_view p) {
@@ -516,13 +540,16 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
     }
   }
   if (!d.open) {
-    row(w, "drives", "Drives", "Share each drive as it is, or erase two or more and combine them into one.");
-    button(w, "dr_open", "Use two or more drives\xE2\x80\xA6", !idle, "plain", "Choose drives on " + me + " for the server");
+    row(w, "drives", "Drives for your server", "Share each drive as it is, or erase two or more and combine them into one.");
+    sym_button(w, "dr_open", "Use two or more drives\xE2\x80\xA6", "drive", !idle, "plain",
+               "Choose drives on " + me + " for the server");
     end_row(w);
   } else if (s.drives) {
     const drives_listing& l = *s.drives;
     if (!l.error.empty()) {
-      row(w, "dr_error", "Drives", l.error);
+      // The listing failed: say so once, not also "no drives".
+      row(w, "dr_error", "Couldn't list the drives", l.error);
+      button(w, "dr_check", "Check again", !idle);
       end_row(w);
     }
     for (const disk_row& k : l.disks) {
@@ -532,8 +559,8 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
       toggle(w, id + "_pick", k.name, on, !idle);
       end_row(w);
     }
-    if (l.disks.empty()) {
-      row(w, "dr_none", "Drives", "No drives besides " + me + "'s own. Connect the drives and choose Check again.");
+    if (l.disks.empty() && l.error.empty()) {
+      row(w, "dr_none", "No other drives", "No drives besides " + me + "'s own. Connect the drives and choose Check again.");
       button(w, "dr_check", "Check again", !idle);
       end_row(w);
     }
@@ -604,7 +631,7 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
     button(w, "dr_close", "Close", !idle, "plain", "Close the drives step");
     end(w);
   } else if (idle) {
-    row(w, "dr_unlisted", "Drives", "The drives on " + me + " couldn't be listed.");
+    row(w, "dr_unlisted", "Couldn't list the drives", "The drives on " + me + " couldn't be listed.");
     button(w, "dr_check", "Check again");
     end_row(w);
   }
@@ -632,9 +659,9 @@ std::string role_label(const std::string& role) {
 void users_rows(writer& w, const view& s, users_state& u, bool busy, const std::string& me, const std::string& Me,
                 const std::function<std::string(const char*)>& sid) {
   const bool locked = s.nas_passphrase == "set" && s.unlocked_s == 0;
-  row(w, "users", "Users",
+  row(w, "users", "File sharing at home",
       "People who can open your shared folders from other computers at home, with their own name and password. For your home network only: MediaViewer never opens it on your router.");
-  if (!locked && !u.adding) button(w, "us_add_open", "Add user\xE2\x80\xA6", busy, "plain", "Add a user");
+  if (!locked && !u.adding) sym_button(w, "us_add_open", "Add user\xE2\x80\xA6", "plus", busy, "plain", "Add a user");
   end_row(w);
   if (locked) {
     row(w, "us_unlock_row", "Unlock as admin",
@@ -656,7 +683,7 @@ void users_rows(writer& w, const view& s, users_state& u, bool busy, const std::
       end_row(w);
     }
     if (u.adding) {
-      stack(w, "us_add", 8, "vertical", "card");
+      stack(w, "us_add", 8, "vertical");  // inside the Users card
       text(w, "us_name_note", "Name: lowercase letters and digits, starting with a letter. Their sign-in from other computers.",
            "secondary");
       field(w, "us_name", "Name", u.name, "anna");
@@ -959,7 +986,10 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   if (!busy_text.empty()) progress(w, "busy", busy_text, -1);
 
   // This computer is the server: its state, and Start or Stop.
-  if (s.host && s.host->set_up) {
+  const bool host_here = s.host && s.host->set_up;
+  // A claimed library is drawn in sections, each a heading with a glyph and a card.
+  const bool sections = s.claimed && !s.folder.empty();
+  const auto host_rows = [&] {
     const host_row& h = *s.host;
     std::string line;
     if (!h.running) {
@@ -1002,8 +1032,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       toggle(w, "host_convert", "Convert them for your phone", h.convert_on, busy);
       end_row(w);
     }
-    // Its DuckDNS name, changed after setup (setup's form is gone once it is claimed).
-    if (s.claimed) {
+  };
+  // Its DuckDNS name, changed after setup (setup's form is gone once it is claimed).
+  bool duck_error_drawn = false;  // DuckDNS's refusal, drawn by the name: not again at the foot
+  const auto duck_rows = [&] {
+    const host_row& h = *s.host;
+    {
       row(w, "duck_now", "DuckDNS name",
           h.duckdns.empty() ? "None: phones reach " + me + " at home only. Free at duckdns.org."
                             : h.duckdns + ".duckdns.org: how your phone finds " + me + " away from home.");
@@ -1020,16 +1054,28 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
         button(w, "duck_cancel", "Cancel", false, "plain", "Don't change the DuckDNS name");
         end(w);
       }
-    }
-    drives_rows(w, s, drives_, busy, me);
-    // Users of this computer's LAN share (self-host-users-smb.md §8): once it is claimed.
-    if (s.claimed) {
-      if (!users_.refreshed) {
-        users_.refreshed = true;
-        queued_.push_back(R"({"do":"users_refresh"})");
+      // Why it wasn't saved, here by the name rather than at the foot of the card.
+      std::string said = duck_note_;
+      if (said.empty() && s.error == "host_name") {
+        said = s.host_said.empty() ? "DuckDNS didn't take the name." : "DuckDNS: " + s.host_said;
+        duck_error_drawn = true;
       }
-      users_rows(w, s, users_, busy, me, Me, sid);
+      if (!said.empty()) text(w, "duck_error", said, "secondary");
     }
+  };
+  // Users of this computer's LAN share (self-host-users-smb.md §8): once it is claimed.
+  const auto here_users_rows = [&] {
+    if (!users_.refreshed) {
+      users_.refreshed = true;
+      queued_.push_back(R"({"do":"users_refresh"})");
+    }
+    users_rows(w, s, users_, busy, me, Me, sid);
+  };
+  if (host_here && !sections) {
+    host_rows();
+    if (s.claimed) duck_rows();
+    drives_rows(w, s, drives_, busy, me);
+    if (s.claimed) here_users_rows();
   }
 
   const auto search_rows = [&] {
@@ -1070,6 +1116,11 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   };
 
   const auto public_rows = [&](bool claimed_now) {
+    if (claimed_now) {
+      row(w, "public_row", "Address from outside",
+          "A name and port that reach your server from the internet, if your router forwards one. Empty: home only, or the relay.");
+      end_row(w);
+    }
     field(w, "public", "Address from outside", public_, "photos.example.com:7878", busy && claimed_now);
     std::string warn;
     if (s.warning == "private") warn = "This name points to a private address, so your phone can't reach it from outside.";
@@ -1110,7 +1161,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     row(w, "passphrase", "Server passphrase", detail);
     if (s.nas_passphrase == "set" && s.unlocked_s > 0) {
-      button(w, "lock", "Lock", busy, "plain", "Lock: forget the server's key on " + me);
+      sym_button(w, "lock", "Lock", "lock", busy, "plain", "Lock: forget the server's key on " + me);
     } else if (s.nas_passphrase == "set" && !unlock_wanted_) {
       button(w, "unlock_open", "Unlock\xE2\x80\xA6", busy, "plain", "Unlock with the server passphrase");
     }
@@ -1152,7 +1203,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       end_row(w);
       return;
     }
-    stack(w, "code", 16, "horizontal", "card");
+    stack(w, "code", 16, "horizontal");  // inside the Phones card
     w.begin_object().key("type").string("surface").key("id").string("qr_picture").key("surface").string(kQrSurface);
     w.key("width").integer(240).key("height").integer(240).key("label").string("Code for your phone to scan").end_object();
     stack(w, "code_words", 6);
@@ -1242,8 +1293,11 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   };
 
   const auto folder_rows = [&] {
+    const bool can_back_up = s.has("backup");
+    bool has_backup = false;
     for (std::size_t i = 0; i < s.folders.size(); ++i) {
       const folder_row& f = s.folders[i];
+      has_backup = has_backup || f.backup;
       const std::string id = row_hash("fo", f.id);
       std::string detail = f.path;
       if (f.backup) {
@@ -1265,10 +1319,29 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
         end(w);
       }
     }
-    stack(w, "new_folder", 8, "vertical", "card");
-    text(w, "new_title", "Share another folder", "body");
+    if (can_back_up && !has_backup) {
+      row(w, "backup_none", "Phone backup",
+          "Not set up. Add a backup folder, and phones that back up save their new photos and videos into it.");
+      end_row(w);
+    }
+    if (!adding_folder_) {
+      stack(w, "folder_add_row", 8, "horizontal");
+      sym_button(w, "folder_add_open", "Add folder\xE2\x80\xA6", "plus", busy, "plain", "Share another folder with your phone");
+      if (can_back_up) {
+        sym_button(w, "backup_add_open", "Add backup folder\xE2\x80\xA6", "sync", busy, "plain", "Add a folder phones back up into");
+      }
+      end(w);
+      return;
+    }
+    stack(w, "new_folder", 8, "vertical");
+    text(w, "new_title", new_backup_ ? "Add a backup folder" : "Add a folder", "title");
+    if (new_backup_) {
+      text(w, "new_backup_note",
+           "Phones that back up save their new photos and videos here, up to the limit, and leave the free space you set.",
+           "secondary");
+    }
     field(w, "new_label", "Name of the new shared folder", new_label_,
-          new_path_.empty() ? "Label" : share_label(new_path_));
+          new_path_.empty() ? "Name on your phone" : share_label(new_path_));
     if (server_here_) {
       // The server is this computer: its folders are chosen, not typed.
       pick_folder(w, "new_path", "Folder on " + me + " to share", new_path_, "Choose a folder or drive\xE2\x80\xA6", busy);
@@ -1276,14 +1349,18 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       field(w, "new_path", "Path of the new shared folder on the server", new_path_,
             "Folder on the server, like /volume1/Video or /Volumes/Drive/Video");
     }
-    toggle(w, "new_backup", "Phones back up to this folder", new_backup_, !s.has("backup"));
+    toggle(w, "new_backup", "Phones back up to this folder", new_backup_, !can_back_up);
     if (new_backup_) {
       stack(w, "new_sizes", 8, "horizontal");
       field(w, "new_limit", "Storage limit in gigabytes", new_limit_, "GB");
       field(w, "new_reserve", "Free space to keep on the server, in gigabytes", new_reserve_, "GB");
       end(w);
     }
-    button(w, "new_add", "Add", busy, "plain", "Add the shared folder");
+    stack(w, "new_buttons", 8, "horizontal");
+    button(w, "new_cancel", "Cancel", false, "plain", "Don't add a folder");
+    button(w, "new_add", new_backup_ ? "Add backup folder" : "Add folder", busy, "primary",
+           new_backup_ ? "Add the backup folder" : "Add the shared folder");
+    end(w);
     end(w);
   };
 
@@ -1316,14 +1393,14 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
   };
 
-  const auto library_rows = [&] {
+  const auto library_folder_row = [&] {
     row(w, "folder", "Folder on your server",
         s.folder.empty() ? "Where your phone reads your library. Nothing is written there until you choose it." : s.folder);
     pick_folder(w, "folder_pick", "Choose the folder on your server", "", s.folder.empty() ? "Choose\xE2\x80\xA6" : "Change\xE2\x80\xA6",
                 busy || (s.catalogue && s.catalogue->running));
     end_row(w);
-    if (s.folder.empty()) return;
-    search_rows();
+  };
+  const auto mismatch_rows = [&] {
     if (s.mismatch) {
       row(w, "mismatch", "The share doesn't match " + me,
           "Its library.json names another library or an older epoch, perhaps after a restore. " + Me +
@@ -1332,17 +1409,57 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     if (s.other_publisher) other_publisher_rows();
     if (!s.asking_name.empty()) asking_rows();
-    if (!s.claimed) {
-      claim_rows();
-      return;
-    }
+  };
+
+  // The claimed library: Server, Phones, Folders, Away from home, then this
+  // computer's Drives and Users.
+  const auto claimed_sections = [&] {
+    section(w, "sec_server", "computer", "Server");
+    if (host_here) host_rows();
+    mismatch_rows();
     passphrase_rows();
+    end_section(w);
+
+    section(w, "sec_phones", "phone", "Phones and computers");
     code_rows();
     phone_rows();
+    end_section(w);
+
+    section(w, "sec_folders", "folder", "Folders and backup");
+    library_folder_row();
+    search_rows();
+    folder_rows();
+    end_section(w);
+
+    section(w, "sec_away", "globe", "Away from home");
+    if (host_here) duck_rows();
+    row(w, "local_row", "Address on your network", "How phones and computers reach your server at home.");
+    end_row(w);
     field(w, "local", "Address on your network", local_, "server.local:7878", busy);
     public_rows(true);
     relay_rows();
-    folder_rows();
+    end_section(w);
+
+    if (host_here) {
+      section(w, "sec_drives", "drive", "Drives");
+      drives_rows(w, s, drives_, busy, me);
+      end_section(w);
+      section(w, "sec_users", "person", "Users");
+      here_users_rows();
+      end_section(w);
+    }
+  };
+
+  const auto library_rows = [&] {
+    if (sections) {
+      claimed_sections();
+      return;
+    }
+    library_folder_row();
+    if (s.folder.empty()) return;
+    search_rows();
+    mismatch_rows();
+    claim_rows();  // a folder, not claimed yet (claimed: the sections above)
   };
 
   const auto this_computer_rows = [&] {
@@ -1467,7 +1584,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
             ? "Claimed. Update the service on your server to protect it with a passphrase."
             : "Update the service on your server to use this.";
   else e = "That didn't work.";
-  if (!e.empty()) text(w, "error", e, "secondary");
+  if (!e.empty() && !(r == "host_name" && duck_error_drawn)) text(w, "error", e, "secondary");
 
   end(w);
   return w.take();
@@ -1564,6 +1681,7 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   std::vector<std::string> out;
   std::string_view rest_any;  // a row's control after its id (find_row)
   note_.clear();
+  duck_note_.clear();
   const std::string v = kind == kChange || kind == kSubmit ? value_string(value_json) : std::string();
 
   // ---- typed (the tree keeps plain ones; secure ones stay here only) ----
@@ -1719,13 +1837,18 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     duck_change_ = false;
     duck_token_.clear();
   } else if (node == "duck_save") {
-    const std::string name = trim(duck_name_);
-    if (name.empty()) {
-      note_ = "Type the DuckDNS name you chose at duckdns.org, like home.";
+    // Checked as the server checks them, so a bad paste keeps the form (and the token) open.
+    const auto name = self_host::parse_subdomain(duck_name_);
+    if (trim(duck_name_).empty()) {
+      duck_note_ = "Type the DuckDNS name you chose at duckdns.org, like home.";
+    } else if (!name) {
+      duck_note_ = "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org.";
     } else if (duck_token_.empty()) {
-      note_ = "Paste the DuckDNS token too.";
+      duck_note_ = "Paste the DuckDNS token too.";
+    } else if (!self_host::parse_token(duck_token_)) {
+      duck_note_ = "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-\xE2\x80\xA6";
     } else {
-      out.push_back(req("host_name").s("duckdns", name).s("duckdns_token", duck_token_).done());
+      out.push_back(req("host_name").s("duckdns", *name).s("duckdns_token", duck_token_).done());
       duck_token_.clear();  // handed on; the server keeps it, this computer doesn't
       duck_change_ = false;
     }
@@ -1841,7 +1964,16 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       new_label_.clear();
       new_path_.clear();
       new_backup_ = false;
+      adding_folder_ = false;
     }
+  } else if (node == "folder_add_open" || node == "backup_add_open") {
+    adding_folder_ = true;
+    new_backup_ = node == "backup_add_open";
+    // A suggestion the owner changes; the service refuses past what is really free.
+    if (new_backup_ && new_limit_.empty()) new_limit_ = "1000";
+  } else if (node == "new_cancel") {
+    adding_folder_ = false;
+    new_backup_ = false;
   } else if (node == "edit_save") {
     const std::int64_t limit = bytes(edit_limit_), reserve = bytes(edit_reserve_);
     if (limit <= 0 || reserve < 0) {
@@ -2010,6 +2142,7 @@ void screen::forget_secrets() {
   changing_ = false;
   unlock_wanted_ = false;
   note_.clear();
+  duck_note_.clear();
 }
 
 }  // namespace mv::phone::card

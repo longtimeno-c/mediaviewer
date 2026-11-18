@@ -391,7 +391,7 @@ class DriftwirePackTest(unittest.TestCase):
             self.assertIn(native, paths)
             self.assertTrue(any(p.startswith("host/driftwire") for p in paths))
             c = m["contributes"]
-            self.assertEqual(c["api"], {"min": 15, "max": 15})
+            self.assertEqual(c["api"], {"min": 16, "max": 16})
             self.assertEqual(c["screens"], [{"id": "settings", "title": "Phone access", "place": "settings"}])
         with zipfile.ZipFile(self.out / "mediaviewer-addon-phone-access-macos.zip") as z:
             notice = z.read("LICENSES/NOTICE.txt").decode()

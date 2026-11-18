@@ -66,7 +66,11 @@ bool write_file(const std::string& path, const std::string& text) {
 
 void remove_file(const std::string& path) { ::DeleteFileW(wide(path).c_str()); }
 
+// Every listing starts with this. A storage cmdlet that finds nothing (no pool, a blank disk's
+// partitions) reports an error, and the storage module takes the wrapper's 'Stop', not this
+// script's preference: without a default -ErrorAction it ends the listing (exit 5).
 constexpr const char* kSetsScript = R"PS(
+$PSDefaultParameterValues = @{ '*:ErrorAction' = 'SilentlyContinue' }
 $setsOf = {
 $ErrorActionPreference = 'SilentlyContinue'  # a detached space has no disk or partition: still listed, never an error
 @(Get-VirtualDisk | ForEach-Object {
