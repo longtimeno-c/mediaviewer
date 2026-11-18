@@ -726,6 +726,20 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     CHECK(fs::exists(fs::path(cfg.library_dir) / "gen" / installed->dir / "catalog.db"));
     mv_link_close(l);
   }
+  SECTION("a catalogue folder's place on the service, for its other files") {
+    rig r(300000, "Pictures");
+    auto* l = open_synced(r);
+    char root[64], rel[256];
+    REQUIRE(mv_files_folder_place(l, "/root-uuid/2024", root, sizeof root, rel, sizeof rel) == MV_LINK_OK);
+    CHECK(std::string(root) == "a1a1a1a1a1a1a1a1");
+    CHECK(std::string(rel) == "2024");
+    REQUIRE(mv_files_folder_place(l, "/root-uuid", root, sizeof root, rel, sizeof rel) == MV_LINK_OK);
+    CHECK(std::string(rel).empty());
+    CHECK(mv_files_folder_place(l, "/other-uuid/2024", root, sizeof root, rel, sizeof rel) == MV_LINK_NOT_FOUND);
+    CHECK(mv_files_folder_place(l, "/root-uuid/../x", root, sizeof root, rel, sizeof rel) == MV_LINK_INVALID);
+    CHECK(mv_files_folder_place(l, "/root-uuid/2024", root, 4, rel, sizeof rel) == MV_LINK_INVALID);
+    mv_link_close(l);
+  }
   SECTION("a folder labelled something else that holds the file is found by its path") {
     rig r(300000, "Pictures");
     auto* l = open_synced(r);

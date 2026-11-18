@@ -205,6 +205,22 @@ public final class LinkFiles: @unchecked Sendable {
     return FolderListing(folders: folders, files: files, others: others)
   }
 
+  /// A catalogue folder's other files: the catalogue holds only photos and clips, so the folder's
+  /// place on the server is asked for (mv_files_folder_place) and listed. [] when it can't be had
+  /// (no link, the share not served): the folder's photos still show.
+  public func otherFiles(inCatalogueFolder key: String) async -> [OtherFile] {
+    guard let link = await connection.awaitLink() else { return [] }
+    let place = await onLinkQueue { () -> FilePath? in
+      var root = [CChar](repeating: 0, count: 256)
+      var rel = [CChar](repeating: 0, count: 4096)
+      let status = key.withCString { mv_files_folder_place(link.raw, $0, &root, root.count, &rel, rel.count) }
+      guard status == 0 else { return nil }
+      return FilePath(root: String(cString: root), rel: String(cString: rel))
+    }
+    guard let place, !Task.isCancelled else { return [] }
+    return (try? await list(place, priority: .userInitiated))?.others ?? []
+  }
+
   /// Keeps a listing's files for opening, and forgets the folders listed longest ago.
   private func remember(_ files: [FileEntry], in folder: FilePath) {
     let key = folder.id
