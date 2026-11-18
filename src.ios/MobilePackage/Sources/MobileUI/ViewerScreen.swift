@@ -20,17 +20,28 @@ struct ViewerScreen: View {
   @AppStorage(Preferences.filmstrip) private var showsFilmstrip = true
   @State private var pageStates: [MediaID: PageState] = [:]
   @State private var showDetails: Bool
-  @State private var playing: GridEntry?
+  /// The clip open on its page (ClipLive, ClipScreen.swift): one at a time, swiped past like a photo.
+  @State private var live = ClipLive()
+  /// Where the controls end at the top and the filmstrip starts at the bottom, and the screen's
+  /// safe area: the room an open clip's page leaves them.
+  @State private var headerBottom: CGFloat = 0
+  @State private var stripTop: CGFloat?
+  /// The top of the card above the filmstrip (a download's progress), when one shows.
+  @State private var slotTop: CGFloat?
+  @State private var screen = ScreenEdges()
   /// Save to Photos and Share: the original, one at a time (OriginalActions.swift).
   @State private var transfer = OriginalTransfer()
+
+  private struct ScreenEdges: Equatable {
+    var bottom: CGFloat = 0
+    var safe = EdgeInsets()
+  }
 
   init(request: ViewerRequest, namespace: Namespace.ID) {
     self.request = request
     self.namespace = namespace
     _index = State(initialValue: request.startIndex)
     _showDetails = State(initialValue: request.showDetails)
-    let start = request.entries[request.startIndex]
-    _playing = State(initialValue: request.playClip && start.item.kind == .clip ? start : nil)
   }
 
   private var current: GridEntry { request.entries[index] }
@@ -40,23 +51,28 @@ struct ViewerScreen: View {
       Color.black.ignoresSafeArea()
       PagerView(entries: request.entries, startIndex: request.startIndex, images: model.services.images,
                 onIndex: pageChanged, onTap: toggleChrome, onZoomed: { zoomed = $0 },
-                onPlay: { playing = $0 }, onState: { pageStates[$0] = $1 },
+                onPlay: { openClip(at: $0) }, onState: { pageStates[$0] = $1 },
                 onPullChanged: { pulling = $0 }, onClose: close,
-                onSettled: { model.viewerFocus = "\(request.context)/\($0)" }, jump: jump, isCovered: playing != nil)
+                onSettled: { model.viewerFocus = "\(request.context)/\($0)" }, jump: jump,
+                live: live, liveIndex: live.index, transfer: transfer, model: model)
         .ignoresSafeArea()
-      // Not just invisible: nothing under an open clip may be reachable by VoiceOver.
-      if chromeShown && !pulling && playing == nil {
+      if chromeShown && !pulling {
         chrome.transition(.opacity)
       }
-      if let playing {
-        ClipScreen(entry: playing, transfer: transfer, onStep: stepFromClip,
-                   canStep: { request.entries.indices.contains(index + $0) }) { closeClip() }
-          .id(playing.id)
-          .transition(.opacity)
-      }
     }
+    .onGeometryChange(for: ScreenEdges.self) { proxy in
+      ScreenEdges(bottom: proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom, safe: proxy.safeAreaInsets)
+    } action: { screen = $0 }
+    .onChange(of: clipInsets, initial: true) { _, insets in live.insets = insets }
+    // A pull to close leaves the page as it is: only a tap shows or hides the controls for it.
+    .onChange(of: chromeShown, initial: true) { _, shown in live.chromeShown = shown }
+    .task {
+      // Opened from a clip's tile: it plays at once, on its page.
+      if request.playClip, current.item.kind == .clip, live.index == nil { openClip(at: index) }
+    }
+    .onDisappear { live.close() }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chromeShown && !pulling)
-    .statusBarHidden(!chromeShown || playing != nil)
+    .statusBarHidden(!chromeShown)
     .persistentSystemOverlays(chromeShown ? .automatic : .hidden)
     .inspector(isPresented: $showDetails) {
       DetailsScreen(item: current.item)
@@ -71,6 +87,29 @@ struct ViewerScreen: View {
 
   private func pageChanged(_ new: Int) {
     index = new
+    guard live.index != new else { return }
+    // Watching one clip and swiping to the next plays it, as Photos does; from a photo, a clip
+    // waits for its Play button (each one streams from the server).
+    let watching = live.clip.map { $0.isPlaying || $0.phase == .reading } ?? false
+    live.close()
+    if watching, request.entries[new].item.kind == .clip { openClip(at: new) }
+  }
+
+  private func openClip(at position: Int) {
+    guard request.entries.indices.contains(position), request.entries[position].item.kind == .clip else { return }
+    live.open(request.entries[position], at: position, clips: model.services.clips)
+  }
+
+  /// The room an open clip's page leaves the controls: below the top bar and above the filmstrip
+  /// while they show, the screen's safe area while they are hidden.
+  private var clipInsets: EdgeInsets {
+    let shown = chromeShown
+    let top = shown && headerBottom > 0 ? headerBottom + 8 : screen.safe.top
+    let edge = [stripTop, slotTop].compactMap { $0 }.min()
+    let bottom: CGFloat
+    if shown, let edge, screen.bottom > edge { bottom = screen.bottom - edge + 8 }
+    else { bottom = screen.safe.bottom }
+    return EdgeInsets(top: top, leading: screen.safe.leading, bottom: bottom, trailing: screen.safe.trailing)
   }
 
   private func toggleChrome() { chromeShown.toggle() }
@@ -78,27 +117,6 @@ struct ViewerScreen: View {
   private func close() {
     model.viewerFocus = "\(request.context)/\(index)"
     model.closeViewer(reduceMotion: reduceMotion)
-  }
-
-  /// A swipe on a playing clip: the pager moves under it to the item before or after, and a clip
-  /// there plays at once; a photo shows on its page.
-  private func stepFromClip(_ step: Int) {
-    let target = index + step
-    guard request.entries.indices.contains(target) else { return }
-    let next = request.entries[target]
-    jump = PagerJump(index: target, animated: false)
-    index = target
-    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-      playing = next.item.kind == .clip ? next : nil
-    }
-  }
-
-  private func closeClip() {
-    if request.playClip, index == request.startIndex {
-      close()
-    } else {
-      playing = nil
-    }
   }
 
   private var chrome: some View {
@@ -110,6 +128,8 @@ struct ViewerScreen: View {
         } scrub: { target in
           jump = PagerJump(index: target, animated: false)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { stripTop = $0 }
+        .onDisappear { stripTop = nil }
       }
     }
   }
@@ -141,9 +161,13 @@ struct ViewerScreen: View {
           .padding(.top, 7)
           .padding(.horizontal, 96)
       }
+      .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { headerBottom = $0 }
       Spacer(minLength: 0)
       bottomSlot
         .frame(maxWidth: Theme.readableWidth)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+          slotTop = frame.height > 0 ? frame.minY : nil
+        }
     }
     .padding(12)
   }

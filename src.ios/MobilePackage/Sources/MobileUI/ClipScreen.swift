@@ -55,6 +55,8 @@ final class ClipModel {
   /// must not pull the bar back.
   private var seekTarget: TimeInterval?
   private var seekGeneration = 0
+  /// The page was left: a load still on its way must not start the player.
+  private var ended = false
 
   init(item: MediaItem, clips: ClipService) {
     self.item = item
@@ -65,8 +67,9 @@ final class ClipModel {
   func load(startAt: Moment?) async {
     try? AVAudioSession.sharedInstance().setCategory(.playback)
     moments = await clips.moments(for: item)
+    guard !ended else { return }  // the page was left while it was asked for
     await route(startAt: startAt)
-    if phase != .playable {
+    if phase != .playable, !ended {
       seconds = startAt?.seconds ?? 0
       still = await clips.still(of: item, at: seconds)
     }
@@ -74,6 +77,7 @@ final class ClipModel {
 
   private func route(startAt: Moment?) async {
     let route = await clips.route(for: item)
+    guard !ended else { return }
     if case .converted = route { isConverted = true }
     switch route {
     case .stream(let asset), .converted(let asset):
@@ -167,12 +171,15 @@ final class ClipModel {
   }
 
   func stop() {
+    ended = true
+    isPlaying = false
     player.pause()
     downloadTask?.cancel()
     removeObservers()
   }
 
   func play() {
+    guard !ended else { return }
     if length > 0, seconds >= length - 0.05 { seek(to: 0) }
     player.play()
     isPlaying = true
@@ -276,32 +283,59 @@ private struct PlayerSurface: UIViewRepresentable {
   func updateUIView(_ view: SurfaceView, context: Context) {}
 }
 
-struct ClipScreen: View {
-  let entry: GridEntry
-  let transfer: OriginalTransfer
-  /// A sideways swipe on the picture: -1 the item before, +1 the item after; nil when there is none.
-  var onStep: ((Int) -> Void)? = nil
-  var canStep: (Int) -> Bool = { _ in false }
-  let onClose: () -> Void
+/// The clip open in the viewer: one at a time, on its own page of the pager, so a swipe moves to
+/// the next item as it does from a photo, and the viewer's controls and filmstrip stay. Owned by
+/// the viewer, not the page: a page laid out again never restarts the clip.
+@MainActor
+@Observable
+final class ClipLive {
+  /// The page whose clip is open.
+  private(set) var index: Int?
+  private(set) var entryID: String?
+  private(set) var clip: ClipModel?
+  /// Room the viewer's controls take at the top and bottom (the safe area when they are hidden).
+  var insets = EdgeInsets()
+  var chromeShown = true
+  /// Where the position bar is on screen: a drag that starts on it scrubs, never pages.
+  var scrubFrame = CGRect.null
+  @ObservationIgnored private var loading: Task<Void, Never>?
 
-  @Environment(AppModel.self) private var model
+  func open(_ entry: GridEntry, at index: Int, clips: ClipService) {
+    close()
+    let clip = ClipModel(item: entry.item, clips: clips)
+    self.clip = clip
+    self.index = index
+    entryID = entry.id
+    loading = Task { await clip.load(startAt: entry.moment) }
+  }
+
+  func close() {
+    loading?.cancel()
+    loading = nil
+    clip?.stop()
+    clip = nil
+    index = nil
+    entryID = nil
+    scrubFrame = .null
+  }
+}
+
+/// The open clip's page: the player, its position bar and buttons, and its moments.
+struct ClipLivePage: View {
+  let entry: GridEntry
+  let live: ClipLive
+  let transfer: OriginalTransfer
+  let onTap: () -> Void
   @Environment(\.verticalSizeClass) private var verticalSize
-  @State private var clip: ClipModel?
 
   var body: some View {
     ZStack {
-      Color.black.ignoresSafeArea()
-      if let clip {
+      Color.black
+      if let clip = live.clip, live.entryID == entry.id {
         ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact,
-                 onStep: onStep, canStep: canStep, onClose: onClose)
+                 live: live, onTapPicture: onTap)
       }
     }
-    .task(id: entry.id) {
-      let new = ClipModel(item: entry.item, clips: model.services.clips)
-      clip = new
-      await new.load(startAt: entry.moment)
-    }
-    .onDisappear { clip?.stop() }
   }
 }
 
@@ -310,76 +344,53 @@ private struct ClipBody: View {
   let entry: GridEntry
   let transfer: OriginalTransfer
   let compactHeight: Bool
-  let onStep: ((Int) -> Void)?
-  let canStep: (Int) -> Bool
-  let onClose: () -> Void
+  let live: ClipLive
+  /// Shows and hides the viewer's controls, as a tap on a photo does.
+  let onTapPicture: () -> Void
 
   @Environment(AppModel.self) private var model
   @Environment(\.dynamicTypeSize) private var typeSize
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var controlsShown = true
-  /// How far a sideways swipe on the picture has moved it.
-  @State private var dragX: CGFloat = 0
 
   var body: some View {
     Group {
       if compactHeight {
-        // The picture sits behind, so it can fill the screen while the controls keep to the safe area.
+        // The picture fills the screen; its controls show and hide with the viewer's.
         VStack(spacing: 0) {
-          if controlsShown {
-            topBar
-            Spacer(minLength: 0)
+          Spacer(minLength: 0)
+          if live.chromeShown {
             below
               .padding(Theme.inset)
               .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(.black.opacity(0.55)))
           }
         }
-        .padding(12)
+        .padding(.leading, live.insets.leading + 12)
+        .padding(.trailing, live.insets.trailing + 12)
+        .padding(.top, live.insets.top)
+        .padding(.bottom, live.insets.bottom + 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-          picture
-            .ignoresSafeArea()
-            .contentShape(Rectangle())
-            .onTapGesture { controlsShown.toggle() }
-        }
+        .background { picture }
       } else if typeSize.isAccessibilitySize {
         // Large type does not fit beside a flexible picture, so everything scrolls as one column.
-        VStack(spacing: 0) {
-          topBar.padding(.horizontal, 12).padding(.top, 4)
-          ScrollView {
-            VStack(spacing: 0) {
-              picture.frame(height: 220)
-              below.padding(.horizontal, 16).padding(.top, 12)
-              momentRows
-            }
+        ScrollView {
+          VStack(spacing: 0) {
+            picture.frame(height: 220)
+            below.padding(.horizontal, 16).padding(.top, 12)
+            momentRows
           }
         }
+        .padding(.top, live.insets.top)
+        .padding(.bottom, live.insets.bottom)
       } else {
         VStack(spacing: 0) {
-          topBar.padding(.horizontal, 12).padding(.top, 4)
           picture.frame(maxHeight: .infinity)
           below.padding(.horizontal, 16).padding(.top, 12)
           momentsList
         }
+        .padding(.top, live.insets.top)
+        .padding(.bottom, live.insets.bottom)
       }
     }
-  }
-
-  private var topBar: some View {
-    VStack(spacing: 8) {
-      HStack(spacing: 8) {
-        Button(action: onClose) { Image(systemName: "xmark") }
-          .buttonStyle(ChromeIconStyle())
-          .accessibilityLabel("Close")
-        Spacer()
-        OriginalButtons(item: entry.item, transfer: transfer)
-      }
-      if transfer.state(for: entry.item) != nil {
-        OriginalProgress(item: entry.item, transfer: transfer)
-          .padding(Theme.inset)
-          .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(Theme.surface))
-      }
-    }
+    .animation(.easeOut(duration: 0.15), value: live.insets)
   }
 
   @ViewBuilder
@@ -392,33 +403,8 @@ private struct ClipBody: View {
         posterImage
       }
     }
-    .offset(x: dragX)
     .contentShape(Rectangle())
-    // Sideways to the item before or after, as the photos page; up and down stay the screen's.
-    .simultaneousGesture(swipe)
-    .accessibilityAction(named: "Next item") { if canStep(1) { onStep?(1) } }
-    .accessibilityAction(named: "Previous item") { if canStep(-1) { onStep?(-1) } }
-  }
-
-  private var swipe: some Gesture {
-    DragGesture(minimumDistance: 20)
-      .onChanged { value in
-        let dx = value.translation.width, dy = value.translation.height
-        guard abs(dx) > abs(dy) else { return }
-        // No item that way: the picture gives a little, then stops.
-        dragX = canStep(dx < 0 ? 1 : -1) ? dx : dx / 4
-      }
-      .onEnded { value in
-        let dx = value.translation.width, dy = value.translation.height
-        let flung = value.predictedEndTranslation.width
-        let step = dx < 0 ? 1 : -1
-        let sideways = abs(dx) > abs(dy) * 1.5
-        if sideways, abs(dx) > 80 || abs(flung) > 220, canStep(step) {
-          onStep?(step)
-        } else {
-          withAnimation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 1)) { dragX = 0 }
-        }
-      }
+    .onTapGesture(perform: onTapPicture)
   }
 
   private var posterImage: some View {
@@ -437,7 +423,7 @@ private struct ClipBody: View {
     case .playable:
       VStack(spacing: 8) {
         if clip.isWaiting { ProgressLine(verb: clip.isConverted ? FailureCopy.clipConverting : "Waiting for the clip", fraction: nil) }
-        ClipTrack(clip: clip)
+        ClipTrack(clip: clip, live: live)
         transport
       }
     case .tooBig(let needed, let available, let bytes):
@@ -463,7 +449,7 @@ private struct ClipBody: View {
 
   private func fallback(title: String, line: String, button: String) -> some View {
     VStack(alignment: .leading, spacing: 12) {
-      if !clip.moments.isEmpty { ClipTrack(clip: clip) }
+      if !clip.moments.isEmpty { ClipTrack(clip: clip, live: live) }
       VStack(alignment: .leading, spacing: 4) {
         Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.title)
         Text(line).font(.footnote).foregroundStyle(Theme.body)
@@ -554,6 +540,8 @@ private struct ClipBody: View {
 /// A 3 pt line with a tick at each moment. A touch near a tick lands on it.
 private struct ClipTrack: View {
   let clip: ClipModel
+  /// Told where the bar is, so the pager leaves a drag on it alone.
+  var live: ClipLive? = nil
   @State private var dragging = false
 
   var body: some View {
@@ -596,6 +584,8 @@ private struct ClipTrack: View {
         })
       }
       .frame(height: 44)
+      .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { live?.scrubFrame = $0 }
+      .onDisappear { live?.scrubFrame = .null }
       .accessibilityElement()
       .accessibilityLabel("Position")
       .accessibilityValue(String.clockFrom(clip.seconds))
