@@ -9,15 +9,15 @@ namespace mv::shell {
 struct close_state {
   bool closing = false;        // the close is already under way
   bool quit_for_real = false;  // the icon's Quit, an update's restart
-  bool lab_finished = false;   // the render thread has ended: a soak's or a harness's own close
+  bool harness_run = false;    // --soak, --browse-soak, a self-test, --boot-report
   bool kept_alive = false;     // something is on the keep-alive list
 };
 
-// A finished lab has no canvas left to come back to, and the harnesses (--soak,
-// --browse-soak, frametime, boot.ps1) wait for the process to exit: before this,
-// every measured run on a PC that was hosting hid instead of quitting and hung.
+// A harness run closes itself when its report is written, and frametime, regenerate.py
+// and boot.ps1 wait for the process to exit: before this, every measured run on a PC
+// that was hosting (`driftwire host`) hid instead of quitting and never exited.
 [[nodiscard]] constexpr bool close_goes_to_background(const close_state& s) noexcept {
-  return !s.closing && !s.quit_for_real && !s.lab_finished && s.kept_alive;
+  return !s.closing && !s.quit_for_real && !s.harness_run && s.kept_alive;
 }
 
 }  // namespace mv::shell

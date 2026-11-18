@@ -49,12 +49,12 @@ TEST_CASE("login item: on writes the value, off removes it", "[.login-item]") {
 }
 
 // #452: a close hides into the background only while something keeps the process,
-// and never once the lab has finished (a soak's own close: the harness waits for exit).
+// and never for a harness run (a soak's own close: the harness waits for exit).
 TEST_CASE("close goes to the background only for a live window something keeps", "[login-item]") {
   using mv::shell::close_goes_to_background;
   CHECK(close_goes_to_background({false, false, false, true}));
   CHECK_FALSE(close_goes_to_background({false, false, false, false}));  // nothing keeps it
   CHECK_FALSE(close_goes_to_background({true, false, false, true}));    // already closing
   CHECK_FALSE(close_goes_to_background({false, true, false, true}));    // the icon's Quit
-  CHECK_FALSE(close_goes_to_background({false, false, true, true}));    // a finished soak, while hosting
+  CHECK_FALSE(close_goes_to_background({false, false, true, true}));    // a soak, while hosting
 }
