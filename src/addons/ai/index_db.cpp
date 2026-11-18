@@ -12,7 +12,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 11;
+constexpr int kSchemaVersion = 12;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -409,6 +409,19 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
     }
     v = "11";
   }
+  // Schema 11 -> 12: tags level 4 reads a clip's length from its header. A row
+  // at level 3 with nothing to add moves to 4 here, so the backfill reads only
+  // the clips and audio files whose length is not known yet.
+  if (v == "11") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    const bool ok = d->exec("UPDATE assets SET tags = 4 WHERE tags = 3 AND (kind NOT IN (2, 4) OR duration_ms > 0);") &&
+                    static_cast<bool>(d->set_meta("schema", "12"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "12";
+  }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
@@ -428,8 +441,11 @@ result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& pa
   sqlite3_busy_timeout(d->db_, 5000);
   if (immutable) sqlite3_db_config(d->db_, SQLITE_DBCONFIG_DEFENSIVE, 1, nullptr);
   // An index this build cannot read as it is (older or newer): the app
-  // migrates it, never a reader.
-  if (d->meta("schema") != std::to_string(kSchemaVersion)) return err(status::unsupported_format);
+  // migrates it, never a reader. Schema 11 reads as it is: 11 -> 12 changed no
+  // table, only tags levels, which no search reads. A phone's catalogue comes
+  // from whichever desktop published it, so this keeps an older one searchable.
+  const std::string schema = d->meta("schema");
+  if (schema != std::to_string(kSchemaVersion) && schema != "11") return err(status::unsupported_format);
   return d;
 }
 
@@ -454,10 +470,10 @@ std::string index_db::content_stamp(const std::string& spec, std::span<const std
     // A lock per query, so the indexer gets in between them. `+root_id`: nearly
     // every row qualifies, and a table scan beats a lookup for each one.
     std::lock_guard lock(m_);
-    stmt s(db_, ("SELECT COUNT(*), TOTAL(mtime), TOTAL(size), TOTAL(tags), TOTAL(id) FROM assets WHERE +root_id IN (" + in + ")").c_str());
+    stmt s(db_, ("SELECT COUNT(*), TOTAL(mtime), TOTAL(size), TOTAL(tags), TOTAL(id), TOTAL(duration_ms) FROM assets WHERE +root_id IN (" + in + ")").c_str());
     if (s.step_row()) {
       out += std::to_string(s.i64(0)) + "," + std::to_string(s.real(1)) + "," + std::to_string(s.real(2)) + "," +
-             std::to_string(s.real(3)) + "," + std::to_string(s.real(4));
+             std::to_string(s.real(3)) + "," + std::to_string(s.real(4)) + "," + std::to_string(s.real(5));
     }
   }
   const std::string of_roots = "asset_id IN (SELECT id FROM assets WHERE root_id IN (" + in + "))";
@@ -1690,7 +1706,8 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
     // its stamp meanwhile set tags back to 0, and this row is dropped.
     stmt up(db_, "UPDATE assets SET tags = ?11, taken_at = ?4, lat = ?5, lon = ?6, camera = ?7, lens = ?8,"
                  " made_with = ?9, ai = ?10, rating = ?12, label = ?13, iso = ?14, aperture_x100 = ?15,"
-                 " focal_mm = ?16, shutter_den = ?17, shutter_us = ?18"
+                 " focal_mm = ?16, shutter_den = ?17, shutter_us = ?18,"
+                 " duration_ms = CASE WHEN ?19 > 0 THEN ?19 ELSE duration_ms END"
                  " WHERE id = ?1 AND mtime = ?2 AND size = ?3");
     stmt del(db_, "DELETE FROM asset_text WHERE rowid = ?1");
     stmt ins(db_, "INSERT INTO asset_text(rowid, text) VALUES(?1, ?2)");
@@ -1714,6 +1731,7 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
         if (t.shutter_den > 0) up.bind(17, std::int64_t{t.shutter_den});
         if (t.shutter_us > 0) up.bind(18, t.shutter_us);
       }
+      up.bind(19, t.level >= 4 ? t.duration_ms : std::int64_t{0});
       if (!up.run()) {
         ok = false;
         break;

@@ -6,20 +6,23 @@ Find any photo, or any moment in any video, by typing what you remember.**
 MediaViewer is a fast, keyboard-first viewer for the folder that comes off your camera: photos, RAW and
 video side by side in one window, with music and documents when you want them. It draws on its own GPU surface
 (Direct3D 11 on Windows, Metal on the Mac) instead of a stock image or media-player control, so decoding never
-stands between you and the screen. It runs natively on Windows and macOS, and nothing about your files ever
-leaves your computer.
+stands between you and the screen. It runs natively on Windows and macOS, and an iPhone and iPad app searches
+the same library from your pocket, served by your own computer. Nothing about your files ever
+goes to anyone else's server.
 
-![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
+![MediaViewer on a Mac showing a photo with the filmstrip underneath](docs/img/mac-viewer.jpg)
 
 ### At a glance
 
 | | |
 |---|---|
-| **Instant** | A RAW preview on screen in 44–125 ms, the next photo ready in 0.2 ms, zero dropped frames while panning |
+| **Instant** | A RAW preview on screen in 44–125 ms on a Windows PC and 28–50 ms on a Mac, the next photo ready in under 0.2 ms, zero dropped frames while panning |
 | **Everything in one window** | Photos, camera RAW, HEIC, AVIF, animated GIF/WebP, HDR video, MP3/M4A, PDF and Word |
 | **Search what's in them** | "dog on a beach", "happy birthday", "videos of Anna": photos and the exact moments in clips, all computed on your machine |
 | **People** | Faces grouped into people. Name someone once, then find every photo and clip they are in |
 | **Edit without fear** | Crop, straighten, colour, lossless rotate, edit any metadata tag, trim and cut video. Originals are never touched |
+| **On your phone** | The iPhone and iPad app searches your whole library on the phone itself, even with no signal, and streams the photos and clips from home |
+| **Your own server** | The Mac you already have (a Windows PC and a Synology NAS next): one guided setup shares your folders with your phones and your other computers, encrypted end to end |
 | **Import and back up** | Verified copies from a card at network speed, sorted by date, duplicates skipped. Back up your whole Photos library to a NAS |
 | **Make it yours** | Every key remappable, with built-in themes and more from anyone, installed from a file or a link |
 | **Private by design** | No account, no cloud, no upload. Telemetry is off unless you turn it on |
@@ -89,6 +92,28 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not
 
 What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. The folder chart is stills only.
 
+### On a Mac
+
+The same harnesses on a MacBook with an Apple M5 and its built-in display at 60 Hz (2026-11-18, raw reports in
+[`docs/perf/mac/`](docs/perf/mac/)).
+
+| | |
+|---|---|
+| **0 dropped frames** | 60 s of animated soak: 3,599 frames, p99 16.85 ms on a 16.67 ms refresh, 0.18 ms of CPU per frame |
+| **0 presents, 0.6 % CPU** | A still image sitting on screen for a minute |
+| **28–50 ms** | A camera RAW's preview on screen (Sony ARW, Canon CR2 and CR3, Nikon NEF, Pentax DNG); the full-resolution decode follows in 0.26–0.49 s. A HEIC: 6 ms, then 55 ms |
+| **Under 1.1 ms** | Arrow to a RAW that was decoded ahead, to the frame being presented; a jump to one that was not takes 53–64 ms |
+| **1 dropped present in 3,595** | 60 s of 1080p HEVC on screen, p99 16.9 ms, worst gap 83.5 ms; the selector skipped 5 video frames. Audio/video error p99 11.0 ms |
+| **1.7 ms** | List a folder of 3,000 photos; sort them by date taken in 0.2 ms |
+
+![Time to first pixel on a Mac](docs/perf/mac/img/perf-first-pixel.svg)
+
+![Moving through a folder on a Mac](docs/perf/mac/img/perf-browse.svg)
+
+![Video frame pacing on a Mac](docs/perf/mac/img/perf-video.svg)
+
+The scripted pan, the A/V drift trace and the app comparison are Windows harnesses only.
+
 ### Against Windows Photos and Media Player
 
 Same machine, same sample files, timed from the screen (a grab is about 17 ms). These are cold launches: the clock starts when the app is opened, so they are not the 44–125 ms in-app preview times above.
@@ -125,7 +150,7 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 
 | Gallery | Frame-time overlay (`F3`) |
 |---|---|
-| ![Gallery of RAW, HEIC and video thumbnails](docs/img/gallery.png) | ![Live frame-time overlay over a Nikon RAW](docs/img/frametime-overlay.png) |
+| ![Gallery of photos, a clip and camera RAW on a Mac](docs/img/mac-gallery.jpg) | ![Live frame-time overlay over a Nikon RAW](docs/img/frametime-overlay.png) |
 
 ## Keyboard-complete
 
@@ -197,6 +222,9 @@ All of it is computed on your computer; nothing is uploaded.
 - **Jump straight to the moment.** `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
 - **Your cloud folders too.** Folders on OneDrive or iCloud Drive are indexed, online-only files included if you let it fetch them.
 - **Move house without re-indexing.** Export the index to one file and import it on another computer, or after moving a library to a NAS. Thumbnails and People go only if you tick them.
+- **New photos show up on their own.** Indexed folders are watched on Windows and macOS, so a photo you add, move or delete is picked up without waiting for the next full walk. Network shares are watched too, and walked every 15 minutes as well in case a change slipped past.
+- **Kind to a flaky NAS.** A share that drops off the network mid-walk no longer loses index rows: what the walk found is indexed, and nothing it didn't reach is forgotten.
+- **Each photo read once.** The words in a picture are read in the same pass as the picture itself, once instead of twice, which matters on a hard disk or a NAS. A clip's length is known from the first, quick pass.
 - **You can see it working.** Settings shows each folder's progress, the pass that is running, and a Rescan that says what it is doing.
 - Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 5 GB in all. On a Mac, Local search needs Apple silicon.
 
@@ -213,6 +241,7 @@ An optional, deletable **People** piece finds faces (YuNet) and groups them into
 - **Name someone once**, then search "Anna" or "videos of Anna", or click their card to see every photo and clip they are in.
 - **Only faces you could recognise** start a person, so the list is the people in your life, not every blurry face in the background of a clip.
 - **Tidy it in seconds.** People live in **Settings → Local search → People**: rename on the card, select several and merge duplicates, or open a person's faces to check who is who.
+- **Corrections that stick.** Answer *Yes* or *Not them* on a face, move it to someone else, or name the unknown faces it is surest about first, and every answer can be undone. *Refine* and *Merge duplicates* show what they will change before they do it. In a held-out test on a real library, 519 of the first 600 one-click suggestions were right and none was wrong.
 - **Scope it** to the folder you are in, with or without its subfolders.
 
 ### Your Mac Photos library
@@ -222,6 +251,42 @@ On a Mac, Local search can also search your **Photos library**, iCloud Photos in
 - It reads what is already on the Mac and never changes the library. Opt in and it will also download iCloud-only videos, one or two at a time, so their moments, sound and faces are searchable too.
 - **Browse it like a folder.** Once added, the library opens from the folder tree, the welcome screen or **File → Open Photos Library**, and `⌘E` shows the photo in Photos.
 - **Back up every original** into year and day folders on a drive or a NAS, iCloud-only ones downloaded for it and edited photos saved as their untouched original. Every copy is verified, a run only copies what is new, and a NAS that remounts under a new name or drops off the network mid-run picks up where it left off.
+
+## On your iPhone and iPad
+
+**MediaViewer for NAS** is the phone half. Your computer indexes the library, your server keeps it, and the
+phone carries a copy of the index, so search runs on the phone itself: on a plane or out of signal, results
+and small thumbnails still come up, and the photos and clips stream from home when you are back online.
+
+| Search, on the phone | The photo, from your server | Folders as they are on disk | The smallest iPhone |
+|---|---|---|---|
+| ![Search for "dog on a beach" on an iPhone](docs/img/phone-search.jpg) | ![A photo open on an iPhone with the filmstrip underneath](docs/img/phone-viewer.jpg) | ![The sample library's folders on an iPhone](docs/img/phone-folders.jpg) | ![Search for "bridge at night" on an iPhone 17e](docs/img/phone-small-search.jpg) |
+
+- **Search the way you do on your computer.** By meaning ("dog on a beach", "snow in the mountains"), words on a sign or a menu, words said in a clip (which plays from that moment), the people you named, place, date, camera and file name. Sound search ("dog barking") is a one-time download on Wi-Fi.
+- **Browse it as it is.** Your whole library by date, or folder by folder as it is on the server, each folder a tile of what is inside. Photos full screen with pinch, swipe and a filmstrip; clips open at the moment that matched.
+- **Clips the phone can't play still play.** MP4 and MOV play as they are, and so do camcorder MTS and M2TS with H.264. Your server converts the rest (MKV, WebM, AVI, MPG, MPEG-2, HEVC in a transport stream) on its hardware encoder as you watch: on a Mac, 5.6–7.4 times real time for 1080p.
+- **Share and save.** Send a photo or clip anywhere from the share sheet, or save a copy to Photos.
+- **Yours, on your own hardware.** No account, no cloud, no subscription, no data collected. The phone pairs by scanning a code on your computer and checking a code on both screens; every connection is encrypted end to end, and the app checks it is your server before it asks for anything. Hand someone a guest code that lasts as long as you choose, and *Forget this library* removes everything the app kept.
+- **Try it without a server.** Enter the code `SAMPLE` and a public-domain sample library of 44 photos and 3 clips opens, searched on the phone by the same model as a real library.
+
+**How quick.** On the sample library in the iOS Simulator on an M5 Mac, from the last key typed to the answer on screen: 128–207 ms on an iPhone 18 Pro Max, 110–271 ms on an iPhone 17e. The search itself is 4.2 ms of that. These are Simulator numbers; a phone's are still to be measured.
+
+iPhone and iPad, iOS 18 or later. In testing on TestFlight; coming to the App Store.
+
+## Your own server: a NAS or the computer you have
+
+Phones and other computers reach your library through a small MediaViewer service. It runs on the Mac or PC
+you already leave on (a package for Synology NAS is coming), and the optional **Phone access** add-on sets it
+up from Settings.
+
+- **One guided setup.** Choose the folders to share, get a free DuckDNS name, and the router's port is opened and kept open for you. Scan the code with your phone and it is done. It starts at login, with no administrator rights.
+- **Reach it from anywhere.** One forwarded port, encrypted end to end, never a file share opened to the internet. Without a public address, a relay you run yourself on a small rented server carries it, sealed so the relay can't read it.
+- **Your other computers too.** On a Mac, **File → Connect to a Server…** pins the server's folders at the top of the folder tree, read-only. Measured through the service over loopback on one Mac: a 12-megapixel photo's first picture in 79–88 ms, its full resolution in 139–155 ms, the next one you arrow to in 56–60 ms (78–87 ms if it wasn't fetched ahead).
+- **Combine your drives.** Keep each drive separate, or mirror, span or stripe them (and, on Windows, parity) with the system's own tools, AppleRAID or Storage Spaces.
+- **People at home.** Add the people in your house with a role each (view, change or admin), and share folders with them over the home network as an encrypted file share with no guest access.
+- **Always in reach.** A menu-bar (or notification-area) item shows the server running, the phones connected and what they used today, and pauses or resumes it in one click.
+
+This is new, and Mac first: hosting on a Windows PC is written but not yet run, and the router, DuckDNS, drive and home-share steps pass their tests against stand-ins, still to be run on real routers, accounts and drives.
 
 ## Import: off the card, verified
 
@@ -296,6 +361,8 @@ All add-ons install from **Settings → Add-ons**, are verified at every start, 
 
 | Soon | |
 |---|---|
+| **MediaViewer on a Synology NAS** | The same service as a Synology package, so the NAS serves your phones with your computer switched off ([docs/design/28](docs/design/28-driftwire.md)) |
+| **Back up your phone** (iPhone 1.1) | Your iPhone's photos and videos copied to a folder on your server while the app is open on Wi-Fi, each one checked on arrival, nothing on the server ever replaced ([plan](docs/plans/mobile.md)) |
 | **Search from Final Cut Pro** (Mac) | A MediaViewer Search panel inside Final Cut Pro that uses your Local search index, so you can drag the matching moments straight into an event or the timeline. It is off until you turn it on under Local search ([docs/design/23](docs/design/23-nle-search.md)) |
 | **More from add-ons** | Add-ons that bring settings pages, commands, keymaps and whole screens, as sandboxed scripts with no network access ([docs/design/25](docs/design/25-open-addons.md)) |
 | **Voice search** (optional add-on) | Speak the query to Local search. Speech runs on-device ([docs/design/19](docs/design/19-voice.md)) |
@@ -324,4 +391,4 @@ GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE); the reasoning is 
 Copyright (C) 2026 longtimeno-c. Copies and forks must keep the copyright notices, `LICENSE`, `NOTICE` and the
 in-app legal notices; they may charge for it, as the GPL allows. Please do not present a fork as the original MediaViewer.
 Bundled libraries and their licences are listed in [THIRD-PARTY.md](THIRD-PARTY.md).
-Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif.
+Screenshots use CC0 sample files from [raw.pixls.us](https://raw.pixls.us) and libheif, and the sample library's CC0 and public-domain pictures from Wikimedia Commons ([sources](tools/ios/sample-library/SOURCES.md)).

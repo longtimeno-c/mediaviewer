@@ -269,8 +269,8 @@ void library::install(std::unique_ptr<library> lib) {
 
 library* library::shared() noexcept { return g_shared_ptr.load(std::memory_order_acquire); }
 
-driftwire::secrets::store& library::store() {
-  return cfg_.store ? *cfg_.store : *own_store_;
+driftwire::secrets::store* library::store() {
+  return cfg_.store ? cfg_.store : own_store_.get();
 }
 
 namespace {
@@ -319,7 +319,9 @@ expected library::load() {
     if (const auto* x = v.str("relay")) s->relay = *x;
     if (const auto* x = v.str("library_id")) s->library_id = *x;
     s->paired_unix = v.integer("paired").value_or(0);
-    auto secret = store().get(kSecretPrefix + s->id);
+    // No OS store: its keys cannot be read, so it is listed to pair again.
+    std::optional<std::vector<std::uint8_t>> secret;
+    if (auto* keys = store()) secret = keys->get(kSecretPrefix + s->id);
     if (secret && secret->size() == 64) {
       std::memcpy(s->device_key.data(), secret->data(), 32);
       std::memcpy(s->access_key.data(), secret->data() + 32, 32);
@@ -383,7 +385,7 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   if (p->expires <= now_unix) return err(status::timeout);
   // No OS store (a build signed without a keychain group, Linux without a
   // keyring): nothing could be kept, so the code is not spent.
-  if (!cfg_.store && !own_store_) return err(status::internal);
+  if (!store()) return err(status::internal);
   auto s = std::make_shared<server_rt>();
   s->id = id_of(p->identity);
   s->name = p->library_name.empty() ? std::string("Server") : p->library_name;
@@ -418,7 +420,7 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   std::array<std::uint8_t, 64> secret{};
   std::memcpy(secret.data(), s->device_key.data(), 32);
   std::memcpy(secret.data() + 32, s->access_key.data(), 32);
-  const bool kept = store().put(kSecretPrefix + s->id, secret);
+  const bool kept = store()->put(kSecretPrefix + s->id, secret);
   sodium_memzero(secret.data(), secret.size());
   // The service has taken the code and lists this desktop by now: not "can't
   // reach" (the Mac's keychain refused a release signed without the
@@ -449,7 +451,7 @@ expected library::forget(std::string_view server_id) {
     if (auto saved = save_locked(); !saved) return err(saved.error());
   }
   if (s->link) s->link->shut_down();
-  (void)store().erase(kSecretPrefix + s->id);
+  if (auto* keys = store()) (void)keys->erase(kSecretPrefix + s->id);
   cache_.remove_server(s->id);
   {
     std::lock_guard lock(stamps_m_);
