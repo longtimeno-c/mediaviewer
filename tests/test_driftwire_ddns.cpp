@@ -189,7 +189,14 @@ TEST_CASE("ddns: the subdomain is one DuckDNS label, however it was typed", "[dr
   CHECK_FALSE(ddns::parse_subdomain("home.example.com"));
   CHECK_FALSE(ddns::parse_subdomain("home.duckdns.org.evil"));
   CHECK_FALSE(ddns::parse_subdomain("home.duckdns.org.duckdns.org"));
-  CHECK_FALSE(ddns::parse_subdomain("https://home.duckdns.org"));
+  // Pasted from the browser's address bar.
+  CHECK(ddns::parse_subdomain("http://home.duckdns.org") == "home");
+  CHECK(ddns::parse_subdomain(" HTTPS://Home.duckdns.org/ ") == "home");
+  CHECK_FALSE(ddns::parse_subdomain("https://home.duckdns.org/path"));
+  CHECK_FALSE(ddns::parse_subdomain("https://home.duckdns.org:7878"));
+  CHECK_FALSE(ddns::parse_subdomain("ftp://home.duckdns.org"));
+  CHECK_FALSE(ddns::parse_subdomain("https://"));
+  CHECK_FALSE(ddns::parse_subdomain("https://home.example.com"));
   CHECK_FALSE(ddns::parse_subdomain("my home"));
   CHECK_FALSE(ddns::parse_subdomain("home&token=x"));
   CHECK_FALSE(ddns::parse_subdomain("-home"));

@@ -135,6 +135,11 @@ func slotSymbol(_ name: String) -> String {
   case "share": return "square.and.arrow.up"
   case "warning": return "exclamationmark.triangle"
   case "minus": return "minus"
+  case "phone": return "iphone"
+  case "drive": return "internaldrive"
+  case "lock": return "lock"
+  case "computer": return "desktopcomputer"
+  case "sync": return "arrow.triangle.2.circlepath"
   default: return "puzzlepiece"
   }
 }
