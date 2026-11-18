@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Folders as tiles, as the desktop's folder tiles are (#698): one big picture and two small ones from
-// inside, the name under them, and what the folder holds. A folder of folders is a page of tiles;
+// Folders as tiles: a folder drawn as one, with up to three pictures from inside peeking out of it
+// (so a folder never reads as a photo), the name under it, and what the folder holds. A folder of folders is a page of tiles;
 // a folder with photos too shows its folders as one row above them.
 import MobileKit
 import SwiftUI
@@ -56,10 +56,9 @@ struct FolderTile: View {
     let preview = asked ?? model.library.knownPreview(of: folder)
     Button { model.library.enter(folder) } label: {
       VStack(alignment: .leading, spacing: 6) {
-        FolderCover(items: preview?.items ?? [], known: preview != nil, offline: folder.offline,
-                    images: model.services.images)
+        FolderCover(items: preview?.items ?? [], known: preview != nil, documents: preview?.others ?? 0,
+                    offline: folder.offline, images: model.services.images)
           .aspectRatio(4 / 3, contentMode: .fit)
-          .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
         VStack(alignment: .leading, spacing: 1) {
           Text(folder.name)
             .font(.subheadline.weight(.semibold))
@@ -89,12 +88,14 @@ struct FolderTile: View {
     }
   }
 
-  /// "1,204 items" from a catalogue; "12 folders · 48 items" from a folder listed in file mode.
+  /// "1,204 items" from a catalogue; "12 folders · 48 items · 3 files" from a folder listed in file mode.
   private func detail(_ preview: FolderPreview?) -> String? {
     if folder.offline { return FailureCopy.notConnected }
     if folder.itemCount >= 0 { return Self.count(folder.itemCount, "item") }
     guard let preview, let files = preview.files, let folders = preview.folders else { return nil }
-    let parts = [folders > 0 ? Self.count(folders, "folder") : nil, files > 0 ? Self.count(files, "item") : nil].compactMap { $0 }
+    let others = preview.others ?? 0
+    let parts = [folders > 0 ? Self.count(folders, "folder") : nil, files > 0 ? Self.count(files, "item") : nil,
+                 others > 0 ? Self.count(others, "file") : nil].compactMap { $0 }
     return parts.isEmpty ? "Empty" : parts.joined(separator: " · ")
   }
 
@@ -103,41 +104,130 @@ struct FolderTile: View {
   }
 }
 
-/// One big picture and two small ones; one picture fills it; none leaves the folder's glyph.
+/// A folder, drawn as one: its back with a tab, up to three of its pictures (or sheets of paper, for
+/// a folder of documents) peeking out of the top, and its front over them. Nothing peeks while the
+/// preview is coming, so a tile never changes shape when it arrives.
 private struct FolderCover: View {
   let items: [MediaItem]
-  /// The preview has come: an empty one shows the glyph, one still coming shows the plain fill.
+  /// The preview has come.
   let known: Bool
+  /// Other files directly inside (PDFs and the like): paper peeks out when there are no pictures.
+  let documents: Int
   let offline: Bool
   let images: ImageLadder
 
   var body: some View {
     GeometryReader { space in
-      let gap: CGFloat = 2
-      let side = (space.size.height - gap) / 2
-      if items.count >= 3 {
-        HStack(spacing: gap) {
-          CoverPicture(item: items[0], images: images)
-          VStack(spacing: gap) {
-            CoverPicture(item: items[1], images: images)
-            CoverPicture(item: items[2], images: images)
+      let w = space.size.width, h = space.size.height
+      let radius = min(10, w * 0.06)
+      ZStack(alignment: .topLeading) {
+        FolderBack(radius: radius, tabWidth: w * 0.38, tabHeight: h * 0.1)
+          .fill(offline ? Theme.lifted : Theme.folderBack)
+        // Its own stack, so the fan's order never lifts a picture over the folder's front.
+        ZStack(alignment: .topLeading) { peeking(w: w, h: h) }
+          .frame(width: w, height: h, alignment: .topLeading)
+        UnevenRoundedRectangle(cornerRadii: .init(topLeading: radius * 0.6, bottomLeading: radius,
+                                                  bottomTrailing: radius, topTrailing: radius * 0.6),
+                               style: .continuous)
+          .fill(offline ? Theme.surface : Theme.folderFront)
+          .overlay {
+            if offline {
+              Image(systemName: "externaldrive.badge.xmark").font(.title3).foregroundStyle(Theme.body)
+            }
           }
-          .frame(width: side)
-        }
-      } else if let first = items.first {
-        CoverPicture(item: first, images: images)
-      } else {
-        Theme.surface.overlay {
-          if known || offline {
-            Image(systemName: offline ? "externaldrive.badge.xmark" : "folder.fill")
-              .font(.title2)
-              .foregroundStyle(Theme.body.opacity(0.7))
-          }
+          .frame(width: w, height: h * 0.44)
+          .offset(y: h * 0.56)
+      }
+      .frame(width: w, height: h, alignment: .topLeading)
+    }
+    .accessibilityHidden(true)
+  }
+
+  /// Fanned like prints in a wallet: the middle one in front, the outer two tilted away.
+  @ViewBuilder
+  private func peeking(w: CGFloat, h: CGFloat) -> some View {
+    let card = CGSize(width: w * 0.4, height: h * 0.56)
+    let shown = Array(items.prefix(3))
+    let sheets = shown.isEmpty && known && documents > 0 ? min(3, documents) : 0
+    let count = shown.isEmpty ? sheets : shown.count
+    let layout = Self.fan(count)
+    ForEach(Array(layout.enumerated()), id: \.offset) { order, place in
+      Group {
+        if shown.isEmpty {
+          PaperSheet()
+        } else {
+          CoverPicture(item: shown[place.index], images: images)
         }
       }
+      .frame(width: card.width, height: card.height)
+      .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+      .padding(2)
+      .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Theme.paper))
+      .rotationEffect(.degrees(place.angle), anchor: .bottom)
+      .position(x: w * (0.5 + place.x), y: h * 0.13 + card.height / 2)
+      .zIndex(Double(order))
     }
-    .background(Theme.surface)
-    .accessibilityHidden(true)
+  }
+
+  private struct Place {
+    let index: Int
+    let x: CGFloat
+    let angle: Double
+  }
+
+  /// Back to front.
+  private static func fan(_ count: Int) -> [Place] {
+    switch count {
+    case 0: return []
+    case 1: return [Place(index: 0, x: 0, angle: -3)]
+    case 2: return [Place(index: 1, x: 0.12, angle: 6), Place(index: 0, x: -0.1, angle: -4)]
+    default:
+      return [Place(index: 1, x: -0.2, angle: -7), Place(index: 2, x: 0.2, angle: 7), Place(index: 0, x: 0, angle: 0)]
+    }
+  }
+}
+
+/// A folder's back: a tab on the left of its top edge.
+private struct FolderBack: Shape {
+  let radius: CGFloat
+  let tabWidth: CGFloat
+  let tabHeight: CGFloat
+
+  func path(in rect: CGRect) -> Path {
+    var p = Path()
+    let r = radius, t = tabHeight
+    p.move(to: CGPoint(x: 0, y: r))
+    p.addQuadCurve(to: CGPoint(x: r, y: 0), control: .zero)
+    p.addLine(to: CGPoint(x: tabWidth - t * 0.6, y: 0))
+    p.addCurve(to: CGPoint(x: tabWidth + t * 0.6, y: t), control1: CGPoint(x: tabWidth, y: 0),
+               control2: CGPoint(x: tabWidth, y: t))
+    p.addLine(to: CGPoint(x: rect.maxX - r, y: t))
+    p.addQuadCurve(to: CGPoint(x: rect.maxX, y: t + r), control: CGPoint(x: rect.maxX, y: t))
+    p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+    p.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+    p.addLine(to: CGPoint(x: r, y: rect.maxY))
+    p.addQuadCurve(to: CGPoint(x: 0, y: rect.maxY - r), control: CGPoint(x: 0, y: rect.maxY))
+    p.closeSubpath()
+    return p
+  }
+}
+
+/// A sheet of a document peeking out: paper with a few lines of text on it.
+private struct PaperSheet: View {
+  var body: some View {
+    GeometryReader { space in
+      let w = space.size.width, h = space.size.height
+      VStack(alignment: .leading, spacing: h * 0.07) {
+        ForEach(0..<4, id: \.self) { line in
+          Capsule().fill(Theme.paperInk)
+            .frame(width: w * (line == 0 ? 0.5 : line == 3 ? 0.6 : 0.78), height: max(1.5, h * 0.035))
+        }
+      }
+      .padding(.top, h * 0.14)
+      .padding(.leading, w * 0.12)
+      .frame(width: w, height: h, alignment: .topLeading)
+      .background(Theme.paper)
+    }
   }
 }
 

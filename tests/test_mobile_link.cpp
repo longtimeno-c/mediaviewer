@@ -2372,6 +2372,7 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   write_file(r.photos / "Trip" / "notes.txt", "no");
   write_file(r.photos / "Trip" / ".hidden.jpg", "no");
   write_file(r.photos / "Trip" / "song.mp3", "no");
+  write_file(r.photos / "Trip" / "IMG_0001.JPG.xmp", "no");
   fs::create_directories(r.photos / "Trip" / "Day 2");
   r.pair_now();
   const auto cfg = r.sync_config();
@@ -2409,10 +2410,13 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   };
   REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "Trip", collect_entries, &entries) == MV_LINK_OK);
   std::sort(entries.begin(), entries.end(), [](const seen& a, const seen& b) { return a.name < b.name; });
-  REQUIRE(entries.size() == 3);
+  // Other files come as kind 3; hidden names and a sidecar do not come at all.
+  REQUIRE(entries.size() == 5);
   CHECK((entries[0].name == "Day 2" && entries[0].dir == 1 && entries[0].kind == -1));
   CHECK((entries[1].name == "IMG_0001.JPG" && entries[1].size == 5000 && entries[1].kind == 0));
   CHECK((entries[2].name == "clip.MOV" && entries[2].kind == 2));
+  CHECK((entries[3].name == "notes.txt" && entries[3].kind == 3));
+  CHECK((entries[4].name == "song.mp3" && entries[4].kind == 3));
 
   entries.clear();
   REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "", collect_entries, &entries) == MV_LINK_OK);
@@ -2522,15 +2526,23 @@ TEST_CASE("file mode: what a folder shows, by the D5 table", "[mobile-files]") {
   CHECK(mob::files::kind_of("a.heic") == kind::photo);
   CHECK(mob::files::kind_of("a.CR3") == kind::raw);
   CHECK(mob::files::kind_of("a.mov") == kind::clip);
-  CHECK(mob::files::kind_of("a.mp3") == kind::none);
-  CHECK(mob::files::kind_of("a.pdf") == kind::none);
-  CHECK(mob::files::kind_of("README") == kind::none);
-  const std::vector<dw::serve::list_entry> listing{
-      {"b.jpg", 1, 2, false}, {".mediaviewer", 0, 0, true}, {"Sub", 0, 0, true}, {"x.txt", 1, 1, false}, {".a.jpg", 1, 1, false}};
+  CHECK(mob::files::kind_of("a.mp3") == kind::other);
+  CHECK(mob::files::kind_of("a.pdf") == kind::other);
+  CHECK(mob::files::kind_of("README") == kind::other);
+  CHECK(mob::files::kind_of("a.CR3.xmp") == kind::none);
+  CHECK(mob::files::kind_of("GX010001.LRV") == kind::none);
+  CHECK(mob::files::kind_of("thumbs.db") == kind::none);
+  CHECK(mob::files::kind_of("C0001M01.XML") == kind::none);
+  CHECK(mob::files::kind_of("DJI_0001.SRT") == kind::none);
+  CHECK(mob::files::kind_of("settings.xml") == kind::other);
+  const std::vector<dw::serve::list_entry> listing{{"b.jpg", 1, 2, false},     {".mediaviewer", 0, 0, true},
+                                                   {"Sub", 0, 0, true},        {"x.txt", 1, 1, false},
+                                                   {".a.jpg", 1, 1, false},    {"b.jpg.xmp", 1, 1, false}};
   const auto out = mob::files::shown(listing);
-  REQUIRE(out.size() == 2);
+  REQUIRE(out.size() == 3);
   CHECK((out[0].name == "b.jpg" && out[0].k == kind::photo && !out[0].dir));
   CHECK((out[1].name == "Sub" && out[1].dir));
+  CHECK((out[2].name == "x.txt" && out[2].k == kind::other && !out[2].dir));
 }
 
 TEST_CASE("file mode: the fields are the desktop's, in its why-order", "[mobile-files]") {
