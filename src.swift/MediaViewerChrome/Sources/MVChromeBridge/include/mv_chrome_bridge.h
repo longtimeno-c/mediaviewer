@@ -53,6 +53,8 @@ enum MvMenuCmd : int32_t {
   kMenuAutoEnhance,
   // S3: Edit > the canvas tools (tool_brush, tool_red_eye, tool_extend, tool_faces).
   kMenuToolBrush, kMenuToolRedEye, kMenuToolExtend, kMenuToolFaces,
+  // The bar's Home: back to the welcome card, nothing open (owner 2026-11-18).
+  kMenuHome,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
