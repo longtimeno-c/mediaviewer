@@ -124,6 +124,13 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
     collection.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "clip")
     collection.holdsDrag = { [weak self] point in self?.onScrubBar(point) ?? false }
     view.addSubview(collection)
+    // A press held on either side of an open clip's picture plays it at double speed until the
+    // finger lifts; it cancels the tap the picture would otherwise take.
+    let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+    hold.minimumPressDuration = 0.3
+    hold.allowableMovement = 40
+    hold.delegate = self
+    collection.addGestureRecognizer(hold)
     let pull = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
     pull.delegate = self
     collection.addGestureRecognizer(pull)
@@ -132,6 +139,7 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
   // Pulling a photo down closes it. Only straight down, and never while it is zoomed in, nor from
   // the open clip's position bar or a list on its page that can scroll (its moments).
   func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+    if gesture is UILongPressGestureRecognizer { return onPictureSide(gesture.location(in: collection)) }
     guard let pan = gesture as? UIPanGestureRecognizer, pan.view === collection else { return true }
     let v = pan.velocity(in: view)
     let zoomed = collection.visibleCells.contains { ($0 as? ZoomPageCell)?.isZoomed == true }
@@ -145,6 +153,29 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
     guard let liveIndex, let window = collection.window, collection.bounds.width > 0,
           abs(collection.contentOffset.x - CGFloat(liveIndex) * collection.bounds.width) < 1 else { return false }
     return live.scrubFrame.contains(collection.convert(point, to: window))
+  }
+
+  /// The outer third either side of the open clip's picture, with the pager at rest on it.
+  private func onPictureSide(_ point: CGPoint) -> Bool {
+    guard let liveIndex, let window = collection.window, collection.bounds.width > 0,
+          abs(collection.contentOffset.x - CGFloat(liveIndex) * collection.bounds.width) < 1 else { return false }
+    let frame = live.pictureFrame
+    let at = collection.convert(point, to: window)
+    guard !frame.isNull, frame.contains(at) else { return false }
+    let third = frame.width / 3
+    return at.x < frame.minX + third || at.x > frame.maxX - third
+  }
+
+  @objc private func held(_ hold: UILongPressGestureRecognizer) {
+    switch hold.state {
+    case .began:
+      UIImpactFeedbackGenerator(style: .light).impactOccurred()
+      live.clip?.setFast(true)
+    case .ended, .cancelled, .failed:
+      live.clip?.setFast(false)
+    default:
+      break
+    }
   }
 
   private func inScrollingList(_ point: CGPoint) -> Bool {

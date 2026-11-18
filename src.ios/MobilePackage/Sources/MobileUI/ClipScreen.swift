@@ -31,6 +31,8 @@ final class ClipModel {
   private(set) var phase: Phase = .reading
   private(set) var moments: [Moment] = []
   private(set) var isPlaying = false
+  /// Held at double speed (a finger on either side of the picture), until it lifts.
+  private(set) var isFast = false
   private(set) var seconds: TimeInterval = 0
   private(set) var length: TimeInterval
   private(set) var still: UIImage?
@@ -124,7 +126,10 @@ final class ClipModel {
     }
     endToken = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
                                                       object: playerItem, queue: .main) { [weak self] _ in
-      MainActor.assumeIsolated { self?.isPlaying = false }
+      MainActor.assumeIsolated {
+        self?.isPlaying = false
+        self?.isFast = false
+      }
     }
   }
 
@@ -172,6 +177,7 @@ final class ClipModel {
 
   func stop() {
     ended = true
+    isFast = false
     isPlaying = false
     player.pause()
     downloadTask?.cancel()
@@ -185,7 +191,21 @@ final class ClipModel {
     isPlaying = true
   }
 
+  /// Double speed while held; back to normal on release. A paused clip starts playing fast, as a
+  /// hold on a short video does elsewhere.
+  func setFast(_ on: Bool) {
+    guard phase == .playable, !ended, on != isFast else { return }
+    isFast = on
+    if on {
+      if !isPlaying { play() }
+      player.rate = 2
+    } else if isPlaying {
+      player.rate = 1
+    }
+  }
+
   func pause() {
+    isFast = false
     player.pause()
     isPlaying = false
   }
@@ -381,6 +401,8 @@ final class ClipLive {
   var chromeShown = true
   /// Where the position bar is on screen: a drag that starts on it scrubs, never pages.
   var scrubFrame = CGRect.null
+  /// Where the picture is on screen: a press held on either side of it plays at double speed.
+  var pictureFrame = CGRect.null
   @ObservationIgnored private var loading: Task<Void, Never>?
 
   func open(_ entry: GridEntry, at index: Int, clips: ClipService) {
@@ -400,6 +422,7 @@ final class ClipLive {
     index = nil
     entryID = nil
     scrubFrame = .null
+    pictureFrame = .null
   }
 }
 
@@ -490,7 +513,27 @@ private struct ClipBody: View {
     }
     .contentShape(Rectangle())
     .onTapGesture(perform: onTapPicture)
+    // Either side, held, plays at double speed (the pager's press, PagerController): it needs
+    // to know where the picture is.
+    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { live.pictureFrame = $0 }
+    .onDisappear { live.pictureFrame = .null }
+    .overlay(alignment: .top) {
+      if clip.isFast {
+        Label("2×", systemImage: "forward.fill")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.white)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 5)
+          .background(Capsule().fill(.black.opacity(0.55)))
+          .padding(.top, 12)
+          .transition(.opacity)
+          .accessibilityHidden(true)
+      }
+    }
+    .animation(.easeOut(duration: 0.15), value: clip.isFast)
+    .accessibilityAction(named: clip.isFast ? "Normal speed" : "Double speed") { clip.setFast(!clip.isFast) }
   }
+
 
   private var posterImage: some View {
     Color.black.overlay {
