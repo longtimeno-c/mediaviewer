@@ -429,9 +429,12 @@ still applies. (`secrets.*`, `known.*`.) The question stays until the next send 
 
 - **Identity**: X25519 key in the OS secret store (`secrets.h`):
   - **Mac**: data protection keychain, generic password "MediaViewer Driftwire",
-    `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, app group
+    `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, access group
     `<team>.io.github.longtimeno-c.mediaviewer.driftwire` (`macpack.py release --team-id`,
-    `APPLE_TEAM_ID`); unsigned builds have no store.
+    `APPLE_TEAM_ID`), claimed as an app group and, with the Developer ID profile embedded, as
+    `keychain-access-groups`: the keychain refuses the app group alone (-34018,
+    [12](12-decision-log.md), 2026-11-15). Unsigned builds, and releases without a profile, have no
+    working store.
   - **Windows**: Credential Manager, values sealed with DPAPI (`CryptProtectData`, own entropy);
     plain items refused.
   - **Linux**: Secret Service via run-time libsecret (`secrets_linux.cpp`), schema
@@ -570,7 +573,8 @@ elevated on Windows, it refuses to start** (except the test build).
 **The protocol.** Message ids 25–31, 33–34 (`wire.h`) plus ident, ping, cancel. `serve_hello`
 (versions, operation names) → `serve_caps` (intersection); unknown operation →
 `end_code::unsupported`. Streams with client ids: `roots`, `list` (NDJSON), `stat`, `read_range`
-(`file_reader::read_at`). Credit per stream (≤ 8 MiB); interactive chunks ≤ 64 KiB, bulk ≤ 256 KiB,
+(`file_reader::read_at`). Credit per stream (≤ 8 MiB; the phone opens a viewer's read with 1 MiB and
+a whole-file pull with all 8, since one window per round trip caps a download); interactive chunks ≤ 64 KiB, bulk ≤ 256 KiB,
 one bulk per four interactive. `stream_cancel`; seek = cancel + new `read_range`. No rejoin or
 replay; reads are idempotent.
 
@@ -613,6 +617,26 @@ writes hidden `.<name>.<device id>.mvpart`, then flushes, hashes and renames wit
 (`" (2)"`), one commit per folder at a time. Only the device's own `.mvpart` and
 `.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`) are ever replaced. Phone side
 `src/mobile/backup.*`.
+
+### Clips the phone can't play: `convert` (2026-11-15)
+
+`src/wire/serve_convert.*`, `cli/convert_run.*`, `src/edit/clip_convert.*`; plan
+`docs/plans/phone-clip-convert.md`. Op 7 `convert` (bit `1u << 7`, not in `kAllOps`): listed in
+`serve_caps` only while the server has a converter (`server::options::converter`,
+`set_converter`); afterwards a request is `unsupported {"why":"off"}`. `{"seg":-1}` is the plan
+(`{"duration_ms","segment_ms","segments","width","height"}` in `stream_end`); `{"seg":k}` streams
+segment k's MPEG-TS (H.264 + AAC) exactly as a `read_range` once it is made. The path walks
+`stat_beneath` first, as a read does.
+
+`convert::service`: one worker for all sessions; asked segments first, then two ahead of a clip's
+second (or later) asked segment, only for the clip asked last; a seek drops what was ahead. Cache
+`serve/convert-cache/<BLAKE2b(folder id, rel, size, mtime, format)>/plan.json, seg-k.ts`, 2 GiB,
+oldest-used segments out; off empties it. Each job is one run of the app's clip helper
+(`MediaViewerClipJob --convert-plan|--convert-segment`, exit 0/1/2 not a clip/3 no encoder), which
+lowers its own priority and encodes on the hardware encoder only. `driftwire host convert on
+[--helper PATH]|off` (host.json `convert`, `convert_helper`; on by default, the Phone access add-on
+names the helper); state.json `"convert":{"on","available","encoder","busy"}`; `driftwire serve
+--convert-helper PATH` for a bare service. Tests `"[convert]"`; timings `"[.convert-bench]"`.
 
 ### Through the person's own relay
 

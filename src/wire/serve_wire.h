@@ -58,7 +58,7 @@ inline constexpr std::size_t kMaxLabelBytes = 64;
 // A listing, at most (a folder bigger than this says "truncated").
 inline constexpr std::size_t kMaxListBytes = 16u * 1024 * 1024;
 
-enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, upgrade = 5, write = 6 };
+enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, upgrade = 5, write = 6, convert = 7 };
 // What a phone can use to read. `admin` is apart: granted only to the owner's session.
 inline constexpr std::uint32_t kAllOps = (1u << 4) - 1;
 inline constexpr std::uint32_t kAdminOp = 1u << 4;
@@ -73,6 +73,10 @@ inline constexpr std::uint32_t kUpgradeOp = 1u << 5;
 // and leaves it out of serve_caps, which is how a phone learns it is too old.
 // Ops cross the wire by name, so this bit is this build's own.
 inline constexpr std::uint32_t kWriteOp = 1u << 6;
+// `convert` (docs/plans/phone-clip-convert.md) is apart as well: the service lists it only
+// when it has a converter (a hardware encoder that opens) and its owner left it on. A
+// phone asks for a clip it cannot play itself only when serve_caps has it.
+inline constexpr std::uint32_t kConvertOp = 1u << 7;
 inline constexpr std::size_t kMaxCandidates = 8;
 inline constexpr int kPunchMs = 10000;
 struct candidate {
@@ -193,6 +197,8 @@ struct open_request {
   std::uint64_t size = 0;    // the whole file
   std::string hash;          // its BLAKE3, 64 lowercase hex digits
   bool meta = false;         // rel is under kBackupMetaFolder
+  // convert: -1 for the plan, else the segment (0 .. plan.segments - 1)
+  std::int64_t segment = -1;
 };
 [[nodiscard]] std::vector<std::uint8_t> encode_open(const open_request& r);
 // nullopt: not a well-formed request at all. A name this build does not know
@@ -263,6 +269,25 @@ struct list_entry {
 [[nodiscard]] std::string list_line(const list_entry& e);
 // A whole listing's bytes (a line that is not one fails the whole).
 [[nodiscard]] std::optional<std::vector<list_entry>> parse_listing(std::string_view lines);
+
+// ---- convert (docs/plans/phone-clip-convert.md) --------------------------------------------
+// {"op":"convert","root","rel","seg":-1}: the plan, in stream_end ok. {"seg":k,"credit"}:
+// segment k as MPEG-TS (H.264, AAC), stream_data then stream_end ok {"sent"}, as read_range;
+// its bytes begin once the server has it. A file it cannot convert: unsupported
+// {"why":"not-a-clip"}; the converter gone or turned off since the caps: unsupported {"why":"off"}.
+inline constexpr std::int64_t kMaxConvertSegments = 1 << 20;  // 48 days of 4 s segments
+inline constexpr const char* kWhyNotAClip = "not-a-clip";
+inline constexpr const char* kWhyConvertOff = "off";
+struct convert_plan {
+  std::int64_t duration_ms = 0;
+  // Every segment's length but the last's, which runs to the end (a tail too short to stand
+  // alone joins it: segments is ceil(duration / segment_ms) or one fewer).
+  std::uint32_t segment_ms = 0;
+  std::uint32_t segments = 0;
+  std::uint32_t width = 0, height = 0;  // the converted picture's
+};
+[[nodiscard]] std::string convert_plan_json(const convert_plan& p);
+[[nodiscard]] std::optional<convert_plan> parse_convert_plan(std::string_view json);
 
 // ---- pairing, claiming and the owner's requests -------------------------------------------
 // A single-use pairing code: 32 lowercase hex digits.

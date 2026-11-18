@@ -2260,6 +2260,13 @@ at every login while hosting is too much (then the icon appears only once the ap
 when Phone access becomes an add-on (#686 §1), which takes this entry over with `keep_alive` /
 `keep_menu`.
 
+**The server converts phone clips with the app's clip helper, not FFmpeg in the add-on (owner,
+2026-11-15; docs/plans/phone-clip-convert.md).** An exception to "add-ons carry their own code"
+(2026-10-11): `driftwire host` runs the app's `MediaViewerClipJob` (`--convert-*`), which already
+holds FFmpeg, the hardware encoder port and the OS's AAC, rather than the Phone access add-on
+carrying a second FFmpeg (~40 MB) for the same code. The add-on tells the host where the helper is.
+Reopen if the host must convert on a computer without MediaViewer installed.
+
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
 anywhere, with no VPN, and they chose to build the headless core (`driftwire serve`,
@@ -3500,6 +3507,20 @@ refresh's rule), per model now. The sheet's tile-by-tile reveal of a photo (main
 a photo's run has no sheet since one-click, and the working glow over the photo stands for it.
 Renumbered after main's: ABI 0.36 (S5's docked screens) became 0.38, `chrome_cmd_faces` 1100 became
 1109.
+
+**The Mac keychain group is also claimed as `keychain-access-groups` (2026-11-15).** Reverses half
+of #501's "a team-prefixed app group, no profile": the data protection keychain does not take an
+app group as an access group. A copy of v0.1.43, signed with its own entitlements and profile,
+got -34018 (`errSecMissingEntitlement`) from `SecItemAdd` in `<team>.<bundle id>.driftwire`, and
+the same with the profile removed and only the app group claimed; adding the group as
+`keychain-access-groups` made it 0. So no Mac release has kept anything in that store: Driftwire's
+identity and remembered devices were this run's only, and a desktop that paired with a NAS (#686)
+was listed there but could not keep the keys, and said "Can't reach". The group's name is
+unchanged, so nothing moves. `keychain-access-groups` is restricted, so `macpack.py` claims it
+only when the app's Developer ID profile is embedded (every release with the VPN extension since
+2026-11-14; Apple's profiles grant `<team>.*`, and `check_profiles` stops a release whose profile
+does not). A release without a profile still has no working store. A refused write now says so
+(`pair_problem_words`, `status::internal`) instead of "Can't reach".
 
 ## Not built
 

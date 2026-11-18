@@ -221,6 +221,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host_setup.cpp"
     "${MV_SOURCE_ROOT}/tests/test_host_users.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_host_drives.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_drive_copy.cpp"
     # The phone's own reading of a pairing QR, for the host's (pure: sodium, json, pair_check).
     "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
@@ -313,11 +314,13 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/session.cpp ${_C}/session.h
   ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
   ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.cpp ${_C}/host_keepers.h
+  ${_C}/convert_run.cpp ${_C}/convert_run.h
   ${_C}/host_setup.cpp ${_C}/host_setup.h ${_C}/qr.cpp ${_C}/qr.h
   ${_S}/host_smb.cpp ${_S}/host_smb.h ${_C}/host_users.cpp ${_C}/host_users.h ${_C}/elevate.h
   ${_C}/host_control.cpp ${_C}/host_control.h ${_C}/host_usage.cpp ${_C}/host_usage.h
   ${_C}/autostart.cpp ${_C}/autostart.h ${_C}/host_proc.h ${_C}/volume.h
   ${_C}/drives.cpp ${_C}/drives.h ${_C}/host_drives.cpp ${_C}/host_drives.h
+  ${_C}/drive_copy.cpp ${_C}/drive_copy.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/nas_update.cpp ${_C}/nas_update.h
   ${_C}/term.h ${_C}/data_dir.h ${_C}/serve_tty.h ${_driftwire_cli_port}

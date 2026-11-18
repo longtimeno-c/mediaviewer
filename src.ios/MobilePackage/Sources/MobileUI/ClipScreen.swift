@@ -37,6 +37,8 @@ final class ClipModel {
   private(set) var download: Download?
   /// The player has been waiting for data for more than a second.
   private(set) var isWaiting = false
+  /// The server converts this clip as it plays (docs/plans/phone-clip-convert.md): a wait says so.
+  private(set) var isConverted = false
 
   let player = AVPlayer()
   private let item: MediaItem
@@ -49,6 +51,10 @@ final class ClipModel {
   private var waitingCheck: Task<Void, Never>?
   private var downloadTask: Task<Void, Never>?
   private var scrubbing = false
+  /// Where the newest seek is going. Until it lands the player still reports the old time, which
+  /// must not pull the bar back.
+  private var seekTarget: TimeInterval?
+  private var seekGeneration = 0
 
   init(item: MediaItem, clips: ClipService) {
     self.item = item
@@ -67,8 +73,10 @@ final class ClipModel {
   }
 
   private func route(startAt: Moment?) async {
-    switch await clips.route(for: item) {
-    case .stream(let asset):
+    let route = await clips.route(for: item)
+    if case .converted = route { isConverted = true }
+    switch route {
+    case .stream(let asset), .converted(let asset):
       let playerItem = AVPlayerItem(asset: asset)
       player.replaceCurrentItem(with: playerItem)
       observe(playerItem)
@@ -104,7 +112,7 @@ final class ClipModel {
     }
     timeToken = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 8), queue: .main) { [weak self] time in
       MainActor.assumeIsolated {
-        guard let self, !self.scrubbing else { return }
+        guard let self, !self.scrubbing, self.seekTarget == nil else { return }
         self.seconds = time.seconds
         let total = playerItem.duration.seconds
         if total.isFinite, total > 0 { self.length = total }
@@ -177,15 +185,30 @@ final class ClipModel {
 
   func toggle() { isPlaying ? pause() : play() }
 
+  /// A frame-exact seek over the network decodes from the keyframe before it, seconds on a long
+  /// clip: half a second either way lands on a nearby keyframe at once. A newer seek replaces one
+  /// still on its way (AVPlayer ends the older with `false`). A length not known yet (0) is no
+  /// limit: clamping to it sent every skip back to the start.
   func seek(to target: TimeInterval) {
-    seconds = max(0, min(length, target))
-    player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    let clamped = max(0, length > 0 ? min(length, target) : target)
+    seconds = clamped
+    seekTarget = clamped
+    seekGeneration += 1
+    let mine = seekGeneration
+    let slack = CMTime(seconds: 0.5, preferredTimescale: 600)
+    player.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: slack, toleranceAfter: slack) { [weak self] _ in
+      DispatchQueue.main.async {
+        guard let self, self.seekGeneration == mine else { return }
+        self.seekTarget = nil
+      }
+    }
   }
 
   /// The moment the picture is at: the last one reached.
   var activeMoment: Moment? { moments.last { $0.seconds <= seconds + 0.05 } }
 
-  func skip(by delta: TimeInterval) { seek(to: seconds + delta) }
+  /// From where the last skip was going, so quick taps add up rather than restart from the old time.
+  func skip(by delta: TimeInterval) { seek(to: (seekTarget ?? seconds) + delta) }
 
   func beginScrub() { scrubbing = true }
 
@@ -255,6 +278,7 @@ private struct PlayerSurface: UIViewRepresentable {
 
 struct ClipScreen: View {
   let entry: GridEntry
+  let transfer: OriginalTransfer
   let onClose: () -> Void
 
   @Environment(AppModel.self) private var model
@@ -265,7 +289,7 @@ struct ClipScreen: View {
     ZStack {
       Color.black.ignoresSafeArea()
       if let clip {
-        ClipBody(clip: clip, entry: entry, compactHeight: verticalSize == .compact, onClose: onClose)
+        ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact, onClose: onClose)
       }
     }
     .task(id: entry.id) {
@@ -280,6 +304,7 @@ struct ClipScreen: View {
 private struct ClipBody: View {
   let clip: ClipModel
   let entry: GridEntry
+  let transfer: OriginalTransfer
   let compactHeight: Bool
   let onClose: () -> Void
 
@@ -332,11 +357,19 @@ private struct ClipBody: View {
   }
 
   private var topBar: some View {
-    HStack {
-      Button(action: onClose) { Image(systemName: "xmark") }
-        .buttonStyle(ChromeIconStyle())
-        .accessibilityLabel("Close")
-      Spacer()
+    VStack(spacing: 8) {
+      HStack(spacing: 8) {
+        Button(action: onClose) { Image(systemName: "xmark") }
+          .buttonStyle(ChromeIconStyle())
+          .accessibilityLabel("Close")
+        Spacer()
+        OriginalButtons(item: entry.item, transfer: transfer)
+      }
+      if transfer.state(for: entry.item) != nil {
+        OriginalProgress(item: entry.item, transfer: transfer)
+          .padding(Theme.inset)
+          .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(Theme.surface))
+      }
     }
   }
 
@@ -367,7 +400,7 @@ private struct ClipBody: View {
       ProgressLine(verb: "Reading the clip", fraction: nil)
     case .playable:
       VStack(spacing: 8) {
-        if clip.isWaiting { ProgressLine(verb: "Waiting for the clip", fraction: nil) }
+        if clip.isWaiting { ProgressLine(verb: clip.isConverted ? FailureCopy.clipConverting : "Waiting for the clip", fraction: nil) }
         ClipTrack(clip: clip)
         transport
       }
@@ -536,7 +569,7 @@ private struct ClipTrack: View {
       HStack {
         Text(String.clockFrom(clip.seconds))
         Spacer()
-        Text(String.clockFrom(clip.length))
+        Text(clip.length > 0 ? String.clockFrom(clip.length) : "–:––")
       }
       .font(.caption.monospacedDigit())
       .foregroundStyle(Theme.body)

@@ -54,6 +54,10 @@ struct mv_mobile_link {
   std::mutex roots_m;
   std::map<std::string, std::string> label_to_root;  // under roots_m; empty until asked
   bool roots_known = false;
+  std::vector<mv::mobile::files::served_root> served;  // under roots_m: the list label_to_root came from
+  // Catalogue roots found under another folder than their share's label (files::places_for), by
+  // the catalogue root's uuid: where its files were found. Under roots_m; cleared with roots_known.
+  std::map<std::string, mv::mobile::files::place> found_places;
   // File mode: whether each root is the catalogue's own folder (holds library.json), asked once
   // per connection. Under roots_m.
   std::map<std::string, bool> catalogue_root;
@@ -173,22 +177,61 @@ mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string&
   if (!f) return MV_LINK_NOT_FOUND;
   const auto ref = roots.find(f->uuid);
   if (ref == roots.end()) return MV_LINK_NOT_FOUND;
+  const auto& share = ref->second.share;
+  const auto& sub = ref->second.sub;
+  std::vector<mv::mobile::files::served_root> served;
   {
     std::lock_guard lock(l->roots_m);
-    auto found = l->label_to_root.find(ref->second.share);
+    auto found = l->label_to_root.find(share);
+    if (l->roots_known && found != l->label_to_root.end()) {
+      root = found->second;
+      rel = sub.empty() ? f->rel : sub + "/" + f->rel;
+      return MV_LINK_OK;
+    }
+    if (l->roots_known) {
+      if (const auto place = l->found_places.find(ref->first); place != l->found_places.end()) {
+        root = place->second.root;
+        rel = place->second.prefix.empty() ? f->rel : place->second.prefix + "/" + f->rel;
+        return MV_LINK_OK;
+      }
+    }
     if (!l->roots_known || found == l->label_to_root.end()) {
       auto listed = l->remote->roots();
       if (!listed) return status_of_read(listed.error());
       l->label_to_root.clear();
-      for (const auto& r : *listed) l->label_to_root[r.label] = r.id;
+      l->served.clear();
+      l->found_places.clear();
+      for (const auto& r : *listed) {
+        l->label_to_root[r.label] = r.id;
+        l->served.push_back({r.id, r.label});
+      }
       l->roots_known = true;
-      found = l->label_to_root.find(ref->second.share);
+      found = l->label_to_root.find(share);
     }
-    if (found == l->label_to_root.end()) return MV_LINK_NO_FOLDER;
-    root = found->second;
+    if (found != l->label_to_root.end()) {
+      root = found->second;
+      rel = sub.empty() ? f->rel : sub + "/" + f->rel;
+      return MV_LINK_OK;
+    }
+    served = l->served;
   }
-  rel = ref->second.sub.empty() ? f->rel : ref->second.sub + "/" + f->rel;
-  return MV_LINK_OK;
+  // No folder carries the share's name: look for this file where the share may be now, without
+  // the lock (each look is a round trip), and keep the place for the rest of its root's files.
+  for (const auto& p : mv::mobile::files::places_for(share, sub, served)) {
+    const std::string path = p.prefix.empty() ? f->rel : p.prefix + "/" + f->rel;
+    const auto st = l->remote->stat(p.root, path);
+    if (!st) {
+      if (st.error() == status::not_found || st.error() == status::permission_denied) continue;
+      return status_of_read(st.error());
+    }
+    if (st->dir) continue;
+    std::lock_guard lock(l->roots_m);
+    l->found_places[ref->first] = p;
+    root = p.root;
+    rel = path;
+    return MV_LINK_OK;
+  }
+  return MV_LINK_NO_FOLDER;
 }
 
 template <typename Fn>
@@ -428,6 +471,7 @@ int32_t mv_link_reconnect(mv_mobile_link* l, mv_cancel* cancel, mv_route_report*
       {
         std::lock_guard lock(l->roots_m);
         l->roots_known = false;
+        l->found_places.clear();
       }
       return connect_static(l, cancel, report);
     }
@@ -772,6 +816,82 @@ int32_t mv_files_read(mv_mobile_link* l, const char* root, const char* rel, uint
         [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
         cancel ? cancel->flag.get() : nullptr, bulk != 0);
     return done ? MV_LINK_OK : status_of_read(done.error());
+  });
+}
+
+// ---- convert (docs/plans/phone-clip-convert.md) ---------------------------------------------------
+
+namespace {
+
+int32_t convert_status(status s) { return s == status::unsupported_format ? MV_LINK_UNSUPPORTED : status_of_read(s); }
+
+int32_t convert_plan_at(mv_mobile_link* l, const std::string& root, const std::string& rel, mv_convert_plan* out) {
+  if (!l->session) return MV_LINK_UNSUPPORTED;  // the sample library converts nothing
+  auto p = l->session->convert_plan(root, rel, nullptr);
+  if (!p) return convert_status(p.error());
+  *out = mv_convert_plan{p->duration_ms, p->segment_ms, p->segments, p->width, p->height};
+  return MV_LINK_OK;
+}
+
+int32_t convert_read_at(mv_mobile_link* l, const std::string& root, const std::string& rel, uint32_t segment,
+                        mv_cancel* cancel, mv_sink_fn sink, void* ctx) {
+  if (!l->session) return MV_LINK_UNSUPPORTED;
+  auto done = l->session->convert_read(
+      root, rel, segment,
+      [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) { return sink(ctx, offset, bytes.data(), bytes.size()) != 0; },
+      cancel ? cancel->flag.get() : nullptr);
+  return done ? MV_LINK_OK : convert_status(done.error());
+}
+
+}  // namespace
+
+int32_t mv_link_can_convert(mv_mobile_link* l, int32_t* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    *out = 0;
+    if (!l->session) return MV_LINK_OK;
+    auto can = l->session->can_convert();
+    if (!can) return status_of_read(can.error());
+    *out = *can ? 1 : 0;
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_convert_plan(mv_mobile_link* l, const char* root, const char* rel, mv_convert_plan* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel || !out) return MV_LINK_INVALID;
+    const std::string p = rel;
+    if (p.empty() || !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    return convert_plan_at(l, root, p, out);
+  });
+}
+
+int32_t mv_asset_convert_plan(mv_mobile_link* l, int64_t asset, mv_convert_plan* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    std::string root, rel;
+    if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
+    return convert_plan_at(l, root, rel, out);
+  });
+}
+
+int32_t mv_files_convert_read(mv_mobile_link* l, const char* root, const char* rel, uint32_t segment, mv_cancel* cancel,
+                              mv_sink_fn sink, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel || !sink) return MV_LINK_INVALID;
+    const std::string p = rel;
+    if (p.empty() || !driftwire::safe_relative(p)) return MV_LINK_INVALID;
+    return convert_read_at(l, root, p, segment, cancel, sink, ctx);
+  });
+}
+
+int32_t mv_asset_convert_read(mv_mobile_link* l, int64_t asset, uint32_t segment, mv_cancel* cancel, mv_sink_fn sink,
+                              void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !sink) return MV_LINK_INVALID;
+    std::string root, rel;
+    if (const auto found = resolve_asset(l, asset, root, rel); found != MV_LINK_OK) return found;
+    return convert_read_at(l, root, rel, segment, cancel, sink, ctx);
   });
 }
 

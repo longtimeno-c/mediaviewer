@@ -59,7 +59,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Lin
 endif()
 
 project(mediaviewer
-  VERSION 0.1.43
+  VERSION 0.1.44
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -740,6 +740,8 @@ add_library(mv_clip STATIC
   src/edit/clip_sample.cpp
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
+  src/edit/clip_convert.cpp
+  src/edit/clip_convert.h
   src/edit/clip_picture_io.cpp
   src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
@@ -797,7 +799,7 @@ file(GENERATE
 # (docs/design/08 "Execution & UX"; docs/design/12 2026-09-25). Beside MediaViewer.exe; no
 # mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
 add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
-target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options shell32)  # shell32: CommandLineToArgvW (the phone's conversion)
 target_include_directories(MediaViewerClipJob PRIVATE src)
 mv_asan_runtime_beside(MediaViewerClipJob)
 
@@ -1442,7 +1444,7 @@ if(MV_BUILD_TESTS)
   # The clip helper with its test hooks (a crash, a hang, a software encoder);
   # the product MediaViewerClipJob.exe is built without them.
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
-  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options shell32)  # shell32: CommandLineToArgvW
   target_include_directories(mv_clipjob_test PRIVATE src)
   # The hooks reach clip::detail through clip_internal.h, which includes FFmpeg;
   # mv_clip keeps those headers PRIVATE.

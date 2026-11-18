@@ -3,6 +3,8 @@
 #include "mobile/files.h"
 
 #include "core/fold.h"
+#include <algorithm>
+
 #include "io/media_extensions.h"
 #include "meta/meta.h"
 #include "meta/search.h"
@@ -137,6 +139,40 @@ std::size_t index::count() const {
 std::size_t index::tagged() const {
   std::lock_guard lock(m_);
   return tagged_;
+}
+
+std::vector<place> places_for(std::string_view share, std::string_view sub, std::span<const served_root> roots) {
+  std::vector<std::string> parts;
+  for (std::size_t at = 0; at <= sub.size();) {
+    const std::size_t slash = std::min(sub.find('/', at), sub.size());
+    if (slash > at) parts.emplace_back(sub.substr(at, slash - at));
+    at = slash + 1;
+  }
+  const auto join_from = [&](std::size_t first) {
+    std::string out;
+    for (std::size_t i = first; i < parts.size(); ++i) out += (out.empty() ? "" : "/") + parts[i];
+    return out;
+  };
+  std::vector<place> out;
+  const auto add = [&](const std::string& root, std::string prefix) {
+    place p{root, std::move(prefix)};
+    if (std::find(out.begin(), out.end(), p) == out.end()) out.push_back(std::move(p));
+  };
+  // The share's own name, then a folder of the share's tree by its name: the label says where it is.
+  for (const auto& r : roots) {
+    if (r.label == share) add(r.id, join_from(0));
+  }
+  for (const auto& r : roots) {
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      if (parts[i] == r.label) add(r.id, join_from(i + 1));
+    }
+  }
+  // Then any folder as the share itself, as a folder deeper in it, or as what holds the share.
+  for (const auto& r : roots) {
+    for (std::size_t i = 0; i <= parts.size(); ++i) add(r.id, join_from(i));
+    add(r.id, parts.empty() ? std::string(share) : std::string(share) + "/" + join_from(0));
+  }
+  return out;
 }
 
 }  // namespace mv::mobile::files

@@ -1,5 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "addons/driftwire/cli/convert_run.h"
 #include "addons/driftwire/cli/serve_cmd.h"
 
 #include <sodium.h>
@@ -277,6 +278,13 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   o.claimable = true;
   o.devices_lock = data + "/serve-devices.lock";
   o.save_config = [path = data + "/" + kConfigFile](const serve::config& c) { return write_config(path, c); };
+  // Clips the phone can't play (docs/plans/phone-clip-convert.md): with the app's clip helper.
+  if (!a.convert_helper.empty()) {
+    convert_check found;
+    o.converter = start_converter(a.convert_helper, data + "/convert-cache", &found);
+    print(o.converter ? "driftwire serve: converting clips for phones with " + found.family + "\n"
+                      : std::string("driftwire serve: no hardware video encoder found; phones keep the download\n"));
+  }
   auto srv = serve::server::start(o);
   if (!srv) {
     if (srv.error() == status::not_found) return fail("no access key yet: run `driftwire serve init` first.", 1);

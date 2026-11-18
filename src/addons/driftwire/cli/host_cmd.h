@@ -88,6 +88,10 @@ struct host_settings {
   // The tray's control (docs/plans/self-hosted.md "Tray"; `host pause|resume|quit`):
   bool paused = false;               // nothing served, no relay, no stay-awake; kept until resumed
   std::int64_t quit_stamp = 0;       // unix ms of the last `host quit`: a host started before it stops
+  // Clips the phone can't play (docs/plans/phone-clip-convert.md; `host convert on|off`): on
+  // unless turned off, with the app's clip helper that the card names ("": none known).
+  bool convert = true;
+  std::string convert_helper;
 };
 [[nodiscard]] std::optional<host_settings> parse_host_settings(std::string_view json);
 [[nodiscard]] std::string host_settings_json(const host_settings& s);
@@ -174,6 +178,9 @@ struct host_snapshot {
   std::string day;
   std::uint64_t read_today = 0, written_today = 0, read_rate = 0, write_rate = 0;
   std::vector<day_device> devices_today;
+  // Converting: turned on, a hardware encoder found ("VideoToolbox"), and a job running now.
+  bool convert_on = false, convert_available = false, convert_busy = false;
+  std::string convert_encoder;
 };
 
 class host_service {

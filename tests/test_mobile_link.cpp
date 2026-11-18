@@ -167,6 +167,50 @@ struct publisher {
   }
 };
 
+// The service's side of each connection, counting what it sends: how far a read's window lets it
+// run ahead of the phone.
+class counting_link final : public dw::link {
+ public:
+  counting_link(std::unique_ptr<dw::link> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
+      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  mv::expected write_all(std::span<const std::uint8_t> bytes) override {
+    *sent_ += bytes.size();
+    return inner_->write_all(bytes);
+  }
+  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  dw::transport via() const noexcept override { return inner_->via(); }
+
+ private:
+  std::unique_ptr<dw::link> inner_;
+  std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+};
+
+class counting_listener final : public dw::net::listener {
+ public:
+  counting_listener(std::unique_ptr<dw::net::listener> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
+      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  std::uint16_t port() const noexcept override { return inner_->port(); }
+  mv::result<std::unique_ptr<dw::link>> accept(int timeout_ms) override { return wrap(inner_->accept(timeout_ms)); }
+  mv::result<std::unique_ptr<dw::link>> accept_from(int timeout_ms, dw::net::address& from) override {
+    return wrap(inner_->accept_from(timeout_ms, from));
+  }
+  mv::result<std::unique_ptr<dw::link>> accept_endpoint(int timeout_ms, dw::net::address& from, std::uint16_t& peer_port) override {
+    return wrap(inner_->accept_endpoint(timeout_ms, from, peer_port));
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+
+ private:
+  mv::result<std::unique_ptr<dw::link>> wrap(mv::result<std::unique_ptr<dw::link>> l) {
+    if (!l) return l;
+    return std::unique_ptr<dw::link>(std::make_unique<counting_link>(std::move(*l), sent_));
+  }
+  std::unique_ptr<dw::net::listener> inner_;
+  std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+};
+
 struct rig {
   scratch dir;
   fs::path data = dir.root / "data", photos = dir.root / "photos", catalogue_home = dir.root / "nas";
@@ -177,6 +221,7 @@ struct rig {
   std::uint16_t port = 0;
   std::string payload;
   std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
+  std::shared_ptr<std::atomic<std::uint64_t>> served = std::make_shared<std::atomic<std::uint64_t>>(0);  // bytes the service sent
 
   std::string photos_label = "Photos";
   std::string relay_address;  // the person's own relay, for start(): the service waits there
@@ -216,7 +261,11 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.cfg.relay = relay_address;
-    o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.make_listener = [sent = served]() -> std::unique_ptr<dw::net::listener> {
+      auto l = dw::net::listen_internet(0, true, 32);
+      REQUIRE(l);
+      return std::make_unique<counting_listener>(std::move(*l), sent);
+    };
     o.now_unix = [this] {
       const auto t = fake_now.load();
       return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
@@ -468,7 +517,7 @@ TEST_CASE("link race: a dead local address loses to the named public route", "[m
 }
 
 TEST_CASE("sync: copy, hash check, install, resume, signatures and generations", "[mobile-link]") {
-  rig r(6 * 1024 * 1024);  // bigger than the stream window, so a drop can land mid-file
+  rig r(16 * 1024 * 1024);  // bigger than a whole-file pull's 8 MB window, so a drop can land mid-file
   r.pair_now();
   mob::link_session s(r.config());
   mob::route_report rep;
@@ -677,9 +726,18 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     CHECK(fs::exists(fs::path(cfg.library_dir) / "gen" / installed->dir / "catalog.db"));
     mv_link_close(l);
   }
-  SECTION("a folder labelled something else is said to be missing, not gone") {
+  SECTION("a folder labelled something else that holds the file is found by its path") {
     rig r(300000, "Pictures");
     auto* l = open_synced(r);
+    CHECK(mv_asset_folder_check(l, 1) == MV_LINK_OK);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_OK);
+    CHECK(got == std::string(70000, 'p'));
+    mv_link_close(l);
+  }
+  SECTION("a file in no folder the service shares is said to be missing, not gone") {
+    rig r(300000, "Pictures");
+    auto* l = open_synced(r);
+    fs::remove(r.photos / "2024" / "pic.bin");
     CHECK(mv_asset_folder_check(l, 1) == MV_LINK_NO_FOLDER);
     CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_NO_FOLDER);
     CHECK(got.empty());
@@ -719,6 +777,29 @@ TEST_CASE("link: a live link is kept on connect, and a reconnect lets reads fini
     CHECK(done);
     CHECK(got.load() == expected_size);
   }
+}
+
+TEST_CASE("link: a whole-file pull lets the service run further ahead than a viewer's read", "[mobile-link]") {
+  // A download's speed is its window over the round trip: with 1 MB, Wi-Fi's 20 ms caps it near
+  // 30 MB/s. Held on its first chunk, a bulk read must let the service send well past 1 MB.
+  rig r(24 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  const std::uint64_t before = r.served->load();
+  std::uint64_t ahead = 0;
+  auto done = s.read_range("c2c2c2c2c2c2c2c2", "gen/000001/extra.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+    // No credit goes back while this chunk is held: what arrives is what the opening window allowed.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (r.served->load() - before < 4u * 1024 * 1024 && std::chrono::steady_clock::now() < until) {
+      std::this_thread::yield();
+    }
+    ahead = r.served->load() - before;
+    return false;
+  }, nullptr, true);
+  CHECK_FALSE(done);  // stopped by the sink
+  CHECK(ahead >= 4u * 1024 * 1024);
 }
 
 TEST_CASE("link: readers after a drop share one new connection", "[mobile-link]") {
@@ -2383,6 +2464,58 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   mv_link_close(l);
 }
 
+TEST_CASE("file mode through the C ABI: a clip the phone can't play, converted by the service",
+          "[mobile-link][mobile-files][convert]") {
+  rig r(300000, "Photos", false);
+  write_file(r.photos / "Old" / "tape.avi", "RIFFtapebytes");
+  r.pair_now();
+  mv_mobile_link* l = open_link((r.dir.root / "thumbs").string(), r.sync_config(), r.config());
+  REQUIRE(l);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  // No converter: said so, and nothing is asked.
+  int32_t can = 1;
+  REQUIRE(mv_link_can_convert(l, &can) == MV_LINK_OK);
+  CHECK(can == 0);
+  mv_convert_plan plan{};
+  CHECK(mv_files_convert_plan(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", &plan) == MV_LINK_UNSUPPORTED);
+
+  // A converter (a stand-in for the helper), and a new session hears of it.
+  namespace cv = serve::convert;
+  cv::service::options o;
+  o.cache_dir = (r.dir.root / "convert-cache").string();
+  o.ahead = 0;
+  o.run.plan = [](const std::string&, std::uint32_t seg, const std::string& out) {
+    std::ofstream(out, std::ios::binary) << serve::convert_plan_json({9000, seg, 3, 640, 360});
+    return cv::ran::ok;
+  };
+  o.run.segment = [](const std::string&, std::uint32_t k, std::uint32_t, const std::string& out) {
+    std::ofstream(out, std::ios::binary) << std::string(200000, static_cast<char>('a' + k));
+    return cv::ran::ok;
+  };
+  r.srv->set_converter(cv::service::start(o));
+  mv_link_close(l);
+  l = open_link((r.dir.root / "thumbs").string(), r.sync_config(), r.config());
+  REQUIRE(l);
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  REQUIRE(mv_link_can_convert(l, &can) == MV_LINK_OK);
+  CHECK(can == 1);
+  REQUIRE(mv_files_convert_plan(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", &plan) == MV_LINK_OK);
+  CHECK(plan.segments == 3);
+  CHECK(plan.duration_ms == 9000);
+  CHECK(plan.width == 640);
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+  REQUIRE(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", 2, nullptr, collect, &got) == MV_LINK_OK);
+  CHECK(got == std::string(200000, 'c'));
+  CHECK(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "Old/gone.avi", 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
+  CHECK(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "../x.avi", 0, nullptr, collect, &got) == MV_LINK_INVALID);
+  mv_link_close(l);
+}
+
 TEST_CASE("file mode: what a folder shows, by the D5 table", "[mobile-files]") {
   using mob::files::kind;
   CHECK(mob::files::kind_of("a.JPG") == kind::photo);
@@ -2540,5 +2673,26 @@ TEST_CASE("file mode is never a guess: a folder that did not answer is unreachab
   SECTION("a current.json that is not one: refused") {
     nas.files["c2/current.json"] = "not signed";
     CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::rejected);
+  }
+}
+
+TEST_CASE("link: where a catalogue folder may be when no service folder has its share's name", "[mobile-link]") {
+  namespace mf = mv::mobile::files;
+  const std::vector<mf::served_root> roots{{"a", "FamilyNas"}, {"b", "Media"}};
+  const auto got = mf::places_for("photo", "Media/1.Hill Photos", roots);
+  REQUIRE(got.size() >= 3);
+  // A folder named in the share's path comes first: "Media" holds "1.Hill Photos".
+  CHECK(got[0] == mf::place{"b", "1.Hill Photos"});
+  // Then each folder as the share itself, deeper in it, or holding it.
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", "Media/1.Hill Photos"}) != got.end());
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", "photo/Media/1.Hill Photos"}) != got.end());
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", ""}) != got.end());
+  // The share's own label stays first when there is one.
+  const std::vector<mf::served_root> named{{"x", "Other"}, {"y", "photo"}};
+  CHECK(mf::places_for("photo", "Media", named)[0] == mf::place{"y", "Media"});
+  // No duplicates.
+  const auto top = mf::places_for("photo", "", roots);
+  for (std::size_t i = 0; i < top.size(); ++i) {
+    for (std::size_t j = i + 1; j < top.size(); ++j) CHECK_FALSE(top[i] == top[j]);
   }
 }

@@ -42,6 +42,7 @@ typedef enum mv_link_status {
   MV_LINK_ACCESS_ENDED = 20,  /* this phone's time-limited access is over (not a removal: it may be extended) */
   MV_LINK_NO_CATALOGUE = 21,  /* (20 is MV_LINK_ACCESS_ENDED, #667) sync: a named folder's library.json names this library, every folder answered,
                                  and none holds a current.json: open it in file mode (see below) */
+  MV_LINK_UNSUPPORTED = 22,   /* convert: this service converts nothing, or this file is not a clip */
 } mv_link_status;
 
 /* Return 0 to stop the read. */
@@ -298,6 +299,26 @@ int32_t mv_files_list(mv_mobile_link* link, const char* root, const char* rel, m
 /* BLOCKS. A range of one file, as mv_file_read. */
 int32_t mv_files_read(mv_mobile_link* link, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
                       mv_cancel* cancel, mv_sink_fn sink, void* ctx);
+
+/* ---- clips this phone can't play (docs/plans/phone-clip-convert.md) ------------------------
+ * The service converts them on its graphics hardware: H.264 and AAC in MPEG-TS segments of
+ * `segment_ms` of the clip each (the last runs to the end), for an HLS playlist. */
+typedef struct mv_convert_plan {
+  int64_t duration_ms;
+  uint32_t segment_ms;
+  uint32_t segments;
+  uint32_t width, height; /* the converted picture's */
+} mv_convert_plan;
+/* BLOCKS. `out` 1 when the service converts, 0 when not (an older one, turned off, the sample). */
+int32_t mv_link_can_convert(mv_mobile_link* link, int32_t* out);
+/* BLOCKS. A clip's plan: MV_LINK_UNSUPPORTED when not offered or not a clip. */
+int32_t mv_files_convert_plan(mv_mobile_link* link, const char* root, const char* rel, mv_convert_plan* out);
+int32_t mv_asset_convert_plan(mv_mobile_link* link, int64_t asset, mv_convert_plan* out);
+/* BLOCKS. One segment's bytes, in order; the first wait for the server's encoder (up to a minute). */
+int32_t mv_files_convert_read(mv_mobile_link* link, const char* root, const char* rel, uint32_t segment, mv_cancel* cancel,
+                              mv_sink_fn sink, void* ctx);
+int32_t mv_asset_convert_read(mv_mobile_link* link, int64_t asset, uint32_t segment, mv_cancel* cancel, mv_sink_fn sink,
+                              void* ctx);
 
 /* File search: the desktop's fields, fold and match (docs/design/16 "File search", 06 "Search text").
  * Nothing here blocks. */

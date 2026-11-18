@@ -189,8 +189,9 @@ MV_API mv_status MV_CALL mv_remote_preview_json(const char* code_utf8, char* utf
     mv::json::writer w;
     w.begin_object();
     mv::remote::library* lib = mv::remote::library::shared();
+    // Not started yet: said as "can't reach" (status::internal is a store that would not keep the keys).
     auto p = lib ? lib->preview(code_utf8, static_cast<std::int64_t>(std::time(nullptr)))
-                 : mv::result<mv::remote::code_preview>(mv::err(status::internal));
+                 : mv::result<mv::remote::code_preview>(mv::err(status::io));
     if (p) {
       w.key("name").string(p->name).key("fingerprint").string(p->fingerprint).key("paired").boolean(p->already_paired);
     } else {
@@ -218,7 +219,7 @@ MV_API mv_status MV_CALL mv_remote_pair_start(const char* code_utf8) {
       if (lib) {
         if (auto p = lib->preview(code, now)) name = p->name;
       }
-      auto paired = lib ? lib->pair(code, now) : mv::result<std::string>(mv::err(status::internal));
+      auto paired = lib ? lib->pair(code, now) : mv::result<std::string>(mv::err(status::io));
       std::lock_guard lock(g_pair_m);
       g_pair_busy = false;
       g_pair_ok = paired.has_value();

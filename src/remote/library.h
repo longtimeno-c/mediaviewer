@@ -148,7 +148,8 @@ class library {
   // BLOCKS: the route race and the code redeemed, then saved. The new
   // server's id. status::invalid_arg: not a code; ::timeout: expired;
   // ::permission_denied: a wrong, spent or expired code, or the wrong
-  // service; ::io: nothing answered; ::unsupported_format: too old.
+  // service; ::io: nothing answered; ::unsupported_format: too old;
+  // ::internal: paired there, but the OS store would not keep the keys.
   [[nodiscard]] result<std::string> pair(std::string_view code_text, std::int64_t now_unix,
                                          const mobile::cancel_flag* cancel = nullptr);
   // BLOCKS (the OS store, servers.json, the cache): forgets a server here.

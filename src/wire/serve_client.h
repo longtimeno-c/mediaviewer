@@ -85,6 +85,16 @@ class client {
                                                                 std::uint32_t window = 1024 * 1024, bool bulk = false,
                                                                 bool meta = false);
 
+  // Clips this phone can't play (docs/plans/phone-clip-convert.md; kConvertOp in caps). The
+  // plan: status::unsupported_format when the service lists no `convert`, or answers it
+  // unsupported (`why` gets kWhyNotAClip or kWhyConvertOff); not_found, permission_denied as stat.
+  [[nodiscard]] result<convert_plan> convert_plan_of(const std::string& root, const std::string& rel,
+                                                     std::string* why = nullptr);
+  // Segment k's MPEG-TS, as a read_range of it. Its first chunk comes when the service has
+  // converted it, which may take a few seconds (a next() timeout is not the end).
+  [[nodiscard]] result<std::unique_ptr<read_stream>> convert_segment(const std::string& root, const std::string& rel,
+                                                                     std::uint32_t k, std::uint32_t window = 1024 * 1024);
+
   [[nodiscard]] result<std::vector<root_info>> roots(end_code* code = nullptr);
   // `meta`: under a backup folder's kBackupMetaFolder (serve_wire.h, "writes").
   // `truncated`, when given, says the service cut the listing short (kMaxListBytes).

@@ -132,6 +132,7 @@ struct ModeLibrary: LibraryStore {
   func people() async throws -> [Person] { try await store(for: nil).people() }
   /// Always the server's: a library with a catalogue shows them beside its own folders too.
   func offlineFolders() async -> [Folder] { await files.offlineFolders() }
+  func preview(of folder: Folder, count: Int) async -> FolderPreview { await store(for: folder).preview(of: folder, count: count) }
 
   func details(for item: MediaItem) async throws -> MediaDetails {
     try await (LinkFiles.isFileID(item.id.raw) ? files : catalogue).details(for: item)

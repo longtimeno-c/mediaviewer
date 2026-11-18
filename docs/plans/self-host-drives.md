@@ -146,4 +146,6 @@ where it must.
 
 - Linux `mdadm` (a stub that says "not yet").
 - Growing a set, changing its kind, hot spares, scheduled scrubs.
+- A second drive for a drive that is already full, without erasing it:
+  [self-host-drives-keep-a-copy.md](self-host-drives-keep-a-copy.md).
 - A combined volume as the boot or system volume.

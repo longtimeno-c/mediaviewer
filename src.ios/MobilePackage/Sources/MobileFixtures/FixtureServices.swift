@@ -211,6 +211,11 @@ struct FixtureStore: LibraryStore {
     FixtureLibrary.folders[parent?.id ?? ""] ?? []
   }
 
+  func preview(of folder: Folder, count: Int) async -> FolderPreview {
+    guard !folder.offline, let list = try? await list(in: .folder(folder)) else { return .empty }
+    return .newest(of: list, count: count)
+  }
+
   /// One folder whose drive is unplugged from the server, as the sample library has.
   func offlineFolders() async -> [Folder] {
     [Folder(id: "travel drive", name: "Travel drive", itemCount: -1, hasSubfolders: false, offline: true)]
@@ -667,6 +672,31 @@ struct FixtureSaver: PhotoSaver {
             continuation.yield(TransferProgress(doneBytes: total * Int64(step) / 12, totalBytes: total))
             try await Task.sleep(for: .milliseconds(120))
           }
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
+      }
+      continuation.onTermination = { _ in task.cancel() }
+    }
+  }
+
+  /// A small generated picture or clip under the item's name.
+  func shareable(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error> {
+    AsyncThrowingStream { continuation in
+      let task = Task {
+        do {
+          let total: Int64 = 6_000_000
+          for step in 1...6 {
+            continuation.yield(.progress(TransferProgress(doneBytes: total * Int64(step) / 6, totalBytes: total)))
+            try await Task.sleep(for: .milliseconds(100))
+          }
+          let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Shared", isDirectory: true)
+          try? FileManager.default.removeItem(at: folder)
+          try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+          let url = folder.appendingPathComponent(item.fileName.isEmpty ? "fixture.jpg" : item.fileName)
+          try Data(repeating: 0, count: 16).write(to: url)
+          continuation.yield(.finished(url))
           continuation.finish()
         } catch {
           continuation.finish(throwing: error)

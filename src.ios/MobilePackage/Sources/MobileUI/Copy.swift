@@ -14,7 +14,7 @@ public enum FailureCopy {
   public static let originalGone = "This file isn't on your server any more."
   public static let notThereYet = "This one hasn't reached your server yet."
   public static let folderNotOnNAS =
-    "Your server isn't sharing the folder this came from. Add it in MediaViewer on your computer, under Phone access, named the same as the folder on your server."
+    "Your server isn't sharing the folder this came from. Share it, or a folder above it, in MediaViewer on your computer, under Phone access."
   public static let ownNetworkOnly =
     "Your server can't be reached from the internet. Your provider may not give that building a public address."
   public static let serviceTooOld = "The MediaViewer service on your server needs updating."
@@ -65,10 +65,12 @@ public enum FailureCopy {
   public static let smartSearchNeedsLocalSearch =
     "Smart search (words, faces, places and sounds) needs Local search. Install it on your Mac or PC and index this library."
   public static let fileSearchNoFolder = "Open a folder in Library to search it."
-  public static let fileSearchHint = "File search looks at the names and tags of the files in this folder."
+  public static let fileSearchHint = "Search looks at the names and tags of the files in this folder only, not the folders inside it."
   public static let fileModeTop = "Choose a folder."
   public static let fileModeSettings = "Folders, searched by name and tag"
   public static let clipStopped = "This clip stopped playing."
+  /// A clip the phone can't play, converted by the server as it plays, while the first part is on its way.
+  public static let clipConverting = "Converting on your server"
   // Offline folders (docs/plans/self-hosted.md §6): a drive unplugged from the server.
   public static let notConnected = "Not connected"
   public static func driveNotConnected(_ folder: String) -> String {

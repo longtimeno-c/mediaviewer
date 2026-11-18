@@ -18,10 +18,22 @@ public protocol LibraryStore: Sendable {
   /// The server's folders whose drive is not connected now, for the top level to show beside its own
   /// folders. Empty when none is, or the server can't be asked.
   func offlineFolders() async -> [Folder]
+  /// A folder's tile: up to `count` pictures that stand for it, newest first, and what it holds when
+  /// that is known. Off the main thread, after what is on screen; never changes what the library or
+  /// search show. `.empty` when nothing can be had.
+  func preview(of folder: Folder, count: Int) async -> FolderPreview
 }
 
 extension LibraryStore {
   public func offlineFolders() async -> [Folder] { [] }
+}
+
+extension FolderPreview {
+  /// The first `count` of a folder's own list (newest first), for a store whose folder list has no
+  /// side effects (a catalogue's; not file mode's, which moves search to that folder).
+  public static func newest(of list: any MediaList, count: Int) -> FolderPreview {
+    FolderPreview(items: (0..<min(count, list.count)).map { list.item(at: $0) }, files: nil, folders: nil)
+  }
 }
 
 /// One step of the §10 ladder.
@@ -123,6 +135,9 @@ public enum ClipRoute {
   /// AVPlayer can have it; the asset's loader reads from the NAS.
   case stream(AVURLAsset)
   case tooBigToStream(neededMbps: Int, availableMbps: Int, fileBytes: Int64)
+  /// A clip the phone can't play that the server converts as it plays (docs/plans/phone-clip-convert.md):
+  /// played as `.stream`, and the first wait says it is the server converting.
+  case converted(AVURLAsset)
   /// MKV, WebM, AVI, TS, MPEG-2: moments as stills, and the file.
   case notPlayableHere(containerName: String, fileBytes: Int64)
   case unavailable(MediaFailure)
@@ -139,6 +154,8 @@ public protocol ClipService: Sendable {
 public protocol PhotoSaver: Sendable {
   /// Saves a copy to the phone's Photos library.
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error>
+  /// The original on the phone under its own name, for the share sheet: ends with `.finished`.
+  func shareable(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error>
 }
 
 /// Everything the screens need, handed in at launch.
