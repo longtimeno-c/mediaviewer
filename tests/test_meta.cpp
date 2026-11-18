@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <exiv2/exiv2.hpp>
+#include <sqlite3.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -15,6 +16,7 @@ extern "C" {
 #include <libavutil/opt.h>
 }
 
+#include <cmath>
 #include <cstring>
 
 #include <cstdio>
@@ -26,6 +28,8 @@ extern "C" {
 #include "fixtures.h"
 #include "meta/af.h"
 #include "meta/meta.h"
+#include "meta/meta_cache.h"
+#include "meta/search.h"
 #include "meta/tables.h"
 #include "edit/edit_stack.h"
 #include "shell/af_focus.h"
@@ -406,6 +410,77 @@ TEST_CASE("date taken alone reads the sort key", "[meta][sort]") {
   plain.write(fixtures::jpeg_rgb(8, 8, rgb.data()));
   CHECK_FALSE(mv::meta::read_date_taken(plain.utf8()).has_value());
   CHECK_FALSE(mv::meta::read_date_taken("/nonexistent/x.jpg").has_value());
+}
+
+// The phone's catalogue: a clip's length comes from the tag pass's own bounded
+// header read, so the AI index has it before its content pass opens the clip.
+TEST_CASE("the search read gives a clip its length from the header", "[meta][clip][search]") {
+  temp_file mp4("len.mp4");
+  REQUIRE(write_mp4(mp4.utf8()));
+  auto full = mv::meta::read(mp4.utf8());
+  REQUIRE(full);
+  REQUIRE(full->s.duration_seconds > 0);
+  auto f = mv::meta::read_search_facts(mp4.utf8());
+  REQUIRE(f);
+  CHECK(f->duration_ms > 0);
+  CHECK(f->duration_ms == static_cast<std::int64_t>(std::llround(full->s.duration_seconds * 1000.0)));
+
+  temp_file jpg("len.jpg");
+  auto rgb = flat_rgb(8, 8);
+  jpg.write(fixtures::jpeg_rgb(8, 8, rgb.data()));
+  auto still = mv::meta::read_search_facts(jpg.utf8());
+  REQUIRE(still);
+  CHECK(still->duration_ms == 0);
+}
+
+// meta_cache.db schema 2 -> 3 adds duration_ms in place: the library's rows
+// stay, a still is served from its row, and only a clip is read again.
+TEST_CASE("meta_cache keeps its rows across the length column and reads only clips again", "[meta][clip][search]") {
+  const fs::path dir = fs::temp_directory_path() / "mv_meta_test_cache3";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  temp_file mp4("cache3.mp4");
+  REQUIRE(write_mp4(mp4.utf8()));
+  temp_file jpg("cache3.jpg");
+  auto rgb = flat_rgb(8, 8);
+  jpg.write(fixtures::jpeg_rgb(8, 8, rgb.data()));
+  {
+    mv::meta::meta_cache cache;
+    REQUIRE(cache.open(dir.string()));
+    REQUIRE(mv::meta::cached_or_read(cache, mp4.utf8()));
+    REQUIRE(mv::meta::cached_or_read(cache, jpg.utf8()));
+  }
+  {
+    // As schema 2 left it: no duration_ms column. The still's row is marked so
+    // a read of the file (not the row) would show.
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open((dir / "meta_cache.db").string().c_str(), &db) == SQLITE_OK);
+    CHECK(sqlite3_exec(db,
+                       "ALTER TABLE files DROP COLUMN duration_ms;"
+                       "UPDATE files SET camera = 'from the row';"
+                       "UPDATE meta SET value = '2' WHERE key = 'schema';",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  mv::meta::meta_cache cache;
+  REQUIRE(cache.open(dir.string()));
+  CHECK(cache.rows() == 2);  // migrated, not made again
+  auto still = mv::meta::cached_or_read(cache, jpg.utf8());
+  REQUIRE(still);
+  CHECK(still->facts.camera == "from the row");
+  CHECK(still->facts.duration_ms == 0);
+  auto clip = mv::meta::cached_or_read(cache, mp4.utf8());
+  REQUIRE(clip);
+  CHECK(clip->facts.camera != "from the row");  // read again
+  CHECK(clip->facts.duration_ms > 0);
+  // Stored: the next ask is the row's.
+  auto again = cache.lookup(mp4.utf8(), clip->size, clip->mtime);
+  REQUIRE(again);
+  CHECK_FALSE(again->duration_unread);
+  CHECK(again->facts.duration_ms == clip->facts.duration_ms);
+  cache.close();
+  fs::remove_all(dir, ec);
 }
 
 TEST_CASE("date parsing", "[meta][sort]") {
