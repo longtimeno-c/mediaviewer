@@ -185,6 +185,7 @@ search_facts search_facts_of(const metadata& m) {
   f.aperture_x100 = aperture_x100(m.s.aperture);
   f.focal_mm = focal_mm(m.s.focal_length);
   f.shutter_us = shutter_us(m.s.exposure, &f.shutter_den);
+  if (m.is_clip && m.s.duration_seconds > 0) f.duration_ms = std::llround(m.s.duration_seconds * 1000.0);
 
   builder b{f, {}};
   b.add(m.s.camera);

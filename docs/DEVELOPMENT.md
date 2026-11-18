@@ -1648,7 +1648,8 @@ python tools/perf/make-charts.py                 # redraw from the committed rep
 
 The published charts are Windows numbers. The macOS lab has `pacing`, `first-pixel`,
 `browse` and `video`; `pan`, `av-sync` and `compare` are Windows-only harnesses, so a Mac
-run draws the charts it has and names the rest as skipped. Inputs are the RAW/HEIC samples
+run draws the charts it has and names the rest as skipped. The README's Mac numbers are a run with
+`--out docs/perf/mac --only pacing,first-pixel,browse,video,bench`. Inputs are the RAW/HEIC samples
 (`tools/testmedia/fetch-raw.ps1`, `fetch-heif.ps1`) and the video corpus
 (`tools/testmedia/generate.sh`); a stage whose inputs are missing is skipped, never faked.
 Soaks open windows and need a visible display and a quiet machine. On macOS a measuring

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "rows": [
+    {"group": "jpeg", "name": "decode 24MP (codec)", "ms": 120.060, "width": 6000, "height": 4000},
+    {"group": "jpeg", "name": "full 24MP sRGB", "ms": 116.716, "width": 6000, "height": 4000},
+    {"group": "jpeg", "name": "full 24MP Adobe RGB", "ms": 188.476, "width": 6000, "height": 4000},
+    {"group": "jpeg", "name": "preview 24MP Adobe RGB", "ms": 122.367, "width": 6000, "height": 4000},
+    {"group": "preview", "name": "libheif-example.heic", "ms": 3.101, "width": 320, "height": 212},
+    {"group": "full", "name": "libheif-example.heic", "ms": 37.141, "width": 1280, "height": 854},
+    {"group": "preview", "name": "canon_eos7dmk2.cr2", "ms": 13.629, "width": 2736, "height": 1824},
+    {"group": "full", "name": "canon_eos7dmk2.cr2", "ms": 320.144, "width": 5496, "height": 3670},
+    {"group": "preview", "name": "canon_eosr6.cr3", "ms": 9.559, "width": 1620, "height": 1080},
+    {"group": "full", "name": "canon_eosr6.cr3", "ms": 156.804, "width": 5496, "height": 3670},
+    {"group": "preview", "name": "nikon_d7500.nef", "ms": 26.147, "width": 2784, "height": 1856},
+    {"group": "full", "name": "nikon_d7500.nef", "ms": 298.783, "width": 5600, "height": 3728},
+    {"group": "preview", "name": "pentax_k50.dng", "ms": 15.364, "width": 2464, "height": 1632},
+    {"group": "full", "name": "pentax_k50.dng", "ms": 252.306, "width": 4936, "height": 3272},
+    {"group": "preview", "name": "sony_ilce7rm3.arw", "ms": 3.308, "width": 1616, "height": 1080},
+    {"group": "full", "name": "sony_ilce7rm3.arw", "ms": 314.213, "width": 7968, "height": 5320},
+    {"group": "folder", "name": "list 3000 stills", "ms": 1.702, "width": 3000, "height": 0},
+    {"group": "folder", "name": "scan sub-folders", "ms": 0.810, "width": 40, "height": 0},
+    {"group": "folder", "name": "sort 3000 by date taken", "ms": 0.223, "width": 3000, "height": 0}
+  ]
+}

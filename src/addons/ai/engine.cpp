@@ -498,6 +498,15 @@ bool engine::backfill_tags() {
                 for (const mv_addon_route_point& p : *r) t.track.push_back({p.lat, p.lon});
               }
             }
+            // Level 4: the clip's length from the same header read, so the
+            // phone's catalogue has it before the content pass opens the clip.
+            if (f->struct_size >= MV_ADDON_TAG_FACTS_V3_SIZE) {
+              t.duration_ms = f->duration_ms;
+            } else if (level > 3) {
+              // A host from before it: level 3, and no more asked of it this run.
+              t.level = 3;
+              tags_level_ = 3;
+            }
           } else {
             // A host from before #405: read to level 1 and ask nothing more
             // of it this run (the next host that knows them reads them).
