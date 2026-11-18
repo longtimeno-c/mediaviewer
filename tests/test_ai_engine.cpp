@@ -941,9 +941,16 @@ struct rig {
         -> mv::result<std::unique_ptr<mv::addon::video_sampler>> {
       ++samplers_opened;
       // "noopen": a clip the decoder cannot open (its length still comes from the tag pass).
-      if (utf8(fs::path(path).filename()).find("noopen") != std::string::npos) return mv::err(mv::status::io);
-      return std::unique_ptr<mv::addon::video_sampler>(
-          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
+      // Spelled plainly: MSVC 14.52 hit an internal compiler error (C1001) on
+      // the one-line `if (...) return mv::err(...)` here.
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("noopen") != std::string::npos) {
+        mv::result<std::unique_ptr<mv::addon::video_sampler>> refused = mv::err(mv::status::io);
+        return refused;
+      }
+      std::unique_ptr<mv::addon::video_sampler> sampler =
+          std::make_unique<fake_sampler>(name, o.start_ms, o.min_gap_ms);
+      return sampler;
     };
     svc.video_frame = [this](const std::string& path, std::int64_t ms,
                              std::uint32_t) -> mv::result<mv::addon::rgb_image> {

@@ -10625,7 +10625,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
   out->look_crop = static_cast<int32_t>(lk.crop);
   out->look_copyable = lk.copyable() ? 1 : 0;
-  for (std::size_t i = 0; i < lk.light.v.size(); ++i) out->look_light[i] = lk.light.v[i];
+  // PR 11's five sliders only (kLookLightParams): light.v is every photo
+  // parameter now (edit-adjust), and look_light holds five.
+  for (std::size_t i = 0; i < mv::edit::clip::kLookLightParams; ++i) out->look_light[i] = lk.light.v[i];
   out->look_mute = lk.mute ? 1 : 0;
   out->look_volume = lk.volume;
   out->look_fade_in_ms = lk.fade_in_ms;
