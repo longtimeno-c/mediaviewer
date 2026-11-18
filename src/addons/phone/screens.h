@@ -109,6 +109,7 @@ class screen {
   // them); the secure ones never are.
   std::string local_, public_, new_label_, new_path_, new_limit_, new_reserve_ = "1";
   bool new_backup_ = false;
+  bool adding_folder_ = false;  // the Add a folder form is open (Add folder… / Add backup folder…)
   std::string editing_;  // a backup folder's id whose sizes are being changed
   std::string edit_limit_, edit_reserve_;
   bool confirm_restart_ = false, confirm_hand_over_ = false;

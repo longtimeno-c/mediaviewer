@@ -362,7 +362,10 @@ private struct TextNode: View {
   var body: some View {
     let style = node.string("style") ?? "body"
     let lines = node.int("lines") ?? 0
-    let text = Text(node.string("text") ?? "")
+    // "symbol" (contribution API 16): a glyph before the text, in its font and colour.
+    let words = Text(node.string("text") ?? "")
+    let line = node.string("symbol").map { Text(Image(systemName: slotSymbol($0))) + Text("  ") + words } ?? words
+    let text = line
       .font(font(style))
       .foregroundStyle(style == "secondary" || style == "caption" ? MVTheme.body : MVTheme.title)
       .lineLimit(lines > 0 ? lines : nil)
