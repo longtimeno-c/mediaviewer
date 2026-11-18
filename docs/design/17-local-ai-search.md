@@ -208,6 +208,13 @@ runtime, provider, model, piece).
   host's `meta_cache.db`; the control thread fills rows below `kTagsLevel` after each walk, 128 per
   transaction, ≤ 2 s a turn, yielding to `should_yield`. A host lacking a level stops the backfill
   there for the run. Level 3 asks `route_of` (128 points) only for `MV_ADDON_TAG_HAS_ROUTE`.
+  Level 4 (schema 12; `MV_ADDON_TAG_FACTS_V3_SIZE`) takes `duration_ms`, the clip's header length
+  from the same bounded read, into `assets.duration_ms` (a 0 leaves it be; the content pass's
+  sampler length still overwrites it). So a clip has its length — and the phone's catalogue
+  shows it — right after the walk, before the content pass reaches it or if the sampler cannot
+  open it. Schema 12's step moves level-3 rows with nothing to add (not a clip or audio, or a
+  length already known) to 4, so an upgrade reads only clips without one. The publish stamp
+  (`content_stamp`) includes `TOTAL(duration_ms)`.
   `wait_idle` waits for it. Exports carry no tags.
 - **`tracks.points`:** ≤ 128 (`kTrackPoints`) evenly spaced, ends kept, int32 microdegree (lat, lon)
   LE. Served by `located_assets` / mv.ai.1 `each_location` as `MV_ADDON_LOCATION_ROUTE_POINT` rows
