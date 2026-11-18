@@ -279,6 +279,9 @@ private struct PlayerSurface: UIViewRepresentable {
 struct ClipScreen: View {
   let entry: GridEntry
   let transfer: OriginalTransfer
+  /// A sideways swipe on the picture: -1 the item before, +1 the item after; nil when there is none.
+  var onStep: ((Int) -> Void)? = nil
+  var canStep: (Int) -> Bool = { _ in false }
   let onClose: () -> Void
 
   @Environment(AppModel.self) private var model
@@ -289,7 +292,8 @@ struct ClipScreen: View {
     ZStack {
       Color.black.ignoresSafeArea()
       if let clip {
-        ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact, onClose: onClose)
+        ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact,
+                 onStep: onStep, canStep: canStep, onClose: onClose)
       }
     }
     .task(id: entry.id) {
@@ -306,11 +310,16 @@ private struct ClipBody: View {
   let entry: GridEntry
   let transfer: OriginalTransfer
   let compactHeight: Bool
+  let onStep: ((Int) -> Void)?
+  let canStep: (Int) -> Bool
   let onClose: () -> Void
 
   @Environment(AppModel.self) private var model
   @Environment(\.dynamicTypeSize) private var typeSize
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var controlsShown = true
+  /// How far a sideways swipe on the picture has moved it.
+  @State private var dragX: CGFloat = 0
 
   var body: some View {
     Group {
@@ -383,6 +392,33 @@ private struct ClipBody: View {
         posterImage
       }
     }
+    .offset(x: dragX)
+    .contentShape(Rectangle())
+    // Sideways to the item before or after, as the photos page; up and down stay the screen's.
+    .simultaneousGesture(swipe)
+    .accessibilityAction(named: "Next item") { if canStep(1) { onStep?(1) } }
+    .accessibilityAction(named: "Previous item") { if canStep(-1) { onStep?(-1) } }
+  }
+
+  private var swipe: some Gesture {
+    DragGesture(minimumDistance: 20)
+      .onChanged { value in
+        let dx = value.translation.width, dy = value.translation.height
+        guard abs(dx) > abs(dy) else { return }
+        // No item that way: the picture gives a little, then stops.
+        dragX = canStep(dx < 0 ? 1 : -1) ? dx : dx / 4
+      }
+      .onEnded { value in
+        let dx = value.translation.width, dy = value.translation.height
+        let flung = value.predictedEndTranslation.width
+        let step = dx < 0 ? 1 : -1
+        let sideways = abs(dx) > abs(dy) * 1.5
+        if sideways, abs(dx) > 80 || abs(flung) > 220, canStep(step) {
+          onStep?(step)
+        } else {
+          withAnimation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 1)) { dragX = 0 }
+        }
+      }
   }
 
   private var posterImage: some View {

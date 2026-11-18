@@ -49,7 +49,8 @@ struct ViewerScreen: View {
         chrome.transition(.opacity)
       }
       if let playing {
-        ClipScreen(entry: playing, transfer: transfer) { closeClip() }
+        ClipScreen(entry: playing, transfer: transfer, onStep: stepFromClip,
+                   canStep: { request.entries.indices.contains(index + $0) }) { closeClip() }
           .id(playing.id)
           .transition(.opacity)
       }
@@ -77,6 +78,19 @@ struct ViewerScreen: View {
   private func close() {
     model.viewerFocus = "\(request.context)/\(index)"
     model.closeViewer(reduceMotion: reduceMotion)
+  }
+
+  /// A swipe on a playing clip: the pager moves under it to the item before or after, and a clip
+  /// there plays at once; a photo shows on its page.
+  private func stepFromClip(_ step: Int) {
+    let target = index + step
+    guard request.entries.indices.contains(target) else { return }
+    let next = request.entries[target]
+    jump = PagerJump(index: target, animated: false)
+    index = target
+    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+      playing = next.item.kind == .clip ? next : nil
+    }
   }
 
   private func closeClip() {
