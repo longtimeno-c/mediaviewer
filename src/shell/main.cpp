@@ -117,6 +117,7 @@
 #include "shell/print_layout.h"
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
+#include "shell/close_policy.h"
 #include "shell/login_item_win.h"
 #include "shell/single_instance_win.h"
 #include "shell/open_with_win.h"
@@ -13513,8 +13514,9 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
     }
 
     case WM_CLOSE: {
-      // #452: an add-on keeps the process: hide, do not close.
-      if (!app->closing && !app->quit_for_real && !kept_alive().empty()) {
+      // #452: an add-on keeps the process: hide, do not close (never a finished lab).
+      if (mv::shell::close_goes_to_background({app->closing, app->quit_for_real, app->lab.finished(),
+                                               !kept_alive().empty()})) {
         enter_background(app);
         return 0;
       }

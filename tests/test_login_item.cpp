@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+#include "shell/close_policy.h"
 #include "shell/login_item_win.h"
 
 namespace {
@@ -45,4 +46,15 @@ TEST_CASE("login item: on writes the value, off removes it", "[.login-item]") {
     (void)::RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, L"MediaViewer", REG_SZ, before->c_str(),
                             static_cast<DWORD>((before->size() + 1) * sizeof(wchar_t)));
   }
+}
+
+// #452: a close hides into the background only while something keeps the process,
+// and never once the lab has finished (a soak's own close: the harness waits for exit).
+TEST_CASE("close goes to the background only for a live window something keeps", "[login-item]") {
+  using mv::shell::close_goes_to_background;
+  CHECK(close_goes_to_background({false, false, false, true}));
+  CHECK_FALSE(close_goes_to_background({false, false, false, false}));  // nothing keeps it
+  CHECK_FALSE(close_goes_to_background({true, false, false, true}));    // already closing
+  CHECK_FALSE(close_goes_to_background({false, true, false, true}));    // the icon's Quit
+  CHECK_FALSE(close_goes_to_background({false, false, true, true}));    // a finished soak, while hosting
 }
