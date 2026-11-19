@@ -139,3 +139,9 @@ Not done here (follow-ups):
 - A custom DDNS update URL (a provider other than DuckDNS keeping the address).
 - Not run against the real Let's Encrypt or duckdns.org (by design, never in tests); Windows and
   Linux `https_request` are compiled by CI, not run.
+- A laptop holding a plain code from before (`name:47614#KEY`) stops reaching the host from outside
+  once the look is on (its port is no longer mapped), and a NAS owner who forwarded only 47614 must
+  forward 47615 too; nothing tells them to copy the code again. Harmless while the VPN hosts are
+  unreleased (#711's port, #730); a note on the card would be the fix if that changes.
+- No test drives an older client's plain knock against this build's relay (the old client is not in
+  the tree); the server's code path for it is the one that was there before.
