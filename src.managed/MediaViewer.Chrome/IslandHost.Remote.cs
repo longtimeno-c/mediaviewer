@@ -117,6 +117,9 @@ public static partial class IslandHost
         ulong gen = RemoteNative.Generation();
         if (gen == _remoteGen) return;
         _remoteGen = gen;
+        // A pairing that worked or a server forgotten: native pins it with the
+        // folders (the welcome card, the jump list's Open > Recent), or drops its pin.
+        Send(Command.RemoteChanged);
         var rows = new List<(string Name, string Key, string State, string Role)>();
         try
         {

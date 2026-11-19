@@ -217,8 +217,10 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S8: the Faces panel's controls
         // (IslandHost.Faces.cs), arg = shell::pack_faces_op.
         public const int Faces = 1109;  // after the Video Editor look's 1100-1108
-        // The bar's Home: back to the welcome card, nothing open (owner 2026-11-18).
-        // 1111: 1110 is RemoteChanged's (PR #718).
+        // docs/plans/desktop-client.md: a pairing worked or a server was forgotten
+        // (IslandHost.Remote.cs); native pins or unpins it with the folders.
+        public const int RemoteChanged = 1110;
+        // Open > Home: back to the welcome card, nothing open (owner 2026-11-18).
         public const int GoHome = 1111;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
@@ -338,7 +340,7 @@ public static partial class IslandHost
                 Rename, GalleryRange,
                 EditStripHeight, PaneEdgeState, InspectorMin,
                 CanvasTool, ToolSizeSet, ToolEraseSet,
-                Faces, GoHome,
+                Faces, RemoteChanged, GoHome,
             };
             unchecked
             {

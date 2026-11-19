@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,20 @@ TEST_CASE("a pinned folder stays first however many folders are opened", "[shell
   welcome_recents none;
   fill_welcome_recents(shown, "", none);
   REQUIRE(none.pinned == 0);
+
+  // A paired server's pin is named by the host; a row past the card is left alone.
+  welcome_recents named = with_cloud;
+  set_welcome_row(named, 1, "FamilyNas", "Paired server");
+  REQUIRE(std::string(named.label[1]) == "FamilyNas");
+  REQUIRE(std::string(named.where[1]) == "Paired server");
+  REQUIRE(named.pinned == 1);
+  set_welcome_row(named, named.count, "x", "y");
+  set_welcome_row(named, -1, "x", "y");
+  REQUIRE(std::memcmp(named.label[0], with_cloud.label[0], sizeof(named.label[0])) == 0);
+  // Cut at a character, as the folders are.
+  const std::string long_name(sizeof(named.label[2]) - 2, 'a');  // é's first byte is the last that fits
+  set_welcome_row(named, 2, long_name + "\xC3\xA9", "");
+  REQUIRE(std::string(named.label[2]) == long_name);
 
   SECTION("opening a pinned folder moves it in the MRU list, not among the pins") {
     pinned = pin_folder(pinned, "D:\\2026");

@@ -186,7 +186,13 @@ constexpr UINT kMsgPrintDone = WM_APP + 0x83;
 // S0 (docs/plans/edit-refresh.md §5): a worker began (wparam 1) or ended (0)
 // reading a cloud placeholder (OneDrive, iCloud for Windows), which comes
 // down with that read. The status line says so meanwhile.
-constexpr UINT kMsgCloudFetch = WM_APP + 0x8D;  // 0x84 is the Video Editor's Auto light (kMsgEditorAutoLight)
+constexpr UINT kMsgCloudFetch = WM_APP + 0x8D;
+// docs/plans/desktop-client.md: the paired servers have loaded (a worker saw
+// mv_remote_generation move), so a server's pin on the welcome card can be named.
+constexpr UINT kMsgRemoteNames = WM_APP + 0x8E;
+// A server's pin was opened: its named folders, listed on a worker (the network),
+// LPARAM a remote_top_result the handler owns.
+constexpr UINT kMsgRemoteTop = WM_APP + 0x8F;  // 0x84 is the Video Editor's Auto light (kMsgEditorAutoLight)
 // docs/plans/edit-refresh.md S3: a canvas-tool job finished, the eyes of a
 // still or Find eyes' fixes (LPARAM: a tool_job_result the handler owns).
 constexpr UINT kMsgToolJob = WM_APP + 0x85;
@@ -649,6 +655,12 @@ struct app_state {
   // pins (pinned0..pinned4), oldest pin first (shell/os_integration.h).
   std::vector<std::string> recent_mru;
   std::vector<std::string> pinned_folders;
+  // docs/plans/desktop-client.md: the last pairing pinned (mv_remote_pair_state_json's
+  // seq), the last server pin opened (its folders are listed on a worker), and
+  // whether a worker has waited (once a run) for the servers to load to name a pin.
+  std::uint64_t remote_pair_seq = 0;
+  std::uint64_t remote_top_seq = 0;  // the pin opened last; an older listing is dropped
+  bool remote_names_waited = false;
   // Issue #617: a jump-list task this start was asked for (--task), run once the
   // window is up ("open-folder") or once Import has loaded ("import").
   std::wstring pending_task;
@@ -898,8 +910,44 @@ std::string onedrive_where(const app_state* app) noexcept {
   }
 }
 
+// docs/plans/desktop-client.md: the paired servers as (key, name), from the
+// core's list (never blocks: an empty list until they have loaded). `loaded`:
+// they have (mv_remote_generation moved), so a pin missing here is a server gone.
+std::vector<std::pair<std::string, std::string>> remote_servers(bool* loaded = nullptr) {
+  std::vector<std::pair<std::string, std::string>> out;
+  std::uint64_t gen = 0;
+  if (loaded) *loaded = mv_remote_generation(&gen) == MV_OK && gen > 0;
+  std::uint32_t need = 0;
+  (void)mv_remote_servers_json(nullptr, 0, &need);
+  if (need == 0) return out;
+  std::string text(need, '\0');
+  if (mv_remote_servers_json(text.data(), need, &need) != MV_OK) return out;
+  text.resize(std::strlen(text.c_str()));
+  if (const auto doc = mv::json::parse(text); doc && doc->k == mv::json::kind::array) {
+    for (const auto& e : doc->a) {
+      const std::string* key = e.str("key");
+      const std::string* name = e.str("name");
+      if (key && !key->empty()) out.emplace_back(*key, name ? *name : std::string());
+    }
+  }
+  return out;
+}
+
+// What a server's pin is called: its name, or "Paired server" until the
+// servers have loaded. "" for a folder.
+std::string remote_pin_name(const std::vector<std::pair<std::string, std::string>>& servers,
+                            const std::string& dir) {
+  const std::string key = mv::remote::server_key_of_pin(dir);
+  if (key.empty()) return {};
+  for (const auto& [k, name] : servers) {
+    if (k == key && !name.empty()) return name;
+  }
+  return "Paired server";
+}
+
 // The card's rows: OneDrive first when it is set up, then the recent folders.
 // The pins lead app->recent_folders (issue #617), so their rows are the first.
+// A paired server's pin is named by the server, "Paired server" its place.
 void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) noexcept {
   const std::size_t pinned = app->pinned_folders.size();
   if (app->onedrive_utf8.empty()) {
@@ -908,12 +956,48 @@ void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) no
     mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app),
                                     pinned);
   }
+  try {
+    if (std::none_of(app->recent_folders.begin(), app->recent_folders.end(),
+                     [](const std::string& d) { return mv::remote::is_key(d); })) {
+      return;
+    }
+    const auto servers = remote_servers();
+    const int first = out.icloud ? 1 : 0;
+    for (std::size_t k = 0; k < app->recent_folders.size() && first + static_cast<int>(k) < out.count; ++k) {
+      const std::string name = remote_pin_name(servers, app->recent_folders[k]);
+      if (!name.empty()) mv::shell::set_welcome_row(out, first + static_cast<int>(k), name, "Paired server");
+    }
+  } catch (...) {
+  }
 }
 
 // The rows from app->recent_folders; one redraw when they change.
 void refresh_welcome_recents(app_state* app) noexcept {
   mv::shell::welcome_recents next;
   if (welcome_lists_recents(app)) fill_welcome_card(app, next);
+  // A server's pin drawn before the servers loaded (abi.cpp starts that with the
+  // session): one worker waits for them, a few seconds at most, then the card
+  // again. Once a run: with no servers.json the generation never moves.
+  std::uint64_t gen = 0;
+  if (!app->remote_names_waited && app->window &&
+      std::any_of(app->recent_folders.begin(), app->recent_folders.end(),
+                  [](const std::string& d) { return mv::remote::is_key(d); }) &&
+      mv_remote_generation(&gen) == MV_OK && gen == 0) {
+    app->remote_names_waited = true;
+    const HWND hwnd = app->window;
+    try {
+      app->jobs.submit_at(mv::background_generation, [hwnd](const mv::job_context&) -> mv::status {
+        for (int i = 0; i < 50; ++i) {
+          std::uint64_t g = 0;
+          if (mv_remote_generation(&g) == MV_OK && g > 0) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        ::PostMessageW(hwnd, kMsgRemoteNames, 0, 0);
+        return mv::status::ok;
+      });
+    } catch (...) {
+    }
+  }
   if (std::memcmp(&next, &app->input.recents, sizeof(next)) == 0) return;
   app->input.recents = next;
   ++app->input.activity_seq;
@@ -1005,6 +1089,7 @@ void run_pending_task(app_state* app);                                // issue #
 void sync_jump_list_tasks(app_state* app);                            // issue #617
 bool run_session_command(app_state* app, mv::shell::command_id command) noexcept;
 void push_recent_folders(app_state* app);
+void remote_pins_changed(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
@@ -7536,6 +7621,9 @@ chrome_dispatch chrome_canvas_command(app_state* app, int command, float arg) {
     case mv::shell::chrome_cmd_open_recent:
       open_recent_folder(app, static_cast<int>(arg));
       return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_remote_changed:
+      remote_pins_changed(app);
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_go_home:
       go_home(app);
       return chrome_dispatch::done;
@@ -10168,8 +10256,17 @@ void publish_jump_list(app_state* app) {
   const char* tasks = jump_tasks_wanted();
   mv::shell::app_settings().set("recent", kJumpTasksKey, tasks);
   const std::uint64_t seq = g_jump_list_seq.fetch_add(1, std::memory_order_acq_rel) + 1;
+  // A paired server's pin stays out: a jump list item starts this exe with a
+  // disk path, and a `remote:` key is not one.
+  std::vector<std::string> folders;
+  std::size_t pinned = 0;
+  for (std::size_t i = 0; i < app->recent_folders.size(); ++i) {
+    if (mv::remote::is_key(app->recent_folders[i])) continue;
+    if (i < app->pinned_folders.size()) ++pinned;
+    folders.push_back(app->recent_folders[i]);
+  }
   app->jobs.submit_at(mv::background_generation,
-                      [folders = app->recent_folders, pinned = app->pinned_folders.size(), exe = jump_list_exe(),
+                      [folders = std::move(folders), pinned, exe = jump_list_exe(),
                        import_task = std::string_view(tasks) == "import", hwnd, seq](const mv::job_context&) -> mv::status {
                         std::vector<std::string> pruned = build_jump_list(folders, pinned, exe, import_task, seq);
                         if (pruned.empty()) return mv::status::ok;
@@ -10225,11 +10322,68 @@ void set_folder_pinned(app_state* app, const std::string& dir, bool pin) {
   recent_folders_changed(app);
 }
 
+// docs/plans/desktop-client.md: a server the tree just paired is pinned with the
+// folders (the card, Open > Recent folders), once per pairing; a pin whose server
+// was forgotten goes, once the servers have loaded. Then the card again, for
+// the names. Not in a soak or a scripted run (record_recent), as any pin.
+void remote_pins_changed(app_state* app) {
+  if (!app) return;
+  bool loaded = false;
+  std::vector<std::pair<std::string, std::string>> servers;
+  std::string paired;
+  std::uint64_t seq = 0;
+  try {
+    servers = remote_servers(&loaded);
+    std::uint32_t need = 0;
+    (void)mv_remote_pair_state_json(nullptr, 0, &need);
+    std::string text(need, '\0');
+    if (need > 0 && mv_remote_pair_state_json(text.data(), need, &need) == MV_OK) {
+      text.resize(std::strlen(text.c_str()));
+      if (const auto doc = mv::json::parse(text)) {
+        if (doc->boolean("ok").value_or(false)) {
+          if (const std::string* k = doc->str("key")) paired = *k;
+          seq = static_cast<std::uint64_t>(std::max<std::int64_t>(0, doc->integer("seq").value_or(0)));
+        }
+      }
+    }
+  } catch (...) {
+    return;
+  }
+  std::vector<std::string> next = app->pinned_folders;
+  if (seq > app->remote_pair_seq) {
+    app->remote_pair_seq = seq;
+    // A full list is no pin: the server is in the folder tree all the same.
+    if (!paired.empty() && !mv::shell::is_pinned_folder(next, paired)) next = mv::shell::pin_folder(std::move(next), paired);
+  }
+  if (loaded) {
+    std::erase_if(next, [&](const std::string& d) {
+      const std::string key = mv::remote::server_key_of_pin(d);
+      if (key.empty()) return false;
+      return std::none_of(servers.begin(), servers.end(), [&](const auto& s) { return s.first == key; });
+    });
+  }
+  if (next != app->pinned_folders && app->record_recent) {
+    app->pinned_folders = std::move(next);
+    mv::shell::save_pinned_folders(app->pinned_folders);
+    recent_folders_changed(app);
+    return;
+  }
+  push_recent_folders(app);  // the names, in Open > Recent folders
+  refresh_welcome_recents(app);
+}
+
 // Open > Recent folders: the jump list's labels (recent_folder_labels, as the
 // Mac's File > Open Recent), "label\tpath\n" per folder.
 void push_recent_folders(app_state* app) {
   if (!app || !app->chrome.attached()) return;
-  const std::vector<std::string> labels = mv::shell::recent_folder_labels(app->recent_folders);
+  std::vector<std::string> labels = mv::shell::recent_folder_labels(app->recent_folders);
+  if (std::any_of(app->recent_folders.begin(), app->recent_folders.end(),
+                  [](const std::string& d) { return mv::remote::is_key(d); })) {
+    const auto servers = remote_servers();
+    for (std::size_t i = 0; i < app->recent_folders.size() && i < labels.size(); ++i) {
+      if (std::string name = remote_pin_name(servers, app->recent_folders[i]); !name.empty()) labels[i] = std::move(name);
+    }
+  }
   std::string lines;
   for (std::size_t i = 0; i < app->recent_folders.size() && i < labels.size(); ++i) {
     lines += labels[i];
@@ -10286,12 +10440,83 @@ void open_welcome_row(app_state* app, int row) {
   open_recent_folder(app, welcome_row_folder(app, row));
 }
 
+// What a server's top listed (kMsgRemoteTop's LPARAM, owned by the handler).
+struct remote_top_result {
+  std::uint64_t seq = 0;
+  std::string top;
+  bool ok = false;
+  std::vector<std::string> folders;  // the named folders' keys
+};
+
+// A server's pin: its named folders from the server, on a worker (mv_list_subdirectories
+// answers a `remote:` key over the network), then kMsgRemoteTop on this thread.
+void open_remote_top(app_state* app, const std::string& top) {
+  const std::uint64_t seq = ++app->remote_top_seq;
+  const HWND hwnd = app->window;
+  try {
+    app->jobs.submit_at(mv::background_generation, [hwnd, seq, top](const mv::job_context&) -> mv::status {
+      auto r = std::make_unique<remote_top_result>();
+      r->seq = seq;
+      r->top = top;
+      std::uint32_t need = 0;
+      std::string text(4096, '\0');
+      mv_status st = mv_list_subdirectories(top.c_str(), text.data(), static_cast<uint32_t>(text.size()), &need);
+      if (st != MV_OK && need > text.size()) {
+        text.assign(need, '\0');
+        st = mv_list_subdirectories(top.c_str(), text.data(), need, &need);
+      }
+      if (st == MV_OK) {
+        r->ok = true;
+        text.resize(std::strlen(text.c_str()));
+        std::size_t at = 0;
+        while (at < text.size()) {
+          const std::size_t end = std::min(text.find('\n', at), text.size());
+          const std::size_t tab = text.find('\t', at);
+          if (tab != std::string::npos && tab < end) r->folders.push_back(text.substr(tab + 1, end - tab - 1));
+          at = end + 1;
+        }
+      }
+      if (::PostMessageW(hwnd, kMsgRemoteTop, 0, reinterpret_cast<LPARAM>(r.get()))) (void)r.release();
+      return mv::status::ok;
+    });
+  } catch (...) {
+  }
+}
+
+// kMsgRemoteTop: one named folder opens; several, the folder tree shows them
+// under the server's row; none, or no answer, opens the top, which says why.
+void on_remote_top(app_state* app, std::unique_ptr<remote_top_result> r) {
+  if (!app || !r || r->seq != app->remote_top_seq) return;  // another pin opened since
+  if (r->ok && r->folders.size() > 1) {
+    set_folder_tree(app, true);
+    return;
+  }
+  const std::string& dir = r->ok && r->folders.size() == 1 ? r->folders[0] : r->top;
+  app->mode = open_mode::folder;
+  app->gallery_visible = false;
+  sync_video_hold(app, false);
+  open_folder(app, wide_from_utf8(dir), {});
+  focus_canvas(app);
+}
+
 // Recent folder `index` (most recent first): a card row, or Open > Recent
 // folders, the jump list's route.
 void open_recent_folder(app_state* app, int index) {
   const int row = index;
   if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
+  if (mv::remote::is_key(dir)) {
+    // docs/plans/desktop-client.md: a paired server's pin. Its folders over the
+    // network, never a disk path, and never forgotten for being away. Its named
+    // folders are listed on a worker (kMsgRemoteTop): one opens straight away.
+    const std::string top = mv::remote::server_key_of_pin(dir);
+    if (top.empty() || !app->window) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    open_remote_top(app, top);
+    return;
+  }
   const auto is_dir = mv::io::is_directory(dir);
   if (!is_dir || !is_dir.value()) {
     // The card was ejected or the folder deleted: it is no longer a place to go.
@@ -13387,6 +13612,14 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgRunTask:
       run_pending_task(app);
+      return 0;
+
+    case kMsgRemoteNames:
+      remote_pins_changed(app);
+      return 0;
+
+    case kMsgRemoteTop:
+      on_remote_top(app, std::unique_ptr<remote_top_result>(reinterpret_cast<remote_top_result*>(lparam)));
       return 0;
 
     case kMsgOpenForwarded: {
