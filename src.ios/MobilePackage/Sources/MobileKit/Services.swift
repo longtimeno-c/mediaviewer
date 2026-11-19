@@ -66,10 +66,14 @@ public protocol ImageLadder: Sendable {
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error>
   /// §8.2 net lane 2: the viewer's ±2.
   func prefetch(_ items: [MediaItem], fittingPixels: CGSize)
+  /// A clip's length when the item does not carry one (a folder's clip, before anything measured
+  /// it). nil when it cannot be had.
+  func length(for item: MediaItem) async -> TimeInterval?
 }
 
 public extension ImageLadder {
   func placeholder(for item: MediaItem) async -> UIImage? { nil }
+  func length(for item: MediaItem) async -> TimeInterval? { nil }
 }
 
 public enum SearchCapability: Hashable, Sendable {

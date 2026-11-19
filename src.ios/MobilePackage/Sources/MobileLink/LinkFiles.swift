@@ -163,6 +163,7 @@ public final class LinkFiles: @unchecked Sendable {
 
   private func readListing(_ folder: FilePath) async throws -> FolderListing {
     guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+    let cache = factCache()
     struct Row { let name: String; let size: UInt64; let mtime: Int64; let dir: Bool; let kind: Int32 }
     let (status, rows) = await onLinkQueue { () -> (Int32, [Row]) in
       final class Rows { var list: [Row] = [] }
@@ -193,9 +194,11 @@ public final class LinkFiles: @unchecked Sendable {
                                 modified: Date(timeIntervalSince1970: TimeInterval(row.mtime))))
         continue
       }
+      // A clip's length when its poster was made before (the folder lists names, sizes and times only).
+      let seconds = row.kind == 2 ? cache?.facts(for: path.stamp(size: row.size, mtime: row.mtime))?.seconds : nil
       let item = MediaItem(id: MediaID(path.id), kind: row.kind == 2 ? .clip : .photo,
                            capturedAt: Date(timeIntervalSince1970: TimeInterval(row.mtime)), pixelWidth: 0, pixelHeight: 0,
-                           duration: nil, fileName: row.name)
+                           duration: seconds, fileName: row.name)
       files.append(FileEntry(path: path, size: row.size, mtime: row.mtime, kind: row.kind, item: item))
     }
     folders.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -558,6 +561,7 @@ public final class LinkFiles: @unchecked Sendable {
         guard !Task.isCancelled else { return nil }
         let read = readFunction(file, link: link, bulk: false)
         if let layout = await onLinkQueue({ TsStreams.layout(read: read, size: file.size) }) {
+          remember(seconds: layout.duration, of: file)
           guard let url = await TsStreams.shared.register(layout, read: read),
                 let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels) else { return nil }
           return UIImage(cgImage: frame)
@@ -577,9 +581,43 @@ public final class LinkFiles: @unchecked Sendable {
       generator.appliesPreferredTrackTransform = true
       generator.maximumSize = CGSize(width: Self.thumbPixels, height: Self.thumbPixels)
       let image = try? await generator.image(at: .zero).image
+      // The frame read the clip's header, so its length costs nothing more.
+      if let length = try? await asset.load(.duration) { remember(seconds: length.seconds, of: file) }
       return withExtendedLifetime(loader) { image.map { UIImage(cgImage: $0) } }
     }
   }
+
+  /// A clip's length, for its tile: what its poster learnt, else its header read for it (a poster
+  /// on disk from before lengths were kept). nil for a clip the phone cannot read itself.
+  func length(for item: MediaItem) async -> TimeInterval? {
+    guard let file = entry(for: item.id), file.kind == 2 else { return nil }
+    if let known = factCache()?.facts(for: file.stamp)?.seconds { return known }
+    let ext = (file.path.name as NSString).pathExtension.lowercased()
+    guard let link = await connection.awaitLink() else { return nil }
+    return await posters.run { [self] () -> TimeInterval? in
+      guard !Task.isCancelled else { return nil }
+      if let known = factCache()?.facts(for: file.stamp)?.seconds { return known }  // a poster meanwhile
+      var seconds: Double?
+      if LinkClips.transportStreams.contains(ext) {
+        let read = readFunction(file, link: link, bulk: false)
+        seconds = await onLinkQueue { TsStreams.layout(read: read, size: file.size) }?.duration
+      } else if ["mp4", "mov", "m4v"].contains(ext), let (asset, loader) = clipAsset(file, link: link) {
+        seconds = (try? await asset.load(.duration))?.seconds
+        withExtendedLifetime(loader) {}
+      }
+      guard let seconds else { return nil }
+      remember(seconds: seconds, of: file)
+      return remembered(seconds)
+    }
+  }
+
+  private func remember(seconds: Double, of file: FileEntry) {
+    guard let value = remembered(seconds), let cache = factCache() else { return }
+    cache.set(.clip(seconds: value), for: file.stamp)
+  }
+
+  /// A length worth keeping: a real one, not AVFoundation's indefinite or a header's zero.
+  private func remembered(_ seconds: Double) -> Double? { seconds.isFinite && seconds > 0 ? seconds : nil }
 
   /// A clip the phone can't play: the first frame of the server's conversion (its first segment,
   /// which then waits in the server's cache for the clip to be opened). nil when it converts nothing.

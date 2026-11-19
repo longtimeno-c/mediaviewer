@@ -8,17 +8,24 @@
 import Foundation
 
 /// What file search keeps of one file: its fields in the desktop's why-order, and the two the
-/// viewer's details show.
+/// viewer's details show. A clip has no fields; it keeps its length, learnt when its poster was
+/// made (a cache from before lengths decodes with none).
 public struct FileFacts: Codable, Hashable, Sendable {
   public let fields: [String]
   public let camera: String
   public let lens: String
+  /// A clip's length in seconds; nil for a photo, or a clip whose length is not known.
+  public let seconds: Double?
 
-  public init(fields: [String], camera: String, lens: String) {
+  public init(fields: [String], camera: String, lens: String, seconds: Double? = nil) {
     self.fields = fields
     self.camera = camera
     self.lens = lens
+    self.seconds = seconds
   }
+
+  /// A clip's: its length, and nothing for search.
+  public static func clip(seconds: Double) -> FileFacts { FileFacts(fields: [], camera: "", lens: "", seconds: seconds) }
 }
 
 public final class FileFactCache: @unchecked Sendable {
