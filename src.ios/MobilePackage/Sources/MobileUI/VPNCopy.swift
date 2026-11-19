@@ -33,6 +33,10 @@ enum VPNCopy {
     "Every app's traffic leaves through your server at \(host), so sites see your home's address. Your server can see which sites you visit, not what you send over HTTPS."
   }
 
+  /// The demo's line under the switch.
+  static let detailDemo =
+    "With your own server, every app's traffic would leave through it. In this demo nothing is routed."
+
   // Status.
   static let status = "Status"
   static func status(_ s: VPNStatus) -> String {

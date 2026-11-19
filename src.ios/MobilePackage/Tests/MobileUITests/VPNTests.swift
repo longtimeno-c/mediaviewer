@@ -159,6 +159,10 @@ final class VPNTests: XCTestCase {
     XCTAssertEqual(VPNFlow.consentMessage(demo), VPNCopy.consentDemo)
     XCTAssertTrue(VPNCopy.consentDemo.contains("Nothing is routed"))
     XCTAssertTrue(VPNCopy.demoBanner.contains("nothing is routed"))
+    // The line under the demo's switch must not say traffic leaves through a server.
+    XCTAssertEqual(VPNFlow.detail(demo), VPNCopy.detailDemo)
+    XCTAssertTrue(VPNFlow.detail(demo).contains("nothing is routed"))
+    XCTAssertFalse(VPNFlow.detail(demo).contains("Sample server"))
     let real = VPNSnapshot(status: .off, host: "home.example.net:51820")
     XCTAssertEqual(VPNFlow.toggleTitle(real), VPNCopy.toggle)
     XCTAssertEqual(VPNFlow.consentMessage(real), VPNCopy.consent(host: "home.example.net:51820"))

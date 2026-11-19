@@ -46,6 +46,11 @@ enum VPNFlow {
 
   static func toggleTitle(_ s: VPNSnapshot) -> String { s.isDemo ? VPNCopy.toggleDemo : VPNCopy.toggle }
 
+  /// Under the switch. The demo never claims to route anything.
+  static func detail(_ s: VPNSnapshot) -> String {
+    s.isDemo ? VPNCopy.detailDemo : VPNCopy.detail(host: s.host ?? "")
+  }
+
   static func consentMessage(_ s: VPNSnapshot) -> String {
     s.isDemo ? VPNCopy.consentDemo : VPNCopy.consent(host: s.host ?? "")
   }
@@ -161,7 +166,7 @@ struct VPNScreen: View {
   /// The same switch and VoiceOver treatment as Settings' "Faster direct connection on mobile data".
   private var vpnToggle: some View {
     let title = VPNFlow.toggleTitle(vpn)
-    let detail = VPNCopy.detail(host: vpn.host ?? "")
+    let detail = VPNFlow.detail(vpn)
     return Toggle(isOn: Binding(get: { vpn.isOn }, set: { switchMoved(to: $0) })) {
       VStack(alignment: .leading, spacing: 2) {
         Text(title).font(.subheadline).foregroundStyle(Theme.title)
