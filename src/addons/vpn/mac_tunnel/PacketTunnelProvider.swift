@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Driftwire VPN's packet tunnel provider (slice 5; src/addons/driftwire/vpn.h,
+// Driftwire VPN's packet tunnel provider (slice 5; src/addons/vpn/vpn.h,
 // vpn_mac.mm): a thin pump. The system starts it only when the Driftwire
 // add-on asks (NETunnelProviderManager in vpn_mac.mm); it sets the
 // interface from that configuration and passes packets both ways over a

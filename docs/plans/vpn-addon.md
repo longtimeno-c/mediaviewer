@@ -54,10 +54,12 @@ there whenever VPN is installed, and while they say the Tunnel was on and VPN is
 installed, its page says "The Tunnel is now the VPN add-on" with where to get it.
 
 **The Mac packet tunnel.** The system extension stays in the app bundle (macOS loads it only
-from there). It moves to `src/addons/vpn/mac_tunnel`, and (owner 2026-11-19, free while Apple's
-entitlement is owed and no build can load it) its id becomes `<app>.VPNTunnel`,
-`MV_DRIFTWIRE_PACKET_TUNNEL` becomes `MV_VPN_PACKET_TUNNEL`, the entitlement check moves to the VPN add-on, and one decision-log
-row records the owner's call (the #672 row stays as history).
+from there). Its source moves to `src/addons/vpn/mac_tunnel` and the entitlement check moves with
+`vpn_mac.mm` to the VPN add-on. It keeps the id `<app>.DriftwireTunnel` and the build option
+`MV_DRIFTWIRE_PACKET_TUNNEL`: renaming was agreed first as free, but 0.1.44 already ships it signed
+with Developer ID profiles for that App ID, so the owner kept it (2026-11-19). The name the OS shows
+for the VPN becomes "MediaViewer VPN". One decision-log row records the owner's call (the #672 row
+stays as history).
 
 **The `driftwire` program.** Both stay there (it is one program, not an add-on, and
 `host vpn` is the hosting Phone access runs); owner 2026-11-19: `/tunnel` is renamed `/vpn`,

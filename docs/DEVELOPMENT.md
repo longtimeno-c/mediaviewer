@@ -1604,7 +1604,7 @@ build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
 # Slice 5 (the VPN): DNS to this resolver; UDP ports beyond 53 only if listed
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --dns 9.9.9.9 --forward-udp-ports 53
-xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/*.swift
+xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/vpn/mac_tunnel/*.swift
 # The VPN's provider built and embedded. It runs only from a Developer ID release with both
 # provisioning profiles (RELEASING.md, "the Driftwire VPN's provisioning profiles"):
 cmake -S . -B build -DMV_DRIFTWIRE_PACKET_TUNNEL=ON && cmake --build build --target mediaviewer_app

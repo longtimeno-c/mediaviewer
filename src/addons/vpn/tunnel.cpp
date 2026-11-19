@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/driftwire/tunnel.h"
+#include "addons/vpn/tunnel.h"
 
 #include <sodium.h>
 

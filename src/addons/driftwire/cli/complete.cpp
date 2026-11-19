@@ -33,7 +33,7 @@ constexpr std::array kCommands{
     command_info{"/handover", "on|off", "Continue over the internet if Wi-Fi drops", ""},
     command_info{"/relay", "on|off", "Use my other computers to relay", ""},
     command_info{"/relay-server", "", "Your own relay server (the key is typed, never an argument)", ""},
-    command_info{"/tunnel", "[on|off|apps|https|vpn|block on|off]", "Tunnel web traffic through your relay server", ""},
+    command_info{"/vpn", "[on|off|server|apps|https|all|block on|off]", "Send this computer's traffic through your VPN server", ""},
     command_info{"/host", "[setup|status|share PATH|unshare L|pair|name duckdns|none|vpn on|off]",
                  "Host your phones' server and your laptop's VPN exit on this computer", ""},
     command_info{"/updates", "on|off", "Check once a day for a newer driftwire", ""},

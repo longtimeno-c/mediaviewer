@@ -7,7 +7,7 @@
 // or a VPN entry of its own) keep theirs.
 //
 // What was there is kept as "<flags>\t<old script URL, UTF-8>".
-#include "addons/driftwire/sysproxy.h"
+#include "addons/vpn/sysproxy.h"
 
 #include <windows.h>
 #include <wininet.h>
