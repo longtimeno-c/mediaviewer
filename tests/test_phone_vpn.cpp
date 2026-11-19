@@ -453,6 +453,44 @@ TEST_CASE("phone vpn: a server whose key changed while running is named by the c
   mv_vpn_state s{};
   mv_vpn_get_state(v, &s);
   CHECK(s.problem == MV_VPN_KEY_REJECTED);
+  // Stopping ends the stream that failed (the runner's problem still says so): nothing more is
+  // told once the stop begins, so Swift never hears from a VPN it is tearing down.
+  mv_vpn_stop(v);
+  CHECK(flow.told().size() == 2);
+}
+
+TEST_CASE("phone vpn: the extension's caps hold: at most MV_VPN_MAX_TCP app connections", "[phone-vpn]") {
+  // The desktop takes 1024 (netstack.h kMaxConnections); a packet tunnel extension's memory
+  // ceiling cannot hold that (plan §2.1), so the phone's profile resets the one past its cap.
+  tcp_echo te;
+  udp_echo ue;
+  auto server = relay::server::start(relay_options(te.port(), ue.port()));
+  REQUIRE(server);
+  phone_flow flow;
+  const auto where = at((*server)->port());
+  auto c = config_for(where, kKey, flow);
+  mv_vpn* v = nullptr;
+  REQUIRE(mv_vpn_start(&c, &v) == MV_VPN_OK);
+  constexpr int kAsked = MV_VPN_MAX_TCP + 1;
+  static_assert(MV_VPN_MAX_TCP < vpn::kMaxConnections);
+  for (int i = 0; i < kAsked; ++i) {
+    const auto f = v4_flow("198.18.0.1", static_cast<std::uint16_t>(41000 + i), "127.0.0.1", te.port(), vpn::kTcp);
+    vpn::tcp_fields t{1000, 0, vpn::kSyn, 65535, 1460};
+    const auto syn = vpn::make_tcp(reversed(f), t, {});
+    REQUIRE(mv_vpn_packet_in(v, syn.data(), syn.size()) == MV_VPN_OK);
+  }
+  // The first answer to each SYN: a SYN-ACK for the first MV_VPN_MAX_TCP, a reset for the last.
+  std::map<std::uint16_t, std::uint8_t> first;
+  std::vector<std::uint8_t> keep;
+  while (first.size() < static_cast<std::size_t>(kAsked)) {
+    auto p = flow.next(vpn::kTcp, keep);
+    REQUIRE(p);
+    first.emplace(p->f.dport, p->tcp.flags);
+  }
+  int accepted = 0;
+  for (int i = 0; i < MV_VPN_MAX_TCP; ++i) accepted += first[static_cast<std::uint16_t>(41000 + i)] == (vpn::kSyn | vpn::kAck);
+  CHECK(accepted == MV_VPN_MAX_TCP);
+  CHECK((first[static_cast<std::uint16_t>(41000 + MV_VPN_MAX_TCP)] & vpn::kRst) != 0);
   mv_vpn_stop(v);
 }
 
@@ -505,6 +543,7 @@ TEST_CASE("phone vpn: the interface's settings route everything, both families, 
   auto doc = mv::json::parse(*v4);
   REQUIRE(doc);
   const auto text = [&](const char* key) { return doc->str(key) ? *doc->str(key) : std::string(); };
+  CHECK(text("remote") == "127.0.0.1");  // the server's address, for tunnelRemoteAddress
   CHECK(text("address4") == "198.18.0.1");
   CHECK(doc->integer("prefix4").value_or(0) == 30);
   CHECK(text("dns4") == "198.18.0.2");

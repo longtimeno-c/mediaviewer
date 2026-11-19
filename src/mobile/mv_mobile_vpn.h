@@ -54,6 +54,13 @@ mv_vpn_status mv_vpn_derive_knock_key(const char* key, uint8_t out[32]);
 
 typedef struct mv_vpn mv_vpn;
 
+/* The extension's caps (docs/plans/phone-vpn.md §2.1), far under the desktop's: app TCP
+ * connections and datagram flows at once (more are refused: a reset, or dropped), and the bytes
+ * held per connection for the app's side. */
+#define MV_VPN_MAX_TCP 96
+#define MV_VPN_MAX_UDP 64
+#define MV_VPN_SEND_BUFFER (64 * 1024)
+
 /* One whole IP packet for the interface (NEPacketTunnelFlow.writePackets). Any of the VPN's
  * threads; the bytes are valid only during the call. Never call into this header from it. */
 typedef void (*mv_vpn_packet_fn)(void* ctx, const uint8_t* packet, size_t size);
@@ -101,7 +108,7 @@ void mv_vpn_get_state(mv_vpn* vpn, mv_vpn_state* out);
 void mv_vpn_stop(mv_vpn* vpn);
 
 /* The interface's settings as JSON, for NEPacketTunnelNetworkSettings:
- *   {"address4","prefix4","dns4","address6","prefix6","mtu",
+ *   {"remote" (the server's first resolved address),"address4","prefix4","dns4","address6","prefix6","mtu",
  *    "include4":[{"base","prefix"}],"exclude4":[..],"include6":[..],"exclude6":[..]}
  * every address through the tunnel, both families, with the server's own addresses (`relay`'s host
  * resolved now, on the current network) and this device's local networks left out (vpn::plan_routes).

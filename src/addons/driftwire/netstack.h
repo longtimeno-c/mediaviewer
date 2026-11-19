@@ -64,6 +64,13 @@ inline constexpr int kRtoMs = 400;
 inline constexpr int kMaxRetries = 8;
 inline constexpr int kIdleMs = 10 * 60 * 1000;
 inline constexpr std::size_t kMaxConnections = 1024;
+// The caps above as one value, so a smaller host (an iPhone's packet tunnel
+// extension, docs/plans/phone-vpn.md §2.1) can pass its own. Defaults: the desktop's.
+struct limits {
+  std::size_t max_connections = kMaxConnections;
+  std::size_t max_udp_flows = 256;
+  std::size_t send_buffer = kSendBuffer;
+};
 
 // Pure helpers (tested): the Internet checksum, and a packet made whole.
 [[nodiscard]] std::uint16_t checksum(std::span<const std::uint8_t> bytes, std::uint32_t sum = 0) noexcept;
@@ -105,7 +112,7 @@ class stack {
     // timer mutex), never call back into the stack.
     std::function<void(std::chrono::steady_clock::time_point due)> timer;
   };
-  explicit stack(callbacks cb);
+  explicit stack(callbacks cb, limits lim = {});
   // Every connection reset. Every link on_tcp handed out is destroyed
   // before the stack (vpn::runner joins its streams first).
   ~stack();
@@ -141,6 +148,7 @@ class stack {
   void close(const std::shared_ptr<conn>& c, bool reset);
 
   callbacks cb_;
+  limits lim_;
   mutable std::mutex m_;
   std::condition_variable cv_;
   std::map<flow, std::shared_ptr<conn>> conns_;  // under m_

@@ -94,6 +94,10 @@ class flow_device final : public vpn::device {
   void* ctx_;
 };
 
+// The extension's profile (docs/plans/phone-vpn.md §2.1): a packet tunnel extension's memory
+// ceiling is a few tens of MiB, so far fewer streams and smaller buffers than the desktop's.
+constexpr vpn::limits kPhoneLimits{MV_VPN_MAX_TCP, MV_VPN_MAX_UDP, MV_VPN_SEND_BUFFER};
+
 mv_vpn_status status_of(relay::forward_answer a) {
   switch (a) {
     case relay::forward_answer::key: return MV_VPN_KEY_REJECTED;
@@ -123,6 +127,7 @@ struct mv_vpn {
   void* ctx = nullptr;
   std::mutex event_m;
   mv_vpn_status said = MV_VPN_OK;  // under event_m: the last state the event told
+  bool stopping = false;           // under event_m: mv_vpn_stop began; nothing more is told
   std::unique_ptr<vpn::runner> run;
   // What the runner's changed() reads: set once it has started, cleared before it stops, so no
   // event reaches Swift from inside mv_vpn_stop.
@@ -130,11 +135,15 @@ struct mv_vpn {
 
   void tell(mv_vpn_status now) {
     std::lock_guard lock(event_m);
-    if (now == said) return;
+    if (stopping || now == said) return;
     said = now;
     if (event) event(ctx, now);
   }
   ~mv_vpn() {
+    {
+      std::lock_guard lock(event_m);
+      stopping = true;
+    }
     live.store(nullptr);
     run.reset();
     sodium_memzero(dial.relay.data(), dial.relay.size());
@@ -166,6 +175,7 @@ extern "C" mv_vpn_status mv_vpn_start(const mv_vpn_config* c, mv_vpn** out) {
     if (const auto s = check_server(v->dial); s != MV_VPN_OK) return s;
     vpn::runner::options o;
     o.dial = v->dial;
+    o.lim = kPhoneLimits;
     o.dev = std::make_unique<flow_device>(v->queue, c->packet_out, c->ctx);
     mv_vpn* raw = v.get();
     o.changed = [raw] {
@@ -247,6 +257,8 @@ extern "C" char* mv_vpn_settings_json(const char* relay_at) {
     mv::json::writer w;
     w.begin_object();
     w.key("address4").string(s.address4).key("prefix4").integer(s.prefix4).key("dns4").string(s.dns4);
+    // The tunnel's remote address as iOS shows it: the server's first address, not its name.
+    w.key("remote").string(dw::net::address_text(s.exclude.front()));
     w.key("address6").string(s.address6).key("prefix6").integer(s.prefix6).key("mtu").integer(s.mtu);
     const auto routes = [&w](const char* name, const std::vector<dw::net::subnet>& all) {
       w.key(name).begin_array();

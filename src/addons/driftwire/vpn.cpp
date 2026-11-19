@@ -12,7 +12,6 @@ namespace mv::driftwire::vpn {
 namespace {
 
 using clock = std::chrono::steady_clock;
-constexpr std::size_t kMaxUdpFlows = 256;
 constexpr std::size_t kUdpQueue = 64;  // datagrams waiting for their flow to open, at most
 
 // A link shared by the worker list (shut down at the end) and the splice.
@@ -100,7 +99,7 @@ result<std::unique_ptr<runner>> runner::start(options o) {
   cb.on_tcp = [raw](std::unique_ptr<link> l, const flow& f) { raw->on_tcp(std::move(l), f); };
   cb.on_udp = [raw](const flow& f, std::span<const std::uint8_t> p) { raw->on_udp(f, p); };
   cb.timer = [raw](std::chrono::steady_clock::time_point due) { raw->kick(due); };
-  r->stack_ = std::make_unique<stack>(std::move(cb));
+  r->stack_ = std::make_unique<stack>(std::move(cb), r->opts_.lim);
   r->pump_thread_ = std::thread([raw] { raw->pump(); });
   r->tick_thread_ = std::thread([raw] { raw->ticker(); });
   return r;
@@ -228,7 +227,7 @@ void runner::on_tcp(std::unique_ptr<link> l, const flow& f) {
   std::shared_ptr<link> local(std::move(l));
   std::lock_guard lock(m_);
   reap_locked();
-  if (stop_.load() || workers_.size() >= kMaxConnections) {
+  if (stop_.load() || workers_.size() >= opts_.lim.max_connections) {
     local->shutdown();
     return;
   }
@@ -281,7 +280,7 @@ void runner::on_udp(const flow& f, std::span<const std::uint8_t> payload) {
     if (stop_.load()) return;
     auto it = udp_.find(f);
     if (it == udp_.end()) {
-      if (udp_.size() >= kMaxUdpFlows) return;  // dropped: UDP's own way
+      if (udp_.size() >= opts_.lim.max_udp_flows) return;  // dropped: UDP's own way
       u = std::make_shared<udp_flow>();
       u->f = f;
       udp_.emplace(f, u);

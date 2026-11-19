@@ -230,7 +230,7 @@ class stack::tcp_link final : public link {
   std::shared_ptr<conn> c_;
 };
 
-stack::stack(callbacks cb) : cb_(std::move(cb)) {}
+stack::stack(callbacks cb, limits lim) : cb_(std::move(cb)), lim_(lim) {}
 
 stack::~stack() {
   std::vector<std::vector<std::uint8_t>> out;
@@ -291,7 +291,7 @@ void stack::on_tcp_packet(const parsed& p, std::vector<std::vector<std::uint8_t>
                              {}));
       return;
     }
-    if (conns_.size() >= kMaxConnections) {
+    if (conns_.size() >= lim_.max_connections) {
       out.push_back(make_tcp(p.f, {0, t.seq + 1, static_cast<std::uint8_t>(kRst | kAck), 0, 0}, {}));
       return;
     }
@@ -390,7 +390,7 @@ void stack::send_data_locked(conn& c, std::vector<std::vector<std::uint8_t>>& ou
     c.snd_nxt = c.snd_una;
     if (c.fin_sent && !c.fin_acked) c.fin_sent = false;
   }
-  const std::size_t wnd = std::min<std::size_t>(c.snd_wnd, kSendBuffer);
+  const std::size_t wnd = std::min<std::size_t>(c.snd_wnd, lim_.send_buffer);
   bool sent = false;
   for (;;) {
     const std::size_t offset = c.snd_nxt - c.snd_una;
@@ -450,10 +450,10 @@ expected stack::write(const std::shared_ptr<conn>& cp, std::span<const std::uint
     std::vector<std::vector<std::uint8_t>> out;
     {
       std::unique_lock lock(m_);
-      cv_.wait(lock, [&] { return c.sendbuf.size() < kSendBuffer || c.reset || c.gone || stopping_; });
+      cv_.wait(lock, [&] { return c.sendbuf.size() < lim_.send_buffer || c.reset || c.gone || stopping_; });
       if (c.reset || stopping_) return err(status::io);
       if (c.gone || c.fin_queued) return err(status::cancelled);
-      const std::size_t n = std::min(bytes.size(), kSendBuffer - c.sendbuf.size());
+      const std::size_t n = std::min(bytes.size(), lim_.send_buffer - c.sendbuf.size());
       c.sendbuf.insert(c.sendbuf.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(n));
       bytes = bytes.subspan(n);
       send_data_locked(c, out, false);
