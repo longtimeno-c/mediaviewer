@@ -217,6 +217,7 @@ class library {
   // The live link, connecting when there is none; sets the server's state.
   [[nodiscard]] expected connect(server_rt& s, bool person, const mobile::cancel_flag* cancel);
   void set_state(server_rt& s, reach r);
+  void keep_addresses(server_rt& s);  // after a connect: the caps' addresses into servers.json
   // servers.json: the text made under m_, written after it is let go, so a
   // row's name (display_name, on the main thread) never waits on the disk.
   // save_m_ is held across both, so two saves land in the order made.

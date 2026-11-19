@@ -385,6 +385,12 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     }
     live_ = std::move(*c);
     last_report_ = report;
+    // The service's word on where it is now: the next race, and the host's saved copy, use it.
+    // Its key was pinned by this handshake, so these lead nowhere but here.
+    const auto& caps = live_->caps();
+    if (!caps.local.empty()) config_.local = caps.local;
+    if (!caps.public_name.empty()) config_.public_name = caps.public_name;
+    if (!caps.relay.empty()) config_.relay = caps.relay;
   }
   if (report.relayed && config_.upgrade && (live_caps_ops() & serve::kUpgradeOp) != 0) start_upgrades();
   return {};
@@ -630,6 +636,13 @@ int link_session::role(std::string& word) const {
   if (!live_ || live_->closed()) return -1;
   word = live_->caps().role;
   return 1;
+}
+
+void link_session::addresses(std::string& local, std::string& public_name, std::string& relay) const {
+  std::lock_guard lock(m_);
+  local = config_.local;
+  public_name = config_.public_name;
+  relay = config_.relay;
 }
 
 bool link_session::connected() const {

@@ -279,11 +279,24 @@ struct desk::state {
       auto opened = serve::client::open(std::shared_ptr<link>(std::move(*l)), c);
       if (opened) {
         admin = std::move(*opened);
+        sync_addresses();
         return admin.get();
       }
       last = opened.error();
     }
     return err(last == status::invalid_arg ? status::io : last);
+  }
+  // The service tells paired devices where it is (serve_caps "addresses"): what this desktop
+  // knows, sent whenever the service says otherwise, so a phone paired before a DuckDNS name or a
+  // new LAN address learns it at its next connect. A service from before it is asked nothing.
+  void sync_addresses() {
+    const auto& caps = admin->caps();
+    if (std::find(caps.features.begin(), caps.features.end(), serve::kFeatureAddresses) == caps.features.end()) return;
+    if (caps.local == info->local && caps.public_name == info->public_name) return;
+    json::writer w;
+    w.begin_object().key("do").string("set_addresses");
+    w.key("local").string(info->local).key("public").string(info->public_name).end_object();
+    (void)admin->admin(w.str());  // best effort: the next session tries again
   }
   // One request; a held session that died is replaced once. Refused for want
   // of an unlock, with the key still kept here: unlocked with it and asked again.
@@ -546,6 +559,8 @@ expected desk::set_public_name(const std::string& public_name) {
   if (!public_name.empty() && !split_host_port(public_name)) return err(status::invalid_arg);
   st_->info->public_name = public_name;
   if (!st_->save()) return err(status::io);
+  st_->admin.reset();
+  (void)st_->session();  // tells the service, for the phones already paired (sync_addresses)
   return {};
 }
 
@@ -557,6 +572,7 @@ expected desk::set_local(const std::string& local) {
   st_->info->local = local;
   st_->admin.reset();
   if (!st_->save()) return err(status::io);
+  (void)st_->session();  // tells the service, for the phones already paired (sync_addresses)
   return {};
 }
 

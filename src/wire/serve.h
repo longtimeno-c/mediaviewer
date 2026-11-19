@@ -76,6 +76,9 @@ inline constexpr const char* kFeatureRelay = "relay";
 inline constexpr const char* kFeatureBackup = "backup";
 // The self-hosted computer's users (share_users.h): serve_admin users, user_set, user_remove.
 inline constexpr const char* kFeatureUsers = "users";
+// The service keeps where paired devices find it (serve_admin set_addresses) and tells them in
+// their caps (kCapsAddresses).
+inline constexpr const char* kFeatureAddresses = "addresses";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
 // Waiters at the relay, one per paired device: the relay's own per-source cap.

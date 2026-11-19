@@ -10,6 +10,15 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ## Phone access
 
+**A paired device learns the server's addresses from the server (2026-11-18).** Until now a phone or
+desktop dialled only the addresses in the code it scanned, so a DuckDNS name or a relay added after
+pairing left every device on the home network until each was paired again (and each re-pair left a stale
+device on the server). The service now keeps the owner's addresses (`set_addresses`, from Phone access)
+and sends `local`, `public` and `relay` in every session's `serve_caps`; the client keeps any it is given
+(`servers.json` on a desktop, the Keychain record on the phone). Safe because the handshake pins the
+service's key: an address can only ever lead back to the same server. An address the service leaves out
+never wipes a kept one, so an older service, or one with none set, changes nothing.
+
 **Phone access is an add-on, offered the first time someone opens it (2026-11-14, owner; reverses
 2026-11-12 below).** Issue #686 §1: the Synology path, this computer as the server and their setup screens
 leave the base viewer for a new Phone access add-on (`src/addons/phone`, id `phone-access`), not installed by

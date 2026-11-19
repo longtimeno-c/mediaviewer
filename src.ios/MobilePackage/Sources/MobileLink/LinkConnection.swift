@@ -508,6 +508,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if let sampleEnd, answered == 0 { scheduleSampleEnd(at: sampleEnd) }
     var status = answered
     if status == 0, sampleEnd == nil, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    if status == 0, sampleEnd == nil { await noteAddresses(from: link) }
     // The server's drives: -1 (the link closed meanwhile) keeps what was known. The sample library
     // has no drives; in sample mode the phone stands in for a server's mirror (showSampleLostDrive).
     let storage = status == 0 ? await onLinkQueue { mv_link_storage(link.raw) } : Int32(-1)
@@ -592,6 +593,28 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
     if changed { publish { _ in } }
     lock.withLock { localCopyDropped = false }
+  }
+
+  /// Where the service now says it is (a DuckDNS name or relay added after pairing, a new LAN
+  /// address), kept with the pairing so the next launch dials it too. Never for a library replaced
+  /// meanwhile; an address it left out never wipes one kept.
+  private func noteAddresses(from link: LinkHandle) async {
+    let said = await onLinkQueue { () -> ServiceAddresses? in
+      var a = mv_link_addresses()
+      guard mv_link_addresses_now(link.raw, &a) == 0 else { return nil }
+      return ServiceAddresses(local: linkString(a.local), publicName: linkString(a.public_name), relay: linkString(a.relay))
+    }
+    guard let said else { return }
+    lock.withLock {
+      guard var r = record, handle === link, !forgotten, !r.isSample else { return }
+      let kept = ServiceAddresses(local: r.local, publicName: r.publicName, relay: r.relay ?? "")
+      guard let next = kept.updated(by: said) else { return }
+      r.local = next.local
+      r.publicName = next.publicName
+      r.relay = next.relay
+      record = r
+      _ = r.save()
+    }
   }
 
   /// A time-limited phone whose access ended keeps nothing of the library but its pairing

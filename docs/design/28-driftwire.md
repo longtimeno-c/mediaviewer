@@ -578,6 +578,16 @@ a whole-file pull with all 8, since one window per round trip caps a download); 
 one bulk per four interactive. `stream_cancel`; seek = cancel + new `read_range`. No rejoin or
 replay; reads are idempotent.
 
+**Addresses after pairing.** `serve.json` keeps where devices find the service: `local` and `public`
+(set by the owner's desktop with `serve_admin set_addresses`, which Phone access sends whenever the
+service's caps disagree with what it knows; feature `addresses`) and `relay`. Every session's
+`serve_caps` carries them as `"addresses":{"local","public","relay"}`, each `host:port` and present only
+when set. `mobile::link_session` replaces its addresses with each one given (an empty one never wipes
+a kept one) and races them next time; the desktop's `remote::library` saves them to `servers.json`,
+the phone (`mv_link_addresses_now`) to its Keychain record. The handshake pins the service's key, so a
+changed address cannot lead to another server. Older clients ignore the field; an older service
+sends none and nothing changes. `driftwire host pair` (the CLI's own host path) does not set them yet.
+
 **Paths.** Root id + relative path; absolute paths never sent or logged. `safe_relative`, then
 `io::stat_beneath`, `list_beneath`, `file_reader::open_beneath` walk part by part from the root's
 descriptor (`openat(O_NOFOLLOW|O_DIRECTORY)`); Windows holds each folder open without share-delete.

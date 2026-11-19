@@ -537,6 +537,32 @@ void library::set_state(server_rt& s, reach r) {
   if (s.state.exchange(r) != r) gen_.fetch_add(1, std::memory_order_acq_rel);
 }
 
+void library::keep_addresses(server_rt& s) {
+  // Where the service now says it is (a DuckDNS name or a relay added after pairing, a new LAN
+  // address): kept in servers.json, so the next run dials it too. Never a change of server: the
+  // link pinned its key. Saved only when something changed; a failed save tries at the next connect.
+  std::string local, public_name, relay;
+  s.link->addresses(local, public_name, relay);
+  std::lock_guard saving(save_m_);
+  std::string text;
+  {
+    std::lock_guard lock(m_);
+    if (local == s.local && public_name == s.public_name && relay == s.relay) return;
+    std::swap(s.local, local);
+    std::swap(s.public_name, public_name);
+    std::swap(s.relay, relay);
+    text = servers_json_locked();
+  }
+  if (!write_servers(text)) {
+    // Not kept: as it was, so the next connect sees the change again and retries the save.
+    // save_m_ is still held, so no other save has changed these since.
+    std::lock_guard lock(m_);
+    std::swap(s.local, local);
+    std::swap(s.public_name, public_name);
+    std::swap(s.relay, relay);
+  }
+}
+
 expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* cancel) {
   if (!s.link) return err(status::permission_denied);  // its keys are gone: pair again
   if (!person && s.state.load() == reach::unreachable &&
@@ -550,6 +576,7 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
     if (s.link->role(word) >= 0 && s.role.exchange(role_code(word)) != role_code(word)) {
       gen_.fetch_add(1, std::memory_order_acq_rel);  // the rows say what it may do
     }
+    keep_addresses(s);
     set_state(s, reach::online);
     return {};
   }
