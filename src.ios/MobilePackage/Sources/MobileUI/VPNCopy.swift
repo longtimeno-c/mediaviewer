@@ -102,5 +102,7 @@ enum VPNIDs {
   static let consentNotNow = "vpn.consent.notNow"
   static let demoBanner = "vpn.demoBanner"
   static let remove = "vpn.remove"
+  /// Remove VPN in the confirmation that asks first.
+  static let removeConfirm = "vpn.remove.confirm"
   static let notInThisBuild = "vpn.notInThisBuild"
 }

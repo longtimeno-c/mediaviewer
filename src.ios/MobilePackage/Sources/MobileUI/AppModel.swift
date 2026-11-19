@@ -154,17 +154,30 @@ public final class AppModel {
   public private(set) var backup = BackupSnapshot()
   /// The Backup screen is open in Settings.
   public var showsBackup = false
+  /// The sample library's VPN demo (routes nothing), forgotten with the sample.
+  public let demoVPN: DemoVPN
+  /// The VPN the screens show and switch: the demo with the sample library, else this build's.
+  public var vpnService: VPNService { Self.vpnService(isSample: connection.isSample, demo: demoVPN, real: services.vpn) }
+  /// `vpnService`'s state, for the VPN screen and the Settings row.
+  public private(set) var vpn: VPNSnapshot
+  /// The VPN screen is open in Settings.
+  public var showsVPN = false
+  @ObservationIgnored private var vpnFollow: Task<Void, Never>?
+  /// Which VPN `vpnFollow` follows: the demo (true) or this build's (false).
+  @ObservationIgnored private var vpnFollowsSample: Bool?
   public let library: LibraryModel
   public let search: SearchModel
 
   private var dismissedNotices: Set<String> = []
 
-  public init(services: Services, scanner: ScanSurfaceProviding) {
+  public init(services: Services, scanner: ScanSurfaceProviding, demoVPN: DemoVPN = DemoVPN()) {
     self.services = services
     self.scanner = scanner
+    self.demoVPN = demoVPN
     let now = services.connection.current
     Self.noteFirstEpoch(of: now.catalogue)
     connection = now
+    vpn = Self.vpnService(isSample: now.isSample, demo: demoVPN, real: services.vpn).current
     // A library paired but never copied (the app was killed mid-copy) goes back to the copy; one
     // with no catalogue on its NAS yet opens as its folders (file mode), and one whose access
     // ended opens on the ended card.
@@ -183,6 +196,8 @@ public final class AppModel {
 
   /// Runs for the app's life.
   public func run() async {
+    followVPN()
+    defer { vpnFollow?.cancel(); vpnFollow = nil; vpnFollowsSample = nil }
     await withTaskGroup(of: Void.self) { group in
       group.addTask { await self.followConnection() }
       group.addTask { await self.followTransfers() }
@@ -196,6 +211,26 @@ public final class AppModel {
 
   private func followBackup() async {
     for await snapshot in services.backup.updates() { backup = snapshot }
+  }
+
+  static func vpnService(isSample: Bool, demo: DemoVPN, real: VPNService) -> VPNService {
+    isSample ? demo : real
+  }
+
+  /// Follows `vpnService`, starting again when the library becomes or stops being the sample.
+  private func followVPN() {
+    let sample = connection.isSample
+    guard vpnFollowsSample != sample else { return }
+    vpnFollow?.cancel()
+    vpnFollowsSample = sample
+    let service = vpnService
+    vpn = service.current
+    vpnFollow = Task { [weak self] in
+      for await snapshot in service.updates() {
+        guard !Task.isCancelled, let self else { return }
+        self.vpn = snapshot
+      }
+    }
   }
 
   /// Where launch picks up. A library paired but never copied (the app was killed mid-copy) goes
@@ -215,6 +250,7 @@ public final class AppModel {
       let modeChanged = snapshot.hasLibrary && connection.hasLibrary && snapshot.fileMode != connection.fileMode
       Self.noteFirstEpoch(of: snapshot.catalogue)
       connection = snapshot
+      if vpnFollowsSample != nil { followVPN() }
       // The access ended during a copy: the library, with the card that says so.
       if stage == .firstCopy, snapshot.hasLibrary, snapshot.synology == .accessEnded {
         stage = .main
@@ -368,10 +404,13 @@ public final class AppModel {
   func forgetLibrary() {
     Task {
       await services.connection.forget()
+      await demoVPN.remove()
+      showsVPN = false
       UserDefaults.standard.removeObject(forKey: Self.epochKey)
       resetLibraryState()
       tab = .library
       connection = services.connection.current
+      if vpnFollowsSample != nil { followVPN() }
       stage = .welcome
     }
   }
