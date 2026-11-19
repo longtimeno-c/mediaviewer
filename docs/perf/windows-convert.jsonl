@@ -1,0 +1,7 @@
+{"machine":"Ryzen 7 5700X3D / RTX 4070 (h264_nvenc), Windows 11","date":"2026-11-18","commit":"9bff6aae","how":"mv_import_tests \"[.convert-bench]\", MediaViewerClipJob.exe, one clip per run (cold cache), two runs; 45 s clips cut from the 1080p soak clip with ffmpeg 9.0.2"}
+{"case":"convert_bench","file":"clip_1080p_mpeg4_mp3.avi","plan_ms":214,"first_frame_ms":584,"seek_ms":367,"cached_ms":4,"seg0_bytes":1776036,"segments":12}
+{"case":"convert_bench","file":"clip_1080p_vp9_opus.mkv","plan_ms":216,"first_frame_ms":633,"seek_ms":521,"cached_ms":4,"seg0_bytes":1790136,"segments":12}
+{"case":"convert_bench","file":"clip_576p_mpeg2_mp2.mpg","plan_ms":219,"first_frame_ms":590,"seek_ms":386,"cached_ms":3,"seg0_bytes":1186656,"segments":12}
+{"case":"convert_bench","file":"clip_1080p_mpeg4_mp3.avi","plan_ms":209,"first_frame_ms":568,"seek_ms":360,"cached_ms":4,"seg0_bytes":1776036,"segments":12}
+{"case":"convert_bench","file":"clip_1080p_vp9_opus.mkv","plan_ms":214,"first_frame_ms":752,"seek_ms":528,"cached_ms":4,"seg0_bytes":1790136,"segments":12}
+{"case":"convert_bench","file":"clip_576p_mpeg2_mp2.mpg","plan_ms":219,"first_frame_ms":608,"seek_ms":394,"cached_ms":3,"seg0_bytes":1186656,"segments":12}

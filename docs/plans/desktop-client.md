@@ -213,6 +213,11 @@ the service says.
   cold arrow medians base 80–138 ms / new 88–108 ms, warm base 0.27–0.41 ms / new 0.35–0.38 ms
   (overlapping); `mv_tests "[.perf-bench]"` decode and list rows overlapping (base 128–200 ms, new
   153–200 ms for the 24 MP decode). The local paths gain one prefix compare per selection.
+- **Measured, Windows** (Ryzen 7 5700X3D, Release, the same test, three runs, 2026-11-18,
+  `docs/perf/windows-desktop-client.json`): list 25–29 ms; remote first pixel 131–143 ms; full
+  resolution 217–229 ms; arrow to a prefetched neighbour 76–78 ms, to a cold one 93–96 ms; local
+  disk: first pixel 72 ms, full 87–88 ms. The core path only: the WinUI paste panel and tree rows
+  were not driven on screen.
 - **Owed**: either host driven on screen against a real `driftwire host` (the Mac half is built and
   its core tested; the Windows native half is compiled only in CI, the C# compiled here); the
   Windows "Downloading… %" notice (the Mac shows it); streaming playback through `read_range` (a

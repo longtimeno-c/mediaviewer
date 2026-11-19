@@ -117,6 +117,7 @@
 #include "shell/print_layout.h"
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
+#include "shell/close_policy.h"
 #include "shell/login_item_win.h"
 #include "shell/single_instance_win.h"
 #include "shell/open_with_win.h"
@@ -694,6 +695,7 @@ struct app_state {
   // the notification-area icon shows while the add-on asks for it.
   bool in_background = false;
   bool quit_for_real = false;  // the icon's Quit, an update's restart
+  bool harness_run = false;    // a soak, self-test or --boot-report: its own close always quits
   // One icon per kept entry (docs/plans/self-hosted.md "Tray": the host's
   // server menu is its own, as Driftwire's is): the entry's id -> the icon's uID.
   std::map<std::string, UINT> tray_icons;
@@ -13748,8 +13750,9 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
     }
 
     case WM_CLOSE: {
-      // #452: an add-on keeps the process: hide, do not close.
-      if (!app->closing && !app->quit_for_real && !kept_alive().empty()) {
+      // #452: an add-on keeps the process: hide, do not close (never a harness run).
+      if (mv::shell::close_goes_to_background({app->closing, app->quit_for_real, app->harness_run,
+                                               !kept_alive().empty()})) {
         enter_background(app);
         return 0;
       }
@@ -14254,6 +14257,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.home_utf8 = profile_folder_utf8();
   app.onedrive_utf8 = onedrive_folder_utf8();
   app.record_recent = !harness_run && g_boot_report.empty();
+  app.harness_run = harness_run || !g_boot_report.empty();
   // Straight into the snapshot: the render thread is not up yet. A launch
   // with a path to open never shows the rows, not even for its first frame.
   if (requested_paths.empty() && welcome_lists_recents(&app)) {
