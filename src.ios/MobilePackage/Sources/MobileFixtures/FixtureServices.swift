@@ -300,7 +300,8 @@ final class FixtureImages: ImageLadder, @unchecked Sendable {
   }
 
   private func draw(_ item: MediaItem, longest: CGFloat) -> UIImage {
-    let aspect = CGFloat(item.aspect)
+    // A picture has its own shape even when it was listed without one (viewer.folderFile).
+    let aspect = CGFloat((item.pixelWidth == 0 ? self.item(item.id) : nil)?.aspect ?? item.aspect)
     let size = aspect >= 1 ? CGSize(width: longest, height: (longest / aspect).rounded())
                            : CGSize(width: (longest * aspect).rounded(), height: longest)
     let seed = FixtureLibrary.seed(item.id)
