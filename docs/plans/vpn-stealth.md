@@ -4,7 +4,7 @@ The self-hosted VPN (`driftwire host vpn on`, or a NAS's `set_vpn`) is meant to 
 through networks that block sites. A filter that wants to block *it* has four easy tells today, and a
 few harder ones. This plan says what each costs to remove and what stays visible anyway.
 
-How it works now (2026-11-19, on `claude/vpn-hosts-on-main`):
+How it worked before this plan (2026-11-19, on `claude/vpn-hosts-on-main`):
 
 - The VPN code is `mediaviewer://relay#name.duckdns.org:47614#KEY`: the relay's **plain** port. The
   plain hop starts with `MVRL`, a version and a role **in the clear**: one byte pattern identifies it.
@@ -113,14 +113,29 @@ A prober that connects to the home address sees a self-signed certificate: rare 
 7. **The knock itself** is unforgeable without the key, but a network that intercepts TLS with its
    own root (a managed device) sees the knock and the relay's handshake inside; it still cannot read
    or test the key quickly (Argon2id).
-8. **Self-signed until issuance works**, and for good when Let's Encrypt cannot be reached.
+8. **Self-signed until issuance works**, and for good when Let's Encrypt cannot be reached, without a
+   DuckDNS name, or on a NAS.
+9. **A NAS's look on a non-standard port** (47615) unless its owner maps outside 443 to it.
+10. **The plain relay port stays open on the home network**, and outside too with `--tls-port off`
+    (or when the look cannot listen): its `MVRL` head is a fixed pattern.
 
-## Slices (one PR, stacked on the #711 port)
+## Built (2026-11-19, one PR stacked on the #711 port)
 
-1. Decoy fixes (short requests, nginx's pages). Small, independent.
-2. The code carries the look (`relay-tls`), Connect sets it; `vpn on` defaults to the look on 443,
-   plain port not mapped; NAS the same.
-3. First-flight padding with the dual knock.
-4. ACME client + certificate keeper + DuckDNS TXT; `https_get` gains POST; relay reloads certs.
-5. `host name domain` (CNAME) and the setup step.
-6. Docs: `28-driftwire.md` (The Tunnel, the VPN exit), `self-hosted.md` (slice 8 built).
+All five, as recommended, with these differences:
+
+- **The NAS** gets the look on its VPN port + 1 by default and the `relay-tls` code; it stays
+  self-signed (no ACME client in `serve`, and no `--tls-cert` for `serve` yet: DSM's own certificate
+  could be passed later). Outside 443 for the NAS is the person's to map on the router (the SPK's
+  service file names the port).
+- **The look's inside port** is the relay's + 1 (47615), not 443, on every OS.
+- **Own domain**: `host name domain NAME|none` and the card's **Your own domain** row; DuckDNS still
+  keeps the address. A custom DDNS update URL was not built.
+- Design: `docs/design/28-driftwire.md` ("The VPN exit", "The NAS as a VPN host", "Connect to a VPN
+  host", "The Tunnel").
+
+Not done here (follow-ups):
+
+- `serve --tls-cert/--tls-key` for a NAS with its own certificate.
+- A custom DDNS update URL (a provider other than DuckDNS keeping the address).
+- Not run against the real Let's Encrypt or duckdns.org (by design, never in tests); Windows and
+  Linux `https_request` are compiled by CI, not run.

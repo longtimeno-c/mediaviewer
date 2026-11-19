@@ -130,8 +130,9 @@ NAT64), and in the relay line for the laptop.
 
 ### 5.1 Ports
 Two TCP ports at most: the service's (7878 by default, `serve.json`) and, with the VPN on, the relay's.
-With the TLS look, the relay takes 443 instead (`--tls-port`), unless the router's 443 is someone
-else's (`mapping` never takes over a port already forwarded). Nothing else: never SMB, never RDP.
+With the TLS look (on by default with the VPN, [vpn-stealth](vpn-stealth.md)), only the look's port is
+mapped, at outside 443, or 8443 when the router's 443 is someone else's (`mapping` never takes over a
+port already forwarded). Nothing else: never SMB, never RDP.
 
 ### 5.2 The router
 `serve` deliberately "never touches a router's mapping" (`docs/design/28`). The host changes that, for
@@ -188,10 +189,8 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 - The relay already refuses to forward to private, loopback and link-local addresses, so the VPN is
   **not a way into the home network**. If the owner wants "VPN home to reach my own LAN" that is a
   different feature (§9 call 5), not this.
-- **The TLS look** with a real certificate passes a prober best. DuckDNS supports TXT records, so a
-  later slice can get a Let's Encrypt certificate for `name.duckdns.org` by DNS-01 with no port 80
-  needed. That is an ACME client (BoringSSL is already linked); out of the first slices, self-signed
-  until then (§9 call 4).
+- **The TLS look** is on by default with the VPN and gets a Let's Encrypt certificate by DNS-01
+  through DuckDNS's TXT (built 2026-11-19, [vpn-stealth](vpn-stealth.md); self-signed until then).
 - **Home upload speed** is the VPN's speed. `host status` shows the relay's measured totals only (never
   hosts, rule 6).
 
@@ -245,7 +244,8 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
    on the phone and desktop, demoable in SAMPLE. **Copy built 2026-11-14 (§15); the card (§16).**
 7. **`host vpn on`** and the relay line; `docs/design/28` gains "Self-hosting", `docs/DEVELOPMENT.md`
    the run recipe. **Built 2026-11-14** (§16).
-8. Later: Let's Encrypt via DNS-01; a custom DDNS URL; the laptop as a `serve` client.
+8. Let's Encrypt via DNS-01 and the person's own domain (by CNAME): **built 2026-11-19**
+   ([vpn-stealth](vpn-stealth.md)). Later: a custom DDNS update URL; the laptop as a `serve` client.
 
 **Verify (proposed):** on a Windows PC and a Mac, `driftwire host setup` with a DuckDNS name and a
 UPnP router makes the name resolve to the home's address, opens the service's port, and pairs a phone
