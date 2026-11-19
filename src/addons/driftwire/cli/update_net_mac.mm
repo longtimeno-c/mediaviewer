@@ -89,6 +89,79 @@ http_answer https_get(const std::string& url, std::size_t max_bytes, int timeout
   return a;
 }
 
+https_reply https_request(const std::string& method, const std::string& url, const std::string& content_type,
+                          const std::string& body, std::size_t max_bytes, int timeout_ms) {
+  https_reply a;
+  @autoreleasepool {
+    NSURL* u = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
+    if (!u || ![u.scheme isEqualToString:@"https"] || (method != "GET" && method != "POST")) {
+      a.error = "bad request";
+      return a;
+    }
+    NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    config.HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever;
+    config.HTTPShouldSetCookies = NO;
+    config.URLCache = nil;
+    config.URLCredentialStorage = nil;
+    config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    config.timeoutIntervalForRequest = timeout_ms / 1000.0;
+    config.timeoutIntervalForResource = timeout_ms / 1000.0;
+    config.HTTPAdditionalHeaders = @{@"User-Agent" : @"driftwire"};
+    NSURLSession* session = [NSURLSession sessionWithConfiguration:config
+                                                          delegate:[MVDriftwireUpdateRedirects new]
+                                                     delegateQueue:nil];
+    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:u];
+    req.HTTPMethod = [NSString stringWithUTF8String:method.c_str()];
+    if (method == "POST") {
+      req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
+      [req setValue:[NSString stringWithUTF8String:content_type.c_str()] forHTTPHeaderField:@"Content-Type"];
+    }
+    __block https_reply got;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSURLSessionDataTask* task =
+        [session dataTaskWithRequest:req
+                   completionHandler:^(NSData* data, NSURLResponse* response, NSError* err) {
+                     if (err) {
+                       got.error = err.localizedDescription ? std::string(err.localizedDescription.UTF8String)
+                                                            : std::string("network error");
+                     } else if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+                       auto* http = static_cast<NSHTTPURLResponse*>(response);
+                       got.status = static_cast<int>(http.statusCode);
+                       const auto header = [&](NSString* name) {
+                         NSString* v = [http valueForHTTPHeaderField:name];
+                         return v ? std::string(v.UTF8String) : std::string();
+                       };
+                       got.location = header(@"Location");
+                       got.nonce = header(@"Replay-Nonce");
+                       const std::string retry = header(@"Retry-After");
+                       if (!retry.empty() && retry.find_first_not_of("0123456789") == std::string::npos &&
+                           retry.size() < 10) {
+                         got.retry_after = std::stoll(retry);
+                       }
+                       if (data && data.length <= max_bytes) {
+                         got.body.assign(static_cast<const char*>(data.bytes), data.length);
+                       } else if (data) {
+                         got.status = 0;
+                         got.error = "too long";
+                       }
+                     }
+                     dispatch_semaphore_signal(done);
+                   }];
+    [task resume];
+    const dispatch_time_t wait =
+        dispatch_time(DISPATCH_TIME_NOW, static_cast<std::int64_t>(timeout_ms + 1000) * static_cast<std::int64_t>(NSEC_PER_MSEC));
+    if (dispatch_semaphore_wait(done, wait) != 0) {
+      [task cancel];
+      dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+      got = https_reply{};
+      got.error = "timed out";
+    }
+    [session finishTasksAndInvalidate];
+    a = std::move(got);
+  }
+  return a;
+}
+
 std::string self_path() {
   std::uint32_t size = 0;
   _NSGetExecutablePath(nullptr, &size);

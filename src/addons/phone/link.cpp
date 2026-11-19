@@ -1185,7 +1185,10 @@ void link::run(const std::string& request) {
     // The line names the port state.json had when it was printed: a relay
     // that started again for the VPN (or a router that mapped it anew) has
     // another by now, so the line is asked for once more with the port it has.
-    const std::uint16_t port = st.relay_outside_port != 0 ? st.relay_outside_port : st.relay_port;
+    // With the web-site look the line names its port (the code says relay-tls).
+    const bool look = line.rfind(serve::kRelayTlsCodePrefix, 0) == 0;
+    const std::uint16_t port = look ? (st.tls_outside_port != 0 ? st.tls_outside_port : st.relay_tls_port)
+                                    : (st.relay_outside_port != 0 ? st.relay_outside_port : st.relay_port);
     if (!line.empty() && st.vpn_on && port != 0 && line.find(":" + std::to_string(port) + "#") == std::string::npos) {
       wipe_string(line);
       if (auto again = self_host::run_host(w, {"vpn", "on"}); again) {
@@ -1206,6 +1209,30 @@ void link::run(const std::string& request) {
   if (what == "host_vpn_hide") {
     std::lock_guard lock(m_);
     wipe_string(v_.relay_line);
+    return;
+  }
+  if (what == "host_domain") {
+    // The VPN's own domain (docs/plans/vpn-stealth.md §3): the program's own `host name domain`,
+    // as Use as VPN runs `host vpn` (no second writer of host.json in the app).
+    const std::string domain = text("domain");
+    const auto w = host_where();
+    if (w.program.empty()) {
+      read_host();
+      return fail("no_driftwire_program");
+    }
+    {
+      std::lock_guard lock(m_);
+      v_.host_said.clear();
+      wipe_string(v_.relay_line);  // the code changes with the name: asked for again
+    }
+    auto r = self_host::run_host(w, {"name", "domain", domain.empty() ? std::string("none") : domain});
+    read_host();
+    if (!r || r->code != 0) {
+      std::lock_guard lock(m_);
+      v_.error = "host_domain";
+      v_.host_said = r ? first_line(r->output) : std::string();
+      return;
+    }
     return;
   }
   if (what == "host_name") {
@@ -1440,9 +1467,12 @@ void link::run(const std::string& request) {
       }
       std::string host;
       std::uint16_t ignored = 0;
+      // With the web-site look, its port and its code (relay_line holds the code then).
+      const auto tls_port = doc2->integer("tls_port").value_or(0);
       if (key && port > 0 && serve::parse_relay_address(where, host, ignored)) {
         const std::string h = host.find(':') != std::string::npos ? "[" + host + "]" : host;
-        line = h + ":" + std::to_string(port) + "#" + *key;
+        line = h + ":" + std::to_string(tls_port > 0 && tls_port <= 65535 ? tls_port : port) + "#" + *key;
+        if (tls_port > 0 && tls_port <= 65535) line = serve::relay_connect_code(line, true);
       }
     }
     refresh();
@@ -1988,12 +2018,13 @@ std::string link::state_json() const {
     w.key("service_port").integer(h.service_port).key("relay_port").integer(h.relay_port);
     w.key("configured_port").integer(h.configured_port).key("outside_port").integer(h.outside_port);
     w.key("folders").integer(static_cast<std::int64_t>(h.folders)).key("offline").integer(static_cast<std::int64_t>(h.offline));
-    w.key("name").string(h.name).key("duckdns").string(h.duckdns);
+    w.key("name").string(h.name).key("duckdns").string(h.duckdns).key("domain").string(h.domain);
     w.key("convert_on").boolean(h.convert_on).key("convert_available").boolean(h.convert_available);
     w.key("convert_busy").boolean(h.convert_busy).key("convert_encoder").string(h.convert_encoder);
     w.key("convert_helper").boolean(!h.convert_helper.empty());
     w.key("vpn").boolean(h.vpn).key("vpn_on").boolean(h.vpn_on).key("tls_port").integer(h.tls_port);
     w.key("tls_failed").boolean(h.tls_failed).key("relay_outside_port").integer(h.relay_outside_port);
+    w.key("tls_outside_port").integer(h.tls_outside_port).key("relay_tls_port").integer(h.relay_tls_port);
     w.key("paused").boolean(h.paused).key("stats").begin_array();
     for (const auto& k : h.stats) w.string(k);
     w.end_array();
@@ -2006,7 +2037,10 @@ std::string link::state_json() const {
   w.key("host_said").string(v_.host_said);
   if (!v_.relay_line.empty()) {
     w.key("relay_line").string(v_.relay_line);
-    w.key("relay_code").string(serve::relay_connect_code(v_.relay_line));
+    // The look's line is its code already (self_host::relay_line_in).
+    w.key("relay_code").string(v_.relay_line.rfind(serve::kRelayTlsCodePrefix, 0) == 0
+                                   ? v_.relay_line
+                                   : serve::relay_connect_code(v_.relay_line));
   }
   w.key("nas_vpn_port").integer(v_.nas_vpn_port).key("nas_vpn_running").boolean(v_.nas_vpn_running);
   // This computer's users (names and roles only) and its share's addresses (screen only).

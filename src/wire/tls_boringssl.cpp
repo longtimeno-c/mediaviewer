@@ -23,6 +23,7 @@
 #include <openssl/x509.h>
 #include <sodium.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -91,12 +92,12 @@ class tls_link final : public link {
     }
   }
 
-  // This session's exporter, for the knock.
-  std::array<std::uint8_t, 32> exporter() {
+  // This session's exporter under `label`, for the knock.
+  std::array<std::uint8_t, 32> exporter(std::string_view label) {
     std::array<std::uint8_t, 32> out{};
     std::lock_guard lock(m_);
-    (void)SSL_export_keying_material(ssl_.get(), out.data(), out.size(), kExporterLabel.data(),
-                                     kExporterLabel.size(), nullptr, 0, 0);
+    (void)SSL_export_keying_material(ssl_.get(), out.data(), out.size(), label.data(), label.size(), nullptr, 0,
+                                     0);
     return out;
   }
 
@@ -183,6 +184,79 @@ class tls_link final : public link {
   std::vector<std::uint8_t> pending_;  // under m_
   bool closed_ = false;                // the reader's own
 };
+
+// The padded knock (kPadExporterLabel): each side's first bytes inside TLS
+// carry a length byte and that many random bytes, sent in the same record as
+// the first real write, so no connection's first records have the sizes of
+// the knock and the relay's handshake. `prefix` goes before the first write;
+// the peer's length and padding are read past before the first read.
+class padded_link final : public link {
+ public:
+  padded_link(std::unique_ptr<link> inner, std::vector<std::uint8_t> prefix, bool strip_peer)
+      : inner_(std::move(inner)), prefix_(std::move(prefix)), stripped_(!strip_peer) {}
+
+  expected write_all(std::span<const std::uint8_t> bytes) override {
+    if (prefix_.empty()) return inner_->write_all(bytes);
+    std::vector<std::uint8_t> out = std::move(prefix_);
+    prefix_.clear();
+    out.insert(out.end(), bytes.begin(), bytes.end());
+    auto w = inner_->write_all(out);
+    sodium_memzero(out.data(), out.size());
+    return w;
+  }
+
+  result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    const auto deadline =
+        timeout_ms < 0 ? clock::time_point::max() : clock::now() + std::chrono::milliseconds(timeout_ms);
+    std::array<std::uint8_t, 256> skip{};
+    while (!stripped_) {
+      const int ms = timeout_ms < 0 ? -1 : left_ms(deadline);
+      if (ms == 0) return err(status::timeout);
+      if (pad_left_ < 0) {
+        auto n = inner_->read_some(std::span(skip).first(1), ms);
+        if (!n) return n;
+        if (*n == 0) return std::size_t{0};
+        pad_left_ = skip[0];
+        continue;
+      }
+      if (pad_left_ == 0) {
+        stripped_ = true;
+        break;
+      }
+      auto n = inner_->read_some(std::span(skip).first(static_cast<std::size_t>(pad_left_)), ms);
+      if (!n) return n;
+      if (*n == 0) return std::size_t{0};
+      pad_left_ -= static_cast<int>(*n);
+    }
+    return inner_->read_some(into, timeout_ms);
+  }
+
+  void shutdown() noexcept override { inner_->shutdown(); }
+  [[nodiscard]] transport via() const noexcept override { return inner_->via(); }
+  [[nodiscard]] const char* through() const noexcept override { return inner_->through(); }
+
+ private:
+  std::unique_ptr<link> inner_;
+  std::vector<std::uint8_t> prefix_;  // the writer's own
+  bool stripped_;                     // the reader's own
+  int pad_left_ = -1;                 // the reader's own; -1: its length not read yet
+};
+
+// A length byte (uniform 0..255) and that many random bytes, after `head`.
+std::vector<std::uint8_t> with_padding(std::span<const std::uint8_t> head) {
+  std::vector<std::uint8_t> out(head.begin(), head.end());
+  std::uint8_t n = 0;
+  RAND_bytes(&n, 1);
+  out.push_back(n);
+  const std::size_t at = out.size();
+  out.resize(at + n);
+  if (n) RAND_bytes(out.data() + at, n);
+  return out;
+}
+
+bool prefix_of(const std::vector<std::uint8_t>& got, const std::array<std::uint8_t, kKnockBytes>& want) {
+  return got.size() <= want.size() && std::equal(got.begin(), got.end(), want.begin());
+}
 
 template <class Configure>
 std::unique_ptr<tls_link> wrap(std::unique_ptr<link> l, SSL_CTX* ctx, Configure configure) {
@@ -315,11 +389,11 @@ result<std::unique_ptr<link>> client(std::unique_ptr<link> l, const std::string&
     return err(h.error());
   }
   if (k) {
-    const auto knock = knock_of(*k, t->exporter());
-    if (auto w = t->write_all(knock); !w) {
-      t->shutdown();
-      return err(w.error());
-    }
+    // The padded knock goes with the first write (one record, of no fixed size).
+    auto knock = knock_of(*k, t->exporter(kPadExporterLabel));
+    auto prefix = with_padding(knock);
+    sodium_memzero(knock.data(), knock.size());
+    return std::unique_ptr<link>(std::make_unique<padded_link>(std::move(t), std::move(prefix), true));
   }
   return std::unique_ptr<link>(std::move(t));
 }
@@ -361,13 +435,17 @@ std::unique_ptr<link> accept(server_context& sc, std::unique_ptr<link> l, const 
     t->shutdown();
     return nullptr;
   }
-  const auto want = knock_of(k, t->exporter());
-  // The knock, or the start of an HTTP request: what came first decides.
+  // The knock: padded (this build's clients) or as before (an older client's).
+  const auto want_padded = knock_of(k, t->exporter(kPadExporterLabel));
+  const auto want_plain = knock_of(k, t->exporter(kExporterLabel));
+  // The knock, or the start of an HTTP request: what came first decides,
+  // and as soon as it cannot be a knock it is a request (a short one, such
+  // as "GET / HTTP/1.0" and a blank line, is answered at once, as nginx does).
   std::vector<std::uint8_t> got;
-  const auto idle_until = clock::now() + std::chrono::milliseconds(kIdleMs);
+  auto idle_until = clock::now() + std::chrono::milliseconds(kIdleMs);
   std::array<std::uint8_t, 4096> buf{};
   bool closed = false;
-  while (got.size() < kKnockBytes) {
+  while (got.size() < kKnockBytes && (prefix_of(got, want_padded) || prefix_of(got, want_plain))) {
     const int ms = left_ms(idle_until);
     if (ms == 0) break;
     auto n = t->read_some(std::span(buf).first(kKnockBytes - got.size()), ms);
@@ -377,24 +455,48 @@ std::unique_ptr<link> accept(server_context& sc, std::unique_ptr<link> l, const 
     }
     got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
   }
-  if (got.size() == kKnockBytes && sodium_memcmp(got.data(), want.data(), kKnockBytes) == 0) {
+  if (got.size() == kKnockBytes && sodium_memcmp(got.data(), want_padded.data(), kKnockBytes) == 0) {
+    // Past the client's padding; ours goes before the relay's first answer.
+    std::uint8_t len = 0;
+    if (!read_exact(*t, std::span(&len, 1), left_ms(deadline > idle_until ? deadline : idle_until))) {
+      t->shutdown();
+      return nullptr;
+    }
+    if (len && !read_exact(*t, std::span(buf).first(len), left_ms(deadline > idle_until ? deadline : idle_until))) {
+      t->shutdown();
+      return nullptr;
+    }
+    as = accepted_as::relay;
+    return std::unique_ptr<link>(std::make_unique<padded_link>(std::move(t), with_padding({}), false));
+  }
+  if (got.size() == kKnockBytes && sodium_memcmp(got.data(), want_plain.data(), kKnockBytes) == 0) {
     as = accepted_as::relay;
     return std::unique_ptr<link>(std::move(t));
   }
-  // A web site: the request's head (through its blank line, 8 KiB at most),
-  // then the page, and the end.
+  // A web site, as nginx is: each request's head (through its blank line,
+  // 8 KiB at most), its answer, and the next on the same connection while
+  // the answer keeps it alive (kIdleMs between requests).
   as = accepted_as::website;
   std::string head(got.begin(), got.end());
-  while (!closed && head.find("\r\n\r\n") == std::string::npos && head.size() < 8192) {
-    const int ms = left_ms(idle_until);
-    if (ms == 0) break;
-    auto n = t->read_some(buf, ms);
-    if (!n || *n == 0) break;
-    head.append(reinterpret_cast<const char*>(buf.data()), *n);
-  }
-  if (head.find("\r\n\r\n") != std::string::npos || head.size() >= 8192) {
-    const auto page = decoy_response(head, d);
-    (void)t->write_all({reinterpret_cast<const std::uint8_t*>(page.data()), page.size()});
+  for (int served = 0; served < kMaxRequests && !closed; ++served) {
+    while (!closed && head.find("\r\n\r\n") == std::string::npos && head.size() < 8192) {
+      const int ms = left_ms(idle_until);
+      if (ms == 0) break;
+      auto n = t->read_some(buf, ms);
+      if (!n || *n == 0) {
+        closed = true;
+        break;
+      }
+      head.append(reinterpret_cast<const char*>(buf.data()), *n);
+    }
+    const auto end = head.find("\r\n\r\n");
+    if (end == std::string::npos && head.size() < 8192) break;  // nothing whole came: closed, as on a timeout
+    const std::string this_one = end == std::string::npos ? head : head.substr(0, end + 4);
+    const auto page = decoy_response(this_one, d);
+    if (!t->write_all({reinterpret_cast<const std::uint8_t*>(page.data()), page.size()})) break;
+    if (!decoy_keeps_alive(page)) break;
+    head = end == std::string::npos ? std::string() : head.substr(end + 4);
+    idle_until = clock::now() + std::chrono::milliseconds(kIdleMs);
   }
   t->shutdown();
   return nullptr;

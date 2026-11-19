@@ -21,6 +21,7 @@
 #include "wire/pair_check.h"
 #include "wire/serve.h"
 #include "wire/splice.h"
+#include "wire/tls.h"
 
 namespace mv::driftwire::cli {
 
@@ -403,7 +404,7 @@ void router_step(const host_layout& l, setup_io& io, const setup_world& w) {
     keeper_context ctx;
     ctx.service_port = cfg && user_roots(*cfg) > 0 ? cfg->port : 0;
     ctx.relay_port = s.relay_port;
-    ctx.relay_tls_port = s.vpn ? s.tls_port : 0;
+    ctx.relay_tls_port = look_port(s);
     ctx.vpn = s.vpn;
     auto want = wanted_ports(ctx);
     if (want.empty()) {
@@ -540,7 +541,7 @@ std::optional<host_pair_code> make_host_pair(const host_layout& l, const setup_w
   return p;
 }
 
-std::string host_relay_line(const host_layout& l, const setup_world& w, std::string& why) {
+std::string host_relay_line(const host_layout& l, const setup_world& w, std::string& why, bool* tls) {
   const host_settings s = host_files::settings(l);
   auto key = host_files::relay_secret(l);
   if (!key) {
@@ -548,12 +549,23 @@ std::string host_relay_line(const host_layout& l, const setup_world& w, std::str
     return {};
   }
   const auto st = host_files::state(l);
-  std::int64_t port = state_number(st, "relay_outside_port");
-  if (!port) port = state_number(st, "relay_port");
-  if (!port) port = s.relay_port;
+  // The look, unless the running relay says it could not listen.
+  const bool look =
+      look_port(s) != 0 && tls::available() && !(st && st->boolean("tls_failed").value_or(false));
+  if (tls) *tls = look;
+  std::int64_t port = 0;
+  if (look) {
+    port = state_number(st, "tls_outside_port");
+    if (!port) port = state_number(st, "relay_tls_port");
+    if (!port) port = look_port(s);
+  } else {
+    port = state_number(st, "relay_outside_port");
+    if (!port) port = state_number(st, "relay_port");
+    if (!port) port = s.relay_port;
+  }
   std::string where;
-  if (!s.ddns.empty() && !w.loopback) {
-    where = ddns::duckdns_name(s.ddns) + ":" + std::to_string(port);
+  if (const std::string name = vpn_name(s); !name.empty() && !w.loopback) {
+    where = name + ":" + std::to_string(port);
   } else if (const auto lan = lan_address(w)) {
     where = with_port(*lan, static_cast<std::uint16_t>(port));
   } else {
@@ -586,15 +598,65 @@ int host_name(const host_layout& l, bool duckdns, setup_io& io, const setup_worl
 
 int host_pair(const host_layout& l, setup_io& io, const setup_world& w) { return show_pair(l, io, w); }
 
-int host_vpn(const host_layout& l, bool on, std::uint16_t tls_port, setup_io& io, const setup_world& w) {
+int host_domain(const host_layout& l, const std::string& typed, setup_io& io) {
+  if (!make_host_folders(l)) {
+    io.say("driftwire host: its folder must be this user's alone (mode 700).\n");
+    return 1;
+  }
+  host_settings s = host_files::settings(l);
+  if (typed == "none") {
+    s.domain.clear();
+  } else {
+    const auto d = parse_domain(typed);
+    if (!d) {
+      io.say("driftwire host: \"" + typed + "\" is not a domain (vpn.example.com).\n");
+      return 1;
+    }
+    if (d->size() > 12 && d->substr(d->size() - 12) == ".duckdns.org") {
+      io.say("driftwire host: that is a DuckDNS name: set it with driftwire host name duckdns.\n");
+      return 1;
+    }
+    s.domain = *d;
+  }
+  if (!host_files::save_settings(l, s)) {
+    io.say("driftwire host: could not write host.json.\n");
+    return 1;
+  }
+  if (s.domain.empty()) {
+    io.say("No own domain now: the VPN code carries " +
+           (s.ddns.empty() ? std::string("this computer's address") : ddns::duckdns_name(s.ddns)) + ".\n");
+    return 0;
+  }
+  io.say("The VPN code, and the name a network sees, are now " + s.domain + ".\n");
+  if (!s.ddns.empty()) {
+    const std::string duck = ddns::duckdns_name(s.ddns);
+    io.say("At your domain's DNS, add two CNAME records (DuckDNS keeps the address; the second lets Let's "
+           "Encrypt check the certificate):\n\n  " +
+           s.domain + "  CNAME  " + duck + "\n  _acme-challenge." + s.domain + "  CNAME  _acme-challenge." + duck +
+           "\n\n");
+  } else {
+    io.say("Point it at this home yourself (an A record, or your provider's dynamic DNS). Without a DuckDNS name "
+           "the web-site look keeps a certificate of its own making.\n");
+  }
+  io.say("Then ask for the code again (driftwire host vpn on) and paste it on the laptop.\n");
+  return 0;
+}
+
+int host_vpn(const host_layout& l, bool on, std::uint16_t tls_port, setup_io& io, const setup_world& w,
+             bool tls_off) {
   if (!make_host_folders(l)) {
     io.say("driftwire host: its folder must be this user's alone (mode 700).\n");
     return 1;
   }
   host_settings s = host_files::settings(l);
   s.vpn = on;
-  if (on && tls_port != 0) s.tls_port = tls_port;
-  if (!on) s.tls_port = 0;  // the look goes with the VPN (`vpn on --tls-port N` brings it back)
+  // The look stays as it was set (on by default): `vpn on` alone, as the
+  // desktop's VPN code asks it, never turns it on or off.
+  if (on && tls_port != 0) {
+    s.look = true;
+    s.tls_port = tls_port;
+  }
+  if (on && tls_off) s.look = false;
   if (!host_files::save_settings(l, s)) {
     io.say("driftwire host: could not write host.json.\n");
     return 1;
@@ -604,25 +666,30 @@ int host_vpn(const host_layout& l, bool on, std::uint16_t tls_port, setup_io& io
     return 0;
   }
   std::string why;
-  std::string line = host_relay_line(l, w, why);
+  bool tls = false;
+  std::string line = host_relay_line(l, w, why, &tls);
   if (line.empty()) {
     io.say("driftwire host: " + why + "\n");
     return 1;
   }
+  // With the look, the code (it says so; Connect turns the look on), else the line as before.
+  if (tls) line = serve::relay_connect_code(line, true);
   // A paragraph a line (the session's transcript wraps them to its width).
   io.say("The VPN is on: this computer carries your laptop's web traffic (TCP 80 and 443, and DNS) out to the "
          "internet, never into your home network.\n"
-         "On the laptop, in Driftwire's Relay (your own server), put this line once. It holds the relay's key: "
+         "On the laptop, paste this code once in Driftwire's Connect to a VPN host. It holds the relay's key: "
          "keep it to yourself.\n\n  " +
          line + "\n\n");
   wipe(line);
   io.say("Then turn on the Tunnel or All traffic (VPN); sites see this home's address.\n");
-  if (s.tls_port != 0) {
-    io.say("Look like a web site: port " + std::to_string(s.tls_port) +
-           ", with a certificate of its own making (a real one comes later); on the laptop, turn on Look like a "
-           "web site.\n");
+  if (tls) {
+    io.say("It looks like a web site on port " + std::to_string(look_port(s)) +
+           " (443 from outside when the router allows), and the code turns on Look like a web site on the laptop.\n");
+  } else if (look_port(s) != 0) {
+    io.say("The web-site look could not listen on port " + std::to_string(look_port(s)) +
+           ": this line is the relay's own port, which a network filter can spot.\n");
   }
-  if (s.ddns.empty()) io.say("Without a DuckDNS name this line works on the home network only.\n");
+  if (vpn_name(s).empty()) io.say("Without a DuckDNS name or your own domain this works on the home network only.\n");
   if (!host_files::running(l)) io.say("Start the host (driftwire host) for it to take effect.\n");
   return 0;
 }
@@ -741,6 +808,10 @@ int run_host_setup(const args& a, const host_layout& l, bool test_hooks) {
 }
 
 int run_host_name(const args& a, const host_layout& l, bool test_hooks) {
+  if (a.host_words.size() == 2 && a.host_words[0] == "domain") {
+    setup_io io = terminal_io(a);
+    return host_domain(l, a.host_words[1], io);
+  }
   if (a.on) {
     if (const int r = needs_terminal(test_hooks)) return r;
   }
@@ -755,7 +826,7 @@ int run_host_pair(const args& a, const host_layout& l, bool test_hooks) {
 
 int run_host_vpn(const args& a, const host_layout& l, bool test_hooks) {
   setup_io io = terminal_io(a);
-  return host_vpn(l, a.on, a.tls_port, io, real_world(a, l, test_hooks));
+  return host_vpn(l, a.on, a.tls_port, io, real_world(a, l, test_hooks), a.tls_off);
 }
 
 }  // namespace mv::driftwire::cli

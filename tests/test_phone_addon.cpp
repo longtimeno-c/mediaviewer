@@ -367,6 +367,49 @@ TEST_CASE("phone access: this computer's VPN switch, its status and the relay li
   CHECK(tree.find("VPN through") == std::string::npos);
 }
 
+TEST_CASE("phone access: the VPN's web-site look and its own domain on this computer's card", "[phone-addon][vpn-stealth]") {
+  screen c(mv::phone::card::computer::mac);
+  // On with the look (on by default): the port the code points at, 443 from outside.
+  std::string tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615,"tls_outside_port":443}})",
+                             kNow);
+  require_valid(tree);
+  CHECK(tree.find("On \xC2\xB7 looks like a web site on port 443") != std::string::npos);
+  CHECK(tree.find("relay port") == std::string::npos);
+  // Its own domain: added from the row, sent as `host name domain`.
+  CHECK(tree.find("Your own domain") != std::string::npos);
+  CHECK(tree.find("which some networks block") != std::string::npos);
+  CHECK(c.on_event("domain_change", kClick, "", kNow).empty());
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true}})", kNow);
+  require_valid(tree);
+  CHECK(tree.find(R"("id":"domain_name")") != std::string::npos);
+  CHECK(c.on_event("domain_save", kClick, "", kNow).empty());  // nothing typed: said so, nothing sent
+  (void)c.on_event("domain_name", kChange, R"(" vpn.example.com ")", kNow);
+  auto r = c.on_event("domain_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_domain","domain":"vpn.example.com"})");
+  // Set: the two CNAMEs it needs, and Remove.
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","domain":"vpn.example.com",
+    "vpn":true}})",
+                 kNow);
+  require_valid(tree);
+  CHECK(tree.find("vpn.example.com: a CNAME to home.duckdns.org, and _acme-challenge.vpn.example.com to "
+                  "_acme-challenge.home.duckdns.org.") != std::string::npos);
+  (void)c.on_event("domain_change", kClick, "", kNow);
+  r = c.on_event("domain_clear", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"host_domain","domain":"none"})");
+  // The VPN off: no domain row.
+  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"vpn":false}})", kNow);
+  CHECK(tree.find("Your own domain") == std::string::npos);
+  // The look's code, shown as it came.
+  tree = c.build(R"({"relay_line":"mediaviewer://relay-tls#home.duckdns.org:443#k3y","relay_code":"mediaviewer://relay-tls#home.duckdns.org:443#k3y",
+    "host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,"vpn_on":true}})",
+                 kNow);
+  require_valid(tree);
+  CHECK(tree.find("mediaviewer://relay-tls#home.duckdns.org:443#k3y") != std::string::npos);
+}
+
 TEST_CASE("phone access: the NAS's VPN switch, when its service offers it", "[phone-addon][nas-vpn]") {
   screen c(mv::phone::card::computer::mac);
   // A NAS from before (no "vpn" feature): no row.

@@ -655,6 +655,16 @@ server::~server() {
 std::uint16_t server::port() const noexcept { return listener_ ? listener_->port() : 0; }
 std::uint16_t server::tls_port() const noexcept { return tls_listener_ ? tls_listener_->port() : 0; }
 
+expected server::set_tls_certificate(const std::string& cert_pem_path, const std::string& key_pem_path) {
+  if (!tls_listener_) return err(status::unsupported_format);
+  auto ctx = tls::make_server_context(cert_pem_path, key_pem_path, opts_.tls_name);
+  if (!ctx) return err(ctx.error());
+  std::shared_ptr<tls::server_context> made(std::move(*ctx));
+  std::lock_guard lock(m_);
+  tls_ctx_ = std::move(made);
+  return {};
+}
+
 void server::release_handshake(const net::address& from) {
   std::lock_guard lock(m_);
   --handshaking_;
@@ -664,7 +674,12 @@ void server::release_handshake(const net::address& from) {
 void server::handle_tls(std::shared_ptr<link> l, const net::address& from, const net::address& peer,
                         std::uint16_t peer_port) {
   tls::accepted_as as = tls::accepted_as::failed;
-  auto t = tls::accept(*tls_ctx_, std::make_unique<shared_link>(l), knock_, opts_.decoy, as);
+  std::shared_ptr<tls::server_context> ctx;
+  {
+    std::lock_guard lock(m_);
+    ctx = tls_ctx_;
+  }
+  auto t = tls::accept(*ctx, std::make_unique<shared_link>(l), knock_, opts_.decoy, as);
   if (as != tls::accepted_as::relay || !t) {
     release_handshake(from);
     std::lock_guard lock(m_);

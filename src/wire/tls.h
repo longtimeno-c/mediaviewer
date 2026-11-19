@@ -51,6 +51,12 @@ using knock_key = std::array<std::uint8_t, 32>;
 [[nodiscard]] std::array<std::uint8_t, kKnockBytes> knock_of(const knock_key& k,
                                                              std::span<const std::uint8_t> exporter);
 inline constexpr std::string_view kExporterLabel = "EXPORTER-driftwire-knock";
+// The padded knock (this build's clients; docs/plans/vpn-stealth.md §5):
+// under this label, and followed by a length byte and that many random bytes
+// in the same record as the client's first bytes; the server's first bytes
+// carry the same. A server takes both knocks, so an older client still
+// connects; a client of this build needs a server of this build.
+inline constexpr std::string_view kPadExporterLabel = "EXPORTER-driftwire-knock-padded";
 
 // The client: TLS with Chrome's ClientHello over `l`, then the knock. `sni`:
 // the relay's name, empty for an address (a browser sends none then). `k`
@@ -74,9 +80,16 @@ class server_context {
 struct decoy {
   std::string dir;  // its pages (index.html and the files beside it); empty: the built-in page
 };
-// The answer to an HTTP request head (pure but for reading `d.dir`): a 200
-// with the page, a 404, or a 400, "Server: nginx", Connection: close.
-[[nodiscard]] std::string decoy_response(std::string_view request_head, const decoy& d);
+// The answer to an HTTP request head (pure but for reading `d.dir` and the
+// clock): a 200 with the page, a 404, a 405 or a 400, with nginx's headers
+// (Server: nginx, a Date at `now`, 0: the time now) and its error pages
+// byte for byte. Keep-alive as nginx keeps it: HTTP/1.1 unless the request
+// says close, HTTP/1.0 only when it asks; never after a 400 or a 405.
+[[nodiscard]] std::string decoy_response(std::string_view request_head, const decoy& d, std::int64_t now = 0);
+// Whether the connection stays open after `response` (decoy_response's).
+[[nodiscard]] bool decoy_keeps_alive(std::string_view response) noexcept;
+// Requests answered on one connection, at most (then it is closed).
+inline constexpr int kMaxRequests = 100;
 
 enum class accepted_as : std::uint8_t { relay, website, failed };
 // The server: the TLS handshake, then the knock. relay: the link for the hop

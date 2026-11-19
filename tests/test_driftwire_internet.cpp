@@ -1256,6 +1256,7 @@ TEST_CASE("host ports in the running host: the service's port, the relay's with 
   // The VPN on (another terminal's `host vpn on`): the relay's port asked for too.
   cli::host_settings on;
   on.vpn = true;
+  on.look = false;  // the plain relay's port (the look's mapping: wanted_ports' test)
   write_text(fs::path(l.settings), cli::host_settings_json(on));
   REQUIRE(eventually([&] {
     const std::string st = state_of(l);

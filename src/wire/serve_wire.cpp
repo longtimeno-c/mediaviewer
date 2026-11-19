@@ -646,25 +646,31 @@ bool parse_relay_address(std::string_view address, std::string& host, std::uint1
   return true;
 }
 
-std::string relay_connect_code(std::string_view relay_line) {
-  return std::string(kRelayCodePrefix) + std::string(relay_line);
+std::string relay_connect_code(std::string_view relay_line, bool tls) {
+  return std::string(tls ? kRelayTlsCodePrefix : kRelayCodePrefix) + std::string(relay_line);
 }
 
-std::optional<std::string> parse_relay_connect_code(std::string_view text) {
+std::optional<std::string> parse_relay_connect_code(std::string_view text, bool* tls) {
   const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
   while (!text.empty() && space(text.front())) text.remove_prefix(1);
   while (!text.empty() && space(text.back())) text.remove_suffix(1);
-  if (text.size() >= kRelayCodePrefix.size()) {
-    bool same = true;  // the scheme in any case, as a link may arrive
-    for (std::size_t i = 0; i < kRelayCodePrefix.size(); ++i) {
+  // The scheme in any case, as a link may arrive.
+  const auto starts = [&](std::string_view prefix) {
+    if (text.size() < prefix.size()) return false;
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
       const char a = text[i] >= 'A' && text[i] <= 'Z' ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
-      if (a != kRelayCodePrefix[i]) {
-        same = false;
-        break;
-      }
+      if (a != prefix[i]) return false;
     }
-    if (same) text.remove_prefix(kRelayCodePrefix.size());
+    return true;
+  };
+  bool look = false;
+  if (starts(kRelayTlsCodePrefix)) {
+    text.remove_prefix(kRelayTlsCodePrefix.size());
+    look = true;
+  } else if (starts(kRelayCodePrefix)) {
+    text.remove_prefix(kRelayCodePrefix.size());
   }
+  if (tls) *tls = false;
   const std::size_t hash = text.find('#');
   if (hash == std::string_view::npos || text.find('#', hash + 1) != std::string_view::npos) return std::nullopt;
   const std::string_view key = text.substr(hash + 1);
@@ -675,6 +681,7 @@ std::optional<std::string> parse_relay_connect_code(std::string_view text) {
   std::string host;
   std::uint16_t port = 0;
   if (!parse_relay_address(text.substr(0, hash), host, port)) return std::nullopt;
+  if (tls) *tls = look;
   return std::string(text);
 }
 

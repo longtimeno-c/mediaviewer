@@ -334,6 +334,8 @@ std::optional<running_state> parse_state(std::string_view text) {
   s.paused = doc->boolean("paused").value_or(false);
   s.tls_failed = doc->boolean("tls_failed").value_or(false);
   s.relay_outside_port = port("relay_outside_port");
+  s.tls_outside_port = port("tls_outside_port");
+  s.relay_tls_port = port("relay_tls_port");
   const auto count = [](const json::value& v, const char* k) {
     const auto n = v.integer(k).value_or(0);
     return n > 0 ? static_cast<std::uint64_t>(n) : std::uint64_t{0};
@@ -436,8 +438,15 @@ vpn_wanted parse_vpn(std::string_view text) {
   const auto doc = json::parse(text, 4);
   if (!doc || doc->k != json::kind::object) return v;
   v.on = doc->boolean("vpn").value_or(false);
+  if (!v.on || !doc->boolean("look").value_or(true)) return v;
   const auto p = doc->integer("tls_port").value_or(0);
-  if (v.on && p > 0 && p <= 65535) v.tls_port = static_cast<std::uint16_t>(p);
+  if (p > 0 && p <= 65535) {
+    v.tls_port = static_cast<std::uint16_t>(p);
+  } else {
+    const auto r = doc->integer("relay_port").value_or(47614);
+    const auto relay = r > 0 && r <= 65535 ? r : 47614;
+    v.tls_port = static_cast<std::uint16_t>(relay < 65535 ? relay + 1 : relay - 1);
+  }
   return v;
 }
 
@@ -448,6 +457,11 @@ std::string relay_line_in(std::string_view output) {
     output = end == std::string_view::npos ? std::string_view() : output.substr(end + 1);
     while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
     while (!line.empty() && (line.back() == ' ' || line.back() == '\r' || line.back() == '\t')) line.remove_suffix(1);
+    if (line.rfind(serve::kRelayTlsCodePrefix, 0) == 0) {
+      bool tls = false;
+      if (serve::parse_relay_connect_code(line, &tls) && tls) return std::string(line);
+      continue;
+    }
     // "where:PORT#KEY": one word, an address before the '#', a key after it.
     const std::size_t hash = line.find('#');
     if (hash == std::string_view::npos || hash == 0 || hash + 1 >= line.size()) continue;
@@ -481,6 +495,7 @@ host_status read_status(const where& w) {
     s.duckdns = parse_duckdns(*text);
     if (const auto doc = json::parse(*text, 4); doc && doc->k == json::kind::object) {
       s.convert_on = doc->boolean("convert").value_or(true);
+      if (const std::string* d = doc->str("domain")) s.domain = *d;
       if (const std::string* h = doc->str("convert_helper")) s.convert_helper = *h;
     }
     const vpn_wanted v = parse_vpn(*text);
@@ -510,6 +525,8 @@ host_status read_status(const where& w) {
       s.vpn_on = st->vpn && st->relay_port != 0;
       s.tls_failed = st->tls_failed;
       s.relay_outside_port = st->relay_outside_port;
+      s.tls_outside_port = st->tls_outside_port;
+      s.relay_tls_port = st->relay_tls_port;
     }
   }
   return s;

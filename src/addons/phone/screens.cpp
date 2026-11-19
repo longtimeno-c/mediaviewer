@@ -41,8 +41,8 @@ struct host_row {
   bool paused = false;  // "Tray": hosting turned off
   bool vpn = false, vpn_on = false, tls_failed = false;  // host.json asks; the relay does; the look failed
   std::int64_t service_port = 0, offline = 0;
-  std::int64_t relay_port = 0, relay_outside_port = 0, tls_port = 0;
-  std::string name, duckdns;
+  std::int64_t relay_port = 0, relay_outside_port = 0, tls_port = 0, tls_outside_port = 0;
+  std::string name, duckdns, domain;
   std::vector<std::string> keepers;
   std::vector<std::string> stats;  // today's usage and the phones connected, in the menu's words
   // Clips the phone can't play (docs/plans/phone-clip-convert.md): the switch, and what the host found.
@@ -232,6 +232,7 @@ view parse(std::string_view text) {
     r.offline = i_of(*h, "offline");
     r.name = s_of(*h, "name");
     r.duckdns = s_of(*h, "duckdns");
+    r.domain = s_of(*h, "domain");
     r.keepers = strings_of(*h, "keepers");
     r.paused = b_of(*h, "paused");
     r.stats = strings_of(*h, "stats");
@@ -246,6 +247,7 @@ view parse(std::string_view text) {
     r.relay_port = i_of(*h, "relay_port");
     r.relay_outside_port = i_of(*h, "relay_outside_port");
     r.tls_port = i_of(*h, "tls_port");
+    r.tls_outside_port = i_of(*h, "tls_outside_port");
     s.host = r;
   }
   s.host_step = s_of(o, "host_step");
@@ -1114,13 +1116,16 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     } else if (!h.vpn_on) {
       line = "Turning on\xE2\x80\xA6";
     } else {
-      const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
-      line = "On \xC2\xB7 relay port " + std::to_string(port);
-      if (h.tls_port > 0) {
-        line += h.tls_failed ? " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port)
-                             : " \xC2\xB7 looks like a web site on port " + std::to_string(h.tls_port);
+      if (h.tls_port > 0 && !h.tls_failed) {
+        // The look is what the code points at (443 from outside when the router gave it).
+        const std::int64_t port = h.tls_outside_port > 0 ? h.tls_outside_port : h.tls_port;
+        line = "On \xC2\xB7 looks like a web site on port " + std::to_string(port);
+      } else {
+        const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
+        line = "On \xC2\xB7 relay port " + std::to_string(port);
+        if (h.tls_port > 0) line += " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port);
       }
-      if (h.duckdns.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
+      if (h.duckdns.empty() && h.domain.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
     }
     row(w, "vpn", "VPN through " + me, line);
     toggle(w, "vpn_on", "Use as VPN", h.vpn, busy);
@@ -1129,6 +1134,29 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     end_row(w);
     if (h.vpn && !s.relay_code.empty()) relay_code_box(w, s.relay_code);
+    // Your own domain instead of the DuckDNS name in the code and what a network sees.
+    if (h.vpn) {
+      row(w, "vpn_domain", "Your own domain",
+          h.domain.empty() ? "Optional: the code then carries your domain instead of the DuckDNS name, which some "
+                             "networks block."
+                           : h.domain + (h.duckdns.empty() ? ": point it at your home yourself."
+                                                           : ": a CNAME to " + h.duckdns +
+                                                                 ".duckdns.org, and _acme-challenge." + h.domain +
+                                                                 " to _acme-challenge." + h.duckdns + ".duckdns.org."));
+      if (!domain_change_) {
+        button(w, "domain_change", h.domain.empty() ? "Add\xE2\x80\xA6" : "Change\xE2\x80\xA6", busy, "plain",
+               "Set your own domain for the VPN");
+      }
+      end_row(w);
+      if (domain_change_) {
+        field(w, "domain_name", "Domain", domain_name_, "vpn.example.com", busy);
+        stack(w, "domain_buttons", 8, "horizontal");
+        button(w, "domain_save", "Save", busy, "primary", "Save your own domain");
+        if (!h.domain.empty()) button(w, "domain_clear", "Remove", busy, "plain", "Use the DuckDNS name again");
+        button(w, "domain_cancel", "Cancel", false, "plain", "Don't change the domain");
+        end(w);
+      }
+    }
   };
   // The NAS as a VPN host (a service that offers it: `driftwire serve`, the
   // Synology's). This computer's own server has the row above instead.
@@ -1645,6 +1673,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_no_folders") e = "Choose a folder for your phone to read.";
   else if (r == "host_no_library") e = "Choose a folder for your phone to read, not only a backup folder.";
   else if (r == "host_twice") e = "That folder is in the list twice.";
+  else if (r == "host_domain") e = s.host_said.empty() ? "That isn't a domain, like vpn.example.com." : s.host_said;
   else if (r == "host_bad_name") e = "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org.";
   else if (r == "host_bad_token") e = "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-\xE2\x80\xA6";
   else if (r == "host_share") e = s.host_said.empty() ? "The folder couldn't be shared." : "Couldn't share it: " + s.host_said;
@@ -1799,6 +1828,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       duck_name_ = v;
     } else if (node == "duck_token") {
       duck_token_ = v;
+    } else if (node == "domain_name") {
+      domain_name_ = v;
     } else if (node == "new_label") {
       new_label_ = v;
     } else if (node == "new_path") {
@@ -1924,6 +1955,21 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     out.push_back(req("nas_vpn").b("on", true).done());  // on again: the same port, the key once more
   } else if (node == "vpn_line_hide") {
     out.push_back(req("host_vpn_hide").done());
+  } else if (node == "domain_change") {
+    domain_change_ = true;
+    domain_name_.clear();
+  } else if (node == "domain_cancel") {
+    domain_change_ = false;
+  } else if (node == "domain_clear") {
+    out.push_back(req("host_domain").s("domain", "none").done());
+    domain_change_ = false;
+  } else if (node == "domain_save") {
+    if (trim(domain_name_).empty()) {
+      note_ = "Type your domain, like vpn.example.com.";
+    } else {
+      out.push_back(req("host_domain").s("domain", trim(domain_name_)).done());
+      domain_change_ = false;
+    }
   } else if (node == "duck_change") {
     duck_change_ = true;
     duck_name_.clear();

@@ -2173,7 +2173,8 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     {
       std::lock_guard lock(m_);
       if (node == "connect_code" && text) connect_typed_ = *text;
-      line = mv::driftwire::serve::parse_relay_connect_code(connect_typed_);
+      bool look = false;
+      line = mv::driftwire::serve::parse_relay_connect_code(connect_typed_, &look);
       sodium_memzero(connect_typed_.data(), connect_typed_.size());
       connect_typed_.clear();
       if (!line) {
@@ -2183,9 +2184,18 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
         v_.relay_server = *line;
         v_.tunnel_relay = tunnel::relay_shown(*line);
         v_.tunnel = true;
+        // The code says whether the host looks like a web site: the Tunnel follows it, on the
+        // code's port (the relay field's own), so nothing else is set by hand.
+        v_.tunnel_tls = look && v_.tunnel_tls_available;
+        if (v_.tunnel_tls) {
+          const auto colon = line->rfind(':', line->find('#'));
+          tunnel_tls_port_ = static_cast<std::uint16_t>(std::stoi(line->substr(colon + 1)));
+        }
         v_.connect_open = false;
-        v_.connect_note = "Connected to " + v_.tunnel_relay +
-                          ". The Tunnel is on; turn on All traffic (VPN) for every app.";
+        v_.connect_note = look && !v_.tunnel_tls_available
+                              ? "This VPN code needs Look like a web site, which this build lacks."
+                              : "Connected to " + v_.tunnel_relay +
+                                    ". The Tunnel is on; turn on All traffic (VPN) for every app.";
         in = internet_;
       }
     }

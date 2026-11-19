@@ -13,6 +13,7 @@
 #include "driftwire_fixture.h"
 
 #include <cctype>
+#include <set>
 
 #include "addons/driftwire/invite.h"
 #include "wire/known.h"
@@ -936,6 +937,26 @@ TEST_CASE("driftwire relay: Connect to a VPN host takes a server's code in one s
   CHECK(tree.find("Your VPN host is home.duckdns.org:47614.") != std::string::npos);
   const auto file = read_bytes(dir / "data" / sp::kPrefsFile);
   CHECK(std::string(file.begin(), file.end()).find(kKey) == std::string::npos);
+  CHECK_FALSE(v.tunnel_tls);  // the plain code: no web-site look
+  // The web-site look's code turns the look on, at the code's port.
+  if (mv::driftwire::tls::available()) {
+    c.eng.on_event("connect_open", 1, "");
+    c.eng.on_event("connect_code", 3,
+                   "\"" + serve::relay_connect_code("home.duckdns.org:8443#" + std::string(kKey), true) + "\"");
+    const auto t = c.eng.snapshot();
+    CHECK(t.relay_server == "home.duckdns.org:8443#" + std::string(kKey));
+    CHECK(t.tunnel);
+    CHECK(t.tunnel_tls);
+    CHECK(t.connect_note.find("Connected to home.duckdns.org:8443") != std::string::npos);
+    REQUIRE(eventually([&] {
+      const auto f = read_bytes(dir / "data" / sp::kPrefsFile);
+      return std::string(f.begin(), f.end()).find("\"tunnel_tls_port\":8443") != std::string::npos;
+    }));
+    // A plain code afterwards turns it off again.
+    c.eng.on_event("connect_open", 1, "");
+    c.eng.on_event("connect_code", 3, "\"" + serve::relay_connect_code(line) + "\"");
+    CHECK_FALSE(c.eng.snapshot().tunnel_tls);
+  }
 }
 
 // ---- the Tunnel: forwarding on the relay server (docs/plans/driftwire-menu-and-tunnel.md) ----
@@ -1139,6 +1160,19 @@ void say(sp::link& l, const std::string& s) {
 std::string hear(sp::link& l, std::size_t n) {
   const auto b = read_n(l, n);
   return {b.begin(), b.end()};
+}
+
+// What comes until `end` has come (within 3 s of quiet).
+std::string hear_until(sp::link& l, const std::string& end) {
+  std::string got;
+  std::vector<std::uint8_t> buf(4096);
+  while (got.find(end) == std::string::npos) {
+    auto n = l.read_some(buf, 3000);
+    REQUIRE(n);
+    REQUIRE(*n != 0);
+    got.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  return got;
 }
 
 // curl -p (HTTP CONNECT) through the proxy at `proxy_port` to `host:port`,
@@ -1704,6 +1738,119 @@ TEST_CASE("driftwire tls: the web site a prober sees, read with care", "[driftwi
   CHECK_FALSE(tls::ja4_of(std::vector<std::uint8_t>{0x17, 3, 3, 0, 0}));
 }
 
+TEST_CASE("driftwire tls: the decoy answers as nginx does, byte for byte", "[driftwire]") {
+  const tls::decoy builtin;
+  constexpr std::int64_t kNoon = 1795089600;  // Thu, 19 Nov 2026 12:00:00 GMT
+  const auto nf = tls::decoy_response("GET /admin HTTP/1.1\r\nHost: a\r\n\r\n", builtin, kNoon);
+  const std::string page =
+      "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n"
+      "<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n";
+  CHECK(nf == "HTTP/1.1 404 Not Found\r\nServer: nginx\r\nDate: Thu, 19 Nov 2026 12:00:00 GMT\r\n"
+              "Content-Type: text/html\r\nContent-Length: " +
+                  std::to_string(page.size()) + "\r\nConnection: keep-alive\r\n\r\n" + page);
+  CHECK(tls::decoy_response("GET / HTTP/1.1\r\n\r\n", builtin, 951782400).find("Date: Tue, 29 Feb 2000 00:00:00 GMT") !=
+        std::string::npos);
+  // Keep-alive as nginx keeps it.
+  CHECK(tls::decoy_keeps_alive(tls::decoy_response("GET / HTTP/1.1\r\n\r\n", builtin)));
+  CHECK_FALSE(tls::decoy_keeps_alive(tls::decoy_response("GET / HTTP/1.1\r\nConnection: Close\r\n\r\n", builtin)));
+  CHECK_FALSE(tls::decoy_keeps_alive(tls::decoy_response("GET / HTTP/1.0\r\n\r\n", builtin)));
+  CHECK(tls::decoy_keeps_alive(tls::decoy_response("GET / HTTP/1.0\r\nconnection: keep-alive\r\n\r\n", builtin)));
+  const auto bad = tls::decoy_response("\x16\x03\x01garbage", builtin);
+  CHECK(bad.find("<center><h1>400 Bad Request</h1></center>") != std::string::npos);
+  CHECK_FALSE(tls::decoy_keeps_alive(bad));
+  const auto not_allowed = tls::decoy_response("POST / HTTP/1.1\r\n\r\n", builtin);
+  CHECK(not_allowed.find("<center><h1>405 Not Allowed</h1></center>") != std::string::npos);
+  CHECK_FALSE(tls::decoy_keeps_alive(not_allowed));
+}
+
+TEST_CASE("driftwire tls: a short request is answered at once, and a second on the same connection", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  auto t = tls::client(dial((*s)->tls_port()), "relay.example", nullptr);
+  REQUIRE(t);
+  // 18 bytes, fewer than the knock's 32: nginx answers it at once, so the
+  // relay must not wait out kIdleMs (10 s) for more. 3 s is ample on loopback.
+  say(**t, "GET / HTTP/1.0\r\n\r\n");
+  std::string got;
+  std::vector<std::uint8_t> buf(4096);
+  for (;;) {
+    auto n = (*t)->read_some(buf, 3000);
+    REQUIRE(n);  // a timeout here is the old wait
+    if (*n == 0) break;
+    got.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  CHECK(got.rfind("HTTP/1.1 200 OK", 0) == 0);
+  CHECK(got.find("Connection: close") != std::string::npos);
+  // HTTP/1.1 keeps the connection: two requests, two answers.
+  auto k = tls::client(dial((*s)->tls_port()), "relay.example", nullptr);
+  REQUIRE(k);
+  say(**k, "GET / HTTP/1.1\r\nHost: relay.example\r\n\r\n");
+  const auto first = hear_until(**k, "</html>\n");
+  CHECK(first.rfind("HTTP/1.1 200 OK", 0) == 0);
+  say(**k, "GET /nothing HTTP/1.1\r\nHost: relay.example\r\nConnection: close\r\n\r\n");
+  std::string second;
+  for (;;) {
+    auto n = (*k)->read_some(buf, 3000);
+    REQUIRE(n);
+    if (*n == 0) break;
+    second.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  CHECK(second.rfind("HTTP/1.1 404 Not Found", 0) == 0);
+}
+
+namespace {
+
+// The lengths of the application-data records (type 23) in a TLS stream.
+std::vector<std::size_t> app_records(const std::vector<std::uint8_t>& stream) {
+  std::vector<std::size_t> out;
+  for (std::size_t at = 0; at + 5 <= stream.size();) {
+    const std::size_t n = std::size_t{stream[at + 3]} << 8 | stream[at + 4];
+    if (at + 5 + n > stream.size()) break;
+    if (stream[at] == 23) out.push_back(n);
+    at += 5 + n;
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("driftwire tls: the first records each way are padded to no fixed size", "[driftwire]") {
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  const auto k = tls::derive_knock_key(kKey);
+  REQUIRE(k);
+  std::set<std::size_t> client_first;
+  std::set<std::vector<std::size_t>> server_seqs;
+  for (int i = 0; i < 6; ++i) {
+    auto tap = std::make_unique<wiretap>(dial((*s)->tls_port()));
+    auto sent = tap->sent;
+    auto heard = tap->heard;
+    auto t = tls::client(std::move(tap), "relay.example", &*k);
+    REQUIRE(t);
+    relay::forward_answer said{};
+    auto f = relay::forward(std::move(*t), kKey, "127.0.0.1", echo.port(), relay::kForwardWaitMs, said);
+    REQUIRE(f);
+    REQUIRE(said == relay::forward_answer::ok);
+    say(**f, "pad");
+    CHECK(hear(**f, 3) == "PAD");
+    // The client's: its Finished, then the knock with the hop's first bytes.
+    const auto c = app_records(*sent);
+    REQUIRE(c.size() >= 2);
+    client_first.insert(c[1]);
+    auto h = app_records(*heard);
+    h.resize(std::min<std::size_t>(h.size(), 6));
+    server_seqs.insert(h);
+  }
+  // Uniform padding of 0..255: six equal lengths by chance is 1 in 256^5.
+  CHECK(client_first.size() > 1);
+  CHECK(server_seqs.size() > 1);
+  CHECK((*s)->snapshot().forwarded == 6);
+}
+
 TEST_CASE("driftwire tls: the ClientHello is Chrome's by JA4, and the Tunnel forwards inside TLS", "[driftwire]") {
   if (!tls::available()) SKIP("this build has no BoringSSL");
   echo_server echo;
@@ -1754,10 +1901,11 @@ TEST_CASE("driftwire tls: without the knock, the relay is an ordinary web site",
   REQUIRE(s);
   const auto tp = (*s)->tls_port();
   // A browser.
-  const auto page = https_get(tp, "GET / HTTP/1.1\r\nHost: relay.example\r\nUser-Agent: Mozilla/5.0\r\n\r\n");
+  const auto page = https_get(
+      tp, "GET / HTTP/1.1\r\nHost: relay.example\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n");
   CHECK(page.rfind("HTTP/1.1 200 OK", 0) == 0);
   CHECK(page.find("Server: nginx") != std::string::npos);
-  CHECK(https_get(tp, "GET /wp-admin HTTP/1.1\r\nHost: relay.example\r\n\r\n").rfind("HTTP/1.1 404", 0) == 0);
+  CHECK(https_get(tp, "GET /wp-admin HTTP/1.0\r\nHost: relay.example\r\n\r\n").rfind("HTTP/1.1 404", 0) == 0);
   // A prober that speaks Driftwire's own hop inside TLS, without the knock:
   // a web server's 400, never a CPace answer.
   {

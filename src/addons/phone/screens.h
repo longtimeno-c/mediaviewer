@@ -124,6 +124,9 @@ class screen {
   std::string duck_name_, duck_token_;  // duck_token_ secure
   bool duck_change_ = false;  // this computer's DuckDNS name being changed, after setup
   std::string duck_note_;     // why Save didn't send, drawn by the form, until the next event
+  // The VPN's own domain (docs/plans/vpn-stealth.md §3; `host name domain`), being changed.
+  std::string domain_name_;
+  bool domain_change_ = false;
   bool server_here_ = false;  // the server is this computer (its folders are picked, not typed)
   std::string note_;  // this screen's own line ("Choose a folder…"), until the next event
   bool seeded_local_ = false, seeded_public_ = false;
