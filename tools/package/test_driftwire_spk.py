@@ -69,7 +69,11 @@ class SpkTests(unittest.TestCase):
         share = res['data-share']['shares'][0]
         self.assertEqual(share['name'], '{{wizard_share}}')
         self.assertEqual(share['permission'], {'ro': ['mediaviewer-nas']})
-        self.assertIn('dst.ports="7878/tcp"', read(data, 'conf/mediaviewer-nas.sc').decode())
+        sc = read(data, 'conf/mediaviewer-nas.sc').decode()
+        self.assertIn('dst.ports="7878/tcp"', sc)
+        # The VPN's relay port, a section of its own so DSM's firewall and router offers name it.
+        self.assertIn('[mediaviewer-nas-vpn]', sc)
+        self.assertIn('dst.ports="47614/tcp"', sc)
         wizard = json.loads(read(data, 'WIZARD_UIFILES/install_uifile'))
         keys = [s['key'] for step in wizard for item in step['items'] for s in item['subitems']]
         self.assertEqual(keys, ['wizard_share'])
