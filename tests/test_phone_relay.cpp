@@ -279,6 +279,25 @@ TEST_CASE("phone relay: the relay's address is host:port and nothing else", "[ph
   }
 }
 
+TEST_CASE("phone relay: a VPN host's code carries its relay line, and nothing else is one", "[phone-relay][nas-vpn]") {
+  const std::string line = "home.duckdns.org:47614#R36ZJ1CHD5PB6TFD50J3T2C8C6";
+  const std::string code = serve::relay_connect_code(line);
+  CHECK(code == "mediaviewer://relay#" + line);
+  CHECK(serve::parse_relay_connect_code(code) == line);
+  // Pasted as it arrives: spaces and a newline around it, the scheme in capitals, or the bare line.
+  CHECK(serve::parse_relay_connect_code("  " + code + "\r\n") == line);
+  CHECK(serve::parse_relay_connect_code("MediaViewer://Relay#" + line) == line);
+  CHECK(serve::parse_relay_connect_code(line) == line);
+  CHECK(serve::parse_relay_connect_code("mediaviewer://relay#[::1]:9#R36ZJ1CHD5PB6TFD") == "[::1]:9#R36ZJ1CHD5PB6TFD");
+  for (const char* bad : {"", "mediaviewer://relay#", "home.duckdns.org:47614", "home.duckdns.org#R36ZJ1CHD5PB6TFD50J3",
+                          "home.duckdns.org:47614#short", "home.duckdns.org:47614#R36ZJ1CHD5PB6 TFD50J3",
+                          "home.duckdns.org:47614#R36ZJ1CHD5PB6TFD50J3#x", "home duckdns.org:47614#R36ZJ1CHD5PB6TFD50J3",
+                          "mediaviewer://pair#abc", "https://example.com/#R36ZJ1CHD5PB6TFD50J3"}) {
+    INFO(bad);
+    CHECK_FALSE(serve::parse_relay_connect_code(bad));
+  }
+}
+
 TEST_CASE("phone relay: a relay that never answers does not hold up a stop", "[phone-relay]") {
   scratch_dir dir{"phone_relay_silent"};
   const fs::path library = dir.root() / "library";

@@ -725,6 +725,36 @@ void tunnel_card(writer& w, const view& v) {
   end(w);
 }
 
+// Connect to a VPN host (docs/design/28): a server's code (Phone access on a
+// Windows PC, a Mac or a Synology) in one step, at parity with a phone's pairing.
+void vpn_host_card(writer& w, const view& v) {
+  stack(w, "vpn_host_card", 10, "vertical", "card", "fill");
+  text(w, "vpn_host_title", "VPN host", "heading");
+  if (v.connect_open) {
+    text(w, "connect_how",
+         "On your server, in MediaViewer: Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 Phone access \xE2\x86\x92 Use as VPN, "
+         "then VPN code\xE2\x80\xA6. Copy it and paste it here.",
+         "caption");
+    w.begin_object().key("type").string("text_field").key("id").string("connect_code").key("label").string("VPN code");
+    w.key("value").string("").key("secure").boolean(true).key("placeholder").string("mediaviewer://relay#\xE2\x80\xA6").end_object();
+    stack(w, "connect_buttons", 8, "horizontal");
+    button(w, "connect_go", "Connect", "primary");
+    button(w, "connect_cancel", "Cancel", "plain");
+    end(w);
+  } else {
+    text(w, "vpn_host_note",
+         v.tunnel_relay.empty()
+             ? "Away from home, send this computer's traffic through your own server: a Windows PC, a Mac or a Synology "
+               "running MediaViewer's Phone access."
+             : "Your VPN host is " + v.tunnel_relay + ".",
+         "caption");
+    button(w, "connect_open", v.tunnel_relay.empty() ? "Connect to a VPN host\xE2\x80\xA6" : "Connect to another\xE2\x80\xA6",
+           "plain");
+  }
+  if (!v.connect_note.empty()) text(w, "connect_note", v.connect_note, "secondary");
+  end(w);
+}
+
 void internet_options(writer& w, const view& v) {
   stack(w, "internet_options", 10, "vertical", "card", "fill");
   text(w, "options_title", "Internet options", "heading");
@@ -851,6 +881,7 @@ std::string build_settings_tree(const view& v) {
     known_settings(w, v);
     internet_options(w, v);
   }
+  vpn_host_card(w, v);
   tunnel_card(w, v);
   w.end_array().end_object();
   return w.take();

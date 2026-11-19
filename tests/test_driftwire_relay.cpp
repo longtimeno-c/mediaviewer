@@ -20,6 +20,9 @@
 #include "wire/splice.h"
 #include "wire/tls.h"
 #include "addons/driftwire/tunnel.h"
+#include "wire/serve_wire.h"
+
+namespace serve = mv::driftwire::serve;
 
 namespace relay = mv::driftwire::relay;
 namespace invite = mv::driftwire::invite;
@@ -899,6 +902,40 @@ TEST_CASE("driftwire relay: the relay server's key is kept in the secret store, 
   }
   auto store = sp::secrets::file_store(utf8(dir / "secrets"));
   CHECK_FALSE(store->get(mv::driftwire::known::kRelayKeyName));
+}
+
+TEST_CASE("driftwire relay: Connect to a VPN host takes a server's code in one step", "[driftwire][nas-vpn]") {
+  scratch_dir dir("driftwire_connect_vpn");
+  bus b;
+  const std::string line = "home.duckdns.org:47614#" + std::string(kKey);
+  client c(b, dir / "in", "Bea", dir / "secrets", dir / "data");
+  // The card, before: the button, no field.
+  auto tree = sp::build_settings_tree(c.eng.snapshot());
+  INFO(tree);
+  CHECK(tree.find(R"("id":"connect_open","label":"Connect to a VPN host)") != std::string::npos);
+  CHECK(tree.find(R"("id":"connect_code")") == std::string::npos);
+  c.eng.on_event("connect_open", 1, "");
+  tree = sp::build_settings_tree(c.eng.snapshot());
+  CHECK(tree.find(R"("id":"connect_code","label":"VPN code","value":"","secure":true)") != std::string::npos);
+  // Not a code: said so, nothing changed.
+  c.eng.on_event("connect_code", 2, "\"mediaviewer://pair#abc\"");
+  c.eng.on_event("connect_go", 1, "");
+  CHECK(c.eng.snapshot().relay_server.empty());
+  CHECK_FALSE(c.eng.snapshot().tunnel);
+  CHECK(c.eng.snapshot().connect_note.find("isn't a VPN code") != std::string::npos);
+  // The code: the relay field filled, the Tunnel on, the field closed, the key kept as the field's is.
+  c.eng.on_event("connect_code", 3, "\" " + serve::relay_connect_code(line) + "\\n\"");  // JSON: a newline after it
+  const auto v = c.eng.snapshot();
+  CHECK(v.relay_server == line);
+  CHECK(v.tunnel_relay == "home.duckdns.org:47614");
+  CHECK(v.tunnel);
+  CHECK_FALSE(v.connect_open);
+  CHECK(v.connect_note.find("Connected to home.duckdns.org:47614") != std::string::npos);
+  tree = sp::build_settings_tree(v);
+  CHECK(tree.find(kKey) == std::string::npos);  // the card names the host, never the key
+  CHECK(tree.find("Your VPN host is home.duckdns.org:47614.") != std::string::npos);
+  const auto file = read_bytes(dir / "data" / sp::kPrefsFile);
+  CHECK(std::string(file.begin(), file.end()).find(kKey) == std::string::npos);
 }
 
 // ---- the Tunnel: forwarding on the relay server (docs/plans/driftwire-menu-and-tunnel.md) ----

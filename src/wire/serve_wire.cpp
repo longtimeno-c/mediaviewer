@@ -528,6 +528,11 @@ result<config> parse_config(std::string_view text, bool any_port, bool no_roots)
       *into = *v;
     }
   }
+  if (doc->find("vpn_port")) {
+    const auto p = doc->integer("vpn_port");
+    if (!p || *p < 0 || *p > 65535) return err(status::invalid_arg);
+    c.vpn_port = static_cast<std::uint16_t>(*p);
+  }
   return c;
 }
 
@@ -550,6 +555,7 @@ std::string config_json(const config& c) {
   if (!c.relay.empty()) w.key("relay").string(c.relay);
   if (!c.local.empty()) w.key("local").string(c.local);
   if (!c.public_name.empty()) w.key("public").string(c.public_name);
+  if (c.vpn_port != 0) w.key("vpn_port").integer(c.vpn_port);
   w.end_object();
   return w.take();
 }
@@ -638,6 +644,38 @@ bool parse_relay_address(std::string_view address, std::string& host, std::uint1
   host.assign(h);
   port = static_cast<std::uint16_t>(p);
   return true;
+}
+
+std::string relay_connect_code(std::string_view relay_line) {
+  return std::string(kRelayCodePrefix) + std::string(relay_line);
+}
+
+std::optional<std::string> parse_relay_connect_code(std::string_view text) {
+  const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+  while (!text.empty() && space(text.front())) text.remove_prefix(1);
+  while (!text.empty() && space(text.back())) text.remove_suffix(1);
+  if (text.size() >= kRelayCodePrefix.size()) {
+    bool same = true;  // the scheme in any case, as a link may arrive
+    for (std::size_t i = 0; i < kRelayCodePrefix.size(); ++i) {
+      const char a = text[i] >= 'A' && text[i] <= 'Z' ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
+      if (a != kRelayCodePrefix[i]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) text.remove_prefix(kRelayCodePrefix.size());
+  }
+  const std::size_t hash = text.find('#');
+  if (hash == std::string_view::npos || text.find('#', hash + 1) != std::string_view::npos) return std::nullopt;
+  const std::string_view key = text.substr(hash + 1);
+  if (key.size() < 16 || key.size() > 4096) return std::nullopt;  // relay::kMinKeyChars, set_relay's cap
+  for (const char ch : key) {
+    if (static_cast<unsigned char>(ch) <= 0x20 || ch == 0x7f) return std::nullopt;
+  }
+  std::string host;
+  std::uint16_t port = 0;
+  if (!parse_relay_address(text.substr(0, hash), host, port)) return std::nullopt;
+  return std::string(text);
 }
 
 std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,
