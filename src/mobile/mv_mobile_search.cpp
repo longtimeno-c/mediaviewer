@@ -222,7 +222,7 @@ mv_mobile_status mv_mobile_library_folders(mv_mobile_library* l, const char* par
     auto got = l->cat->folders_under(parent ? parent : "");
     if (!got) return map_status(got.error());
     for (const auto& f : *got) {
-      const mv_mobile_folder row{f.key.c_str(), f.name.c_str(), f.items, f.has_subfolders ? 1u : 0u};
+      const mv_mobile_folder row{f.key.c_str(), f.name.c_str(), f.items, f.has_subfolders ? 1u : 0u, f.files};
       visit(user, &row);
     }
     return MV_MOBILE_OK;

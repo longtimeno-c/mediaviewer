@@ -30,25 +30,29 @@ struct PagerView: UIViewControllerRepresentable {
   let onIndex: (Int) -> Void
   let onTap: () -> Void
   let onZoomed: (Bool) -> Void
-  let onPlay: (GridEntry) -> Void
+  let onPlay: (Int) -> Void
   let onState: (MediaID, PageState) -> Void
   let onPullChanged: (Bool) -> Void
   let onClose: () -> Void
   let onSettled: (Int) -> Void
   /// A request to show a page, from the filmstrip.
   let jump: PagerJump?
-  /// Something opaque is over the pages, so VoiceOver must not reach them.
-  let isCovered: Bool
+  /// The open clip, played on its own page.
+  let live: ClipLive
+  let liveIndex: Int?
+  let transfer: OriginalTransfer
+  let model: AppModel
 
   func makeUIViewController(context: Context) -> PagerController {
     PagerController(entries: entries, startIndex: startIndex, images: images, onIndex: onIndex,
                     onTap: onTap, onZoomed: onZoomed, onPlay: onPlay, onState: onState,
-                    onPullChanged: onPullChanged, onClose: onClose, onSettled: onSettled)
+                    onPullChanged: onPullChanged, onClose: onClose, onSettled: onSettled,
+                    live: live, transfer: transfer, model: model)
   }
 
   func updateUIViewController(_ controller: PagerController, context: Context) {
     if let jump { controller.go(to: jump) }
-    controller.view.accessibilityElementsHidden = isCovered
+    controller.setLive(liveIndex)
   }
 }
 
@@ -59,7 +63,7 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
   private let onIndex: (Int) -> Void
   private let onTap: () -> Void
   private let onZoomed: (Bool) -> Void
-  private let onPlay: (GridEntry) -> Void
+  private let onPlay: (Int) -> Void
   private let onState: (MediaID, PageState) -> Void
   private let onPullChanged: (Bool) -> Void
   private let onClose: () -> Void
@@ -73,13 +77,21 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
   private static let pageGap: CGFloat = 20
 
   private let layout = UICollectionViewFlowLayout()
-  private lazy var collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
+  private lazy var collection = PagerCollectionView(frame: .zero, collectionViewLayout: layout)
+  private let live: ClipLive
+  private let transfer: OriginalTransfer
+  private let model: AppModel
+  /// The page that shows the open clip's player rather than its poster.
+  private var liveIndex: Int?
 
   init(entries: GridSource, startIndex: Int, images: ImageLadder, onIndex: @escaping (Int) -> Void,
        onTap: @escaping () -> Void, onZoomed: @escaping (Bool) -> Void,
-       onPlay: @escaping (GridEntry) -> Void, onState: @escaping (MediaID, PageState) -> Void,
+       onPlay: @escaping (Int) -> Void, onState: @escaping (MediaID, PageState) -> Void,
        onPullChanged: @escaping (Bool) -> Void, onClose: @escaping () -> Void,
-       onSettled: @escaping (Int) -> Void) {
+       onSettled: @escaping (Int) -> Void, live: ClipLive, transfer: OriginalTransfer, model: AppModel) {
+    self.live = live
+    self.transfer = transfer
+    self.model = model
     self.entries = entries
     index = startIndex
     self.images = images
@@ -109,18 +121,70 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
     collection.dataSource = self
     collection.delegate = self
     collection.register(ZoomPageCell.self, forCellWithReuseIdentifier: "page")
+    collection.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "clip")
+    collection.holdsDrag = { [weak self] point in self?.onScrubBar(point) ?? false }
     view.addSubview(collection)
+    // A press held on either side of an open clip's picture plays it at double speed until the
+    // finger lifts; it cancels the tap the picture would otherwise take.
+    let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+    hold.minimumPressDuration = 0.3
+    hold.allowableMovement = 40
+    hold.delegate = self
+    collection.addGestureRecognizer(hold)
     let pull = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
     pull.delegate = self
     collection.addGestureRecognizer(pull)
   }
 
-  // Pulling a photo down closes it. Only straight down, and never while it is zoomed in.
+  // Pulling a photo down closes it. Only straight down, and never while it is zoomed in, nor from
+  // the open clip's position bar or a list on its page that can scroll (its moments).
   func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+    if gesture is UILongPressGestureRecognizer { return onPictureSide(gesture.location(in: collection)) }
     guard let pan = gesture as? UIPanGestureRecognizer, pan.view === collection else { return true }
     let v = pan.velocity(in: view)
     let zoomed = collection.visibleCells.contains { ($0 as? ZoomPageCell)?.isZoomed == true }
-    return v.y > 0 && v.y > abs(v.x) && !zoomed
+    let at = pan.location(in: collection)
+    return v.y > 0 && v.y > abs(v.x) && !zoomed && !onScrubBar(at) && !inScrollingList(at)
+  }
+
+  /// A drag from the open clip's position bar scrubs. Only with the pager at rest on that page: the
+  /// bar's place is measured there.
+  private func onScrubBar(_ point: CGPoint) -> Bool {
+    guard let liveIndex, let window = collection.window, collection.bounds.width > 0,
+          abs(collection.contentOffset.x - CGFloat(liveIndex) * collection.bounds.width) < 1 else { return false }
+    return live.scrubFrame.contains(collection.convert(point, to: window))
+  }
+
+  /// The outer third either side of the open clip's picture, with the pager at rest on it.
+  private func onPictureSide(_ point: CGPoint) -> Bool {
+    guard let liveIndex, let window = collection.window, collection.bounds.width > 0,
+          abs(collection.contentOffset.x - CGFloat(liveIndex) * collection.bounds.width) < 1 else { return false }
+    let frame = live.pictureFrame
+    let at = collection.convert(point, to: window)
+    guard !frame.isNull, frame.contains(at) else { return false }
+    let third = frame.width / 3
+    return at.x < frame.minX + third || at.x > frame.maxX - third
+  }
+
+  @objc private func held(_ hold: UILongPressGestureRecognizer) {
+    switch hold.state {
+    case .began:
+      UIImpactFeedbackGenerator(style: .light).impactOccurred()
+      live.clip?.setFast(true)
+    case .ended, .cancelled, .failed:
+      live.clip?.setFast(false)
+    default:
+      break
+    }
+  }
+
+  private func inScrollingList(_ point: CGPoint) -> Bool {
+    var view = collection.hitTest(point, with: nil)
+    while let v = view, v !== collection {
+      if let list = v as? UIScrollView, list.contentSize.height > list.bounds.height + 1 { return true }
+      view = v.superview
+    }
+    return false
   }
 
   @objc private func pulled(_ pan: UIPanGestureRecognizer) {
@@ -170,11 +234,35 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
 
   func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { entries.count }
 
+  /// Swaps the poster page and the player page of the clip opened or left. No animation: the
+  /// player's first frame is the poster the page already showed.
+  func setLive(_ new: Int?) {
+    guard new != liveIndex else { return }
+    let changed = [liveIndex, new].compactMap { $0 }.filter { entries.indices.contains($0) }
+    liveIndex = new
+    guard collection.bounds.width > 0, !changed.isEmpty else { return }
+    UIView.performWithoutAnimation {
+      collection.reloadItems(at: changed.map { IndexPath(item: $0, section: 0) })
+    }
+  }
+
   func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+    if indexPath.item == liveIndex {
+      let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "clip", for: indexPath)
+      cell.backgroundColor = .black
+      let entry = entries[indexPath.item]
+      cell.contentConfiguration = UIHostingConfiguration { [live, transfer, model, onTap] in
+        ClipLivePage(entry: entry, live: live, transfer: transfer, onTap: onTap)
+          .padding(.trailing, Self.pageGap)
+          .environment(model)
+      }
+      .margins(.all, 0)
+      return cell
+    }
     let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "page", for: indexPath) as! ZoomPageCell
     let entry = entries[indexPath.item]
     cell.show(entry: entry, images: images, trailingGap: Self.pageGap, fittingPixels: fittingPixels,
-              onTap: onTap, onPlay: { [onPlay] in onPlay(entry) },
+              onTap: onTap, onPlay: { [onPlay] in onPlay(indexPath.item) },
               onZoomed: { [weak self] zoomed in
                 guard let self else { return }
                 if indexPath.item == self.index { self.onZoomed(zoomed) }
@@ -245,6 +333,17 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
 
   func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
     if scrollView === collection, !decelerate { settled() }
+  }
+}
+
+/// The pager's collection: a drag that starts on the open clip's position bar scrubs the clip and
+/// never turns the page.
+final class PagerCollectionView: UICollectionView {
+  var holdsDrag: ((CGPoint) -> Bool)?
+
+  override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+    if gesture === panGestureRecognizer, holdsDrag?(gesture.location(in: self)) == true { return false }
+    return super.gestureRecognizerShouldBegin(gesture)
   }
 }
 

@@ -119,13 +119,16 @@ public struct Folder: Identifiable, Hashable, Sendable {
   /// The drive that holds it is not connected to the server now (unplugged, a share not mounted;
   /// docs/plans/self-hosted.md §6): shown, said so, and never opened until it is back.
   public let offline: Bool
+  /// Documents and audio a catalogue indexed in it and beneath (never grid items); 0 when unknown.
+  public let fileCount: Int
 
-  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false) {
+  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false, fileCount: Int = 0) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.hasSubfolders = hasSubfolders
     self.offline = offline
+    self.fileCount = fileCount
   }
 }
 
@@ -137,14 +140,56 @@ public struct FolderPreview: Equatable, Sendable {
   public let files: Int?
   /// Folders directly inside; nil when not known.
   public let folders: Int?
+  /// Other files directly inside (PDFs, saves, archives); nil when not known.
+  public let others: Int?
 
-  public init(items: [MediaItem], files: Int?, folders: Int?) {
+  public init(items: [MediaItem], files: Int?, folders: Int?, others: Int? = nil) {
     self.items = items
     self.files = files
     self.folders = folders
+    self.others = others
   }
 
   public static let empty = FolderPreview(items: [], files: nil, folders: nil)
+}
+
+/// A file in a NAS folder that is not a photo or a clip (a PDF, a game's save, an archive): listed by
+/// name, opened by the phone's own preview (Quick Look), never decoded by MediaViewer.
+public struct OtherFile: Identifiable, Hashable, Sendable {
+  public let id: String
+  public let name: String
+  public let bytes: Int64
+  public let modified: Date
+
+  public init(id: String, name: String, bytes: Int64, modified: Date) {
+    self.id = id
+    self.name = name
+    self.bytes = bytes
+    self.modified = modified
+  }
+
+  /// "pdf", lower case; "" for a name with none.
+  public var fileExtension: String {
+    guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return "" }
+    return name[name.index(after: dot)...].lowercased()
+  }
+
+  public enum Family: Sendable { case pdf, text, sheet, slides, archive, audio, code, disc, other }
+
+  public var family: Family {
+    switch fileExtension {
+    case "pdf": return .pdf
+    case "txt", "md", "rtf", "doc", "docx", "pages", "odt", "nfo", "log": return .text
+    case "xls", "xlsx", "csv", "numbers", "ods": return .sheet
+    case "ppt", "pptx", "key", "odp": return .slides
+    case "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz": return .archive
+    case "mp3", "m4a", "m4p", "wav", "flac", "aac", "ogg", "opus", "aiff": return .audio
+    case "json", "xml", "html", "htm", "ini", "cfg", "yaml", "yml", "lua", "py", "js", "sh", "bat": return .code
+    case "iso", "img", "bin", "cue", "dmg", "nds", "gba", "gb", "gbc", "nes", "sfc", "smc", "n64", "z64", "chd", "cia", "3ds", "nsp", "xci", "sav", "srm":
+      return .disc
+    default: return .other
+    }
+  }
 }
 
 public struct Person: Identifiable, Hashable, Sendable {

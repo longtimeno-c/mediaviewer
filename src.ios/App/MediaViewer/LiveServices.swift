@@ -19,7 +19,9 @@ enum LiveServices {
     // lists and searches the new generation, never the one it replaces.
     let connection = OpenedConnection(link: link.connection, catalogue: catalogue)
     let images = LayeredImages(local: catalogue.images, remote: link.images)
-    let library = ModeLibrary(catalogue: catalogue.library, files: link.files.library) { connection.current }
+    let library = ModeLibrary(catalogue: catalogue.library, files: link.files.library, linkFiles: link.files) {
+      connection.current
+    }
     let search = ModeSearch(catalogue: catalogue.search, files: link.files.search) { connection.current }
     return Services(library: library, images: images, search: search,
                     connection: connection, sync: link.connection, clips: link.clips,
@@ -114,6 +116,8 @@ private func inFileMode(_ snapshot: ConnectionSnapshot) -> Bool { snapshot.fileM
 struct ModeLibrary: LibraryStore {
   let catalogue: LibraryStore
   let files: LibraryStore
+  /// A catalogue folder's other files (PDFs, saves) come from its place on the server.
+  let linkFiles: LinkFiles
   let mode: @Sendable () -> ConnectionSnapshot
 
   private func store(for folder: Folder?) -> LibraryStore {
@@ -136,6 +140,17 @@ struct ModeLibrary: LibraryStore {
 
   func details(for item: MediaItem) async throws -> MediaDetails {
     try await (LinkFiles.isFileID(item.id.raw) ? files : catalogue).details(for: item)
+  }
+
+  /// A file-mode folder's from its listing; a catalogue folder's from the server folder it is.
+  func otherFiles(in folder: Folder) async throws -> [OtherFile] {
+    if LinkFiles.isFileID(folder.id) { return try await files.otherFiles(in: folder) }
+    return await linkFiles.otherFiles(inCatalogueFolder: folder.id)
+  }
+
+  /// Other files are always the server's, named by where they are.
+  func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+    try await files.download(file, progress: progress)
   }
 }
 

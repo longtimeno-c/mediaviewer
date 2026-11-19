@@ -217,7 +217,11 @@ class library {
   // The live link, connecting when there is none; sets the server's state.
   [[nodiscard]] expected connect(server_rt& s, bool person, const mobile::cancel_flag* cancel);
   void set_state(server_rt& s, reach r);
-  [[nodiscard]] expected save_locked() const;  // m_ held
+  // servers.json: the text made under m_, written after it is let go, so a
+  // row's name (display_name, on the main thread) never waits on the disk.
+  // save_m_ is held across both, so two saves land in the order made.
+  [[nodiscard]] std::string servers_json_locked() const;  // m_ held
+  [[nodiscard]] expected write_servers(const std::string& text) const;
   [[nodiscard]] std::optional<identity> identity_of(std::string_view file_key);
   [[nodiscard]] std::string servers_file() const;
   [[nodiscard]] result<listing> list_live(server_rt& s, const key_parts& k, std::string_view folder_key, bool person,
@@ -235,6 +239,7 @@ class library {
   disk_cache cache_;
   std::unique_ptr<driftwire::secrets::store> own_store_;
   mutable std::mutex m_;
+  std::mutex save_m_;  // a whole save: its text under m_, then the write
   std::map<std::string, std::shared_ptr<server_rt>> servers_;  // under m_
   // The last listing's size and mtime per file key, and each named folder's label.
   mutable std::mutex stamps_m_;

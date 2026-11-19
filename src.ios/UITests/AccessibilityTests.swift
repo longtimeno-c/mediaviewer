@@ -18,12 +18,13 @@ final class AccessibilityTests: XCTestCase {
     XCTAssertTrue(app.buttons["Details"].exists)
   }
 
-  func testOpenClipHidesTheViewerBehindIt() throws {
+  /// A clip plays on its own page of the viewer: its transport and the viewer's controls are both
+  /// there, each once.
+  func testOpenClipKeepsTheViewerControls() throws {
     let app = launched("clip")
     XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 30))
-    sleep(1)
-    XCTAssertFalse(app.buttons["Save to Photos"].exists, "The viewer's Save is reachable behind the clip.")
-    XCTAssertFalse(app.buttons["Details"].exists, "The viewer's Details is reachable behind the clip.")
+    XCTAssertEqual(app.buttons.matching(identifier: "Save to Photos").count, 1)
+    XCTAssertEqual(app.buttons.matching(identifier: "Details").count, 1)
   }
 
   func testRunningCopyReadsItsLineAndKeepsCancel() throws {

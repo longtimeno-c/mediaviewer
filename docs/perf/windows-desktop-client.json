@@ -1,0 +1,41 @@
+{
+ "machine": "Ryzen 7 5700X3D / RTX 4070, Windows 11",
+ "date": "2026-11-18",
+ "commit": "9bff6aae",
+ "how": "mv_tests \"[.desktop-client-perf]\", Release, loopback, three runs",
+ "runs": [
+  {
+   "files": 12,
+   "mib_each": 9.86952,
+   "list_ms": 28.2597,
+   "remote_first_pixel_ms": 140.413,
+   "remote_full_ms": 227.023,
+   "remote_arrow_cached_ms": 76.4566,
+   "remote_arrow_cold_ms": 94.3397,
+   "local_first_pixel_ms": 72.2865,
+   "local_full_ms": 88.2982
+  },
+  {
+   "files": 12,
+   "mib_each": 9.86952,
+   "list_ms": 25.21,
+   "remote_first_pixel_ms": 142.825,
+   "remote_full_ms": 229.087,
+   "remote_arrow_cached_ms": 77.2378,
+   "remote_arrow_cold_ms": 95.8506,
+   "local_first_pixel_ms": 72.3245,
+   "local_full_ms": 87.0008
+  },
+  {
+   "files": 12,
+   "mib_each": 9.86952,
+   "list_ms": 28.4883,
+   "remote_first_pixel_ms": 131.016,
+   "remote_full_ms": 216.662,
+   "remote_arrow_cached_ms": 77.7212,
+   "remote_arrow_cold_ms": 92.8085,
+   "local_first_pixel_ms": 71.8282,
+   "local_full_ms": 86.6864
+  }
+ ]
+}

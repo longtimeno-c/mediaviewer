@@ -21,10 +21,12 @@
 
 namespace mv::mobile::files {
 
-enum class kind : std::int32_t { none = -1, photo = 0, raw = 1, clip = 2 };
+enum class kind : std::int32_t { none = -1, photo = 0, raw = 1, clip = 2, other = 3 };
 
 // What the phone shows a file as, from its extension (the D5 table, io/media_extensions.h): a
-// photo, a RAW, a clip, or nothing (audio, documents and everything else are not shown).
+// photo, a RAW, a clip, or another file (a PDF, a save, an archive: listed by name, opened by the
+// phone's own preview, never decoded here), or nothing: a camera's or an editor's companion file
+// (an XMP sidecar, a THM or LRV beside a clip, Thumbs.db), which only clutters a folder.
 [[nodiscard]] kind kind_of(std::string_view name) noexcept;
 
 struct entry {
@@ -35,8 +37,8 @@ struct entry {
   kind k = kind::none;
 };
 
-// What a folder shows: its folders and the files the phone can show, hidden (dot) names left out,
-// in the listing's order.
+// What a folder shows: its folders, its photos and clips, and its other files, hidden (dot) names
+// and companion files left out, in the listing's order.
 [[nodiscard]] std::vector<entry> shown(std::span<const driftwire::serve::list_entry> listing);
 
 // One value ImageIO read, under the Exiv2 key the desktop's search_facts_of reads it by

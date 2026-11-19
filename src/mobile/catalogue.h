@@ -60,6 +60,9 @@ struct folder {
   std::int32_t parent = -1;
   std::uint32_t items = 0;
   bool has_subfolders = false;
+  // Documents and audio Local search indexed in it and beneath (kinds 3 and 4): not rows of any
+  // list, but a folder that holds only them is still a folder to open, and its tile counts them.
+  std::uint32_t files = 0;
 };
 
 struct month {

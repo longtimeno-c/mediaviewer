@@ -31,6 +31,8 @@ final class ClipModel {
   private(set) var phase: Phase = .reading
   private(set) var moments: [Moment] = []
   private(set) var isPlaying = false
+  /// Held at double speed (a finger on either side of the picture), until it lifts.
+  private(set) var isFast = false
   private(set) var seconds: TimeInterval = 0
   private(set) var length: TimeInterval
   private(set) var still: UIImage?
@@ -55,6 +57,8 @@ final class ClipModel {
   /// must not pull the bar back.
   private var seekTarget: TimeInterval?
   private var seekGeneration = 0
+  /// The page was left: a load still on its way must not start the player.
+  private var ended = false
 
   init(item: MediaItem, clips: ClipService) {
     self.item = item
@@ -65,8 +69,9 @@ final class ClipModel {
   func load(startAt: Moment?) async {
     try? AVAudioSession.sharedInstance().setCategory(.playback)
     moments = await clips.moments(for: item)
+    guard !ended else { return }  // the page was left while it was asked for
     await route(startAt: startAt)
-    if phase != .playable {
+    if phase != .playable, !ended {
       seconds = startAt?.seconds ?? 0
       still = await clips.still(of: item, at: seconds)
     }
@@ -74,6 +79,7 @@ final class ClipModel {
 
   private func route(startAt: Moment?) async {
     let route = await clips.route(for: item)
+    guard !ended else { return }
     if case .converted = route { isConverted = true }
     switch route {
     case .stream(let asset), .converted(let asset):
@@ -120,7 +126,10 @@ final class ClipModel {
     }
     endToken = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
                                                       object: playerItem, queue: .main) { [weak self] _ in
-      MainActor.assumeIsolated { self?.isPlaying = false }
+      MainActor.assumeIsolated {
+        self?.isPlaying = false
+        self?.isFast = false
+      }
     }
   }
 
@@ -167,18 +176,36 @@ final class ClipModel {
   }
 
   func stop() {
+    ended = true
+    isFast = false
+    isPlaying = false
     player.pause()
     downloadTask?.cancel()
     removeObservers()
   }
 
   func play() {
+    guard !ended else { return }
     if length > 0, seconds >= length - 0.05 { seek(to: 0) }
     player.play()
     isPlaying = true
   }
 
+  /// Double speed while held; back to normal on release. A paused clip starts playing fast, as a
+  /// hold on a short video does elsewhere.
+  func setFast(_ on: Bool) {
+    guard phase == .playable, !ended, on != isFast else { return }
+    isFast = on
+    if on {
+      if !isPlaying { play() }
+      player.rate = 2
+    } else if isPlaying {
+      player.rate = 1
+    }
+  }
+
   func pause() {
+    isFast = false
     player.pause()
     isPlaying = false
   }
@@ -257,6 +284,89 @@ final class ClipModel {
   }
 }
 
+/// What a clip's own stream says about it, for Details: read from the clip already open, so it
+/// costs the server nothing more. A clip the server converts reports the conversion, not the file.
+struct VideoFacts: Equatable, Sendable {
+  var resolution: String?
+  var frameRate: String?
+  var codec: String?
+  var dynamicRange: String?
+  var bitRate: String?
+  var audio: String?
+  var converted = false
+}
+
+extension ClipModel {
+  func videoFacts() async -> VideoFacts? {
+    guard phase == .playable, let asset = player.currentItem?.asset else { return nil }
+    var facts = VideoFacts(converted: isConverted)
+    if let video = try? await asset.loadTracks(withMediaType: .video).first {
+      if let (size, transform) = try? await video.load(.naturalSize, .preferredTransform) {
+        let shown = size.applying(transform)
+        let w = Int(abs(shown.width).rounded()), h = Int(abs(shown.height).rounded())
+        if w > 0, h > 0 { facts.resolution = "\(w) × \(h)" + Self.resolutionName(w, h) }
+      }
+      if let rate = try? await video.load(.nominalFrameRate), rate > 0 {
+        // 29.97 stays as it is; 14.9997 from a stream's rounding is 15.
+        facts.frameRate = abs(rate - rate.rounded()) < 0.01 ? "\(Int(rate.rounded())) fps" : String(format: "%.2f fps", rate)
+      }
+      if let formats = try? await video.load(.formatDescriptions), let first = formats.first {
+        facts.codec = Self.codecName(CMFormatDescriptionGetMediaSubType(first))
+      }
+      if let traits = try? await video.load(.mediaCharacteristics), traits.contains(.containsHDRVideo) {
+        facts.dynamicRange = "HDR"
+      }
+      if let bits = try? await video.load(.estimatedDataRate), bits > 0 {
+        facts.bitRate = String(format: "%.1f Mbit/s", Double(bits) / 1_000_000)
+      }
+    }
+    if let audio = try? await asset.loadTracks(withMediaType: .audio).first,
+       let formats = try? await audio.load(.formatDescriptions), let first = formats.first {
+      var parts = [Self.codecName(CMFormatDescriptionGetMediaSubType(first))].compactMap { $0 }
+      if let basic = CMAudioFormatDescriptionGetStreamBasicDescription(first)?.pointee {
+        let channels = Int(basic.mChannelsPerFrame)
+        parts.append(channels == 1 ? "mono" : channels == 2 ? "stereo" : "\(channels) channels")
+        if basic.mSampleRate > 0 { parts.append(String(format: "%.1f kHz", basic.mSampleRate / 1000)) }
+      }
+      if !parts.isEmpty { facts.audio = parts.joined(separator: " · ") }
+    }
+    return facts
+  }
+
+  private static func resolutionName(_ w: Int, _ h: Int) -> String {
+    switch min(w, h) {
+    case 2160...: return " (4K)"
+    case 1440..<2160: return " (1440p)"
+    case 1080..<1440: return " (1080p)"
+    case 720..<1080: return " (720p)"
+    default: return ""
+    }
+  }
+
+  private static func codecName(_ code: FourCharCode) -> String? {
+    switch code {
+    case kCMVideoCodecType_HEVC, kCMVideoCodecType_HEVCWithAlpha: return "HEVC"
+    case kCMVideoCodecType_H264: return "H.264"
+    case kCMVideoCodecType_AppleProRes422, kCMVideoCodecType_AppleProRes422HQ, kCMVideoCodecType_AppleProRes422LT,
+         kCMVideoCodecType_AppleProRes422Proxy, kCMVideoCodecType_AppleProRes4444, kCMVideoCodecType_AppleProRes4444XQ:
+      return "ProRes"
+    case kCMVideoCodecType_DolbyVisionHEVC: return "HEVC (Dolby Vision)"
+    case kCMVideoCodecType_VP9: return "VP9"
+    case kCMVideoCodecType_AV1: return "AV1"
+    case kCMVideoCodecType_MPEG2Video: return "MPEG-2"
+    case kAudioFormatMPEG4AAC, kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2: return "AAC"
+    case kAudioFormatAppleLossless: return "ALAC"
+    case kAudioFormatLinearPCM: return "PCM"
+    case kAudioFormatAC3: return "AC-3"
+    case kAudioFormatEnhancedAC3: return "E-AC-3"
+    case kAudioFormatOpus: return "Opus"
+    case kAudioFormatMPEGLayer3: return "MP3"
+    case kAudioFormatFLAC: return "FLAC"
+    default: return nil
+    }
+  }
+}
+
 private struct PlayerSurface: UIViewRepresentable {
   let player: AVPlayer
 
@@ -276,28 +386,62 @@ private struct PlayerSurface: UIViewRepresentable {
   func updateUIView(_ view: SurfaceView, context: Context) {}
 }
 
-struct ClipScreen: View {
-  let entry: GridEntry
-  let transfer: OriginalTransfer
-  let onClose: () -> Void
+/// The clip open in the viewer: one at a time, on its own page of the pager, so a swipe moves to
+/// the next item as it does from a photo, and the viewer's controls and filmstrip stay. Owned by
+/// the viewer, not the page: a page laid out again never restarts the clip.
+@MainActor
+@Observable
+final class ClipLive {
+  /// The page whose clip is open.
+  private(set) var index: Int?
+  private(set) var entryID: String?
+  private(set) var clip: ClipModel?
+  /// Room the viewer's controls take at the top and bottom (the safe area when they are hidden).
+  var insets = EdgeInsets()
+  var chromeShown = true
+  /// Where the position bar is on screen: a drag that starts on it scrubs, never pages.
+  var scrubFrame = CGRect.null
+  /// Where the picture is on screen: a press held on either side of it plays at double speed.
+  var pictureFrame = CGRect.null
+  @ObservationIgnored private var loading: Task<Void, Never>?
 
-  @Environment(AppModel.self) private var model
+  func open(_ entry: GridEntry, at index: Int, clips: ClipService) {
+    close()
+    let clip = ClipModel(item: entry.item, clips: clips)
+    self.clip = clip
+    self.index = index
+    entryID = entry.id
+    loading = Task { await clip.load(startAt: entry.moment) }
+  }
+
+  func close() {
+    loading?.cancel()
+    loading = nil
+    clip?.stop()
+    clip = nil
+    index = nil
+    entryID = nil
+    scrubFrame = .null
+    pictureFrame = .null
+  }
+}
+
+/// The open clip's page: the player, its position bar and buttons, and its moments.
+struct ClipLivePage: View {
+  let entry: GridEntry
+  let live: ClipLive
+  let transfer: OriginalTransfer
+  let onTap: () -> Void
   @Environment(\.verticalSizeClass) private var verticalSize
-  @State private var clip: ClipModel?
 
   var body: some View {
     ZStack {
-      Color.black.ignoresSafeArea()
-      if let clip {
-        ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact, onClose: onClose)
+      Color.black
+      if let clip = live.clip, live.entryID == entry.id {
+        ClipBody(clip: clip, entry: entry, transfer: transfer, compactHeight: verticalSize == .compact,
+                 live: live, onTapPicture: onTap)
       }
     }
-    .task(id: entry.id) {
-      let new = ClipModel(item: entry.item, clips: model.services.clips)
-      clip = new
-      await new.load(startAt: entry.moment)
-    }
-    .onDisappear { clip?.stop() }
   }
 }
 
@@ -306,71 +450,55 @@ private struct ClipBody: View {
   let entry: GridEntry
   let transfer: OriginalTransfer
   let compactHeight: Bool
-  let onClose: () -> Void
+  let live: ClipLive
+  /// Shows and hides the viewer's controls, as a tap on a photo does.
+  let onTapPicture: () -> Void
 
   @Environment(AppModel.self) private var model
   @Environment(\.dynamicTypeSize) private var typeSize
-  @State private var controlsShown = true
 
   var body: some View {
     Group {
       if compactHeight {
-        // The picture sits behind, so it can fill the screen while the controls keep to the safe area.
+        // The picture fills the screen; its controls show and hide with the viewer's.
         VStack(spacing: 0) {
-          if controlsShown {
-            topBar
-            Spacer(minLength: 0)
+          Spacer(minLength: 0)
+          if live.chromeShown {
             below
               .padding(Theme.inset)
               .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(.black.opacity(0.55)))
           }
         }
-        .padding(12)
+        .padding(.leading, live.insets.leading + 12)
+        .padding(.trailing, live.insets.trailing + 12)
+        .padding(.top, live.insets.top)
+        .padding(.bottom, live.insets.bottom + 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-          picture
-            .ignoresSafeArea()
-            .contentShape(Rectangle())
-            .onTapGesture { controlsShown.toggle() }
-        }
+        .background { picture }
       } else if typeSize.isAccessibilitySize {
         // Large type does not fit beside a flexible picture, so everything scrolls as one column.
-        VStack(spacing: 0) {
-          topBar.padding(.horizontal, 12).padding(.top, 4)
-          ScrollView {
-            VStack(spacing: 0) {
-              picture.frame(height: 220)
-              below.padding(.horizontal, 16).padding(.top, 12)
-              momentRows
-            }
+        ScrollView {
+          VStack(spacing: 0) {
+            picture.frame(height: 220)
+            below.padding(.horizontal, 16).padding(.top, 12)
+            momentRows
           }
         }
+        .padding(.top, live.insets.top)
+        .padding(.bottom, live.insets.bottom)
       } else {
+        // Full screen (the viewer's controls hidden): the picture takes all but the position bar
+        // and the buttons; the moments come back with the controls.
         VStack(spacing: 0) {
-          topBar.padding(.horizontal, 12).padding(.top, 4)
           picture.frame(maxHeight: .infinity)
-          below.padding(.horizontal, 16).padding(.top, 12)
-          momentsList
+          below.padding(.horizontal, 16).padding(.top, live.chromeShown ? 12 : 4)
+          if live.chromeShown { momentsList }
         }
+        .padding(.top, live.insets.top)
+        .padding(.bottom, live.insets.bottom)
       }
     }
-  }
-
-  private var topBar: some View {
-    VStack(spacing: 8) {
-      HStack(spacing: 8) {
-        Button(action: onClose) { Image(systemName: "xmark") }
-          .buttonStyle(ChromeIconStyle())
-          .accessibilityLabel("Close")
-        Spacer()
-        OriginalButtons(item: entry.item, transfer: transfer)
-      }
-      if transfer.state(for: entry.item) != nil {
-        OriginalProgress(item: entry.item, transfer: transfer)
-          .padding(Theme.inset)
-          .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(Theme.surface))
-      }
-    }
+    .animation(.easeOut(duration: 0.15), value: live.insets)
   }
 
   @ViewBuilder
@@ -383,7 +511,29 @@ private struct ClipBody: View {
         posterImage
       }
     }
+    .contentShape(Rectangle())
+    .onTapGesture(perform: onTapPicture)
+    // Either side, held, plays at double speed (the pager's press, PagerController): it needs
+    // to know where the picture is.
+    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { live.pictureFrame = $0 }
+    .onDisappear { live.pictureFrame = .null }
+    .overlay(alignment: .top) {
+      if clip.isFast {
+        Label("2×", systemImage: "forward.fill")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.white)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 5)
+          .background(Capsule().fill(.black.opacity(0.55)))
+          .padding(.top, 12)
+          .transition(.opacity)
+          .accessibilityHidden(true)
+      }
+    }
+    .animation(.easeOut(duration: 0.15), value: clip.isFast)
+    .accessibilityAction(named: clip.isFast ? "Normal speed" : "Double speed") { clip.setFast(!clip.isFast) }
   }
+
 
   private var posterImage: some View {
     Color.black.overlay {
@@ -401,7 +551,7 @@ private struct ClipBody: View {
     case .playable:
       VStack(spacing: 8) {
         if clip.isWaiting { ProgressLine(verb: clip.isConverted ? FailureCopy.clipConverting : "Waiting for the clip", fraction: nil) }
-        ClipTrack(clip: clip)
+        ClipTrack(clip: clip, live: live)
         transport
       }
     case .tooBig(let needed, let available, let bytes):
@@ -427,7 +577,7 @@ private struct ClipBody: View {
 
   private func fallback(title: String, line: String, button: String) -> some View {
     VStack(alignment: .leading, spacing: 12) {
-      if !clip.moments.isEmpty { ClipTrack(clip: clip) }
+      if !clip.moments.isEmpty { ClipTrack(clip: clip, live: live) }
       VStack(alignment: .leading, spacing: 4) {
         Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.title)
         Text(line).font(.footnote).foregroundStyle(Theme.body)
@@ -460,6 +610,23 @@ private struct ClipBody: View {
   }
 
   private var transport: some View {
+    ZStack {
+      transportButtons
+      HStack {
+        Spacer(minLength: 0)
+        Button(action: onTapPicture) {
+          transportIcon(live.chromeShown ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+            .font(.system(size: 17))
+        }
+        .accessibilityLabel(live.chromeShown ? "Full screen" : "Exit full screen")
+        .accessibilityShowsLargeContentViewer()
+      }
+    }
+    .foregroundStyle(Theme.title)
+    .buttonStyle(.plain)
+  }
+
+  private var transportButtons: some View {
     HStack(spacing: 28) {
       Button { clip.skip(by: -10) } label: { transportIcon("gobackward.10") }
         .accessibilityLabel("Back 10 seconds")
@@ -518,6 +685,8 @@ private struct ClipBody: View {
 /// A 3 pt line with a tick at each moment. A touch near a tick lands on it.
 private struct ClipTrack: View {
   let clip: ClipModel
+  /// Told where the bar is, so the pager leaves a drag on it alone.
+  var live: ClipLive? = nil
   @State private var dragging = false
 
   var body: some View {
@@ -560,6 +729,8 @@ private struct ClipTrack: View {
         })
       }
       .frame(height: 44)
+      .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { live?.scrubFrame = $0 }
+      .onDisappear { live?.scrubFrame = .null }
       .accessibilityElement()
       .accessibilityLabel("Position")
       .accessibilityValue(String.clockFrom(clip.seconds))

@@ -73,6 +73,7 @@ public enum FailureCopy {
   public static let clipConverting = "Converting on your server"
   // Offline folders (docs/plans/self-hosted.md §6): a drive unplugged from the server.
   public static let notConnected = "Not connected"
+  public static let fileNotOpened = "Couldn't open this file. Check the connection and try again."
   public static func driveNotConnected(_ folder: String) -> String {
     "The drive with “\(folder)” isn't connected to your server. Connect it, then try again."
   }
