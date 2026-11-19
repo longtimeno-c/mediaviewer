@@ -41,27 +41,38 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return
       }
       guard let settings = networkSettings(for: item) else {
-        stop()
+        mv_vpn_stop(vpn)  // this handle: it was never published to self.vpn
         completionHandler(VPNServerProblem.unreachable.error)  // its name did not resolve
         return
       }
       vpnLock.withLock { self.vpn = vpn }
       setTunnelNetworkSettings(settings) { [self] error in
-        if let error {
-          stop()
-          completionHandler(error)
-          return
+        queue.async { [self] in
+          // stopTunnel may have run meanwhile: then this start is over, not started.
+          let still = vpnLock.withLock { self.vpn == vpn }
+          if let error {
+            stop()
+            completionHandler(error)
+            return
+          }
+          guard still else {
+            completionHandler(NEVPNError(.connectionFailed))
+            return
+          }
+          readPackets()
+          watchPath()
+          completionHandler(nil)
         }
-        readPackets()
-        watchPath()
-        completionHandler(nil)
       }
     }
   }
 
   override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-    monitor?.cancel()
-    monitor = nil
+    let m = vpnLock.withLock { () -> NWPathMonitor? in
+      defer { monitor = nil }
+      return monitor
+    }
+    m?.cancel()
     queue.async { [self] in
       stop()
       completionHandler()
@@ -155,8 +166,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     let json = String(cString: raw)
     mv_vpn_free(raw)
     guard let s = VPNInterfaceSettings.parse(json) else { return nil }
-    let host = item.relay.split(separator: ":").dropLast().joined(separator: ":")
-    let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
+    // The server's first resolved address (the core resolved it for the exclusions just now).
+    guard let remote = s.remote else { return nil }
+    let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: remote)
     let v4 = NEIPv4Settings(addresses: [s.address4], subnetMasks: [VPNInterfaceSettings.mask(s.prefix4)])
     v4.includedRoutes = s.include4.map(Self.route4)
     v4.excludedRoutes = s.exclude4.map(Self.route4)
@@ -189,18 +201,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       defer { self.lastPath = path }
       guard let last = self.lastPath, !path.isSameNetwork(as: last) else { return }
       self.reasserting = true
-      // On `queue` already (the monitor's), as stop() is: the VPN cannot go while this runs.
-      guard let item = self.item, let settings = self.networkSettings(for: item) else { return }
-      self.setTunnelNetworkSettings(settings) { [weak self] _ in
-        guard let self else { return }
-        self.queue.async {
-          guard let v = self.vpnLock.withLock({ self.vpn }) else { return }
-          self.reasserting = mv_vpn_check(v) != MV_VPN_OK
-        }
-      }
+      self.pathMoves += 1
+      self.rejoin(move: self.pathMoves, attempt: 0)
     }
     m.start(queue: queue)
-    monitor = m
+    let stopped = vpnLock.withLock { () -> Bool in
+      guard vpn != nil else { return true }  // stopTunnel ran first
+      monitor = m
+      return false
+    }
+    if stopped { m.cancel() }
+  }
+
+  /// Network moves seen (on `queue`): a later move supersedes an earlier one's retries.
+  private var pathMoves = 0
+
+  /// After a move, on `queue` (as stop() is, so the VPN cannot go while this runs): the routes for
+  /// the new network, then the server asked. Until both work (the name not resolving yet, iOS
+  /// refusing the settings, the server not answering), again after 1, 2, 4 … 30 s, still
+  /// reasserting; a newer move or a stop ends it.
+  private func rejoin(move: Int, attempt: Int) {
+    guard move == pathMoves, vpnLock.withLock({ vpn != nil }) else { return }
+    let again = { [weak self] in
+      let delay = min(30.0, pow(2.0, Double(attempt)))
+      self?.queue.asyncAfter(deadline: .now() + delay) { self?.rejoin(move: move, attempt: attempt + 1) }
+    }
+    guard let item, let settings = networkSettings(for: item) else { return again() }
+    setTunnelNetworkSettings(settings) { [weak self] error in
+      guard let self else { return }
+      self.queue.async {
+        guard error == nil, let v = self.vpnLock.withLock({ self.vpn }) else {
+          if error != nil { again() }
+          return
+        }
+        let ok = mv_vpn_check(v) == MV_VPN_OK
+        self.reasserting = !ok
+        if !ok { again() }
+      }
+    }
   }
 }
 

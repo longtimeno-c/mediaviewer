@@ -117,6 +117,8 @@ public struct VPNInterfaceSettings: Decodable, Equatable, Sendable {
     /// The default route (the system's own, not a /0 of ours).
     public var isDefault: Bool { prefix == 0 }
   }
+  /// The server's first resolved address: NEPacketTunnelNetworkSettings' tunnelRemoteAddress.
+  public var remote: String?
   public var address4: String
   public var prefix4: Int
   public var dns4: String
@@ -173,5 +175,57 @@ public struct VPNItemStore: Sendable {
     return VPNTunnelItem.decode(data)
   }
 
+  /// Whether an item is kept, from its attributes alone: the secret is not read.
+  public func exists() -> Bool {
+    var q = query
+    q[kSecReturnAttributes as String] = true
+    q[kSecMatchLimit as String] = kSecMatchLimitOne
+    var out: AnyObject?
+    return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
+  }
+
   public func remove() { SecItemDelete(query as CFDictionary) }
+}
+
+/// What iOS's VPN status means for the screen (LinkVPN), pure so it is tested without iOS.
+public enum VPNStatusMachine {
+  /// NEVPNStatus's raw values (NetworkExtension is not imported here).
+  public enum Status: Int, Sendable {
+    case invalid = 0, disconnected = 1, connecting = 2, connected = 3, reasserting = 4, disconnecting = 5
+  }
+
+  /// One switch-on: the person asked for it, and whether iOS has since said "connecting".
+  public struct Attempt: Equatable, Sendable {
+    public var wantsOn: Bool
+    public var sawConnecting: Bool
+    public init(wantsOn: Bool = false, sawConnecting: Bool = false) {
+      self.wantsOn = wantsOn
+      self.sawConnecting = sawConnecting
+    }
+  }
+
+  public enum Phase: Equatable, Sendable {
+    case connecting, connected, reconnecting, off
+    /// It stopped after starting while wanted on: the extension's error says why.
+    case failed
+    /// Nothing to show: disconnecting, or the "disconnected" iOS posts after a save, before the
+    /// start it is about to make.
+    case unchanged
+  }
+
+  public static func phase(_ status: Status, _ attempt: inout Attempt) -> Phase {
+    switch status {
+    case .connecting:
+      if attempt.wantsOn { attempt.sawConnecting = true }
+      return .connecting
+    case .connected: return .connected
+    case .reasserting: return .reconnecting
+    case .disconnecting: return .unchanged
+    case .disconnected, .invalid:
+      guard attempt.wantsOn else { return .off }
+      guard attempt.sawConnecting else { return .unchanged }
+      attempt = Attempt()
+      return .failed
+    }
+  }
 }

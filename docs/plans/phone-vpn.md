@@ -610,19 +610,31 @@ Built, and tested where it can be without a device:
   it against an in-process loopback relay.
 - **S1's two shared fixes** (the knock key handed in, the ticker that sleeps) were already on main
   (PR #675), with the IPv6 routing fix (#677).
+- **The iOS limits profile** (§2.1), after the 2026-11-19 review: `vpn::limits` (netstack.h:
+  connections, datagram flows, send buffer per connection; the desktop's constants by default)
+  passed through `vpn::runner::options::lim` to the stack. The extension runs at
+  `MV_VPN_MAX_TCP` 96, `MV_VPN_MAX_UDP` 64 and `MV_VPN_SEND_BUFFER` 64 KiB; a `[phone-vpn]` test
+  sees the 97th connection reset. The worker pool (a thread per forward today) is still S1's
+  question for the device.
 - **The iOS core** gains BoringSSL (`tools/ios/vcpkg.json`; the triplets build its `bssl` tool as
   a plain program) and builds the two libraries (`tools/ios/build-core.sh`).
 - **The extension** `DriftwireTunnel.appex` (target in `MediaViewerMobile.xcodeproj`, embedded in
   the app's PlugIns): `App/DriftwireTunnel/PacketTunnelProvider.swift` reads the tunnel item from
   the shared Keychain group, starts the VPN, sets IPv4 and IPv6 (every address through the tunnel,
   the server's addresses and the local networks left out, DNS to the server's resolver), and on a
-  path change reasserts, sets the routes again and checks the server. Entitlements in
+  path change reasserts, sets the routes again and checks the server, again with backoff (1 s
+  doubling to 30 s) until both work; iOS's tunnel remote address is the server's first resolved
+  address. Entitlements in
   `App/Entitlements/` (§4.1). Builds for the Simulator and archives for a device unsigned; it has
   never run (no device; packet tunnels do not run in the Simulator).
-- **`MobileLink/LinkVPN.swift`**, the real `VPNService`: connect(code:) parses through the C ABI,
-  derives the knock key and keeps the tunnel item; acceptConsent persists; setOn saves
+- **`MobileLink/LinkVPN.swift`**, the real `VPNService`: connect(code:) parses through the C ABI
+  and derives the knock key, and keeps both **in memory only**; acceptConsent is remembered in
+  memory too. Only setOn(true) writes the tunnel item, the host and consent, then saves
   `NETunnelProviderManager` ("MediaViewer — your server") and starts it; status from
-  `NEVPNStatusDidChange` and the extension's last error; remove() as call 1 says. The shared,
+  `NEVPNStatusDidChange` through `VPNStatusMachine` (an early "disconnected" after the save is not
+  a failure) and the extension's last error; remove() as call 1 says, and a configuration loaded
+  at launch after a remove() stays removed. At launch the Keychain item's existence is checked off
+  the main thread, attributes only. The shared,
   pure pieces (names, the item, the App Group state, the routes, the problem codes) are in
   `MobileLinkSupport/VPNTunnel.swift`, tested in `VPNTunnelTests`.
 
@@ -634,7 +646,15 @@ Built, and tested where it can be without a device:
 
 Not built: S1's device measurements (§2.4); `provision.py --ios`; the S2 `[phone-relay]`
 items of option A (call 1 chose the pasted code instead); the "extension cannot read the pairing
-record" check, which needs a signed device build; the iOS limits profile (S3).
+record" check, which needs a signed device build.
+
+Open after the review (2026-11-19), for a device:
+
+- **#10:** iOS may hand the app the provider's NSError wrapped, or as an NEVPNError, so
+  `VPNServerProblem(error:)` might not see the server's code; check on a device what
+  `fetchLastDisconnectError` returns after a refused key, and unwrap `NSUnderlyingErrorKey` if needed.
+- **#12:** the NAS's direct path is not excluded yet (§1.3, "required, not optional"): with the
+  VPN on away from home the library's punched path would enter the tunnel. S3.
 
 ### S3 — The tunnel, routes and IPv6 (shared code and iOS)
 

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The VPN through your server, for real (docs/plans/phone-vpn.md S2): the packet tunnel extension
 // (App/DriftwireTunnel) runs the whole VPN; this side keeps its one secret and its configuration.
-// Built in but opt-in (owner, 2026-11-19): nothing goes to the Keychain or iOS's VPN settings until
-// the person pastes the server's VPN code (connect) and switches it on (setOn); remove() takes all
-// of it away again. The code is read by the laptop's own parser, behind the C ABI (owner call 1).
+// Built in but opt-in (owner, 2026-11-19): nothing goes to the Keychain, the App Group or iOS's VPN
+// settings until the person has pasted the server's VPN code (connect, kept in memory until then)
+// AND switched it on (setOn); remove() takes all of it away again. The code is read by the laptop's
+// own parser, behind the C ABI (owner call 1).
 import CMobileVPN
 import Foundation
 import MobileKit
@@ -17,8 +18,14 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   private var snapshot: VPNSnapshot                                    // under lock
   private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]  // under lock
   private var manager: NETunnelProviderManager?                        // under lock
-  /// The person switched it on: a disconnect is then a failure to say, not "Off".
-  private var wantsOn = false                                          // under lock
+  /// This switch-on, as the status machine follows it.
+  private var attempt = VPNStatusMachine.Attempt()                     // under lock
+  /// A pasted code not yet switched on: kept here, written nowhere (opt-in).
+  private var pending: VPNTunnelItem?                                  // under lock
+  /// Consent given in this run, before the first switch-on writes it down.
+  private var consentedNow = false                                     // under lock
+  /// Bumped by remove(): a load that started before it must not bring the configuration back.
+  private var generation = 0                                           // under lock
   private let defaults: UserDefaults
   private let item: VPNItemStore
   private var observer: NSObjectProtocol?
@@ -27,17 +34,29 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   public init(bundle: Bundle = .main) {
     defaults = UserDefaults(suiteName: VPNNames.appGroup) ?? .standard
     item = VPNItemStore(group: VPNNames.keychainGroup(prefix: bundle.object(forInfoDictionaryKey: VPNNames.prefixInfoKey) as? String))
-    let state = VPNSharedState.load(defaults)
-    let setUp = item.load() != nil
-    snapshot = VPNSnapshot(status: setUp ? .off : .notSetUp, host: setUp ? state.host : nil, consented: state.consented)
+    // Not set up until the Keychain answers, off the main thread (attributes only, no secret).
+    snapshot = VPNSnapshot(status: .notSetUp)
     observer = NotificationCenter.default.addObserver(forName: .NEVPNStatusDidChange, object: nil, queue: nil) {
       [weak self] note in
       guard let self, let connection = note.object as? NEVPNConnection,
             connection === self.lock.withLock({ self.manager?.connection }) else { return }
       self.statusChanged(connection)
     }
-    // A configuration saved by an earlier run: its state now.
-    if setUp { Task { [weak self] in await self?.loadManager() } }
+    let generation = 0
+    Task.detached(priority: .utility) { [weak self, item, defaults] in
+      guard item.exists() else { return }
+      let state = VPNSharedState.load(defaults)
+      guard let self, self.lock.withLock({ self.generation == generation && self.pending == nil }) else { return }
+      self.publish {
+        if !$0.isSetUp {
+          $0.status = .off
+          $0.host = state.host
+          $0.consented = state.consented
+        }
+      }
+      // A configuration saved by an earlier run: its state now.
+      await self.loadManager(generation: generation)
+    }
   }
 
   deinit {
@@ -74,23 +93,18 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
       var out = [UInt8](repeating: 0, count: 32)
       return mv_vpn_derive_knock_key(key, &out) == MV_VPN_OK ? Data(out) : nil
     }.value
-    // An earlier code's tunnel stops first: the new code replaces it and leaves the VPN off.
+    guard let knock else {
+      publish { $0.status = .failed(.other("This phone couldn't read the VPN code. Try again.")) }
+      return
+    }
+    // An earlier code's tunnel stops: the new code replaces it and leaves the VPN off. Kept in
+    // memory only, until the switch is turned on.
     let earlier = lock.withLock { () -> NETunnelProviderManager? in
-      wantsOn = false
+      attempt = VPNStatusMachine.Attempt()
+      pending = VPNTunnelItem(relay: relay, key: key, knock: knock)
       return manager
     }
     earlier?.connection.stopVPNTunnel()
-    guard let knock, item.save(VPNTunnelItem(relay: relay, key: key, knock: knock)) else {
-      publish { $0.status = .failed(.other("This phone couldn't keep the VPN code. Try again.")) }
-      return
-    }
-    var state = VPNSharedState.load(defaults)
-    state.host = relay
-    state.save(defaults)
-    if let earlier, let proto = earlier.protocolConfiguration as? NETunnelProviderProtocol, proto.serverAddress != relay {
-      proto.serverAddress = relay
-      try? await earlier.saveToPreferences()
-    }
     publish {
       $0.status = .off
       $0.host = relay
@@ -98,16 +112,14 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   }
 
   public func acceptConsent() async {
-    var state = VPNSharedState.load(defaults)
-    state.consented = true
-    state.save(defaults)
+    lock.withLock { consentedNow = true }
     publish { $0.consented = true }
   }
 
   public func setOn(_ on: Bool) async {
     guard on else {
       let m = lock.withLock { () -> NETunnelProviderManager? in
-        wantsOn = false
+        attempt = VPNStatusMachine.Attempt()
         return manager
       }
       m?.connection.stopVPNTunnel()
@@ -116,27 +128,47 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     }
     let now = current
     guard now.isSetUp, now.consented, let host = now.host else { return }
-    lock.withLock { wantsOn = true }
+    let (toWrite, consent) = lock.withLock { () -> (VPNTunnelItem?, Bool) in
+      attempt = VPNStatusMachine.Attempt(wantsOn: true)
+      return (pending, consentedNow)
+    }
     publish { $0.status = .connecting }
+    // Switched on: only now is anything written (the item, the host and consent).
+    if let toWrite {
+      guard item.save(toWrite) else {
+        lock.withLock { attempt = VPNStatusMachine.Attempt() }
+        publish { $0.status = .failed(.other("This phone couldn't keep the VPN code. Try again.")) }
+        return
+      }
+      lock.withLock { pending = nil }
+    }
+    var state = VPNSharedState.load(defaults)
+    state.host = host
+    state.consented = state.consented || consent
+    state.save(defaults)
     let m: NETunnelProviderManager
     do {
       m = try await savedManager(host: host)
     } catch {
-      lock.withLock { wantsOn = false }
+      lock.withLock { attempt = VPNStatusMachine.Attempt() }
       publish { $0.status = .failed(.notAllowed) }  // the person declined iOS's alert
       return
     }
     do {
       try m.connection.startVPNTunnel()
     } catch {
-      lock.withLock { wantsOn = false }
+      lock.withLock { attempt = VPNStatusMachine.Attempt() }
       publish { $0.status = .failed(.other("iOS couldn't start the VPN.")) }
     }
   }
 
   public func remove() async {
     let m = lock.withLock { () -> NETunnelProviderManager? in
-      wantsOn = false
+      generation += 1
+      attempt = VPNStatusMachine.Attempt()
+      pending = nil
+      consentedNow = false
+      defer { manager = nil }
       return manager
     }
     m?.connection.stopVPNTunnel()
@@ -146,7 +178,6 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     item.remove()
     defaults.removePersistentDomain(forName: VPNNames.appGroup)
     defaults.removeObject(forKey: VPNSharedState.defaultsKey)  // a standard-defaults fallback, too
-    lock.withLock { manager = nil }
     publish { $0 = VPNSnapshot(status: .notSetUp) }
   }
 
@@ -156,10 +187,15 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     (m.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == VPNNames.extensionBundleID
   }
 
-  private func loadManager() async {
+  private func loadManager(generation: Int) async {
     guard let all = try? await NETunnelProviderManager.loadAllFromPreferences(),
           let m = all.first(where: Self.isOurs) else { return }
-    lock.withLock { manager = m }
+    // remove() ran meanwhile: what was loaded is gone, and stays gone.
+    guard lock.withLock({ () -> Bool in
+      guard self.generation == generation else { return false }
+      manager = m
+      return true
+    }) else { return }
     statusChanged(m.connection)
   }
 
@@ -181,24 +217,21 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   }
 
   private func statusChanged(_ connection: NEVPNConnection) {
-    switch connection.status {
+    guard let status = VPNStatusMachine.Status(rawValue: connection.status.rawValue) else { return }
+    let phase = lock.withLock { VPNStatusMachine.phase(status, &attempt) }
+    switch phase {
     case .connecting: publish { $0.status = .connecting }
     case .connected:
       let since = connection.connectedDate ?? Date()
       publish { $0.status = .connected(since: since) }
-    case .reasserting: publish { $0.status = .reconnecting }
-    case .disconnecting: break
-    case .disconnected, .invalid:
-      guard lock.withLock({ wantsOn }) else {
-        publish { if $0.isSetUp { $0.status = .off } }
-        return
-      }
+    case .reconnecting: publish { $0.status = .reconnecting }
+    case .off: publish { if $0.isSetUp { $0.status = .off } }
+    case .unchanged: break
+    case .failed:
       // It stopped while wanted on: why, in the extension's words (VPNServerProblem).
-      lock.withLock { wantsOn = false }
       connection.fetchLastDisconnectError { [weak self] error in
         self?.publish { $0.status = Self.status(after: error) }
       }
-    @unknown default: break
     }
   }
 

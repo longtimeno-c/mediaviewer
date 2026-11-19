@@ -71,5 +71,41 @@ final class VPNTunnelTests: XCTestCase {
     XCTAssertEqual(VPNInterfaceSettings.mask(24), "255.255.255.0")
     XCTAssertEqual(VPNInterfaceSettings.mask(32), "255.255.255.255")
     XCTAssertEqual(VPNInterfaceSettings.mask(0), "0.0.0.0")
+    XCTAssertNil(s.remote)  // optional: the server's address when the core gives it
+    let withRemote = try XCTUnwrap(VPNInterfaceSettings.parse(json.replacingOccurrences(of: "{\"address4\"", with: "{\"remote\":\"203.0.113.9\",\"address4\"")))
+    XCTAssertEqual(withRemote.remote, "203.0.113.9")
+  }
+}
+
+final class VPNStatusMachineTests: XCTestCase {
+  typealias M = VPNStatusMachine
+
+  func testAnEarlyDisconnectAfterTheSaveIsNotAFailure() {
+    // Switched on: iOS posts "disconnected" for the configuration it just saved, then connects.
+    var a = M.Attempt(wantsOn: true)
+    XCTAssertEqual(M.phase(.disconnected, &a), .unchanged)
+    XCTAssertTrue(a.wantsOn)  // still wanted: the real failure, if any, is still to come
+    XCTAssertEqual(M.phase(.connecting, &a), .connecting)
+    XCTAssertEqual(M.phase(.connected, &a), .connected)
+    XCTAssertEqual(M.phase(.reasserting, &a), .reconnecting)
+    XCTAssertEqual(M.phase(.disconnecting, &a), .unchanged)
+    // It stopped on its own after starting: a failure, said once.
+    XCTAssertEqual(M.phase(.disconnected, &a), .failed)
+    XCTAssertEqual(a, M.Attempt())
+    XCTAssertEqual(M.phase(.disconnected, &a), .off)
+  }
+
+  func testAStartThatFailsIsAFailure() {
+    var a = M.Attempt(wantsOn: true)
+    XCTAssertEqual(M.phase(.connecting, &a), .connecting)
+    XCTAssertEqual(M.phase(.invalid, &a), .failed)  // the extension refused the start
+  }
+
+  func testSwitchedOffIsOff() {
+    var a = M.Attempt()
+    XCTAssertEqual(M.phase(.connecting, &a), .connecting)
+    XCTAssertFalse(a.sawConnecting)  // not an attempt of the person's
+    XCTAssertEqual(M.phase(.disconnected, &a), .off)
+    XCTAssertEqual(M.Status(rawValue: 3), .connected)  // NEVPNStatus.connected
   }
 }
