@@ -675,7 +675,7 @@ int host_vpn(const host_layout& l, bool on, std::uint16_t tls_port, setup_io& io
   // With the look, the code (it says so; Connect turns the look on), else the line as before.
   if (tls) line = serve::relay_connect_code(line, true);
   // A paragraph a line (the session's transcript wraps them to its width).
-  io.say("The VPN is on: this computer carries your laptop's web traffic (TCP 80 and 443, and DNS) out to the "
+  io.say("The VPN is on: this computer carries your laptop's traffic out to the "
          "internet, never into your home network.\n"
          "On the laptop, paste this code once in Driftwire's Connect to a VPN host. It holds the relay's key: "
          "keep it to yourself.\n\n  " +

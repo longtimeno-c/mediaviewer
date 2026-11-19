@@ -876,8 +876,8 @@ TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loo
   }
   {
     std::lock_guard g(seen_m);
-    CHECK(seen_tcp == std::vector<std::uint16_t>{80, 443});  // the relay's defaults with the VPN on
-    CHECK(seen_udp == std::vector<std::uint16_t>{53});
+    CHECK(seen_tcp == std::vector<std::uint16_t>{relay::kAnyPort});  // all traffic with the VPN on
+    CHECK(seen_udp == std::vector<std::uint16_t>{relay::kAnyPort});
     CHECK_FALSE(seen_private);
   }
 

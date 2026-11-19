@@ -182,7 +182,7 @@ service. What is new is the drive being a PC's drive:
 ## 7. The VPN part: the PC as the exit
 
 The Tunnel/VPN client needs only a relay with forwarding. On the host, `host vpn on` turns forwarding
-on (`--forward-ports 80,443`, `--forward-udp-ports 53` as the relay's defaults) and maps the relay's
+on (every port, TCP and UDP, apart from TCP 25: `--forward-ports all`, `--forward-udp-ports all`) and maps the relay's
 port. The laptop puts `name.duckdns.org:PORT#KEY` in **Relay (your own server)** once and turns on the
 Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 
@@ -434,7 +434,7 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   desktop's card and get its library, since a phone that pinned the host library would be refused
   once the desktop published. `host unshare` takes only the host library's Catalogue with the last
   folder, never a desktop's.
-- **`host vpn on`**: forwarding on in the running host's relay (TCP 80, 443, UDP 53; private,
+- **`host vpn on`**: forwarding on in the running host's relay (every port but TCP 25, TCP and UDP; private,
   loopback and link-local refused, call 5), the relay's port mapped, the relay line
   `name.duckdns.org:PORT#KEY` printed (the LAN address without a name). `--tls-port 443`: the
   relay's TLS look with its own self-signed certificate for the name (call 4); a look that cannot

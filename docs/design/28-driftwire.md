@@ -816,9 +816,11 @@ One guided run in the order a person needs it (`cli/host_setup.*`, plan §2):
 
 ### The VPN exit: `driftwire host vpn on|off` (slice 7, 2026-11-14)
 
-`host vpn on` sets `vpn` in `host.json`; the running host restarts its relay with forwarding to TCP
-80 and 443 and UDP 53 (the relay's defaults; never a private, loopback or link-local address: owner
-call 5, no VPN into the home network). **The web-site look is on by default** with the VPN
+`host vpn on` sets `vpn` in `host.json`; the running host restarts its relay with forwarding to every port
+(`relay::kAnyPort`, TCP and UDP; all traffic, owner 2026-11-19), apart from TCP 25 (`kNeverForwardTcp`:
+mail straight from a home address is spam's way out; mail apps use 587, 465 and 993), and never to a
+private, loopback or link-local address, nor to any of the host's own networks
+(`relay::forward_destination_ok`; owner call 5, no VPN into the home network). **The web-site look is on by default** with the VPN
 ([vpn-stealth](../plans/vpn-stealth.md), 2026-11-19): `look_port` is `tls_port` or the relay's port
 + 1 (any user may listen there, so Linux needs no privilege and a host that serves 443 keeps it), and
 the router keeper maps **only it** outside, at 443, else 8443 (`kLookFallbackPort`): the plain
@@ -874,8 +876,8 @@ offers it (`options::vpn`, set by `serve_cmd.cpp` only; the service inside `drif
 since the host runs its own relay) as feature `vpn`. The owner op **`set_vpn`** `{on, port?}` (unlocked
 once there is a passphrase) keeps a key of its own in the service's store (`kVpnKeyName`, apart from the
 person's other relay's `kRelayKeyName`) and `vpn_port` in `serve.json` (0: off, 47614 by default), and
-runs a `relay::server` inside the service with the relay's own forwarding defaults: TCP 80 and 443, UDP
-53, public addresses only, and the web-site look on the next port (self-signed; the plain relay alone
+runs a `relay::server` inside the service forwarding every port as the host does (`kAnyPort`, TCP 25
+never), public addresses only, and the web-site look on the next port (self-signed; the plain relay alone
 when it cannot listen). `set_vpn` answers `tls_port` then, and the card's code is
 `mediaviewer://relay-tls#NAME:PORT#KEY`; the SPK's service file names that port too
 (`[mediaviewer-nas-vpn-web]`, 47615) so DSM's router page offers it (outside 443 is the person's to map). On answers the port and the key, once, for the owner's line; a service
@@ -945,8 +947,8 @@ Reach the web through one's own relay server on a filtering network. Plan
 - **Forwarding** (`splice.*`): role `kForwarder` (2): CPace (`…forwarder-server`) then Noise NNpsk0;
   the client's sealed answer carries kind byte, port and host (`forward_host_ok`). Reply `F`, or `O`
   off, `X` port, `B` busy, `U` unreachable, `N` private, `K` kind. Then **sealed frames**
-  (`sealed_link`: 2-byte length + AEAD ≤ 16 KiB). Ports 80/443 unless `--forward-ports` (`none`
-  off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
+  (`sealed_link`: 2-byte length + AEAD ≤ 16 KiB). Ports 80/443 unless `--forward-ports` (`all`:
+  every port but TCP 25, as the VPN hosts set it; `none` off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
   logs only counts. Models: `tools/formal/relay.pv`, `relay_leaked_key.pv`.
 - **Local proxy** (`tunnel.*`): SOCKS5 CONNECT (names sent as names) and HTTP CONNECT / absolute-form
   on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 3 opening at once. No UDP.
@@ -976,7 +978,7 @@ Reach the web through one's own relay server on a filtering network. Plan
 - **All traffic: Driftwire VPN** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`tunnel_vpn`,
   `/tunnel vpn`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
   no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram
-  flows (`kForwardUdp`, `--forward-udp-ports` default 53). DNS `198.18.0.2` answered by the relay
+  flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay
   (`dns.driftwire`, `--dns`). Addresses `198.18.0.1/30`, `fd5d:7269:6674::1/64`; everything routed
   except the relay's addresses and local networks (`vpn::plan_routes`). **Block when the tunnel is
   down** (`tunnel_block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,

@@ -95,6 +95,9 @@ struct nas {
   // forward to this loopback site, as the shipped one never would.
   std::uint16_t vpn_site = 0;
   bool vpn = false;
+  // What the service gave its VPN relay, before the test's tweak.
+  std::mutex vpn_seen_m;
+  std::vector<std::uint16_t> vpn_seen_tcp, vpn_seen_udp;
   explicit nas(bool real = false, bool with_vpn = false, std::uint16_t site = 0)
       : real_network(real), vpn_site(site), vpn(with_vpn) {
     fs::create_directories(share);
@@ -113,7 +116,12 @@ struct nas {
     o.claimable = true;
     o.vpn = vpn;
     if (vpn_site != 0) {
-      o.vpn_tweak = [site = vpn_site](mv::driftwire::relay::server::options& ro) {
+      o.vpn_tweak = [this, site = vpn_site](mv::driftwire::relay::server::options& ro) {
+        {
+          std::lock_guard g(vpn_seen_m);
+          vpn_seen_tcp = ro.forward_ports;
+          vpn_seen_udp = ro.forward_udp_ports;
+        }
         ro.forward_ports = {site};
         ro.forward_private = true;
       };
@@ -2161,6 +2169,12 @@ TEST_CASE("phone pairing: the NAS as a VPN host: Use as VPN, its code, and a lap
     REQUIRE_FALSE(n.saved.empty());
     CHECK(n.saved.back().vpn_port == mv::driftwire::relay::kDefaultPort);
     CHECK(serve::config_json(n.saved.back()).find(key) == std::string::npos);
+  }
+  {
+    // All traffic: every port (TCP but SMTP's, UDP), public addresses only.
+    std::lock_guard g(n.vpn_seen_m);
+    CHECK(n.vpn_seen_tcp == std::vector<std::uint16_t>{mv::driftwire::relay::kAnyPort});
+    CHECK(n.vpn_seen_udp == std::vector<std::uint16_t>{mv::driftwire::relay::kAnyPort});
   }
 
   // The laptop: the code pasted (Connect to a VPN host), its Tunnel proxy, a site through the NAS.

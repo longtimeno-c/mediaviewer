@@ -3452,7 +3452,9 @@ bool server::state::apply_vpn_locked(std::uint16_t port) {
   // The web-site look beside it (docs/plans/vpn-stealth.md), on the next port,
   // self-signed: the code the owner copies points at it.
   ro.tls_port = static_cast<std::uint16_t>(port < 65535 ? port + 1 : port - 1);
-  // The relay's own forwarding defaults: TCP 80 and 443, UDP 53, public addresses only.
+  // All traffic: every TCP port but SMTP's, every UDP port, public addresses only.
+  ro.forward_ports = {relay::kAnyPort};
+  ro.forward_udp_ports = {relay::kAnyPort};
   if (vpn_tweak) vpn_tweak(ro);
   auto r = relay::server::start(ro);
   if (!r && ro.tls_port != 0) {

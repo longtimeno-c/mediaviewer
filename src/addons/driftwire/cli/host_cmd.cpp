@@ -651,7 +651,11 @@ struct host_service::state {
     if (!settings.vpn) {
       ro.forward_ports.clear();  // forwarding (the Tunnel/VPN exit) only with `host vpn on`
       ro.forward_udp_ports.clear();
-    } else if (look_port(settings) != 0) {
+    } else {
+      ro.forward_ports = {relay::kAnyPort};  // all traffic: every TCP port but SMTP's, every UDP port
+      ro.forward_udp_ports = {relay::kAnyPort};
+    }
+    if (look_port(settings) != 0) {
       // The web-site look (on by default with the VPN; docs/plans/vpn-stealth.md): Let's
       // Encrypt's certificate for the name when the certificate keeper has one, else self-signed.
       ro.tls_port = look_port(settings);
@@ -662,8 +666,7 @@ struct host_service::state {
         ro.tls_key = c->key;
       }
     }
-    // TCP 80 and 443 and UDP 53 (the relay's defaults) with the VPN on; never
-    // a private, loopback or link-local address (call 5: no VPN into the LAN).
+    // Never a private, loopback or link-local address (call 5: no VPN into the LAN).
     if (o.relay_tweak) o.relay_tweak(ro);
     const bool with_tls = ro.tls_port != 0;
     auto r = relay::server::start(ro);
