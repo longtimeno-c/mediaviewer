@@ -421,7 +421,7 @@ Tests, always filtered by tag: `mv_import_tests "[phone-addon]"` (the card's tre
 vocabulary, the secure field, the catalogue rows, the manifest, the module through a signed store in a
 folder of the test's own), `mv_import_tests "[phone-qr]"` (the encoder against the matrices the C# encoder
 had, read by a phone scanner), `mv_import_tests "[phone-self-host]"` (the setup against the test build of
-`driftwire host` on loopback), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+`driftwire host` on loopback, the VPN switch included), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
 claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
 machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the link over a Local
 search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`). To try it
@@ -601,6 +601,24 @@ build/bin/mv_import_tests "[host-setup]"                     # setup, pairing re
 build/bin/driftwire host pause                               # Hosting off (the server menu's toggle); resume, quit (start at login stays)
 build/bin/driftwire host status --watch                      # usage today, phones connected, again on each change; Ctrl-C ends it
 build/bin/mv_import_tests "[host-tray]"                      # the server menu, its numbers, the registry entry, the watcher, pause/quit on loopback
+```
+
+**Phone route bench** (the phone's reads from a host on this computer, VPN off and on alternated; one JSON
+line per measurement, loopback, so run base and new alternated as the performance suite says):
+
+```sh
+MV_HOST_BENCH_MB=256 MV_HOST_BENCH_ROUNDS=4 build/bin/mv_import_tests "[.phone-host-bench]"
+```
+
+It reads a 256 MB file whole (8 MB window bulk, and 1 MB) and 200 ranges of 256 KB at random offsets,
+from a session opened after each switch, and prints ms to the first byte, MB/s and p50/p95.
+
+**VPN host bench** (a host's relay with the VPN on and the shipped forwarding, a laptop's Tunnel proxy with
+its line, curl to a public URL through it and directly, alternated; this one reaches the internet):
+
+```sh
+MV_VPN_BENCH_ROUNDS=5 build/bin/mv_import_tests "[.vpn-host-bench]"     # MV_VPN_BENCH_URL to fetch another
+build/bin/mv_import_tests "[nas-vpn]"                                     # the NAS as a VPN host, the code, Connect
 ```
 
 While a host runs, MediaViewer shows its own server menu-bar item / notification-area icon

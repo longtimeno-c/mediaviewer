@@ -191,6 +191,7 @@ struct addon_state {
       std::lock_guard held(m);
       open = false;
       card.forget_secrets();  // typed and never sent: gone when Settings closes
+      (void)mv::phone::app_request(R"({"do":"host_vpn_hide"})");  // the relay line shown, if any
       ticker_stop = true;
       t = std::move(ticker);
     }

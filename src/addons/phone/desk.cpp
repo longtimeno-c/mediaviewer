@@ -860,6 +860,8 @@ result<owner_state> desk::owner_status() {
   out.unlocked_s = doc->integer("unlocked_s").value_or(0);
   out.locked_until = doc->integer("locked_until").value_or(0);
   if (const std::string* r = doc->str("relay")) out.relay = *r;
+  out.vpn_port = doc->integer("vpn_port").value_or(0);
+  out.vpn_running = doc->boolean("vpn_running").value_or(false);
   // This desktop's own kept key decides whether it can act without asking.
   if (!st_->signer || std::chrono::steady_clock::now() >= st_->signer_until) {
     out.unlocked_s = 0;
@@ -877,6 +879,22 @@ expected desk::set_relay(const std::string& address, const std::string& key) {
   MV_TRY(const std::string text, st_->ask(w.str()));
   (void)text;
   return {};
+}
+
+result<vpn_answer> desk::set_vpn(bool on) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("set_vpn").key("on").boolean(on).end_object();
+  MV_TRY(std::string text, st_->ask(w.str()));
+  const auto doc = json::parse(text, 2);
+  std::fill(text.begin(), text.end(), '\0');
+  if (!doc) return err(status::corrupt);
+  vpn_answer a;
+  a.port = doc->integer("vpn_listening").value_or(doc->integer("vpn_port").value_or(0));
+  a.running = doc->boolean("vpn_running").value_or(false);
+  if (const std::string* k = doc->str("key")) a.key = *k;
+  return a;
 }
 
 result<std::string> desk::users(std::string_view verb, const std::string& name, const std::string& role,
@@ -1190,7 +1208,19 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     w.begin_object().key("passphrase").string(s.passphrase).key("features").begin_array();
     for (const auto& f : s.features) w.string(f);
     w.end_array().key("unlocked_s").integer(s.unlocked_s).key("locked_until").integer(s.locked_until);
-    w.key("relay").string(s.relay).end_object();
+    w.key("relay").string(s.relay).key("vpn_port").integer(s.vpn_port).key("vpn_running").boolean(s.vpn_running);
+    w.end_object();
+    return w.take();
+  }
+  if (method == "set_vpn") {
+    const auto on = doc->boolean("on");
+    if (!on) return err(status::invalid_arg);
+    MV_TRY(vpn_answer a, d.set_vpn(*on));
+    json::writer w;
+    w.begin_object().key("port").integer(a.port).key("running").boolean(a.running);
+    if (!a.key.empty()) w.key("key").string(a.key);
+    w.end_object();
+    std::fill(a.key.begin(), a.key.end(), '\0');
     return w.take();
   }
   if (method == "set_relay") {
