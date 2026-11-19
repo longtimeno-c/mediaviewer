@@ -7312,12 +7312,34 @@ void engine::process_text(std::vector<work_item>& items) {
   }
   if (!reader) return;
   const std::string spec = reader->spec_key();
+  // A photo whose picture is still owed is left to the picture pass, which
+  // reads its text from the same decode (process_photos). claim queues text
+  // only once no picture is pending, but a walk can add photos between those
+  // two looks, and reading them here would read each photo twice.
+  std::unordered_set<std::int64_t> picture_owed;
+  {
+    std::string picture_spec;
+    {
+      std::lock_guard lock(models_m_);
+      picture_spec = build_.meta.spec_key;
+    }
+    std::vector<std::int64_t> ids;
+    for (const work_item& w : items) {
+      if (w.asset.kind == asset_kind::photo) ids.push_back(w.asset.id);
+    }
+    if (!picture_spec.empty() && !ids.empty()) {
+      // claim's picture filter, so this skips only what the picture pass will take.
+      const track_filter f{true, MV_AI_MEDIA_PICTURES, default_media(), skip_root(), held_list()};
+      for (const work_item& w : db_->pending_among(picture_spec, ids, kMaxTries, f)) picture_owed.insert(w.asset.id);
+    }
+  }
   for (const work_item& w : items) {
     if (!wait_turn()) return;  // stopping: the rest stay pending
     if (w.asset.kind == asset_kind::video) {
       process_text_moments(w, *reader, spec + kMomentsSuffix);
       continue;
     }
+    if (picture_owed.count(w.asset.id)) continue;  // still pending: the picture pass reads it
     auto img = still_of(w.asset.path, kTextEdge);
     if (!img) {
       if (img.error() == status::permission_denied) {
