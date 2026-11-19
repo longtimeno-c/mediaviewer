@@ -909,6 +909,7 @@ TEST_CASE("driftwire relay: the relay server's key is kept in the secret store, 
 TEST_CASE("vpn: Connect to a VPN host takes a server's code in one step", "[vpn][nas-vpn]") {
   scratch_dir dir("vpn_connect");
   const std::string line = "home.duckdns.org:47614#" + std::string(kKey);
+  fs::create_directories(dir / "secrets");
   auto store = sp::secrets::file_store(utf8(dir / "secrets"));
   vpn_test::fake_host host;
   vpn::service::options o;

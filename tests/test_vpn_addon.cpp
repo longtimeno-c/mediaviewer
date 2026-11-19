@@ -75,6 +75,8 @@ TEST_CASE("vpn: the first start takes Driftwire's Tunnel: its switches, the key 
   d.tunnel_block = true;
   REQUIRE(mv::driftwire::save_prefs(utf8(theirs / mv::driftwire::kPrefsFile), d));
   write_text(theirs / "driftwire_proxy.json", R"({"pac_url":"http://127.0.0.1:50123/x.pac","saved":""})");
+  fs::create_directories(s / "dw_secrets");
+  fs::create_directories(s / "my_secrets");
   auto dw_store = secrets::file_store(utf8(s / "dw_secrets"));
   auto my_store = secrets::file_store(utf8(s / "my_secrets"));
   REQUIRE(dw_store->put(mv::driftwire::known::kRelayKeyName, bytes_of(kKey)));
@@ -105,7 +107,7 @@ TEST_CASE("vpn: the first start takes Driftwire's Tunnel: its switches, the key 
   CHECK_FALSE(vpn::load_prefs(prefs_path)->tunnel);
 
   // The service starts with what was taken, the key put back on the server.
-  vpn::save_prefs(prefs_path, *p);
+  REQUIRE(vpn::save_prefs(prefs_path, *p));
   vpn_test::fake_host host;
   vpn::service::options o;
   o.prefs_path = prefs_path;
@@ -126,6 +128,7 @@ TEST_CASE("vpn: a Driftwire whose Tunnel was never used gives nothing; a key in 
   mv::driftwire::prefs d;
   d.relay_server = "relay.example:47614#" + std::string(kKey);  // relayed transfers only
   REQUIRE(mv::driftwire::save_prefs(utf8(theirs / mv::driftwire::kPrefsFile), d));
+  fs::create_directories(s / "my_secrets");
   auto my_store = secrets::file_store(utf8(s / "my_secrets"));
   const std::string prefs_path = utf8(mine / vpn::kPrefsFile);
   CHECK_FALSE(vpn::adopt_driftwire(utf8(theirs), utf8(mine), prefs_path, nullptr, my_store.get()));

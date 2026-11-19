@@ -201,6 +201,7 @@ void service::control_loop() {
       post_pending_ = false;
       lock.unlock();
       post();
+      sync_keep();  // the menu's label and rows follow (a mode or a problem changed)
       lock.lock();
     }
     done_ = std::max(done_, serving);

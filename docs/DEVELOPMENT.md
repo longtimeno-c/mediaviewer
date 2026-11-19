@@ -1611,7 +1611,7 @@ cmake -S . -B build -DMV_DRIFTWIRE_PACKET_TUNNEL=ON && cmake --build build --tar
 python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID Application: …" \
   --team-id <TEAM> --app-profile <app>.provisionprofile --tunnel-profile <tunnel>.provisionprofile \
   --skip-notarize --allow-no-updater      # then copy to /Applications and approve the extension once
-# With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
+# With the VPN add-on's Tunnel on (Settings → Add-ons → VPN, its menu-bar row, or /vpn on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \
