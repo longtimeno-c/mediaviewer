@@ -26,6 +26,8 @@ enum LiveServices {
     return Services(library: library, images: images, search: search,
                     connection: connection, sync: link.connection, clips: link.clips,
                     saver: PhotoLibrarySaver(originals: link.images), backup: link.backup)
+      // The VPN through your server (docs/plans/phone-vpn.md): the DriftwireTunnel extension.
+      .with(vpn: LinkVPN())
   }
 }
 
