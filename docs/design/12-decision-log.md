@@ -2193,8 +2193,9 @@ Developer ID with `packet-tunnel-provider-systemextension`, its Developer ID pro
 2026-11-14) is embedded and grants it, the app claims `system-extension.install` under its own
 profile, and the app is notarized and stapled (Gatekeeper: "Notarized Developer ID"). So the
 "entitlement owed" above is settled. Not yet run: activating it on a real Mac (the extension
-approval in System Settings, the VPN configuration prompt, traffic through an exit); the owner
-chose to do that together later.
+approval in System Settings, the VPN configuration prompt, traffic through an exit), which no
+release can do yet because the add-on does not start the VPN; the owner chose to do that together
+once a release does.
 
 **Windows' VPN carries `wintun.dll` under an additional permission, only in its own process
 (owner, 2026-11-19, #672).** WireGuard LLC's licence for the signed `wintun.dll` lets it ship beside
