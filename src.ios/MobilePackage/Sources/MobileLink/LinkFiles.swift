@@ -21,7 +21,7 @@ struct FileEntry: Sendable {
   let path: FilePath
   let size: UInt64
   let mtime: Int64
-  /// mv_file_entry.kind: 0 photo, 1 RAW, 2 clip.
+  /// mv_file_entry.kind: 0 photo, 1 RAW, 2 clip, 3 any other file.
   let kind: Int32
   let item: MediaItem
 
@@ -112,6 +112,8 @@ public final class LinkFiles: @unchecked Sendable {
     let folders: [Folder]
     /// Newest first, as every list the screens show is.
     let files: [FileEntry]
+    /// The files that are not photos or clips, by name.
+    let others: [OtherFile]
   }
 
   func roots() async throws -> [Folder] {
@@ -179,10 +181,16 @@ public final class LinkFiles: @unchecked Sendable {
     guard status == 0 else { throw Self.failure(status) }
     var folders: [Folder] = []
     var files: [FileEntry] = []
+    var others: [OtherFile] = []
     for row in rows {
       let path = folder.appending(row.name)
       if row.dir {
         folders.append(Folder(id: path.id, name: row.name, itemCount: -1, hasSubfolders: true))
+        continue
+      }
+      if row.kind == 3 {
+        others.append(OtherFile(id: path.id, name: row.name, bytes: Int64(row.size),
+                                modified: Date(timeIntervalSince1970: TimeInterval(row.mtime))))
         continue
       }
       let item = MediaItem(id: MediaID(path.id), kind: row.kind == 2 ? .clip : .photo,
@@ -192,8 +200,25 @@ public final class LinkFiles: @unchecked Sendable {
     }
     folders.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     files.sort { $0.mtime != $1.mtime ? $0.mtime > $1.mtime : $0.path.rel < $1.path.rel }
+    others.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     remember(files, in: folder)
-    return FolderListing(folders: folders, files: files)
+    return FolderListing(folders: folders, files: files, others: others)
+  }
+
+  /// A catalogue folder's other files: the catalogue holds only photos and clips, so the folder's
+  /// place on the server is asked for (mv_files_folder_place) and listed. [] when it can't be had
+  /// (no link, the share not served): the folder's photos still show.
+  public func otherFiles(inCatalogueFolder key: String) async -> [OtherFile] {
+    guard let link = await connection.awaitLink() else { return [] }
+    let place = await onLinkQueue { () -> FilePath? in
+      var root = [CChar](repeating: 0, count: 256)
+      var rel = [CChar](repeating: 0, count: 4096)
+      let status = key.withCString { mv_files_folder_place(link.raw, $0, &root, root.count, &rel, rel.count) }
+      guard status == 0 else { return nil }
+      return FilePath(root: String(cString: root), rel: String(cString: rel))
+    }
+    guard let place, !Task.isCancelled else { return [] }
+    return (try? await list(place, priority: .userInitiated))?.others ?? []
   }
 
   /// Keeps a listing's files for opening, and forgets the folders listed longest ago.
@@ -226,7 +251,7 @@ public final class LinkFiles: @unchecked Sendable {
         items = Self.pick(inner.files, count: count)
         next.insert(contentsOf: inner.folders, at: 0)  // down the first branch before across
       }
-      return FolderPreview(items: items, files: top.files.count, folders: top.folders.count)
+      return FolderPreview(items: items, files: top.files.count, folders: top.folders.count, others: top.others.count)
     }
   }
 
@@ -630,6 +655,59 @@ public final class LinkFiles: @unchecked Sendable {
     }
   }
 
+  /// An other file whole on the phone, under its own name, for Quick Look. Not through the
+  /// originals store: a game image or an archive can be larger than its whole budget, and a
+  /// document must not push the viewer's photos out. Only the file opened last is kept; opening
+  /// another deletes it, and so does the system's tmp clean-up.
+  func download(_ other: OtherFile, progress: @escaping (Int64, Int64) -> Void) async throws -> URL {
+    guard let path = FilePath(id: other.id) else { throw MediaFailure.originalGone }
+    guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+    let size = UInt64(max(0, other.bytes))
+    let item = MediaItem(id: MediaID(other.id), kind: .photo, capturedAt: other.modified, pixelWidth: 0, pixelHeight: 0,
+                         duration: nil, fileName: other.name)
+    let entry = FileEntry(path: path, size: size, mtime: Int64(other.modified.timeIntervalSince1970), kind: 3, item: item)
+    let fm = FileManager.default
+    let top = fm.temporaryDirectory.appendingPathComponent("Open", isDirectory: true)
+    try? fm.removeItem(at: top)  // the file opened before, and any download cut short
+    let folder = top.appendingPathComponent(Self.hashName(entry.stamp), isDirectory: true)
+    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    let named = folder.appendingPathComponent(other.name.replacingOccurrences(of: "/", with: "_"))
+    let part = folder.appendingPathComponent(".part")
+    let total = other.bytes
+    progress(0, total)
+    let read = readFunction(entry, link: link)
+    let connection = self.connection
+    let status = await withLinkCancel { cancel in
+      await onLinkQueue { () -> Int32 in
+        guard let made = connection.whileLive(link, { fm.createFile(atPath: part.path, contents: nil) }) else { return 11 }
+        guard made, let handle = try? FileHandle(forWritingTo: part) else { return 13 }
+        defer { try? handle.close() }
+        var written: Int64 = 0
+        var reported: Int64 = 0
+        return read(0, size, cancel) { data in
+          do { try handle.write(contentsOf: data) } catch { return false }
+          written += Int64(data.count)
+          if written - reported >= 256 * 1024 {
+            reported = written
+            progress(written, total)
+          }
+          return true
+        }
+      }
+    }
+    switch status {
+    case 0:
+      try fm.moveItem(at: part, to: named)
+      return named
+    case 11:
+      try? fm.removeItem(at: folder)
+      throw CancellationError()
+    default:
+      try? fm.removeItem(at: folder)
+      throw Self.failure(status)
+    }
+  }
+
   /// Reads a range of the file over the link: what a clip's loader and a whole-file copy use.
   /// `bulk` false: a clip being watched, ahead of downloads on the link.
   func readFunction(_ file: FileEntry, link: LinkHandle, bulk: Bool = true) -> ClipRead {
@@ -829,6 +907,15 @@ public struct FileModeLibrary: LibraryStore {
   }
 
   public func offlineFolders() async -> [Folder] { await files.offlineRoots() }
+
+  public func otherFiles(in folder: Folder) async throws -> [OtherFile] {
+    guard !folder.offline, let path = FilePath(id: folder.id) else { return [] }
+    return try await files.list(path).others
+  }
+
+  public func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+    try await files.download(file, progress: progress)
+  }
 
   public func preview(of folder: Folder, count: Int) async -> FolderPreview {
     guard !folder.offline, let path = FilePath(id: folder.id) else { return .empty }

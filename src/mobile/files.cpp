@@ -34,14 +34,38 @@ bool starts_with_nocase(std::string_view s, std::string_view prefix) {
 
 }  // namespace
 
+namespace {
+
+bool equal_nocase(std::string_view a, std::string_view b) { return a.size() == b.size() && starts_with_nocase(a, b); }
+
+// Files a camera or an editor leaves beside the pictures: never something to open on a phone.
+bool companion(std::string_view name) noexcept {
+  for (std::string_view whole : {"Thumbs.db", "desktop.ini", "Icon\r"}) {
+    if (equal_nocase(name, whole)) return true;
+  }
+  const auto ext = io::extension_of(name);
+  // Editors' sidecars; GoPro and DJI previews and telemetry (THM, LRV, LRF, SRT); Canon's CTG; the
+  // AVCHD and Sony card indexes (CPI, BDM, MPL, BIM).
+  for (std::string_view e : {".xmp", ".thm", ".lrv", ".aae", ".pp3", ".dop", ".on1", ".lrf", ".srt", ".ctg", ".cpi",
+                             ".bdm", ".mpl", ".bim"}) {
+    if (equal_nocase(ext, e)) return true;
+  }
+  // Sony XAVC's metadata beside each clip: C0001M01.XML.
+  if (equal_nocase(ext, ".xml") && name.size() >= 7 && equal_nocase(name.substr(name.size() - 7, 3), "M01")) return true;
+  return false;
+}
+
+}  // namespace
+
 kind kind_of(std::string_view name) noexcept {
+  if (companion(name)) return kind::none;
   const auto* row = io::find_media_extension(io::extension_of(name));
-  if (!row) return kind::none;
+  if (!row) return kind::other;
   switch (row->kind) {
     case io::media_kind::still: return kind::photo;
     case io::media_kind::raw: return kind::raw;
     case io::media_kind::video: return kind::clip;
-    default: return kind::none;  // audio and documents: not something this phone shows
+    default: return kind::other;  // audio and documents: listed, opened by the phone's own preview
   }
 }
 

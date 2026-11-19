@@ -130,8 +130,9 @@ mv_mobile_status mv_mobile_library_fill_aspects(mv_mobile_library* library);
 typedef struct mv_mobile_folder {
   const char* key;
   const char* name;
-  uint32_t item_count;     /* this folder and every folder beneath it */
+  uint32_t item_count;     /* photos and clips, this folder and every folder beneath it */
   uint32_t has_subfolders;
+  uint32_t file_count;     /* documents and audio Local search indexed, the same way; never list rows */
 } mv_mobile_folder;
 typedef void (*mv_mobile_folder_fn)(void* user, const mv_mobile_folder* folder);
 /* parent_key NULL: the library's top level. */

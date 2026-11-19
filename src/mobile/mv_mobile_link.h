@@ -290,12 +290,19 @@ typedef struct mv_file_entry {
   uint64_t size;
   int64_t mtime;
   int32_t dir;  /* 1: a folder */
-  int32_t kind; /* files: 0 photo, 1 RAW, 2 clip (the D5 table); -1 for a folder */
+  int32_t kind; /* files: 0 photo, 1 RAW, 2 clip (the D5 table), 3 any other file; -1 for a folder */
 } mv_file_entry;
 typedef void (*mv_file_entry_fn)(void* ctx, const mv_file_entry* entry);
-/* BLOCKS. One folder: its folders and the files this phone shows, hidden names left out, in the
+/* BLOCKS. One folder: its folders and its files, hidden names and companion files (XMP, THM, LRV) left out, in the
  * service's order. MV_LINK_NOT_FOUND, MV_LINK_DENIED, MV_LINK_UNREACHABLE. */
 int32_t mv_files_list(mv_mobile_link* link, const char* root, const char* rel, mv_file_entry_fn fn, void* ctx);
+/* BLOCKS. Where a catalogue folder (its key, "/<root uuid>/<path>", from mv_mobile_library_folders)
+ * is on the service: the folder id and the path under it, for mv_files_list. So a library with a
+ * catalogue can show a folder's other files (PDFs, saves), which the catalogue does not hold.
+ * MV_LINK_NOT_FOUND (no catalogue, or not one of its roots), MV_LINK_NO_FOLDER, MV_LINK_UNREACHABLE;
+ * MV_LINK_INVALID also when either buffer is too small. */
+int32_t mv_files_folder_place(mv_mobile_link* link, const char* folder_key, char* root_out, size_t root_size,
+                              char* rel_out, size_t rel_size);
 /* BLOCKS. A range of one file, as mv_file_read. */
 int32_t mv_files_read(mv_mobile_link* link, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
                       mv_cancel* cancel, mv_sink_fn sink, void* ctx);

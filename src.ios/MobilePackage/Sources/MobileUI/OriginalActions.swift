@@ -98,17 +98,6 @@ struct SharedFile: Identifiable {
   let url: URL
 }
 
-/// Share and Save to Photos, as the clip screen's top bar buttons.
-struct OriginalButtons: View {
-  let item: MediaItem
-  let transfer: OriginalTransfer
-
-  var body: some View {
-    ShareOriginalButton(item: item, transfer: transfer)
-    SaveOriginalButton(item: item, transfer: transfer)
-  }
-}
-
 struct ShareOriginalButton: View {
   let item: MediaItem
   let transfer: OriginalTransfer

@@ -22,10 +22,19 @@ public protocol LibraryStore: Sendable {
   /// that is known. Off the main thread, after what is on screen; never changes what the library or
   /// search show. `.empty` when nothing can be had.
   func preview(of folder: Folder, count: Int) async -> FolderPreview
+  /// The folder's files that are not photos or clips, by name. Empty for a catalogue's folders.
+  func otherFiles(in folder: Folder) async throws -> [OtherFile]
+  /// The whole file on the phone, under its own name so the phone's preview knows what it is.
+  /// `progress`: bytes done and in all, from any thread.
+  func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL
 }
 
 extension LibraryStore {
   public func offlineFolders() async -> [Folder] { [] }
+  public func otherFiles(in folder: Folder) async throws -> [OtherFile] { [] }
+  public func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+    throw MediaFailure.originalGone
+  }
 }
 
 extension FolderPreview {
