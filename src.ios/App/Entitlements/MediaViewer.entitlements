@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The VPN through your server (docs/plans/phone-vpn.md §4.1; owner call 8, 2026-11-19). The app's
+     own Keychain group comes first: it stays the default for new items, so the pairing record and
+     the device key stay where they are and the extension cannot read them. The tunnel item names
+     the .vpn group itself (MobileLinkSupport VPNItemStore). -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.io.github.longtimeno-c.mediaviewer.mobile</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)io.github.longtimeno-c.mediaviewer.mobile</string>
+		<string>$(AppIdentifierPrefix)io.github.longtimeno-c.mediaviewer.mobile.vpn</string>
+	</array>
+</dict>
+</plist>
