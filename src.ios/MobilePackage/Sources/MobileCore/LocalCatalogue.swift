@@ -253,7 +253,8 @@ private struct CoreLibrary: LibraryStore {
           guard let user, let row, let key = row.pointee.key, let name = row.pointee.name else { return }
           user.assumingMemoryBound(to: [Folder].self).pointee.append(
             Folder(id: String(cString: key), name: String(cString: name),
-                   itemCount: Int(row.pointee.item_count), hasSubfolders: row.pointee.has_subfolders != 0))
+                   itemCount: Int(row.pointee.item_count), hasSubfolders: row.pointee.has_subfolders != 0,
+                   fileCount: Int(row.pointee.file_count)))
         }, ptr)
       }
     }
@@ -264,7 +265,9 @@ private struct CoreLibrary: LibraryStore {
   /// A catalogue folder's list is everything beneath it, newest first: its first items stand for it.
   func preview(of folder: Folder, count: Int) async -> FolderPreview {
     guard let list = try? await list(in: .folder(folder)), !Task.isCancelled else { return .empty }
-    return .newest(of: list, count: count)
+    let newest = FolderPreview.newest(of: list, count: count)
+    // Paper peeks out of a folder of documents only.
+    return FolderPreview(items: newest.items, files: nil, folders: nil, others: folder.fileCount > 0 ? folder.fileCount : nil)
   }
 
   func people() async throws -> [Person] {

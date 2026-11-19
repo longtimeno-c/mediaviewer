@@ -241,6 +241,13 @@ TEST_CASE("remote keys: a folder ends in a slash, nothing climbs out", "[desktop
   }
   CHECK(rm::is_key("remote:x"));
   CHECK_FALSE(rm::is_key("/remote:x"));
+  // A server pinned with the folders is kept without its slash (the pins trim it).
+  CHECK(rm::server_key_of_pin("remote:" + s) == "remote:" + s + "/");
+  CHECK(rm::server_key_of_pin("remote:" + s + "/") == "remote:" + s + "/");
+  for (const std::string& not_top : std::vector<std::string>{"remote:" + s + "/" + r, "remote:xyz", "remote:",
+                                                              "C:\\Photos", "/Users/x", ""}) {
+    CHECK(rm::server_key_of_pin(not_top).empty());
+  }
 }
 
 TEST_CASE("a desktop pairs from the code alone and is listed with the phones", "[desktop-client]") {

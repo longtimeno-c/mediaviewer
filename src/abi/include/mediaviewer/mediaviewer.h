@@ -507,7 +507,9 @@ MV_API mv_status MV_CALL mv_host_tray_stop(void);
  * {"name","fingerprint"} (compare it with the other computer's card), or
  * {"error":"words to show"}; never blocks.
  * mv_remote_pair_start: pairs on a worker; mv_remote_pair_state_json polls
- * {"busy":bool,"ok":bool,"words":"..."} for the notice.
+ * {"busy":bool,"ok":bool,"words":"...","key":"remote:<id>/","seq":n} for the
+ * notice: `key` the server the last pairing that worked added, `seq` how many
+ * have worked this run (0: none), so a host pins each one once (2026-11-18).
  * mv_remote_forget: forgets a server here (keys, cache) on a worker; the
  * server's owner removes this computer there.
  * Buffer rules as mv_storage_report_json. [any-thread][no-block] */

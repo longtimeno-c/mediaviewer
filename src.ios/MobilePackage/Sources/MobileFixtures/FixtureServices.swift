@@ -118,6 +118,8 @@ enum FixtureLibrary {
   static func items(under folderID: String) -> [MediaItem] {
     let path = folderID.split(separator: "/").map(String.init)
     if path[0] == "iceland road trip" { return stride(from: 1, to: items.count, by: 6).map { items[$0] } }
+    if path[0] == "Games" { return stride(from: 5, to: items.count, by: 97).prefix(4).map { items[$0] } }
+    if path[0] == "Docs" { return [] }
     guard let source = sources.firstIndex(of: path[0]) else { return [] }
     let year = path.count > 1 ? Int(path[1]) : nil
     let month = path.count > 2 ? Int(path[2]) : nil
@@ -143,6 +145,8 @@ enum FixtureLibrary {
     tree[""] = sources.map { Folder(id: $0, name: $0, itemCount: counts[$0] ?? 0, hasSubfolders: true) } + [
       Folder(id: "iceland road trip", name: "iceland road trip", itemCount: items.count / 6, hasSubfolders: false),
       Folder(id: "new camera card", name: "new camera card", itemCount: 0, hasSubfolders: false),
+      Folder(id: "Docs", name: "Docs", itemCount: -1, hasSubfolders: false),
+      Folder(id: "Games", name: "Games", itemCount: -1, hasSubfolders: false),
     ]
     for source in sources {
       tree[source] = (years[source] ?? []).sorted(by: >).map { year in
@@ -213,7 +217,48 @@ struct FixtureStore: LibraryStore {
 
   func preview(of folder: Folder, count: Int) async -> FolderPreview {
     guard !folder.offline, let list = try? await list(in: .folder(folder)) else { return .empty }
-    return .newest(of: list, count: count)
+    let others = Self.others(in: folder.id)
+    guard !others.isEmpty else { return .newest(of: list, count: count) }
+    let newest = FolderPreview.newest(of: list, count: count)
+    return FolderPreview(items: newest.items, files: list.count, folders: 0, others: others.count)
+  }
+
+  /// A NAS's documents and games beside the photos (file mode's other files).
+  static func others(in folderID: String) -> [OtherFile] {
+    let names: [String: [(String, Int64)]] = [
+      "Docs": [("Boarding pass LIS.pdf", 182_000), ("Car insurance 2026.pdf", 1_240_000), ("Budget.xlsx", 48_000),
+               ("Passport scan.pdf", 3_400_000), ("Recipes.docx", 96_000), ("Tax return 2025.pdf", 640_000),
+               ("notes.txt", 2_100), ("Wedding playlist.m4a", 8_200_000)],
+      "Games": [("Save backup.zip", 52_000_000), ("Controls.pdf", 310_000), ("readme.txt", 4_000),
+                ("Pokemon Emerald.sav", 131_072), ("settings.ini", 1_200), ("Manual.pdf", 6_800_000)],
+    ]
+    return (names[folderID] ?? []).enumerated().map { i, file in
+      OtherFile(id: "\(folderID)/\(file.0)", name: file.0, bytes: file.1,
+                modified: Date(timeIntervalSince1970: 1_760_000_000 - TimeInterval(i) * 86_400 * 19))
+    }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+  }
+
+  func otherFiles(in folder: Folder) async throws -> [OtherFile] { Self.others(in: folder.id) }
+
+  /// A one-page PDF (or a line of text) under the file's name, after a short wait with progress.
+  func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+    for step in 1...5 {
+      try await Task.sleep(for: .milliseconds(200))
+      progress(file.bytes * Int64(step) / 5, file.bytes)
+    }
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FixtureOpen/\(abs(file.id.hashValue))")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let url = folder.appendingPathComponent(file.name)
+    if file.fileExtension == "pdf" {
+      let page = CGRect(x: 0, y: 0, width: 595, height: 842)
+      try UIGraphicsPDFRenderer(bounds: page).writePDF(to: url) { context in
+        context.beginPage()
+        (file.name as NSString).draw(at: CGPoint(x: 60, y: 80), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 24)])
+      }
+    } else {
+      try Data("A stand-in for \(file.name).\n".utf8).write(to: url)
+    }
+    return url
   }
 
   /// One folder whose drive is unplugged from the server, as the sample library has.

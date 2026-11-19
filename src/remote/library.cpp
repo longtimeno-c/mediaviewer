@@ -341,7 +341,7 @@ expected library::load() {
   return {};
 }
 
-expected library::save_locked() const {
+std::string library::servers_json_locked() const {
   json::writer w;
   w.begin_object().key("format").integer(1).key("servers").begin_array();
   for (const auto& [id, s] : servers_) {
@@ -357,9 +357,12 @@ expected library::save_locked() const {
         .end_object();
   }
   w.end_array().end_object();
+  return w.str();
+}
+
+expected library::write_servers(const std::string& text) const {
   std::error_code ec;
   fs::create_directories(fs_path(cfg_.data_dir), ec);
-  const std::string& text = w.str();
   return write_atomic(servers_file(),
                             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
 }
@@ -420,7 +423,8 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   std::array<std::uint8_t, 64> secret{};
   std::memcpy(secret.data(), s->device_key.data(), 32);
   std::memcpy(secret.data() + 32, s->access_key.data(), 32);
-  const bool kept = store()->put(kSecretPrefix + s->id, secret);
+  auto* keys = store();
+  const bool kept = keys && keys->put(kSecretPrefix + s->id, secret);
   sodium_memzero(secret.data(), secret.size());
   // The service has taken the code and lists this desktop by now: not "can't
   // reach" (the Mac's keychain refused a release signed without the
@@ -430,10 +434,15 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   s->state = reach::online;  // it just answered
   std::shared_ptr<server_rt> old;
   {
-    std::lock_guard lock(m_);
-    if (auto it = servers_.find(s->id); it != servers_.end()) old = it->second;
-    servers_[s->id] = s;
-    if (auto saved = save_locked(); !saved) return err(saved.error());
+    std::lock_guard saving(save_m_);
+    std::string text;
+    {
+      std::lock_guard lock(m_);
+      if (auto it = servers_.find(s->id); it != servers_.end()) old = it->second;
+      servers_[s->id] = s;
+      text = servers_json_locked();
+    }
+    if (auto saved = write_servers(text); !saved) return err(saved.error());
   }
   if (old && old->link) old->link->shut_down();
   gen_.fetch_add(1, std::memory_order_acq_rel);
@@ -443,12 +452,17 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
 expected library::forget(std::string_view server_id) {
   std::shared_ptr<server_rt> s;
   {
-    std::lock_guard lock(m_);
-    auto it = servers_.find(std::string(server_id));
-    if (it == servers_.end()) return err(status::not_found);
-    s = it->second;
-    servers_.erase(it);
-    if (auto saved = save_locked(); !saved) return err(saved.error());
+    std::lock_guard saving(save_m_);
+    std::string text;
+    {
+      std::lock_guard lock(m_);
+      auto it = servers_.find(std::string(server_id));
+      if (it == servers_.end()) return err(status::not_found);
+      s = it->second;
+      servers_.erase(it);
+      text = servers_json_locked();
+    }
+    if (auto saved = write_servers(text); !saved) return err(saved.error());
   }
   if (s->link) s->link->shut_down();
   if (auto* keys = store()) (void)keys->erase(kSecretPrefix + s->id);
@@ -529,13 +543,20 @@ void library::keep_addresses(server_rt& s) {
   // link pinned its key. Saved only when something changed; a failed save tries at the next connect.
   std::string local, public_name, relay;
   s.link->addresses(local, public_name, relay);
-  std::lock_guard lock(m_);
-  if (local == s.local && public_name == s.public_name && relay == s.relay) return;
-  std::swap(s.local, local);
-  std::swap(s.public_name, public_name);
-  std::swap(s.relay, relay);
-  if (!save_locked()) {
+  std::lock_guard saving(save_m_);
+  std::string text;
+  {
+    std::lock_guard lock(m_);
+    if (local == s.local && public_name == s.public_name && relay == s.relay) return;
+    std::swap(s.local, local);
+    std::swap(s.public_name, public_name);
+    std::swap(s.relay, relay);
+    text = servers_json_locked();
+  }
+  if (!write_servers(text)) {
     // Not kept: as it was, so the next connect sees the change again and retries the save.
+    // save_m_ is still held, so no other save has changed these since.
+    std::lock_guard lock(m_);
     std::swap(s.local, local);
     std::swap(s.public_name, public_name);
     std::swap(s.relay, relay);

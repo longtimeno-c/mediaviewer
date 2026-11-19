@@ -73,6 +73,22 @@ UI thread through the same call a disk folder uses (`mv_chrome_list_subdirectori
 through the same call Open Folder uses (`mv_chrome_open_folder`, `mv_folder_open`): a listing of
 its files, titled with the folder's name, the gallery, filmstrip, marks and keys of any folder.
 
+**Pinned with the folders too (owner 2026-11-18).** A server just paired is also pinned like a
+folder (issue #617's pins, as `remote:<server id>`), named by the server with "Paired server" as
+its place:
+- **Mac:** after File > Connect to a Server; the welcome card, the Dock menu and File > Open Recent
+  list it, and the Folders pane opens if the welcome card is up. Opening the pin opens the
+  server's one named folder straight away; with several it shows the Folders pane.
+- **Windows:** after the tree's Connect to a server. The island sends `chrome_cmd_remote_changed`
+  whenever `mv_remote_generation` moves; native reads `mv_remote_pair_state_json`'s `key` and
+  `seq` to pin each pairing once, and drops the pin of a server no longer listed. The welcome card
+  and Open > Recent folders list it; the jump list does not (its items start the exe with a disk
+  path). Opening the pin lists the server's named folders on a worker (`mv_list_subdirectories`):
+  one opens straight away; with several, the folder tree shows them under the server's row.
+
+Forget This Server unpins it; Unpin or the card's x drops the pin and leaves the server paired in
+the tree. Never treated as a disk path, so never forgotten for being away.
+
 ### First pixel (rule 3)
 
 The ladder is the one docs/design/04 sets, with the network as the slow end:
@@ -199,6 +215,11 @@ the service says.
   cold arrow medians base 80–138 ms / new 88–108 ms, warm base 0.27–0.41 ms / new 0.35–0.38 ms
   (overlapping); `mv_tests "[.perf-bench]"` decode and list rows overlapping (base 128–200 ms, new
   153–200 ms for the 24 MP decode). The local paths gain one prefix compare per selection.
+- **Measured, Windows** (Ryzen 7 5700X3D, Release, the same test, three runs, 2026-11-18,
+  `docs/perf/windows-desktop-client.json`): list 25–29 ms; remote first pixel 131–143 ms; full
+  resolution 217–229 ms; arrow to a prefetched neighbour 76–78 ms, to a cold one 93–96 ms; local
+  disk: first pixel 72 ms, full 87–88 ms. The core path only: the WinUI paste panel and tree rows
+  were not driven on screen.
 - **Owed**: either host driven on screen against a real `driftwire host` (the Mac half is built and
   its core tested; the Windows native half is compiled only in CI, the C# compiled here); the
   Windows "Downloading… %" notice (the Mac shows it); streaming playback through `read_range` (a

@@ -46,6 +46,11 @@ public enum Theme {
   /// Forget, the one action that loses something: 4.5:1 or better on ground in both looks.
   static let danger = pair(dark: 0xFF453A, light: 0xC4161C)
   static let onAccent = Color.white
+  /// A folder tile: the folder's back and front, and the paper of the documents peeking out of it.
+  static let folderBack = pair(dark: 0x284468, light: 0x8DB6E8)
+  static let folderFront = pair(dark: 0x3A659D, light: 0xB7D3F5)
+  static let paper = pair(dark: 0xE4E4E8, light: 0xFFFFFF)
+  static let paperInk = pair(dark: 0xC2C2C8, light: 0xDADADF)
 
   static let inset: CGFloat = 12
   static let cardRadius: CGFloat = 10

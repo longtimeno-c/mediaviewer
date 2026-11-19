@@ -16,7 +16,7 @@ goes to anyone else's server.
 
 | | |
 |---|---|
-| **Instant** | A RAW preview on screen in 44–125 ms on a Windows PC and 28–50 ms on a Mac, the next photo ready in under 0.2 ms, zero dropped frames while panning |
+| **Instant** | A RAW preview on screen in 47–89 ms on a Windows PC and 28–50 ms on a Mac, the next photo ready in under 0.2 ms, zero dropped frames while panning |
 | **Everything in one window** | Photos, camera RAW, HEIC, AVIF, animated GIF/WebP, HDR video, MP3/M4A, PDF and Word |
 | **Search what's in them** | "dog on a beach", "happy birthday", "videos of Anna": photos and the exact moments in clips, all computed on your machine |
 | **People** | Faces grouped into people. Name someone once, then find every photo and clip they are in |
@@ -55,16 +55,17 @@ driftwire tells you when a new version is out, and `driftwire update` installs i
 ## Speed you can measure
 
 Every number below comes from the app's own harnesses, and the raw reports are in [`docs/perf/`](docs/perf/).
-Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not a lab matrix.
+Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display (2026-11-18). One desktop, not a lab matrix.
 
 | | |
 |---|---|
-| **0 dropped frames** | 60 s of animated panning on a 42 MP Sony RAW: 3,597 frames, p99 16.95 ms on a 16.68 ms refresh |
-| **44-125 ms** | Time for a camera RAW's preview to appear; the full-resolution decode then cross-fades in without moving your view |
-| **0.08 % CPU, 0 presents** | Cost of a still image sitting on screen. Idle means idle |
+| **0 dropped frames** | 60 s of animated panning on a 42 MP Sony RAW: 3,597 frames, p99 17.10 ms on a 16.68 ms refresh |
+| **47–89 ms** | Time for a camera RAW's preview to appear (three runs of five cameras; one Nikon run took 134 ms); the full-resolution decode then cross-fades in without moving your view. A HEIC: 32 ms |
+| **0.03 % CPU, 0 presents** | Cost of a still image sitting on screen. Idle means idle |
 | **0.2 ms, then the next refresh** | Arrow to the next photo once it has been decoded ahead. The frame is ready in 0.2 ms; a 60 Hz monitor shows it within 16.7 ms |
-| **51–100 ms** | Jump to a RAW that was not next to the current one: its embedded preview, about the same as opening that file |
-| **0 dropped video frames** | 60 s of 1080p HEVC on screen: 3,597 presents, p99 17.10 ms. Audio/video error over that minute stays at p99 7.2 ms |
+| **45–68 ms** | Jump to a RAW that was not next to the current one: its embedded preview, about the same as opening that file |
+| **0 dropped presents** | 60 s of 1080p HEVC on screen: 3,597 presents, p99 17.25 ms; the selector skipped 1 video frame. Over 120 s the audio/video error ends at p99 2.2 ms |
+| **0.6 s to the window, 0.3 s to the photo** | Launch to a usable window (median of 10 warm launches), and to a 42 MP Sony RAW's first pixel when opened with it |
 
 ### Stills
 
@@ -86,11 +87,11 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not
 
 ![Video frame pacing over 60 seconds of playback](docs/img/perf-video.svg)
 
-**Audio against video.** 120 s of the same kind of clip. The error stays under one frame of a 30 fps video (33.3 ms). The selector discarded 2 of 3,597 frames; that is not a dropped screen present.
+**Audio against video.** 120 s of the same kind of clip. The error stays under one frame of a 30 fps video (33.3 ms). The selector discarded none of 3,600 frames.
 
 ![Audio/video error over 120 seconds of playback](docs/img/perf-av-sync.svg)
 
-What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. The folder chart is stills only.
+What is still slower than it should be: a full RAW decode takes 0.6–2.0 s behind the preview, and one of three timed Nikon NEF opens dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 22 fps on screen, with a worst gap of 636 ms. The folder chart is stills only.
 
 ### On a Mac
 
@@ -116,17 +117,17 @@ The scripted pan, the A/V drift trace and the app comparison are Windows harness
 
 ### Against Windows Photos and Media Player
 
-Same machine, same sample files, timed from the screen (a grab is about 17 ms). These are cold launches: the clock starts when the app is opened, so they are not the 44–125 ms in-app preview times above.
+Same machine, same sample files, timed from the screen (a grab is about 17 ms). These are cold launches: the clock starts when the app is opened, so they are not the 47–89 ms in-app preview times above.
 
-**Opening.** Two launches each. RAW is a tie. Photos is faster on the HEIC (810 ms vs 964 ms).
+**Opening.** Two launches each. The Sony RAW is about a tie (1,012 ms vs 976 ms). Photos is faster on the Nikon RAW (754 ms vs 957 ms), MediaViewer on the HEIC (373 ms vs 783 ms).
 
 ![Launch to a settled picture, MediaViewer and Windows Photos](docs/img/compare-open.svg)
 
-**Panning.** With the mouse, MediaViewer updates the picture about every refresh (p50 16.7 ms). The slowest updates were 49–84 ms. The same wheel-and-drag did not move the picture in Photos, so Photos has no pan number here.
+**Panning.** With the mouse, MediaViewer updates the picture about every refresh (p50 16.7 ms). The slowest updates were 20–85 ms. The same wheel-and-drag did not move the picture in Photos, so Photos has no pan number here.
 
 ![Mouse-drag pan, MediaViewer and Windows Photos](docs/img/compare-pan.svg)
 
-**Video.** On a 30 fps test clip both apps ran at 29 fps. Media Player's slow gaps were shorter (p99 44 ms, MediaViewer 66 ms). On a 4K HEVC clip MediaViewer averaged 24 fps; Media Player stayed on a single frame for the whole sample, so it has no playback number for that file.
+**Video.** On a 30 fps test clip both apps ran at 27–28 fps with the same slow gaps (p99 167 ms each, in two runs: the same gap in both players points at the screen grab, not the apps). On a 4K HEVC clip MediaViewer averaged 22 fps; Media Player stayed on a single frame for the whole sample, so it has no playback number for that file.
 
 ![Video playback gaps, MediaViewer and Media Player](docs/img/compare-video.svg)
 
@@ -264,7 +265,7 @@ and small thumbnails still come up, and the photos and clips stream from home wh
 
 - **Search the way you do on your computer.** By meaning ("dog on a beach", "snow in the mountains"), words on a sign or a menu, words said in a clip (which plays from that moment), the people you named, place, date, camera and file name. Sound search ("dog barking") is a one-time download on Wi-Fi.
 - **Browse it as it is.** Your whole library by date, or folder by folder as it is on the server, each folder a tile of what is inside. Photos full screen with pinch, swipe and a filmstrip; clips open at the moment that matched.
-- **Clips the phone can't play still play.** MP4 and MOV play as they are, and so do camcorder MTS and M2TS with H.264. Your server converts the rest (MKV, WebM, AVI, MPG, MPEG-2, HEVC in a transport stream) on its hardware encoder as you watch: on a Mac, 5.6–7.4 times real time for 1080p.
+- **Clips the phone can't play still play.** MP4 and MOV play as they are, and so do camcorder MTS and M2TS with H.264. Your server converts the rest (MKV, WebM, AVI, MPG, MPEG-2, HEVC in a transport stream) on its hardware encoder as you watch: on a Mac, 5.6–7.4 times real time for 1080p; on a Windows PC with NVENC, the first frame of a 1080p AVI or MKV in 0.6–0.75 s and a seek in 0.4–0.5 s.
 - **Share and save.** Send a photo or clip anywhere from the share sheet, or save a copy to Photos.
 - **Yours, on your own hardware.** No account, no cloud, no subscription, no data collected. The phone pairs by scanning a code on your computer and checking a code on both screens; every connection is encrypted end to end, and the app checks it is your server before it asks for anything. Hand someone a guest code that lasts as long as you choose, and *Forget this library* removes everything the app kept.
 - **Try it without a server.** Enter the code `SAMPLE` and a public-domain sample library of 44 photos and 3 clips opens, searched on the phone by the same model as a real library.
@@ -281,12 +282,12 @@ up from Settings.
 
 - **One guided setup.** Choose the folders to share, get a free DuckDNS name, and the router's port is opened and kept open for you. Scan the code with your phone and it is done. It starts at login, with no administrator rights.
 - **Reach it from anywhere.** One forwarded port, encrypted end to end, never a file share opened to the internet. Without a public address, a relay you run yourself on a small rented server carries it, sealed so the relay can't read it.
-- **Your other computers too.** On a Mac, **File → Connect to a Server…** pins the server's folders at the top of the folder tree, read-only. Measured through the service over loopback on one Mac: a 12-megapixel photo's first picture in 79–88 ms, its full resolution in 139–155 ms, the next one you arrow to in 56–60 ms (78–87 ms if it wasn't fetched ahead).
+- **Your other computers too.** On a Mac, **File → Connect to a Server…** pins the server's folders at the top of the folder tree, read-only. Measured through the service over loopback on one Mac: a 12-megapixel photo's first picture in 79–88 ms, its full resolution in 139–155 ms, the next one you arrow to in 56–60 ms (78–87 ms if it wasn't fetched ahead). The same over loopback on the Windows PC above: 131–143 ms, 217–229 ms, 76–78 ms (93–96 ms).
 - **Combine your drives.** Keep each drive separate, or mirror, span or stripe them (and, on Windows, parity) with the system's own tools, AppleRAID or Storage Spaces.
 - **People at home.** Add the people in your house with a role each (view, change or admin), and share folders with them over the home network as an encrypted file share with no guest access.
 - **Always in reach.** A menu-bar (or notification-area) item shows the server running, the phones connected and what they used today, and pauses or resumes it in one click.
 
-This is new, and Mac first: hosting on a Windows PC is written but not yet run, and the router, DuckDNS, drive and home-share steps pass their tests against stand-ins, still to be run on real routers, accounts and drives.
+This is new. It hosts on a Mac and on a Windows PC: on Windows the service, its relay, the router's port (UPnP), a striped Storage Spaces pool and streaming to a paired iPhone have run for real. DuckDNS and the home share pass their tests against stand-ins, still to be run on real accounts and networks.
 
 ## Import: off the card, verified
 

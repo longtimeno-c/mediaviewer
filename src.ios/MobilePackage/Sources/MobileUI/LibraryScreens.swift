@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // §11.1 Library (date-ordered grid, folder switch, the route chip only when it matters), People.
 import MobileKit
+import QuickLook
 import SwiftUI
 
 struct LibraryScreen: View {
@@ -9,22 +10,30 @@ struct LibraryScreen: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
+    @Bindable var library = model.library
     content
       .safeAreaInset(edge: .top, spacing: 0) { PlaceBar() }
       .background(Theme.ground)
+      .quickLookPreview($library.previewing)
   }
+
+  /// Above photos, a few rows of files; with no photos, every file.
+  private static let filesAbovePhotos = 3
 
   @ViewBuilder
   private var content: some View {
     if model.library.isLoading {
       GridSkeleton().background(Theme.ground)
-    } else if model.library.sections.isEmpty, !model.library.subfolders.isEmpty {
-      // A folder of folders (a year, an archive, the top of a server): its folders are the page.
+    } else if model.library.sections.isEmpty, !model.library.subfolders.isEmpty || !model.library.others.isEmpty {
+      // A folder of folders (a year, an archive, the top of a server) or of documents: its folders
+      // and its files are the page.
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           noticeSlot
-          FolderGrid(folders: model.library.subfolders)
+          if !model.library.subfolders.isEmpty { FolderGrid(folders: model.library.subfolders) }
+          if !model.library.others.isEmpty { FileList(files: model.library.others) }
         }
+        .padding(.bottom, 16)
       }
       .background(Theme.ground)
       .id(model.library.scope)
@@ -45,6 +54,9 @@ struct LibraryScreen: View {
       MediaGrid(sections: model.library.sections, entries: model.library.entries, context: "library") {
         noticeSlot
         if !model.library.subfolders.isEmpty { FolderShelf(folders: model.library.subfolders) }
+        if !model.library.others.isEmpty {
+          FileList(files: model.library.others, collapsedTo: Self.filesAbovePhotos)
+        }
       }
         // A new folder starts at its top, not at the last folder's scroll position.
         .id(model.library.scope)

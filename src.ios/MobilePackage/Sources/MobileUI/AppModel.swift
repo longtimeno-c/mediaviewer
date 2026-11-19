@@ -500,6 +500,19 @@ public final class LibraryModel {
   public private(set) var trail: [Folder] = []
   /// The folders inside the one on screen.
   public private(set) var subfolders: [Folder] = []
+  /// The files in the one on screen that are not photos or clips (file mode only), by name.
+  public private(set) var others: [OtherFile] = []
+  /// The other file being fetched for the phone's preview. Changes only when one starts or ends,
+  /// so a list of files is not redrawn on every progress step.
+  public private(set) var openingID: String?
+  /// How far that fetch has got: read only by the row being opened.
+  public private(set) var openProgress: (done: Int64, total: Int64) = (0, 0)
+  @ObservationIgnored private var openToken = 0
+  /// The fetched file the preview shows; nil closes it.
+  public var previewing: URL?
+  /// Why the last other file could not be opened, on its row.
+  public private(set) var openFailure: (id: String, message: String)?
+  @ObservationIgnored private var openTask: Task<Void, Never>?
   public private(set) var sections: [GridSection] = []
   public private(set) var entries = GridSource.empty
   public private(set) var isLoading = true
@@ -538,6 +551,8 @@ public final class LibraryModel {
   /// Jumps straight to a place in the tree.
   public func show(_ path: [Folder]) {
     requested = path
+    cancelOpening()
+    openFailure = nil
     Task { await load() }
   }
 
@@ -553,6 +568,45 @@ public final class LibraryModel {
 
   public func knownPreview(of folder: Folder) -> FolderPreview? { previews[folder.id] }
 
+  /// Fetches an other file and shows it in the phone's preview; tapping the one being fetched stops it.
+  public func open(_ file: OtherFile) {
+    if openingID == file.id {
+      cancelOpening()
+      return
+    }
+    openTask?.cancel()
+    openToken += 1
+    let token = openToken
+    openFailure = nil
+    openingID = file.id
+    openProgress = (0, file.bytes)
+    openTask = Task { [store] in
+      do {
+        let url = try await store.download(file) { done, total in
+          Task { @MainActor [weak self] in
+            // A step from a fetch already stopped never moves this one's bar.
+            guard let self, self.openToken == token, done >= self.openProgress.done else { return }
+            self.openProgress = (done, total)
+          }
+        }
+        guard !Task.isCancelled, openToken == token else { return }
+        openingID = nil
+        previewing = url
+      } catch {
+        guard !Task.isCancelled, openToken == token else { return }
+        openingID = nil
+        openFailure = (file.id, FailureCopy.fileNotOpened)
+      }
+    }
+  }
+
+  public func cancelOpening() {
+    openTask?.cancel()
+    openTask = nil
+    openToken += 1
+    openingID = nil
+  }
+
   func forgetPreviews() { previews = [:] }
 
   func reset() {
@@ -562,6 +616,10 @@ public final class LibraryModel {
     requested = []
     trail = []
     subfolders = []
+    others = []
+    cancelOpening()
+    openFailure = nil
+    previewing = nil
     sections = []
     entries = .empty
     failure = nil
@@ -577,15 +635,18 @@ public final class LibraryModel {
   }
 
   private func perform() async {
-    isLoading = sections.isEmpty
+    // What is on screen (photos, folders or files) stays until the next folder arrives.
+    isLoading = sections.isEmpty && subfolders.isEmpty && others.isEmpty
     let path = requested
     let scope = path.last.map(LibraryScope.folder) ?? .everything
     let parent = path.last
     do {
       async let found = store.list(in: scope)
       async let inside = parent?.hasSubfolders == false ? [] : store.folders(under: parent)
+      async let loose = Self.otherFiles(store, in: parent)
       let list = try await found
       let folders = try await inside
+      let otherFiles = try await loose
       let built = await Task.detached(priority: .userInitiated) { Self.grid(of: list) }.value
       guard !Task.isCancelled, path == requested else { return }
       trail = path
@@ -593,6 +654,7 @@ public final class LibraryModel {
       subfolders = path.isEmpty ? Self.merging(subfolders.filter(\.offline), into: folders) : folders
       sections = built.sections
       entries = built.entries
+      if others != otherFiles { others = otherFiles }
       failure = nil
       if path.isEmpty { addOfflineFolders(over: folders) }
     } catch {
@@ -600,6 +662,11 @@ public final class LibraryModel {
       failure = FailureCopy.libraryFailed
     }
     isLoading = false
+  }
+
+  nonisolated private static func otherFiles(_ store: LibraryStore, in folder: Folder?) async throws -> [OtherFile] {
+    guard let folder else { return [] }
+    return try await store.otherFiles(in: folder)
   }
 
   /// The server's folders whose drive is not connected join the top level once they are known: its

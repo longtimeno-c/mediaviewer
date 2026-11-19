@@ -181,6 +181,12 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
   }
 }
 
+void set_welcome_row(welcome_recents& out, int row, std::string_view label, std::string_view where) noexcept {
+  if (row < 0 || row >= out.count) return;
+  copy_utf8(label, out.label[row], sizeof(out.label[row]));
+  copy_utf8(where, out.where[row], sizeof(out.where[row]));
+}
+
 std::string paths_as_text(std::span<const std::string> utf8_paths, std::string_view newline) {
   std::string out;
   for (const std::string& p : utf8_paths) {

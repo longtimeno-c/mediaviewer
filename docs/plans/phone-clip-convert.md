@@ -1,6 +1,7 @@
 # Clips the phone can't play, converted by the server
 
-Status: built (draft PR). Mac verified in the Simulator; Windows written to compile, not run.
+Status: built (draft PR). Mac verified in the Simulator; Windows: the helper and service run
+(`"[.convert-bench]"`, NVENC, below), not yet played on a phone from a Windows server.
 
 The owner's library lives on their own computer (`docs/plans/self-hosted.md`) and the phone reads it
 in file mode. AVFoundation opens MP4/MOV/M4V, and (since `TsStreams`) H.264 transport streams as
@@ -89,6 +90,16 @@ Over loopback, real helper behind the real service (`"[.convert-bench]"`), cold 
 | AVI 1080p30, MPEG-4 Part 2 + MP3 | 105 ms | 650 ms | 590–600 ms | 5–8 ms |
 | MKV 1080p30, VP9 + Opus | 107 ms | 646 ms | 640–655 ms | 5 ms |
 | MPG 720×576, MPEG-2 + MP2 | 102–111 ms | 317–322 ms | 218–222 ms | 2–3 ms |
+
+Windows (Ryzen 7 5700X3D, RTX 4070, `h264_nvenc`, 2026-11-18): the same test with
+`MediaViewerClipJob.exe`, 45 s clips cut from the 1080p soak clip, one clip per run, two runs
+(`docs/perf/windows-convert.jsonl`). The plan takes about twice the Mac's; not looked into.
+
+| Clip | Plan | First frame (plan + segment 0) | Seek to the middle | From the cache |
+|---|---|---|---|---|
+| AVI 1080p30, MPEG-4 Part 2 + MP3 | 209–214 ms | 568–584 ms | 360–367 ms | 4 ms |
+| MKV 1080p30, VP9 + Opus | 214–216 ms | 633–752 ms | 521–528 ms | 4 ms |
+| MPG 720×576, MPEG-2 + MP2 | 219 ms | 590–608 ms | 386–394 ms | 3 ms |
 
 Conversion runs at 5.6–7.4× realtime for 1080p and about 19× for SD (`clip_convert`'s own runs). A
 segment made ahead for one clip delays the next clip's first frame by up to one segment's time

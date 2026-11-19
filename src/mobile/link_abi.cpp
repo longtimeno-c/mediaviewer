@@ -162,36 +162,29 @@ void reload_view(mv_mobile_link* l) {
   l->view = std::move(next);
 }
 
-// The service folder and relative path of an asset. A catalogue root is matched
-// to the service folder labelled with its share's name; a miss asks the service
-// again, in case the folder has just been added.
-mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string& root, std::string& rel) {
-  std::optional<asset_file> f;
-  std::map<std::string, generation_view::root_ref> roots;
-  {
-    std::shared_lock lock(l->view_m);
-    if (!l->view) return MV_LINK_NOT_FOUND;
-    f = l->view->file(asset);
-    roots = l->view->roots();
-  }
-  if (!f) return MV_LINK_NOT_FOUND;
-  const auto ref = roots.find(f->uuid);
-  if (ref == roots.end()) return MV_LINK_NOT_FOUND;
-  const auto& share = ref->second.share;
-  const auto& sub = ref->second.sub;
+// The service folder and path of `in_root`, a path under catalogue root `uuid` (a file's, or a
+// folder's when `dir`). A catalogue root is matched to the service folder labelled with its
+// share's name; a miss asks the service again, in case the folder has just been added.
+mv_link_status resolve_in_root(mv_mobile_link* l, const std::string& uuid, const generation_view::root_ref& ref,
+                               const std::string& in_root, bool dir, std::string& root, std::string& rel) {
+  const auto under = [](const std::string& base, const std::string& tail) {
+    return base.empty() ? tail : tail.empty() ? base : base + "/" + tail;
+  };
+  const auto& share = ref.share;
+  const auto& sub = ref.sub;
   std::vector<mv::mobile::files::served_root> served;
   {
     std::lock_guard lock(l->roots_m);
     auto found = l->label_to_root.find(share);
     if (l->roots_known && found != l->label_to_root.end()) {
       root = found->second;
-      rel = sub.empty() ? f->rel : sub + "/" + f->rel;
+      rel = under(sub, in_root);
       return MV_LINK_OK;
     }
     if (l->roots_known) {
-      if (const auto place = l->found_places.find(ref->first); place != l->found_places.end()) {
+      if (const auto place = l->found_places.find(uuid); place != l->found_places.end()) {
         root = place->second.root;
-        rel = place->second.prefix.empty() ? f->rel : place->second.prefix + "/" + f->rel;
+        rel = under(place->second.prefix, in_root);
         return MV_LINK_OK;
       }
     }
@@ -210,28 +203,48 @@ mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string&
     }
     if (found != l->label_to_root.end()) {
       root = found->second;
-      rel = sub.empty() ? f->rel : sub + "/" + f->rel;
+      rel = under(sub, in_root);
       return MV_LINK_OK;
     }
     served = l->served;
   }
-  // No folder carries the share's name: look for this file where the share may be now, without
+  // No folder carries the share's name: look for this path where the share may be now, without
   // the lock (each look is a round trip), and keep the place for the rest of its root's files.
   for (const auto& p : mv::mobile::files::places_for(share, sub, served)) {
-    const std::string path = p.prefix.empty() ? f->rel : p.prefix + "/" + f->rel;
-    const auto st = l->remote->stat(p.root, path);
-    if (!st) {
-      if (st.error() == status::not_found || st.error() == status::permission_denied) continue;
-      return status_of_read(st.error());
+    const std::string path = under(p.prefix, in_root);
+    if (!path.empty()) {
+      const auto st = l->remote->stat(p.root, path);
+      if (!st) {
+        if (st.error() == status::not_found || st.error() == status::permission_denied) continue;
+        return status_of_read(st.error());
+      }
+      if (st->dir != dir) continue;
+    } else if (!dir) {
+      continue;
     }
-    if (st->dir) continue;
     std::lock_guard lock(l->roots_m);
-    l->found_places[ref->first] = p;
+    l->found_places[uuid] = p;
     root = p.root;
     rel = path;
     return MV_LINK_OK;
   }
   return MV_LINK_NO_FOLDER;
+}
+
+// The service folder and relative path of an asset.
+mv_link_status resolve_asset(mv_mobile_link* l, std::int64_t asset, std::string& root, std::string& rel) {
+  std::optional<asset_file> f;
+  std::map<std::string, generation_view::root_ref> roots;
+  {
+    std::shared_lock lock(l->view_m);
+    if (!l->view) return MV_LINK_NOT_FOUND;
+    f = l->view->file(asset);
+    roots = l->view->roots();
+  }
+  if (!f) return MV_LINK_NOT_FOUND;
+  const auto ref = roots.find(f->uuid);
+  if (ref == roots.end()) return MV_LINK_NOT_FOUND;
+  return resolve_in_root(l, ref->first, ref->second, f->rel, false, root, rel);
 }
 
 template <typename Fn>
@@ -819,6 +832,34 @@ int32_t mv_files_list(mv_mobile_link* l, const char* root, const char* rel, mv_f
       mv_file_entry out{e.name.c_str(), e.size, e.mtime, e.dir ? 1 : 0, e.dir ? -1 : static_cast<int32_t>(e.k)};
       fn(ctx, &out);
     }
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_folder_place(mv_mobile_link* l, const char* folder_key, char* root_out, size_t root_size, char* rel_out,
+                              size_t rel_size) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !folder_key || !root_out || !rel_out || root_size == 0 || rel_size == 0) return MV_LINK_INVALID;
+    // "/<root uuid>" or "/<root uuid>/<path under it>", as the catalogue keys its folders.
+    const std::string_view key = folder_key;
+    if (key.size() < 2 || key.front() != '/') return MV_LINK_INVALID;
+    const std::size_t slash = key.find('/', 1);
+    const std::string uuid(key.substr(1, slash == std::string_view::npos ? std::string_view::npos : slash - 1));
+    const std::string in_root = slash == std::string_view::npos ? std::string() : std::string(key.substr(slash + 1));
+    if (uuid.empty() || (!in_root.empty() && !driftwire::safe_relative(in_root))) return MV_LINK_INVALID;
+    std::map<std::string, generation_view::root_ref> roots;
+    {
+      std::shared_lock lock(l->view_m);
+      if (!l->view) return MV_LINK_NOT_FOUND;
+      roots = l->view->roots();
+    }
+    const auto ref = roots.find(uuid);
+    if (ref == roots.end()) return MV_LINK_NOT_FOUND;
+    std::string root, rel;
+    if (const auto st = resolve_in_root(l, uuid, ref->second, in_root, true, root, rel); st != MV_LINK_OK) return st;
+    if (root.size() >= root_size || rel.size() >= rel_size) return MV_LINK_INVALID;
+    std::memcpy(root_out, root.c_str(), root.size() + 1);
+    std::memcpy(rel_out, rel.c_str(), rel.size() + 1);
     return MV_LINK_OK;
   });
 }

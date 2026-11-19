@@ -75,6 +75,11 @@ inline constexpr std::size_t kMaxPinnedFolders = 5;
 // are counted in out.pinned and drawn with a pin.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
                           welcome_recents& out, bool icloud = false, std::size_t pinned = 0) noexcept;
+// Row `row`'s text (the cloud row counted), cut to fit as above; a row past
+// out.count is left alone. For a shown entry that is not a disk folder (a
+// paired server's `remote:` pin, docs/plans/desktop-client.md), whose path
+// says nothing to a person.
+void set_welcome_row(welcome_recents& out, int row, std::string_view label, std::string_view where) noexcept;
 // The same with any cloud place leading (Windows: "OneDrive", 2026-10-07);
 // an empty `cloud_label` is none.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
