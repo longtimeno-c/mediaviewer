@@ -99,6 +99,24 @@ class ReleaseTests(unittest.TestCase):
         release.prepare()
         self.assertIn('tag=v0.1.1\n', (self.folder / 'output').read_text())
 
+    def test_a_used_version_fails_preflight_before_the_builds(self):
+        # v0.1.44 was published, CMakeLists.txt still said 0.1.44, and the run
+        # failed at publish, 1.5 hours in.
+        for name in ('MV_MANIFEST_SIGNING_KEY', 'MV_MAC_CERT_P12_BASE64', 'MV_MAC_CERT_PASSWORD',
+                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_PASSWORD', 'MV_SPARKLE_PRIVATE_KEY'):
+            os.environ[name] = 'test'
+        for mode in ('preview', 'stable'):
+            os.environ['MODE'] = mode
+            for used in ((0, 1, 1), (0, 1, 2)):
+                self.highest.return_value = used
+                with self.assertRaisesRegex(ValueError, 'Bump CMakeLists.txt'):
+                    release.prepare()
+            self.highest.return_value = (0, 1, 0)
+            release.prepare()
+        os.environ['MODE'] = 'artifacts'  # unpublished test installers may reuse a version
+        self.highest.return_value = (0, 1, 1)
+        release.prepare()
+
     def test_tag_version_reads_stable_and_legacy_preview_tags(self):
         self.assertEqual(release.tag_version('v0.1.4'), (0, 1, 4))
         self.assertEqual(release.tag_version('v0.1.4.preview.36219649049'), (0, 1, 4))

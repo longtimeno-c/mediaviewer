@@ -73,6 +73,12 @@ def prepare():
                              + ', '.join(name for name in azure if name not in configured))
         if not configured:
             print('::warning::Windows installers will be unsigned; SmartScreen may warn.')
+        # publish refuses a version already used, but only after both builds:
+        # check here, before them.
+        highest = highest_release_version(os.environ['GITHUB_REPOSITORY'])
+        if highest and highest >= current:
+            raise ValueError(f'Bump CMakeLists.txt: {version} is not above the published '
+                             f'v{".".join(map(str, highest))} (previews included)')
     # MV_DRIFTWIRE_REPO=1 publishes the command line from a stable release: after publish,
     # driftwire-repo signs the package repository with DRIFTWIRE_REPO_GPG_KEY and
     # driftwire-homebrew pushes the formula with HOMEBREW_TAP_TOKEN. Without either, that job
