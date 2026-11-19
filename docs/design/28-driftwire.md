@@ -818,8 +818,9 @@ One guided run in the order a person needs it (`cli/host_setup.*`, plan §2):
 `host vpn on` sets `vpn` (and `--tls-port N`, the web-site look) in `host.json`; the running host
 restarts its relay with forwarding to every port (`relay::kAnyPort`, TCP and UDP; all traffic, owner
 2026-11-19), apart from TCP 25 (`kNeverForwardTcp`: mail straight from a home address is spam's way
-out; mail apps use 587, 465 and 993), and never to a private, loopback or link-local address (owner
-call 5: no VPN into the home network), and its router
+out; mail apps use 587, 465 and 993), and never to a private, loopback or link-local address, nor to any of the host's own networks
+(`relay::forward_destination_ok`: a home device's global IPv6 address, the host itself; owner call 5,
+no VPN into the home network), and its router
 keeper asks for the relay's port. It prints the relay line once, `name.duckdns.org:PORT#KEY` (the LAN
 address without a name; `PORT` the router's outside port when the running host has one), for the
 laptop's **Relay (your own server)**: the only place the relay's key is ever shown. The TLS look is a
