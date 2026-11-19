@@ -90,6 +90,8 @@ struct decoy {
 [[nodiscard]] bool decoy_keeps_alive(std::string_view response) noexcept;
 // Requests answered on one connection, at most (then it is closed).
 inline constexpr int kMaxRequests = 100;
+// A web-site connection lasts at most this long in all (it holds a handshake slot).
+inline constexpr int kWebsiteMs = 30000;
 
 enum class accepted_as : std::uint8_t { relay, website, failed };
 // The server: the TLS handshake, then the knock. relay: the link for the hop

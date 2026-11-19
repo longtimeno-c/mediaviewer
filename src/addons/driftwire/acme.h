@@ -103,6 +103,8 @@ struct cert_info {
   bool self_signed = false;  // issuer == subject
 };
 [[nodiscard]] std::optional<cert_info> inspect(std::string_view pem, std::string_view name);
+// Whether `key_pem` is the private key of the first certificate in `cert_pem`.
+[[nodiscard]] bool key_matches(std::string_view cert_pem, std::string_view key_pem);
 
 // The pieces (the tests and the stand-in CA).
 // base64url without padding.

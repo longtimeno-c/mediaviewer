@@ -670,6 +670,12 @@ struct host_service::state {
     if (o.relay_tweak) o.relay_tweak(ro);
     const bool with_tls = ro.tls_port != 0;
     auto r = relay::server::start(ro);
+    if (!r && !ro.tls_cert.empty()) {
+      // Let's Encrypt's files would not load: the look self-signed rather than no look.
+      ro.tls_cert.clear();
+      ro.tls_key.clear();
+      r = relay::server::start(ro);
+    }
     tls_failed = false;
     if (!r && with_tls) {
       // The look's port taken or not allowed (443 on Linux without privilege): the relay and the

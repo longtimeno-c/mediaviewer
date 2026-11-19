@@ -535,8 +535,12 @@ std::optional<cert_files> usable_certificate(const std::string& folder, const st
   if (!pem) return std::nullopt;
   const auto info = acme::inspect(*pem, name);
   if (!info || !info->for_name || info->self_signed || info->not_after <= now) return std::nullopt;
-  std::error_code ec;
-  if (!std::filesystem::is_regular_file(to_path(dir + "/key.pem"), ec)) return std::nullopt;
+  // A key that is not this certificate's (a write cut between the two files) is no certificate.
+  auto key = host_files::read(dir + "/key.pem", 16 * 1024);
+  if (!key) return std::nullopt;
+  const bool matches = acme::key_matches(*pem, *key);
+  sodium_memzero(key->data(), key->size());
+  if (!matches) return std::nullopt;
   return cert_files{dir + "/cert.pem", dir + "/key.pem", info->not_after};
 }
 

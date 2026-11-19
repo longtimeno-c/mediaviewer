@@ -1187,8 +1187,11 @@ void link::run(const std::string& request) {
     // another by now, so the line is asked for once more with the port it has.
     // With the web-site look the line names its port (the code says relay-tls).
     const bool look = line.rfind(serve::kRelayTlsCodePrefix, 0) == 0;
-    const std::uint16_t port = look ? (st.tls_outside_port != 0 ? st.tls_outside_port : st.relay_tls_port)
-                                    : (st.relay_outside_port != 0 ? st.relay_outside_port : st.relay_port);
+    // A name carries the router's outside port; a LAN address (no name) the one it listens on.
+    const bool named = !st.duckdns.empty() || !st.domain.empty();
+    const std::uint16_t inside = look ? st.relay_tls_port : st.relay_port;
+    const std::uint16_t outside = look ? st.tls_outside_port : st.relay_outside_port;
+    const std::uint16_t port = named && outside != 0 ? outside : inside;
     if (!line.empty() && st.vpn_on && port != 0 && line.find(":" + std::to_string(port) + "#") == std::string::npos) {
       wipe_string(line);
       if (auto again = self_host::run_host(w, {"vpn", "on"}); again) {

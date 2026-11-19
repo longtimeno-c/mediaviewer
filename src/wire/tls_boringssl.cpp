@@ -477,6 +477,7 @@ std::unique_ptr<link> accept(server_context& sc, std::unique_ptr<link> l, const 
   // 8 KiB at most), its answer, and the next on the same connection while
   // the answer keeps it alive (kIdleMs between requests).
   as = accepted_as::website;
+  const auto website_until = clock::now() + std::chrono::milliseconds(kWebsiteMs);
   std::string head(got.begin(), got.end());
   for (int served = 0; served < kMaxRequests && !closed; ++served) {
     while (!closed && head.find("\r\n\r\n") == std::string::npos && head.size() < 8192) {
@@ -491,12 +492,15 @@ std::unique_ptr<link> accept(server_context& sc, std::unique_ptr<link> l, const 
     }
     const auto end = head.find("\r\n\r\n");
     if (end == std::string::npos && head.size() < 8192) break;  // nothing whole came: closed, as on a timeout
-    const std::string this_one = end == std::string::npos ? head : head.substr(0, end + 4);
+    // A head past 8 KiB: nginx's 400, which closes.
+    const std::string this_one = end == std::string::npos ? std::string() : head.substr(0, end + 4);
     const auto page = decoy_response(this_one, d);
     if (!t->write_all({reinterpret_cast<const std::uint8_t*>(page.data()), page.size()})) break;
     if (!decoy_keeps_alive(page)) break;
     head = end == std::string::npos ? std::string() : head.substr(end + 4);
-    idle_until = clock::now() + std::chrono::milliseconds(kIdleMs);
+    // The next request within kIdleMs, and the whole connection within kWebsiteMs: a decoy
+    // connection holds one of the relay's handshake slots while it lasts.
+    idle_until = std::min(clock::now() + std::chrono::milliseconds(kIdleMs), website_until);
   }
   t->shutdown();
   return nullptr;

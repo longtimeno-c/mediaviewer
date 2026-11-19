@@ -553,21 +553,16 @@ std::string host_relay_line(const host_layout& l, const setup_world& w, std::str
   const bool look =
       look_port(s) != 0 && tls::available() && !(st && st->boolean("tls_failed").value_or(false));
   if (tls) *tls = look;
-  std::int64_t port = 0;
-  if (look) {
-    port = state_number(st, "tls_outside_port");
-    if (!port) port = state_number(st, "relay_tls_port");
-    if (!port) port = look_port(s);
-  } else {
-    port = state_number(st, "relay_outside_port");
-    if (!port) port = state_number(st, "relay_port");
-    if (!port) port = s.relay_port;
-  }
+  // The port it listens on here (for a LAN address), and the router's outside one for it (for a name).
+  std::int64_t inside = state_number(st, look ? "relay_tls_port" : "relay_port");
+  if (!inside) inside = look ? look_port(s) : s.relay_port;
+  std::int64_t outside = state_number(st, look ? "tls_outside_port" : "relay_outside_port");
+  if (!outside) outside = inside;
   std::string where;
   if (const std::string name = vpn_name(s); !name.empty() && !w.loopback) {
-    where = name + ":" + std::to_string(port);
+    where = name + ":" + std::to_string(outside);
   } else if (const auto lan = lan_address(w)) {
-    where = with_port(*lan, static_cast<std::uint16_t>(port));
+    where = with_port(*lan, static_cast<std::uint16_t>(inside));
   } else {
     wipe(*key);
     why = "this computer has no address on a network for the relay line.";

@@ -29,6 +29,20 @@
 }
 @end
 
+@interface MVDriftwireNoRedirects : NSObject <NSURLSessionTaskDelegate>
+@end
+
+@implementation MVDriftwireNoRedirects
+// ACME's requests (https_request): no redirect followed; the 3xx is the answer.
+- (void)URLSession:(NSURLSession*)session
+                          task:(NSURLSessionTask*)task
+    willPerformHTTPRedirection:(NSHTTPURLResponse*)response
+                    newRequest:(NSURLRequest*)request
+             completionHandler:(void (^)(NSURLRequest*))done {
+  done(nil);
+}
+@end
+
 namespace mv::driftwire::cli {
 
 http_answer https_get(const std::string& url, std::size_t max_bytes, int timeout_ms) {
@@ -108,7 +122,7 @@ https_reply https_request(const std::string& method, const std::string& url, con
     config.timeoutIntervalForResource = timeout_ms / 1000.0;
     config.HTTPAdditionalHeaders = @{@"User-Agent" : @"driftwire"};
     NSURLSession* session = [NSURLSession sessionWithConfiguration:config
-                                                          delegate:[MVDriftwireUpdateRedirects new]
+                                                          delegate:[MVDriftwireNoRedirects new]
                                                      delegateQueue:nil];
     NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:u];
     req.HTTPMethod = [NSString stringWithUTF8String:method.c_str()];

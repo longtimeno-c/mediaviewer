@@ -100,11 +100,8 @@ std::string es256(EVP_PKEY* key, std::string_view signing_input) {
 std::string csr_of(EVP_PKEY* key, const std::string& name) {
   bssl::UniquePtr<X509_REQ> req(X509_REQ_new());
   if (!req || !X509_REQ_set_version(req.get(), X509_REQ_VERSION_1) || !X509_REQ_set_pubkey(req.get(), key)) return {};
-  X509_NAME* subject = X509_REQ_get_subject_name(req.get());
-  if (!X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_UTF8, reinterpret_cast<const std::uint8_t*>(name.data()),
-                                  static_cast<ossl_ssize_t>(name.size()), -1, 0)) {
-    return {};
-  }
+  // The name in the subject alternative name only: a CN holds at most 64 characters, and
+  // Let's Encrypt takes a CSR without one.
   bssl::UniquePtr<STACK_OF(X509_EXTENSION)> exts(sk_X509_EXTENSION_new_null());
   const std::string san = "DNS:" + name;
   X509_EXTENSION* ext = X509V3_EXT_nconf_nid(nullptr, nullptr, NID_subject_alt_name, san.c_str());
@@ -395,6 +392,14 @@ outcome order(const order_options& o) {
   out.key_pem = pem_of(cert_key.get());
   out.not_after = info->not_after;
   return done(failure::none);
+}
+
+bool key_matches(std::string_view cert_pem, std::string_view key_pem) {
+  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(cert_pem.data(), static_cast<ossl_ssize_t>(cert_pem.size())));
+  if (!bio) return false;
+  bssl::UniquePtr<X509> x(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
+  pkey_ptr key = key_of(key_pem);
+  return x && key && X509_check_private_key(x.get(), key.get()) == 1;
 }
 
 std::optional<cert_info> inspect(std::string_view pem, std::string_view name) {

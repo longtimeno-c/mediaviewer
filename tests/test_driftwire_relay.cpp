@@ -1844,6 +1844,19 @@ TEST_CASE("driftwire tls: a short request is answered at once, and a second on t
     second.append(reinterpret_cast<const char*>(buf.data()), *n);
   }
   CHECK(second.rfind("HTTP/1.1 404 Not Found", 0) == 0);
+  // A head past 8 KiB with no end: nginx's 400, and the connection closed.
+  auto big = tls::client(dial((*s)->tls_port()), "relay.example", nullptr);
+  REQUIRE(big);
+  say(**big, "GET / HTTP/1.1\r\nX-Long: " + std::string(9000, 'a'));
+  std::string third;
+  for (;;) {
+    auto n = (*big)->read_some(buf, 3000);
+    REQUIRE(n);
+    if (*n == 0) break;
+    third.append(reinterpret_cast<const char*>(buf.data()), *n);
+  }
+  CHECK(third.rfind("HTTP/1.1 400 Bad Request", 0) == 0);
+  CHECK(third.find("Connection: close") != std::string::npos);
 }
 
 namespace {

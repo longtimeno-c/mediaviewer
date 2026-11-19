@@ -528,6 +528,12 @@ TEST_CASE("acme: the certificate keeper gets one, keeps it, renews it, and backs
     CHECK((fs::status(dir / "tls" / "key.pem").permissions() & fs::perms::group_all) == fs::perms::none);
 #endif
     CHECK_FALSE(cli::usable_certificate(ctx.folder, "other.example.com", now.load()));
+    // A key that is not the certificate's (a write cut between the two files): no certificate.
+    const auto key = mv::test::read_bytes(dir / "tls" / "key.pem");
+    fs::copy_file(dir / "tls" / "account.pem", dir / "tls" / "key.pem", fs::copy_options::overwrite_existing);
+    CHECK_FALSE(cli::usable_certificate(ctx.folder, kName, now.load()));
+    write_bytes(dir / "tls" / "key.pem", key);
+    CHECK(cli::usable_certificate(ctx.folder, kName, now.load()));
     // Asked again (the ports changed): a good certificate is kept, no new order.
     k->ports_changed(ctx);
     k->ports_changed(ctx);

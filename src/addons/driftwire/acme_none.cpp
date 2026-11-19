@@ -33,5 +33,6 @@ outcome order(const order_options& o) {
 }
 
 std::optional<cert_info> inspect(std::string_view, std::string_view) { return std::nullopt; }
+bool key_matches(std::string_view, std::string_view) { return false; }
 
 }  // namespace mv::driftwire::acme
