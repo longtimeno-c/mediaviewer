@@ -585,13 +585,16 @@ struct host_service::state {
     if (!settings.vpn) {
       ro.forward_ports.clear();  // forwarding (the Tunnel/VPN exit) only with `host vpn on`
       ro.forward_udp_ports.clear();
-    } else if (settings.tls_port != 0) {
+    } else {
+      ro.forward_ports = {relay::kAnyPort};  // all traffic: every TCP port but SMTP's, every UDP port
+      ro.forward_udp_ports = {relay::kAnyPort};
+    }
+    if (settings.vpn && settings.tls_port != 0) {
       // The web-site look, self-signed for the name (Let's Encrypt is later: call 4).
       ro.tls_port = settings.tls_port;
       ro.tls_name = settings.ddns.empty() ? std::string("localhost") : ddns::duckdns_name(settings.ddns);
     }
-    // TCP 80 and 443 and UDP 53 (the relay's defaults) with the VPN on; never
-    // a private, loopback or link-local address (call 5: no VPN into the LAN).
+    // Never a private, loopback or link-local address (call 5: no VPN into the LAN).
     if (o.relay_tweak) o.relay_tweak(ro);
     const bool with_tls = ro.tls_port != 0;
     auto r = relay::server::start(ro);

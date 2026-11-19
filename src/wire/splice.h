@@ -128,6 +128,20 @@ inline constexpr int kPairWaitMs = 5000;
 inline constexpr int kReregisterMs = 60000;
 // tools/driftwire-relay's port unless told another.
 inline constexpr std::uint16_t kDefaultPort = 47614;
+// In a forwarding port list: every port (a VPN host's "all traffic"), apart
+// from kNeverForwardTcp. Port 0 is no destination, so it can mean this.
+inline constexpr std::uint16_t kAnyPort = 0;
+// SMTP: never forwarded, even with kAnyPort, so a key holder can't send mail
+// straight from the host's home address (spam's way out; mail apps use 587,
+// 465 and 993, which go through).
+inline constexpr std::uint16_t kNeverForwardTcp = 25;
+// Whether a forwarding port list lets `port` through (empty: none).
+[[nodiscard]] bool forward_allows(const std::vector<std::uint16_t>& ports, std::uint16_t port, bool tcp);
+// Whether a forward may go to `a` (unless the tests allow any): a public
+// address that is on none of this machine's own networks (`home`:
+// net::local_subnets()), so a home device with a global IPv6 address, or
+// this machine itself, is never reached through the VPN (owner call 5).
+[[nodiscard]] bool forward_destination_ok(const net::address& a, std::span<const net::subnet> home) noexcept;
 // A server key, as typed after '#', at least this long.
 inline constexpr std::size_t kMinKeyChars = 16;
 // A forward's host, as asked: a name or an address, at most this long.
@@ -314,7 +328,8 @@ class server {
     int wait_ms = 10 * 60 * 1000;  // a code lives 10 minutes
     limits lim;
     // Forwarding (the Tunnel): the ports a key holder may reach (empty: no
-    // forwarding at all), forwards at once, and each forward's limits (a
+    // forwarding at all; kAnyPort: every port but kNeverForwardTcp, as the
+    // VPN hosts set it), forwards at once, and each forward's limits (a
     // browser keeps a connection open a while between requests).
     std::vector<std::uint16_t> forward_ports{80, 443};
     int max_forwards = 64;
@@ -326,7 +341,7 @@ class server {
     // The tests: forward to loopback and private addresses too.
     bool forward_private = false;
     // Slice 5: the UDP ports a key holder's datagram flows may reach (DNS
-    // by default; empty: none), and the resolver kDnsHost means (the
+    // by default; empty: none; kAnyPort: every port), and the resolver kDnsHost means (the
     // system's first, else 1.1.1.1:53; private allowed: it is this server's own).
     std::vector<std::uint16_t> forward_udp_ports{53};
     std::optional<net::endpoint> dns_upstream;

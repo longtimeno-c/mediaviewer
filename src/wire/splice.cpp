@@ -34,6 +34,17 @@ std::int64_t now_ns() {
 
 }  // namespace
 
+bool forward_allows(const std::vector<std::uint16_t>& ports, std::uint16_t port, bool tcp) {
+  if (port == kAnyPort) return false;  // no destination
+  if (std::find(ports.begin(), ports.end(), port) != ports.end()) return true;
+  if (tcp && port == kNeverForwardTcp) return false;
+  return std::find(ports.begin(), ports.end(), kAnyPort) != ports.end();
+}
+
+bool forward_destination_ok(const net::address& a, std::span<const net::subnet> home) noexcept {
+  return net::is_public(a) && !net::on_link(a, home);
+}
+
 token random_token() {
   if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   token t;
@@ -980,8 +991,9 @@ result<std::unique_ptr<link>> connect_host(const std::string& host, std::uint16_
   }
   why = forward_answer::unreachable;
   bool any_allowed = false;
+  const auto home = any ? std::vector<net::subnet>{} : net::local_subnets();
   for (const auto& a : addrs) {
-    if (!any && !net::is_public(a)) continue;
+    if (!any && !forward_destination_ok(a, home)) continue;
     any_allowed = true;
     const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - clock::now()).count();
     if (left <= 0) break;
@@ -1033,18 +1045,16 @@ void server::serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t 
     to = opts_.dns_upstream ? *opts_.dns_upstream : default_dns();
   } else {
     if (opts_.forward_udp_ports.empty()) return no(forward_answer::off);
-    if (std::find(opts_.forward_udp_ports.begin(), opts_.forward_udp_ports.end(), port) ==
-        opts_.forward_udp_ports.end()) {
-      return no(forward_answer::port);
-    }
+    if (!forward_allows(opts_.forward_udp_ports, port, false)) return no(forward_answer::port);
     std::vector<net::address> addrs;
     if (const auto lit = net::parse_address(host)) {
       addrs.push_back(*lit);
     } else {
       addrs = net::resolve(host);
     }
+    const auto home = opts_.forward_private ? std::vector<net::subnet>{} : net::local_subnets();
     for (const auto& a : addrs) {
-      if (opts_.forward_private || net::is_public(a)) {
+      if (opts_.forward_private || forward_destination_ok(a, home)) {
         to = net::endpoint{net::address_text(a), port};
         break;
       }
@@ -1133,9 +1143,7 @@ void server::serve_forward(std::shared_ptr<link> l, std::string host, std::uint1
     ++counts_.forward_refused;
   };
   if (opts_.forward_ports.empty()) return no(forward_answer::off);
-  if (std::find(opts_.forward_ports.begin(), opts_.forward_ports.end(), port) == opts_.forward_ports.end()) {
-    return no(forward_answer::port);
-  }
+  if (!forward_allows(opts_.forward_ports, port, true)) return no(forward_answer::port);
   {
     std::lock_guard lock(m_);
     if (static_cast<int>(counts_.forwarding) >= opts_.max_forwards) {

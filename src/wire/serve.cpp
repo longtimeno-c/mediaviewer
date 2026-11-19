@@ -3447,7 +3447,9 @@ bool server::state::apply_vpn_locked(std::uint16_t port) {
   sodium_memzero(v->data(), v->size());
   ro.port = port;
   ro.loopback_only = loopback_only;
-  // The relay's own forwarding defaults: TCP 80 and 443, UDP 53, public addresses only.
+  // All traffic: every TCP port but SMTP's, every UDP port, public addresses only.
+  ro.forward_ports = {relay::kAnyPort};
+  ro.forward_udp_ports = {relay::kAnyPort};
   if (vpn_tweak) vpn_tweak(ro);
   auto r = relay::server::start(ro);
   sodium_memzero(ro.key.data(), ro.key.size());
