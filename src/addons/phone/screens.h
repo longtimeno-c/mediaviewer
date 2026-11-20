@@ -91,8 +91,10 @@ class screen {
   // "title", "line", "on"; "busy"; "code" while the VPN code shows; "error"}.
   [[nodiscard]] std::string vpn_state(std::string_view state_json) const;
   // The link's request for the VPN add-on's `method` ("vpn_set" with `on`,
-  // "vpn_code", "vpn_code_hide"); "" when there is nothing to host on.
-  [[nodiscard]] std::string vpn_request(std::string_view state_json, std::string_view method, bool on) const;
+  // "vpn_code", "vpn_code_hide", "vpn_domain" with `domain`: the own domain or
+  // "none", this computer only); "" when there is nothing to host on.
+  [[nodiscard]] std::string vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                        std::string_view domain = {}) const;
 
   // A phone's ("ph", its key) or a shared folder's ("fo", its id) row id prefix.
   [[nodiscard]] static std::string row_id(const char* prefix, const std::string& of);

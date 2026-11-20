@@ -57,6 +57,11 @@ void stack(writer& w, const char* id, int spacing, const char* axis = "vertical"
 
 void end(writer& w) { w.end_array().end_object(); }
 
+void field(writer& w, const char* id, const std::string& label, const std::string& value, const std::string& hint) {
+  w.begin_object().key("type").string("text_field").key("id").string(id).key("label").string(label);
+  w.key("value").string(value).key("placeholder").string(hint).end_object();
+}
+
 std::string through(const view& v) {
   std::string t = v.server_shown.empty() ? std::string("your VPN server") : v.server_shown;
   if (t.size() > 64) t.resize(64);
@@ -206,6 +211,21 @@ void host_card(writer& w, const view& v) {
       text(w, "host_busy", "Changing the VPN\xE2\x80\xA6", "secondary");
     } else if (v.host_on && v.host_code.empty()) {
       button(w, "host_code", "VPN code\xE2\x80\xA6", "plain");
+    }
+    if (v.host_on && v.host_where == "here") {
+      // Its own domain instead of the DuckDNS name (docs/plans/vpn-stealth.md §3).
+      text(w, "domain_heading", "Your own domain", "body");
+      text(w, "domain_line", v.host_domain_line, "caption");
+      if (!v.domain_open) {
+        button(w, "domain_change", v.host_domain.empty() ? "Add\xE2\x80\xA6" : "Change\xE2\x80\xA6", "plain");
+      } else {
+        field(w, "domain_name", "Domain", v.domain_typed, "vpn.example.com");
+        stack(w, "domain_buttons", 8, "horizontal");
+        button(w, "domain_save", "Save", "primary");
+        if (!v.host_domain.empty()) button(w, "domain_clear", "Remove", "plain");
+        button(w, "domain_cancel", "Cancel", "plain");
+        end(w);
+      }
     }
     if (v.host_on && !v.host_code.empty()) {
       stack(w, "host_code_box", 8);

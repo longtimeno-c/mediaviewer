@@ -393,6 +393,11 @@ class server {
   server& operator=(const server&) = delete;
   [[nodiscard]] std::uint16_t port() const noexcept;
   [[nodiscard]] std::uint16_t tls_port() const noexcept;
+  // A new certificate for the web-site look (a renewal: docs/plans/vpn-stealth.md):
+  // new connections take it, open ones keep theirs. status::unsupported_format
+  // without the look; the PEM files' errors as make_server_context gives them
+  // (the old certificate stays).
+  [[nodiscard]] expected set_tls_certificate(const std::string& cert_pem_path, const std::string& key_pem_path);
   [[nodiscard]] counts snapshot() const;
   // Where a connection counts toward kPerSource: its IPv6 /64, or its IPv4 /24.
   [[nodiscard]] static net::address source_of(const net::address& a) noexcept;
@@ -418,7 +423,7 @@ class server {
   std::thread accept_thread_;
   std::unique_ptr<net::listener> tls_listener_;
   std::thread tls_accept_thread_;
-  std::unique_ptr<tls::server_context> tls_ctx_;
+  std::shared_ptr<tls::server_context> tls_ctx_;  // under m_ once started (set_tls_certificate)
   tls::knock_key knock_{};
   std::atomic<bool> stop_{false};
   mutable std::mutex m_;

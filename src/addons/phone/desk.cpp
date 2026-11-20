@@ -893,6 +893,7 @@ result<vpn_answer> desk::set_vpn(bool on) {
   vpn_answer a;
   a.port = doc->integer("vpn_listening").value_or(doc->integer("vpn_port").value_or(0));
   a.running = doc->boolean("vpn_running").value_or(false);
+  a.tls_port = doc->integer("tls_port").value_or(0);
   if (const std::string* k = doc->str("key")) a.key = *k;
   return a;
 }
@@ -1218,6 +1219,7 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     MV_TRY(vpn_answer a, d.set_vpn(*on));
     json::writer w;
     w.begin_object().key("port").integer(a.port).key("running").boolean(a.running);
+    if (a.tls_port != 0) w.key("tls_port").integer(a.tls_port);
     if (!a.key.empty()) w.key("key").string(a.key);
     w.end_object();
     std::fill(a.key.begin(), a.key.end(), '\0');

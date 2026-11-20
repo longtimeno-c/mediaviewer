@@ -60,6 +60,14 @@ else()
   set(_driftwire_bt ${_S}/bt_none.cpp)
 endif()
 
+# A real certificate for the relay's web-site look (acme.h, docs/plans/vpn-stealth.md):
+# BoringSSL, as tls_boringssl.cpp (cmake/wire.cmake decides MV_DRIFTWIRE_TLS).
+if(MV_DRIFTWIRE_TLS)
+  set(_driftwire_acme ${_S}/acme.cpp)
+else()
+  set(_driftwire_acme ${_S}/acme_none.cpp)
+endif()
+
 add_library(mv_driftwire_engine STATIC
   ${_S}/transfer.cpp ${_S}/transfer.h
   ${_S}/presence.cpp ${_S}/presence.h
@@ -67,6 +75,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
   ${_S}/ddns.cpp ${_S}/ddns.h
+  ${_S}/acme.h ${_driftwire_acme}
   ${_S}/host_ports.cpp ${_S}/host_ports.h
   ${_S}/race.h
   ${_S}/internet.cpp ${_S}/internet.h
@@ -91,6 +100,9 @@ target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options mv_wire ${MV
   Threads::Threads)
 set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+if(MV_DRIFTWIRE_TLS)
+  target_link_libraries(mv_driftwire_engine PRIVATE OpenSSL::Crypto)  # acme.cpp
+endif()
 if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
@@ -188,6 +200,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_ddns.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_acme.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
     # The Phone access add-on (docs/plans/phone-access-addon.md): its card, its QR, the module.
@@ -217,6 +230,10 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
   # test_phone_*.cpp: the Phone access add-on's (src/addons/phone, cmake/phone.cmake).
   target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone mv_vpn_engine)
+  if(MV_DRIFTWIRE_TLS)
+    target_link_libraries(${target} PRIVATE OpenSSL::Crypto)  # test_driftwire_acme.cpp's stand-in CA
+    target_compile_definitions(${target} PRIVATE MV_DRIFTWIRE_TLS=1)
+  endif()
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
     MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json"

@@ -74,6 +74,9 @@ class SpkTests(unittest.TestCase):
         # The VPN's relay port, a section of its own so DSM's firewall and router offers name it.
         self.assertIn('[mediaviewer-nas-vpn]', sc)
         self.assertIn('dst.ports="47614/tcp"', sc)
+        # The web-site look beside it (the VPN code's port; outside 443 where the router allows).
+        self.assertIn('[mediaviewer-nas-vpn-web]', sc)
+        self.assertIn('dst.ports="47615/tcp"', sc)
         wizard = json.loads(read(data, 'WIZARD_UIFILES/install_uifile'))
         keys = [s['key'] for step in wizard for item in step['items'] for s in item['subitems']]
         self.assertEqual(keys, ['wizard_share'])

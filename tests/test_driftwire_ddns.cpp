@@ -544,3 +544,21 @@ TEST_CASE("ddns: a subdomain or token that is not parse_*'s never reaches a requ
   CHECK(d.update(r).what == ddns::outcome::refused);
   CHECK(s.count() == 0);
 }
+
+TEST_CASE("ddns: DuckDNS's TXT request carries only what parsing allows", "[ddns][vpn-stealth]") {
+  CHECK(ddns::duckdns_txt_url("https://www.duckdns.org", "home", kToken, "abc-_9") ==
+        "https://www.duckdns.org/update?domains=home&token=" + std::string(kToken) + "&txt=abc-_9&verbose=true");
+  CHECK(ddns::duckdns_txt_url("https://www.duckdns.org", "home", kToken, "") ==
+        "https://www.duckdns.org/update?domains=home&token=" + std::string(kToken) + "&txt=&clear=true&verbose=true");
+  int asked = 0;
+  const ddns::fetch_fn count = [&](const std::string&, int) {
+    ++asked;
+    return ddns::fetch_answer{200, "OK"};
+  };
+  CHECK_FALSE(ddns::set_duckdns_txt(count, "b", "home", kToken, "a&ip=1.2.3.4"));
+  CHECK_FALSE(ddns::set_duckdns_txt(count, "b", "home.duckdns.org", kToken, "abc"));
+  CHECK_FALSE(ddns::set_duckdns_txt(count, "b", "home", "not-a-token", "abc"));
+  CHECK(asked == 0);
+  CHECK(ddns::set_duckdns_txt(count, "b", "home", kToken, "abc"));
+  CHECK(asked == 1);
+}
