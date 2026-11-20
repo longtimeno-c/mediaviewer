@@ -963,8 +963,10 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   server** for relayed transfers: each add-on has its own field and key.
 - **Host** is Phone access's link (this computer's `driftwire host`, the claimed NAS), reached only
   through the host's `addon_request` (docs/design/18): Phone access answers caller `vpn` alone with
-  `vpn_state` (where, title, line, on, busy, code, error), `vpn_set {on}`, `vpn_code`,
-  `vpn_code_hide` (`screen::vpn_state` / `vpn_request`). The VPN add-on asks on its control thread
+  `vpn_state` (where, title, line, on, busy, code, error, and for this computer domain and
+  domain_line), `vpn_set {on}`, `vpn_code`, `vpn_code_hide`, `vpn_domain {domain}` (this computer's
+  own domain for the VPN, or "none": `host name domain`; [vpn-stealth](../plans/vpn-stealth.md))
+  (`screen::vpn_state` / `vpn_request`). No log line carries the domain (rule 6). The VPN add-on asks on its control thread
   while its page shows (every 3 s, every 0.5 s while busy) and hides the code when the page closes.
   Without Phone access the card says to add it. Phone access's card keeps one line pointing here.
 - **Moving over**: the VPN add-on's first start with no `vpn.json` takes the Tunnel's keys from
