@@ -89,7 +89,8 @@ not; 2 usage error, no terminal, or failed start.
 - **Files**: typed, pasted or dropped; quotes, escapes, `~`, `file://`, globs `* ? [...]` expanded by
   the program. Commands: `/send`, `/folder`, `/files`, `/clear`, `/code`, `/copy`, `/send-to`,
   `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`, `/save-to`, `/internet`,
-  `/dht`, `/handover`, `/relay`, `/relay-server`, `/tunnel [on|off|apps on|off]`, `/updates`,
+  `/dht`, `/handover`, `/relay`, `/relay-server`, `/vpn [on|off|server|apps|https|all|block]` (the VPN
+  add-on's engine, its own `vpn.json`; `/tunnel` is the old name), `/updates`,
   `/settings`, `/help`, `/quit`.
 - **Its own data folder** (0700): `driftwire.json`, `driftwire_resume.json`, `driftwire_dht.dat`, the
   lock; `${XDG_STATE_HOME:-~/.local/state}/driftwire`, `~/Library/Application Support/Driftwire`,
@@ -867,14 +868,15 @@ on a real Synology** (the owner's unit died 2026-11-14): tested on loopback and 
 
 ### Connect to a VPN host (2026-11-15)
 
-The line holds the relay's key and is long to type, so the host's card gives it as a code,
-`mediaviewer://relay#host:port#KEY` (`serve::relay_connect_code`), and the laptop's Driftwire add-on has
-a **VPN host** card on its settings page (Settings → Add-ons → Driftwire): **Connect to a VPN host…**
-opens a secure field; Connect reads the code or a bare line (`serve::parse_relay_connect_code`: spaces
-and a newline around it, the scheme in any case; one `#`, a key of at least 16 characters, a host:port
-the relay field takes), fills **Your own relay server** as typing it would (the key in the secret store,
-never the settings file), and turns the Tunnel on; All traffic (VPN) is then one switch. The card names
-the host, never the key. One parser in `src/wire`, used by both add-ons; both chromes draw both cards.
+The line holds the relay's key and is long to type, so the host gives it as a code,
+`mediaviewer://relay#host:port#KEY` (`serve::relay_connect_code`), shown by the VPN add-on's Host card
+(VPN code…) on the server. On the laptop, the VPN add-on's Connect card (Settings → Add-ons → VPN) has
+**Connect to a VPN host…**: a secure field; Connect reads the code or a bare line
+(`serve::parse_relay_connect_code`: spaces and a newline around it, the scheme in any case; one `#`, a
+key of at least 16 characters, a host:port the field takes), fills **Your VPN server** as typing it
+would (the key in the secret store, never the settings file), and turns the Tunnel on; All traffic
+(VPN) is then one switch. The card names the host, never the key. One parser in `src/wire`. Until
+2026-11-19 these were Driftwire's VPN host card and Phone access's VPN rows ([The Tunnel](#the-tunnel-2026-11-12-the-vpn-add-on-since-2026-11-19)).
 Measured with `"[.vpn-host-bench]"` (a host's relay with the shipped forwarding on this Mac, the
 Tunnel's proxy, curl to a public download, alternated with direct): the same throughput as direct, about
 35 ms more to the first byte (numbers in PR #711).
@@ -913,10 +915,33 @@ else does (never the viewer, never the phone).
   address. Never the real duckdns.org. Not run: the real `https_get` against DuckDNS, Windows and
   Linux.
 
-## The Tunnel (2026-11-12)
+## The Tunnel (2026-11-12; the VPN add-on since 2026-11-19)
 
 Reach the web through one's own relay server on a filtering network. Plan
-[driftwire-menu-and-tunnel](../plans/driftwire-menu-and-tunnel.md).
+[driftwire-menu-and-tunnel](../plans/driftwire-menu-and-tunnel.md). Since 2026-11-19 it is the **VPN
+add-on** (`src/addons/vpn`, id `vpn`, [plan](../plans/vpn-addon.md)), not Driftwire's: one settings
+page with a **Connect** card (Your VPN server, Connect to a VPN host…, the switches below) and a
+**Host** card (this computer or the claimed server as the exit: Use as VPN, VPN code…).
+
+- **The add-on** (`service.*`, `tree.cpp`, `prefs.*`, `addon_entry.cpp`): its own control thread,
+  `vpn.json` (`server`, `tunnel`, `tunnel_port`, `all_apps`, `tls`, `tls_port`, `all_traffic`,
+  `block`), the server's key in the secret store as "MediaViewer VPN" / `server_key`. Node ids
+  `server`, `tunnel`, `all_traffic`, `block`, `tls`, `all_apps`, `connect_*`, `host_on`, `host_code`,
+  `host_code_hide`. While the Tunnel is on it keeps the process (`keep_alive`, "VPN: Tunnel through
+  <server>") with the Tunnel and All traffic as its menu rows. Driftwire keeps **Your own relay
+  server** for relayed transfers: each add-on has its own field and key.
+- **Host** is Phone access's link (this computer's `driftwire host`, the claimed NAS), reached only
+  through the host's `addon_request` (docs/design/18): Phone access answers caller `vpn` alone with
+  `vpn_state` (where, title, line, on, busy, code, error), `vpn_set {on}`, `vpn_code`,
+  `vpn_code_hide` (`screen::vpn_state` / `vpn_request`). The VPN add-on asks on its control thread
+  while its page shows (every 3 s, every 0.5 s while busy) and hides the code when the page closes.
+  Without Phone access the card says to add it. Phone access's card keeps one line pointing here.
+- **Moving over**: the VPN add-on's first start with no `vpn.json` takes the Tunnel's keys from
+  Driftwire's `driftwire.json` (sibling data folder) if the Tunnel was ever used (on, or a port), the
+  relay key from Driftwire's item, and a crash's `driftwire_proxy.json` (now `vpn_proxy.json`).
+  Driftwire writes those keys back untouched and, while the Tunnel was on there, shows "The Tunnel is
+  now the VPN add-on" until the VPN add-on answers its `status` request. The `driftwire` program does
+  the same into its own folder.
 
 - **Forwarding** (`splice.*`): role `kForwarder` (2): CPace (`…forwarder-server`) then Noise NNpsk0;
   the client's sealed answer carries kind byte, port and host (`forward_host_ok`). Reply `F`, or `O`
@@ -926,31 +951,32 @@ Reach the web through one's own relay server on a filtering network. Plan
   logs only counts. Models: `tools/formal/relay.pv`, `relay_leaked_key.pv`.
 - **Local proxy** (`tunnel.*`): SOCKS5 CONNECT (names sent as names) and HTTP CONNECT / absolute-form
   on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 3 opening at once. No UDP.
-- **System proxy** (`sysproxy.*`): **Use for all apps** (`tunnel_all_apps`, on by default) sets the
+- **System proxy** (`sysproxy.*`): **Use for all apps** (`all_apps`, on by default) sets the
   OS auto-proxy to `http://127.0.0.1:<port>/driftwire-tunnel.pac` (local DIRECT, else `SOCKS5
   127.0.0.1:<port>; DIRECT`; no `dnsResolve`). `sysproxy_mac.cpp` (SystemConfiguration, admin once
   a run), `sysproxy_win.cpp` (WinINet LAN, per user), `sysproxy_none.cpp` (Linux). The prior setting
-  is saved in `driftwire_proxy.json` and restored on off, quit or the next start after a crash, only
+  is saved in `vpn_proxy.json` and restored on off, quit or the next start after a crash, only
   where still ours. Only hosts passing `make_sysproxy` change it.
-- **One switch**: node `tunnel` (`kChange`, off by default) in the window (**Tunnel through
-  <relay>**), settings page, menu bar, `/tunnel`. `sync_tunnel` on the control thread; `link` node
-  bearer `via: "tunnel"`; `tunnel_mode` "proxy" or VPN. Site refusals map to SOCKS5 reply 2/4 or
+- **One switch**: node `tunnel` (`kChange`, off by default) on the VPN page (**Tunnel through
+  <server>**), its menu row, `/vpn`. `sync_tunnel` on the service's control thread; `link` node
+  bearer `via: "tunnel"`; `mode` "proxy" or "vpn". Site refusals map to SOCKS5 reply 2/4 or
   HTTP 403/502.
 - **Looking like HTTPS** (`tls.*`; [spike](../plans/driftwire-tls-spike.md)): **Look like a web site
-  (port 443)** (`tunnel_tls`) uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
+  (port 443)** (`tls`) uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
   --tls-port 443` (JA4 in tests `t13d1516h2_8daaf6152771_d8a2da3f94cd`). Certificate unchecked (the
   inner hop proves the key). First 32 bytes inside TLS are the **knock** (keyed BLAKE2b of exporter
   `EXPORTER-driftwire-knock`, key = Argon2id of the server key); without it the relay acts as a web
   server (`Server: nginx`, `--decoy-dir`). `--tls-cert`/`--tls-key` or self-signed `--tls-name`.
   Codes use the plain port.
-- **All traffic: Driftwire VPN** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`tunnel_vpn`,
-  `/tunnel vpn`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
+- **All traffic** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`all_traffic`,
+  `/vpn all`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
   no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram
   flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay
   (`dns.driftwire`, `--dns`). Addresses `198.18.0.1/30`, `fd5d:7269:6674::1/64`; everything routed
   except the relay's addresses and local networks (`vpn::plan_routes`). **Block when the tunnel is
-  down** (`tunnel_block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,
-  `mac_tunnel/`, `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`, `cmake/darwin-tunnel.cmake`, embedded by
+  down** (`block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,
+  `mac_tunnel/`, still `<app id>.DriftwireTunnel` (its App ID and profiles; owner 2026-11-19),
+  `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`, `cmake/darwin-tunnel.cmake`, embedded by
   `macpack.py` in `Contents/Library/SystemExtensions`, offered only when entitled;
   `includeAllNetworks` kill switch); Windows Wintun (`vpn_win.cpp`, routes `0.0.0.0/1`,
   `128.0.0.0/1`, `::/1`, `8000::/1`, WFP kill-switch sublayer that outlives a crash until stop, next
@@ -1078,7 +1104,7 @@ The protocol is `src/wire` (`mv_wire`, `cmake/wire.cmake`), linked by the app's 
 | Engine, presence, tree, prefs | `engine.*`, `presence.*`, `tree.cpp`, `prefs.*` |
 | Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
 | Bluetooth | `bt_pipe.*`, `bt_mac.mm`, `bt_win.cpp`, `bt_none.cpp` |
-| The Tunnel | `tunnel.*`, `sysproxy*`, `tls.*`, `netstack.*`, `vpn*`, `mac_tunnel/` |
+| The Tunnel, the VPN add-on | `src/addons/vpn/` (`tunnel.*`, `sysproxy*`, `netstack.*`, `vpn*`, `mac_tunnel/`, `service.*`, `tree.cpp`, `prefs.*`, `addon_entry.cpp`, `manifest.json`), `cmake/vpn.cmake`, `src/wire/tls.*`, `src/wire/relay_field.*`; tests `test_vpn.cpp`, `test_vpn_addon.cpp`, the `[vpn]` part of `test_driftwire_relay.cpp` |
 | Add-on entry and manifest | `addon_entry.cpp`, `manifest.json`, `cmake/driftwire.cmake` |
 | The command line | `src/addons/driftwire/cli/` (`term*`, `keys`, `line_editor`, `paths_arg`, `complete`, `theme.h`, `text`, `render`, `inline_view`, `args`, `host`, `session`, `data_dir*`, `update*`, `serve_cmd`, `serve_tty*`, `nas_update`, `main.cpp`); targets `mv_driftwire_cli_core`, `mv_driftwire_cli` (`OUTPUT_NAME driftwire`), `mv_driftwire_cli_test`, `mv_driftwire_cli_gallery` |
 | Packaging | `cmake/driftwire-cli/` (`needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`, `repo/`), `packaging/windows/install.ps1`, `packaging/macos/driftwire.rb.in`, `tools/package/driftwire_repo.py`, `driftwire-windows.ps1`, `homebrew_formula.py`, `github-release.py`, `tools/mac/macpack.py cli`, `.github/actions/driftwire-cli-linux` |
