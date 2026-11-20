@@ -586,8 +586,9 @@ struct host_service::state {
       ro.forward_ports.clear();  // forwarding (the Tunnel/VPN exit) only with `host vpn on`
       ro.forward_udp_ports.clear();
     } else {
-      ro.forward_ports = {relay::kAnyPort};  // all traffic: every TCP port but SMTP's, every UDP port
-      ro.forward_udp_ports = {relay::kAnyPort};
+      relay::vpn_host_defaults(ro);  // all traffic, never into the home's networks
+      // Nor to the home's outside address (the router's, which hairpins to its forwarded ports).
+      if (!settings.ddns.empty()) ro.forward_refused = relay::refuse_name_addresses(ddns::duckdns_name(settings.ddns));
     }
     if (settings.vpn && settings.tls_port != 0) {
       // The web-site look, self-signed for the name (Let's Encrypt is later: call 4).

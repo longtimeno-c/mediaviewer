@@ -3447,9 +3447,28 @@ bool server::state::apply_vpn_locked(std::uint16_t port) {
   sodium_memzero(v->data(), v->size());
   ro.port = port;
   ro.loopback_only = loopback_only;
-  // All traffic: every TCP port but SMTP's, every UDP port, public addresses only.
-  ro.forward_ports = {relay::kAnyPort};
-  ro.forward_udp_ports = {relay::kAnyPort};
+  // All traffic, never into the home's networks, nor to the home's outside
+  // address (the router's, which hairpins to its forwarded ports): the
+  // outside name as the owner's desktop last set it, looked up as it changes.
+  relay::vpn_host_defaults(ro);
+  ro.forward_refused = [this, name = std::string(), check = std::function<bool(const net::address&)>(),
+                        m = std::make_shared<std::mutex>()](const net::address& a) mutable {
+    std::string now;
+    if (const auto c = cfg(); c && !c->public_name.empty()) {
+      std::uint16_t p = 0;
+      if (!parse_relay_address(c->public_name, now, p)) now.clear();
+    }
+    std::function<bool(const net::address&)> f;
+    {
+      std::lock_guard lock(*m);
+      if (now != name) {
+        name = now;
+        check = relay::refuse_name_addresses(now);
+      }
+      f = check;
+    }
+    return f && f(a);
+  };
   if (vpn_tweak) vpn_tweak(ro);
   auto r = relay::server::start(ro);
   sodium_memzero(ro.key.data(), ro.key.size());

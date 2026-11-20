@@ -18,14 +18,16 @@
 // connection to a web site and copy bytes both ways (splice.h, forwarding),
 // so the person's own traffic leaves from here on a network that filters
 // sites. Only to ports 80 and 443 unless --forward-ports says others ("all":
-// every port but SMTP's 25; "none" turns it off), at most --max-forwards at
-// once, public addresses only.
+// every port but relay::never_forward's; "none" turns it off), at most
+// --max-forwards TCP forwards and --max-udp-flows UDP flows at once (UDP out
+// capped by --udp-out-mbs), public addresses only.
 //
 //   mv-driftwire-relay [--key-file PATH] [--port N] [--max-pairs N] [--wait-s N]
 //                       [--max-gb N] [--rate-mbs N] [--idle-s N] [--loopback]
 //                       [--forward-ports LIST|all|none] [--max-forwards N]
 //                       [--tls-port N [--tls-cert PEM --tls-key PEM | --tls-name NAME] [--decoy-dir DIR]]
-//                       [--forward-udp-ports LIST|all|none] [--dns ADDRESS[:PORT]]
+//                       [--forward-udp-ports LIST|all|none] [--max-udp-flows N] [--udp-out-mbs N]
+//                       [--dns ADDRESS[:PORT]]
 // Slice 5 (the VPN): key holders' datagram flows to those UDP ports (53 by
 // default), and their DNS to --dns (else this machine's first resolver).
 // Slice 4: --tls-port (443) also serves the hop inside TLS behind a knock
@@ -80,7 +82,7 @@ bool port_list(const char* text, std::vector<std::uint16_t>& out) {
   out.clear();
   if (std::strcmp(text, "none") == 0) return true;
   if (std::strcmp(text, "all") == 0) {
-    out.push_back(relay::kAnyPort);  // every port (TCP's 25 never)
+    out.push_back(relay::kAnyPort);  // every port but relay::never_forward's
     return true;
   }
   std::string s(text);
@@ -123,7 +125,7 @@ int usage() {
                "usage: mv-driftwire-relay [--key-file PATH] [--port N] [--max-pairs N] [--wait-s N] [--max-gb N] "
                "[--rate-mbs N] [--idle-s N] [--loopback] [--forward-ports LIST|all|none] [--max-forwards N] "
                "[--tls-port N] [--tls-cert PEM] [--tls-key PEM] [--tls-name NAME] [--decoy-dir DIR] "
-               "[--forward-udp-ports LIST|all|none] [--dns ADDRESS[:PORT]]\n"
+               "[--forward-udp-ports LIST|all|none] [--max-udp-flows N] [--udp-out-mbs N] [--dns ADDRESS[:PORT]]\n"
                "  --key-file   a file whose first line is the key (16+ characters); else MV_RELAY_KEY; else a\n"
                "               new one, printed once (--key KEY also works, but shows in the process list)\n"
                "  --port       TCP port, IPv6 and IPv4 (default %u)\n"
@@ -133,13 +135,15 @@ int usage() {
                "  --rate-mbs   MB/s each way per transfer, 0 for no cap (default 0)\n"
                "  --idle-s     a transfer silent this long ends (default 120)\n"
                "  --loopback   listen on 127.0.0.1 only, on a port the OS picks (tests)\n"
-               "  --forward-ports  ports a key holder's Tunnel may reach, e.g. 80,443 (default), all (but 25), or none\n"
-               "  --max-forwards   Tunnel connections at once (default 64)\n"
+               "  --forward-ports  ports a key holder's Tunnel may reach, e.g. 80,443 (default), all (but 23, 25, 135-139, 445), or none\n"
+               "  --max-forwards   Tunnel TCP connections at once (default 64)\n"
                "  --tls-port   also listen here (443) behind TLS, looking like a web site (Tunnel: Look like a web site)\n"
                "  --tls-cert, --tls-key  its certificate chain and key (PEM; a real one passes a look best)\n"
                "  --tls-name   else a self-signed certificate for this name\n"
                "  --decoy-dir  the web site's pages (index.html ...); else a small built-in page\n"
-               "  --forward-udp-ports  UDP ports a key holder's VPN may reach (default 53), all, or none\n"
+               "  --forward-udp-ports  UDP ports a key holder's VPN may reach (default 53), all (but 135-139), or none\n"
+               "  --max-udp-flows  the VPN's UDP flows at once (default 64)\n"
+               "  --udp-out-mbs    MB/s the VPN's UDP may send out, all flows together but lookups, 0 for no cap (default 0)\n"
                "  --dns        the resolver the VPN's DNS goes to (default: this machine's first)\n",
                static_cast<unsigned>(relay::kDefaultPort));
   return 2;
@@ -183,6 +187,10 @@ int main(int argc, char** argv) {
       // set
     } else if (std::strcmp(a, "--max-forwards") == 0 && number(next, v, 4096) && v > 0) {
       o.max_forwards = static_cast<int>(v);
+    } else if (std::strcmp(a, "--max-udp-flows") == 0 && number(next, v, 4096) && v > 0) {
+      o.max_udp_flows = static_cast<int>(v);
+    } else if (std::strcmp(a, "--udp-out-mbs") == 0 && number(next, v, 1ull << 20)) {
+      o.udp_out_rate = v * 1000 * 1000;
     } else if (std::strcmp(a, "--tls-port") == 0 && number(next, v, 65535) && v > 0) {
       o.tls_port = static_cast<std::uint16_t>(v);
     } else if (std::strcmp(a, "--tls-cert") == 0) {
@@ -254,7 +262,7 @@ int main(int argc, char** argv) {
       return out;
     };
     std::printf("mv-driftwire-relay: Tunnel forwarding for key holders to TCP ports %s, UDP ports %s\n",
-                list(o.forward_ports, "all but 25").c_str(), list(o.forward_udp_ports, "all").c_str());
+                list(o.forward_ports, "all but 23,25,135-139,445").c_str(), list(o.forward_udp_ports, "all but 135-139").c_str());
   }
   std::fflush(stdout);
   while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
