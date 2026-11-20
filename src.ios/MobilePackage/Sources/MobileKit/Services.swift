@@ -182,6 +182,15 @@ public struct Services: Sendable {
   public let saver: PhotoSaver
   /// Phone backup (1.1, §10b).
   public private(set) var backup: BackupService = NoBackup()
+  /// The VPN through your server (docs/plans/phone-vpn.md). `NoVPN` until the tunnel extension ships.
+  public private(set) var vpn: VPNService = NoVPN()
+
+  /// The same services with this VPN.
+  public func with(vpn: VPNService) -> Services {
+    var copy = self
+    copy.vpn = vpn
+    return copy
+  }
 
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,
