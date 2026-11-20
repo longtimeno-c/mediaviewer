@@ -2360,8 +2360,6 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       std::lock_guard vl(vpn_m);
       w.key("vpn_port").integer(cfg()->vpn_port).key("vpn_running").boolean(vpn_relay != nullptr);
       if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
-    // The web-site look's port when it listens: the code is then its (relay-tls).
-    if (vpn_relay && vpn_relay->tls_port() != 0) w.key("tls_port").integer(vpn_relay->tls_port());
     }
     w.end_object();
     return {end_code::ok, w.take()};
@@ -2788,6 +2786,8 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     json::writer w;
     w.begin_object().key("vpn_port").integer(port).key("vpn_running").boolean(running);
     if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
+    // The web-site look's port when it listens: the code is then its (relay-tls).
+    if (vpn_relay && vpn_relay->tls_port() != 0) w.key("tls_port").integer(vpn_relay->tls_port());
     if (on) w.key("key").string(key);
     w.end_object();
     sodium_memzero(key.data(), key.size());
