@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The VPN's interface on the Mac (vpn.h): a Network Extension packet tunnel.
 //
-// The provider (src/addons/driftwire/mac_tunnel, a system extension inside
+// The provider (src/addons/vpn/mac_tunnel, a system extension inside
 // MediaViewer.app, `<app id>.DriftwireTunnel`) is a thin pump: it sets the
 // interface's address, routes and DNS from what this file gives it, and
 // passes packets both ways over a loopback TCP connection to the add-on,
@@ -31,7 +31,7 @@
 #include <mutex>
 
 #include "wire/net.h"
-#include "addons/driftwire/vpn.h"
+#include "addons/vpn/vpn.h"
 
 // The system extension's activation, answered on a queue of its own.
 @interface MVTunnelActivation : NSObject <OSSystemExtensionRequestDelegate>
@@ -188,12 +188,12 @@ class mac_port final : public os_port {
     if (!manager) manager = [[NETunnelProviderManager alloc] init];
     NETunnelProviderProtocol* proto = [[NETunnelProviderProtocol alloc] init];
     proto.providerBundleIdentifier = extension_id();
-    proto.serverAddress = s.relay_name.empty() ? @"Driftwire" : @(s.relay_name.c_str());
+    proto.serverAddress = s.relay_name.empty() ? @"MediaViewer VPN" : @(s.relay_name.c_str());
     proto.providerConfiguration = config;
     proto.includeAllNetworks = s.kill_switch;  // Block when the tunnel is down
     proto.excludeLocalNetworks = YES;
     manager.protocolConfiguration = proto;
-    manager.localizedDescription = @"Driftwire";
+    manager.localizedDescription = @"MediaViewer VPN";
     manager.enabled = YES;
     dispatch_semaphore_t saved = dispatch_semaphore_create(0);
     [manager saveToPreferencesWithCompletionHandler:^(NSError* e) {

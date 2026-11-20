@@ -10,7 +10,7 @@
 // The interface is the OS's, behind `os_port` (D9), one file per OS:
 //   vpn_mac.mm   a Network Extension packet tunnel (NETunnelProviderManager
 //                here; the provider itself, a thin packet pump in the app's
-//                bundle, is src/addons/driftwire/mac_tunnel). It needs Apple's
+//                bundle, is src/addons/vpn/mac_tunnel). It needs Apple's
 //                Network Extension entitlement on the signing team: owed.
 //   vpn_win.cpp  Wintun (wintun.dll beside the add-on, loaded at run time;
 //                shipping it waits for the owner's licence call), routes and
@@ -35,8 +35,8 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/netstack.h"
-#include "addons/driftwire/tunnel.h"
+#include "addons/vpn/netstack.h"
+#include "addons/vpn/tunnel.h"
 
 namespace mv::driftwire::vpn {
 

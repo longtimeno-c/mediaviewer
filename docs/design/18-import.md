@@ -224,7 +224,12 @@ in the first window. The first window loads the full pack on demand
 Add-ons link nothing of each other. `addon_request(id, method, json, reply)` (host table) lands on
 the other add-on's slot worker through `mv.request.1`, with the caller's id filled in by the host;
 the reply comes back on the caller's thread. `MV_ERR_NOT_FOUND` means not installed (offer to
-install). No add-on serves `mv.request.1` today.
+install). Served today (2026-11-19, [VPN add-on](../plans/vpn-addon.md)):
+
+| Add-on | Methods | Who may ask |
+|---|---|---|
+| `phone-access` | `vpn_state`, `vpn_set {on}`, `vpn_code`, `vpn_code_hide`: this computer or the claimed server as the VPN's exit | `vpn` only |
+| `vpn` | `status` → `{"tunnel": bool}`: it is installed and loaded | anyone (Driftwire asks) |
 
 ## Commands
 

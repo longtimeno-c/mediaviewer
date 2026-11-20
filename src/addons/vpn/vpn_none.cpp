@@ -3,7 +3,7 @@
 // Where Driftwire has no virtual interface yet (Linux, until its host reaches
 // Driftwire: /dev/net/tun with CAP_NET_ADMIN, docs/plans/linux.md): the proxy
 // only (vpn.h).
-#include "addons/driftwire/vpn.h"
+#include "addons/vpn/vpn.h"
 
 namespace mv::driftwire::vpn {
 

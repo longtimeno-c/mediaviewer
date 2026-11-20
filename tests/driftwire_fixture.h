@@ -110,7 +110,7 @@ class bus_discovery final : public sp::discovery {
   std::thread thread_;
 };
 
-class fake_host final : public sp::engine_host {
+class fake_host : public sp::engine_host {
  public:
   explicit fake_host(fs::path received) : received_(std::move(received)) {}
   void post_tree(const std::string& tree) override {

@@ -378,6 +378,7 @@ final class StorageStore: ObservableObject {
       case "places": return ("Places", "The add-on and its place database.")
       case "import": return ("Import", "The add-on.")
       case "driftwire": return ("Driftwire", "The add-on.")
+      case "vpn": return ("VPN", "The add-on.")
       case "enhance": return ("Enhance", "The add-on and the models it downloaded.")
       default: return (folder, "An add-on and its data.")
       }
