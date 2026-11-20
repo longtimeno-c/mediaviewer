@@ -3,7 +3,7 @@
 // The system proxy where Driftwire does not set one (Linux, for now: GNOME,
 // KDE and the environment each keep their own; sysproxy.h). The Tunnel still
 // runs; the window says to point apps at its address.
-#include "addons/driftwire/sysproxy.h"
+#include "addons/vpn/sysproxy.h"
 
 namespace mv::driftwire::sysproxy {
 

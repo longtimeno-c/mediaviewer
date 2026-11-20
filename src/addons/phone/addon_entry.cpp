@@ -35,6 +35,7 @@
 #include "addons/phone/screens.h"
 #include "addons/phone/self_host.h"
 #include "addons/phone/service.h"
+#include "core/json.h"
 #include "wire/net.h"
 
 #ifndef MV_PHONE_ACCESS_VERSION
@@ -191,7 +192,6 @@ struct addon_state {
       std::lock_guard held(m);
       open = false;
       card.forget_secrets();  // typed and never sent: gone when Settings closes
-      (void)mv::phone::app_request(R"({"do":"host_vpn_hide"})");  // the relay line shown, if any
       ticker_stop = true;
       t = std::move(ticker);
     }
@@ -240,8 +240,49 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
 
 const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, nullptr, nullptr, &screen_open, nullptr, &on_event};
 
+// The VPN add-on's Host section (docs/plans/vpn-addon.md): this computer or the
+// claimed server as the VPN's exit, which only this add-on's link can change.
+// Only the VPN add-on is answered; the host names the caller.
+//   vpn_state            {"where":"here"|"server"|"none", "title", "line", "on", "busy", "code"?, "error"?}
+//   vpn_set {on}         Use as VPN on or off (queued; vpn_state says when it is done)
+//   vpn_code             the VPN code once more (vpn_state's "code")
+//   vpn_code_hide        the code shown, gone
+//   vpn_domain {domain}  this computer's own domain for the VPN, or "none" (vpn_state's "domain")
+// MV_ERR_NOT_FOUND for another caller or method, as for an add-on that has none.
+mv_status MV_CALL handle_request(void*, const char* caller_id, const char* method, const char* request_json,
+                                 mv_addon_reply_fn reply, void* user) {
+  return guard([&] {
+    if (!caller_id || std::strcmp(caller_id, "vpn") != 0 || !method || !reply) return MV_ERR_NOT_FOUND;
+    const std::string m = method;
+    if (m != "vpn_state" && m != "vpn_set" && m != "vpn_code" && m != "vpn_code_hide" && m != "vpn_domain") {
+      return MV_ERR_NOT_FOUND;
+    }
+    std::string answer = "{}";
+    {
+      std::lock_guard lock(g->m);
+      const std::string state = mv::phone::app_state_json();
+      if (m == "vpn_state") {
+        answer = g->card.vpn_state(state);
+      } else {
+        const auto args = mv::json::parse(request_json ? request_json : "", 2);
+        const bool on = args && args->boolean("on").value_or(false);
+        const std::string* domain = args ? args->str("domain") : nullptr;
+        const std::string r = g->card.vpn_request(state, m, on, domain ? *domain : std::string());
+        if (r.empty()) return MV_ERR_NOT_FOUND;  // nothing to host on: vpn_state says so
+        if (!mv::phone::app_request(r)) return MV_ERR_BUSY;  // [no-block]: queued for the link
+        g->post_locked();  // the card's busy line, if it shows
+      }
+    }
+    reply(user, answer.c_str());
+    return MV_OK;
+  });
+}
+
+const mv_addon_request_api kRequests{sizeof(mv_addon_request_api), 0, &handle_request};
+
 const void* MV_CALL query(void*, const char* id) {
   if (id && std::strcmp(id, MV_SLOTS_INTERFACE) == 0) return &kSlots;
+  if (id && std::strcmp(id, MV_REQUEST_INTERFACE) == 0) return &kRequests;
   return nullptr;
 }
 

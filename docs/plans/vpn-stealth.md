@@ -128,7 +128,8 @@ All five, as recommended, with these differences:
   could be passed later). Outside 443 for the NAS is the person's to map on the router (the SPK's
   service file names the port).
 - **The look's inside port** is the relay's + 1 (47615), not 443, on every OS.
-- **Own domain**: `host name domain NAME|none` and the card's **Your own domain** row; DuckDNS still
+- **Own domain**: `host name domain NAME|none` and a **Your own domain** row in the VPN add-on's Host
+  section (Phone access runs the command, `vpn_domain`); DuckDNS still
   keeps the address. A custom DDNS update URL was not built.
 - Design: `docs/design/28-driftwire.md` ("The VPN exit", "The NAS as a VPN host", "Connect to a VPN
   host", "The Tunnel").

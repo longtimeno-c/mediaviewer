@@ -207,20 +207,20 @@ TEST_CASE("phone access: the claimed card is in sections, each a heading with it
   CHECK(tree.find("\"id\":\"local_row\"") != std::string::npos);
   CHECK(tree.find("\"id\":\"public_row\"") != std::string::npos);
   CHECK(tree.find("\"id\":\"backup_add_open\",\"label\":\"Add backup folder\xE2\x80\xA6\"") != std::string::npos);
-  // This computer's VPN switch is in Away from home, once.
-  const std::size_t vpn = tree.find("\"id\":\"vpn_on\"");
+  // The VPN's one line (the VPN add-on has the switch) is in Away from home, once.
+  const std::size_t vpn = tree.find("\"id\":\"vpn_d\"");
   REQUIRE(vpn != std::string::npos);
   CHECK(vpn > tree.find("\"id\":\"sec_away_heading\""));
   CHECK(vpn < tree.find("\"id\":\"sec_drives_heading\""));
-  CHECK(tree.find("\"id\":\"vpn_on\"", vpn + 1) == std::string::npos);
-  CHECK(tree.find("\"id\":\"nas_vpn_on\"") == std::string::npos);
-  // A NAS that offers the VPN: its own switch, in Away from home too.
+  CHECK(tree.find("\"id\":\"vpn_d\"", vpn + 1) == std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_on\"") == std::string::npos);
+  // A NAS that offers the VPN: the line too, in Away from home.
   const std::string nas_vpn = c.build(R"({"folder":"/volume1/photo","claimed":true,"nas_features":["vpn"]})", kNow);
   require_valid(nas_vpn);
-  const std::size_t nv = nas_vpn.find("\"id\":\"nas_vpn_on\"");
+  const std::size_t nv = nas_vpn.find("\"id\":\"vpn_d\"");
   REQUIRE(nv != std::string::npos);
   CHECK(nv > nas_vpn.find("\"id\":\"sec_away_heading\""));
-  CHECK(nas_vpn.find("\"id\":\"vpn_on\"") == std::string::npos);
+  CHECK(nas_vpn.find("\"id\":\"nas_vpn_on\"") == std::string::npos);
   // Another server (not this computer): no Drives or Users.
   const std::string nas = c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow);
   require_valid(nas);
@@ -308,138 +308,124 @@ TEST_CASE("phone access: this computer's server has Stop while it runs and Start
   CHECK(tree.find("The server didn't stop: schtasks failed") != std::string::npos);
 }
 
-TEST_CASE("phone access: this computer's VPN switch, its status and the relay line", "[phone-addon]") {
-  screen c(mv::phone::card::computer::mac);
-  // Off: the switch, what it does, no line to show.
-  std::string tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})", kNow);
-  require_valid(tree);
-  CHECK(tree.find("VPN through this Mac") != std::string::npos);
-  CHECK(tree.find(R"("type":"toggle","id":"vpn_on","label":"Use as VPN","value":false)") != std::string::npos);
-  CHECK(tree.find("Never a way into your home network") != std::string::npos);
-  CHECK(tree.find("\"id\":\"vpn_line\"") == std::string::npos);
-  auto r = c.on_event("vpn_on", kChange, "true", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"host_vpn","on":true})");
-
-  tree = c.build(R"({"busy":"host_vpn","host":{"installed":true,"set_up":true,"running":true}})", kNow);
-  CHECK(tree.find("Changing the VPN") != std::string::npos);
-
-  // Asked for, the running host not there yet; then on, with the router's port and the look.
-  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"vpn":true,"vpn_on":false}})", kNow);
-  CHECK(tree.find("Turning on") != std::string::npos);
-  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":false,"vpn":true}})", kNow);
-  CHECK(tree.find("On once the server runs.") != std::string::npos);
-  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,"vpn_on":true,
-    "relay_port":47614,"relay_outside_port":47700,"tls_port":443,"tls_failed":true}})",
-                 kNow);
-  require_valid(tree);
-  CHECK(tree.find("On \xC2\xB7 relay port 47700 \xC2\xB7 the web-site look couldn't listen on port 443") != std::string::npos);
-  CHECK(tree.find("home network only") == std::string::npos);
-  CHECK(tree.find(R"("id":"vpn_on","label":"Use as VPN","value":true)") != std::string::npos);
-  CHECK(tree.find("\"id\":\"vpn_line\"") != std::string::npos);
-  CHECK(tree.find("VPN code") != std::string::npos);
-  r = c.on_event("vpn_line", kClick, "", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"host_vpn_line"})");
-
-  // The line, copyable, with what to do with it; Hide asks the link to drop it.
-  tree = c.build(R"({"relay_line":"[::1]:47614#k3y","relay_code":"mediaviewer://relay#[::1]:47614#k3y","host":{"installed":true,
-    "set_up":true,"running":true,"vpn":true,"vpn_on":true,"relay_port":47614}})",
-                 kNow);
-  require_valid(tree);
-  CHECK(tree.find(R"("id":"vpn_line_text","text":"mediaviewer://relay#[::1]:47614#k3y","style":"mono","copyable":true)") !=
-        std::string::npos);
-  CHECK(tree.find("Connect to a VPN host") != std::string::npos);  // where the laptop takes it
-  CHECK(tree.find("Without a DuckDNS name it works on your home network only.") != std::string::npos);
-  CHECK(tree.find("\"id\":\"vpn_line\"") == std::string::npos);
-  r = c.on_event("vpn_line_hide", kClick, "", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"host_vpn_hide"})");
-  r = c.on_event("vpn_on", kChange, "false", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"host_vpn","on":false})");
-
-  tree = c.build(R"({"error":"host_vpn","host_said":"could not write host.json","host":{"installed":true,"set_up":true}})",
-                 kNow);
-  CHECK(tree.find("The VPN wasn't changed: could not write host.json") != std::string::npos);
-  // Not this computer's server: no VPN row.
-  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo"})", kNow);
-  CHECK(tree.find("VPN through") == std::string::npos);
+// The VPN is the VPN add-on's (docs/plans/vpn-addon.md): the card says where, and
+// answers its vpn_* requests with the state and the link's requests.
+std::string member(const std::string& json, const char* key) {
+  const auto doc = mv::json::parse(json, 2);
+  REQUIRE(doc);
+  if (const std::string* s = doc->str(key)) return *s;
+  if (const auto b = doc->boolean(key)) return *b ? "true" : "false";
+  return "-";
 }
 
-TEST_CASE("phone access: the VPN's web-site look and its own domain on this computer's card", "[phone-addon][vpn-stealth]") {
+TEST_CASE("phone access: this computer's VPN, for the VPN add-on: its status, the switch and the code",
+          "[phone-addon]") {
+  screen c(mv::phone::card::computer::mac);
+  // The card: one line, no switch.
+  const char* off = R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})";
+  std::string tree = c.build(off, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Use this Mac as your laptop's VPN in Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN.") !=
+        std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_on\"") == std::string::npos);
+  CHECK(c.on_event("vpn_on", kChange, "true", kNow).empty());  // an old id does nothing
+
+  // The VPN add-on's Host section.
+  std::string st = c.vpn_state(off);
+  CHECK(member(st, "where") == "here");
+  CHECK(member(st, "title") == "VPN through this Mac");
+  CHECK(member(st, "on") == "false");
+  CHECK(member(st, "line").find("Never a way into your home network") != std::string::npos);
+  CHECK(member(st, "code") == "-");
+  CHECK(c.vpn_request(off, "vpn_set", true) == R"({"do":"host_vpn","on":true})");
+  CHECK(c.vpn_request(off, "vpn_set", false) == R"({"do":"host_vpn","on":false})");
+  CHECK(c.vpn_request(off, "vpn_code", false) == R"({"do":"host_vpn_line"})");
+  CHECK(c.vpn_request(off, "vpn_code_hide", false) == R"({"do":"host_vpn_hide"})");
+  CHECK(c.vpn_request(off, "something", true).empty());
+
+  CHECK(member(c.vpn_state(R"({"busy":"host_vpn","host":{"installed":true,"set_up":true,"running":true}})"), "busy") ==
+        "true");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"vpn":true,"vpn_on":false}})"),
+               "line") == "Turning on\xE2\x80\xA6");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":false,"vpn":true}})"), "line") ==
+        "On once the server runs.");
+  st = c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,"vpn_on":true,
+    "relay_port":47614,"relay_outside_port":47700,"tls_port":443,"tls_failed":true}})");
+  CHECK(member(st, "line") == "On \xC2\xB7 relay port 47700 \xC2\xB7 the web-site look couldn't listen on port 443");
+  CHECK(member(st, "on") == "true");
+  st = c.vpn_state(R"({"relay_line":"[::1]:47614#k3y","relay_code":"mediaviewer://relay#[::1]:47614#k3y","host":{"installed":true,
+    "set_up":true,"running":true,"vpn":true,"vpn_on":true,"relay_port":47614}})");
+  CHECK(member(st, "code") == "mediaviewer://relay#[::1]:47614#k3y");
+  CHECK(member(st, "line").find("Without a DuckDNS name it works on your home network only.") != std::string::npos);
+  CHECK(member(c.vpn_state(R"({"error":"host_vpn","host_said":"could not write host.json","host":{"installed":true,"set_up":true}})"),
+               "error") == "The VPN wasn't changed: could not write host.json");
+  // Nothing to host on: none, and nothing is asked of the link.
+  const char* nothing = R"({"claimed":true,"folder":"/volume1/photo"})";
+  CHECK(member(c.vpn_state(nothing), "where") == "none");
+  CHECK(c.vpn_request(nothing, "vpn_set", true).empty());
+  CHECK(c.build(nothing, kNow).find("as your laptop's VPN") == std::string::npos);
+}
+
+TEST_CASE("phone access: the VPN's web-site look and its own domain, for the VPN add-on", "[phone-addon][vpn-stealth]") {
   screen c(mv::phone::card::computer::mac);
   // On with the look (on by default): the port the code points at, 443 from outside.
-  std::string tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,
-    "vpn_on":true,"relay_port":47614,"tls_port":47615,"tls_outside_port":443}})",
-                             kNow);
-  require_valid(tree);
-  CHECK(tree.find("On \xC2\xB7 looks like a web site on port 443") != std::string::npos);
-  CHECK(tree.find("relay port") == std::string::npos);
-  // Its own domain: added from the row, sent as `host name domain`.
-  CHECK(tree.find("Your own domain") != std::string::npos);
-  CHECK(tree.find("which some networks block") != std::string::npos);
-  CHECK(c.on_event("domain_change", kClick, "", kNow).empty());
-  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true}})", kNow);
-  require_valid(tree);
-  CHECK(tree.find(R"("id":"domain_name")") != std::string::npos);
-  CHECK(c.on_event("domain_save", kClick, "", kNow).empty());  // nothing typed: said so, nothing sent
-  (void)c.on_event("domain_name", kChange, R"(" vpn.example.com ")", kNow);
-  auto r = c.on_event("domain_save", kClick, "", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"host_domain","domain":"vpn.example.com"})");
-  // Set: the two CNAMEs it needs, and Remove.
-  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","domain":"vpn.example.com",
-    "vpn":true}})",
-                 kNow);
-  require_valid(tree);
-  CHECK(tree.find("vpn.example.com: a CNAME to home.duckdns.org, and _acme-challenge.vpn.example.com to "
-                  "_acme-challenge.home.duckdns.org.") != std::string::npos);
-  (void)c.on_event("domain_change", kClick, "", kNow);
-  r = c.on_event("domain_clear", kClick, "", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"host_domain","domain":"none"})");
-  // The VPN off: no domain row.
-  tree = c.build(R"({"host":{"installed":true,"set_up":true,"running":true,"vpn":false}})", kNow);
-  CHECK(tree.find("Your own domain") == std::string::npos);
-  // The look's code, shown as it came.
-  tree = c.build(R"({"relay_line":"mediaviewer://relay-tls#home.duckdns.org:443#k3y","relay_code":"mediaviewer://relay-tls#home.duckdns.org:443#k3y",
-    "host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,"vpn_on":true}})",
-                 kNow);
-  require_valid(tree);
-  CHECK(tree.find("mediaviewer://relay-tls#home.duckdns.org:443#k3y") != std::string::npos);
+  const char* look = R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615,"tls_outside_port":443}})";
+  std::string st = c.vpn_state(look);
+  CHECK(member(st, "line") == "On \xC2\xB7 looks like a web site on port 443");
+  CHECK(member(st, "domain") == "");
+  CHECK(member(st, "domain_line").find("which some networks block") != std::string::npos);
+  // Its own domain: `host name domain` (or none), for this computer only.
+  CHECK(c.vpn_request(look, "vpn_domain", false, "vpn.example.com") ==
+        R"({"do":"host_domain","domain":"vpn.example.com"})");
+  CHECK(c.vpn_request(look, "vpn_domain", false, "none") == R"({"do":"host_domain","domain":"none"})");
+  CHECK(c.vpn_request(look, "vpn_domain", false, "").empty());
+  const char* nas = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614})";
+  CHECK(c.vpn_request(nas, "vpn_domain", false, "vpn.example.com").empty());
+  // Set: the two CNAMEs it needs; the line no longer says home network only.
+  st = c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","domain":"vpn.example.com",
+    "vpn":true,"vpn_on":true,"relay_port":47614,"tls_port":47615}})");
+  CHECK(member(st, "domain") == "vpn.example.com");
+  CHECK(member(st, "domain_line") == "vpn.example.com: a CNAME to home.duckdns.org, and _acme-challenge.vpn.example.com "
+                                     "to _acme-challenge.home.duckdns.org.");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"domain":"vpn.example.com","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615}})"), "line").find("home network only") == std::string::npos);
+  CHECK(member(c.vpn_state(R"({"busy":"host_domain","host":{"installed":true,"set_up":true,"running":true}})"), "busy") ==
+        "true");
+  CHECK(member(c.vpn_state(R"({"error":"host_domain","host_said":"driftwire host: \"x\" is not a domain (vpn.example.com).",
+    "host":{"installed":true,"set_up":true}})"), "error").find("is not a domain") != std::string::npos);
+  // The look's code, given as it came.
+  CHECK(member(c.vpn_state(R"({"relay_line":"mediaviewer://relay-tls#home.duckdns.org:443#k3y",
+    "relay_code":"mediaviewer://relay-tls#home.duckdns.org:443#k3y","host":{"installed":true,"set_up":true,"running":true,
+    "vpn":true,"vpn_on":true}})"), "code") == "mediaviewer://relay-tls#home.duckdns.org:443#k3y");
 }
 
-TEST_CASE("phone access: the NAS's VPN switch, when its service offers it", "[phone-addon][nas-vpn]") {
+TEST_CASE("phone access: the NAS's VPN, for the VPN add-on, when its service offers it", "[phone-addon][nas-vpn]") {
   screen c(mv::phone::card::computer::mac);
-  // A NAS from before (no "vpn" feature): no row.
-  std::string tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["passphrase","relay"]})", kNow);
-  require_valid(tree);
-  CHECK(tree.find("VPN through your server") == std::string::npos);
+  // A NAS from before (no "vpn" feature): nothing.
+  const char* before = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["passphrase","relay"]})";
+  CHECK(c.build(before, kNow).find("as your laptop's VPN") == std::string::npos);
+  CHECK(member(c.vpn_state(before), "where") == "none");
   const char* off = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["relay","vpn"],"nas_vpn_port":0})";
-  tree = c.build(off, kNow);
+  std::string tree = c.build(off, kNow);
   require_valid(tree);
-  CHECK(tree.find("VPN through your server") != std::string::npos);
-  CHECK(tree.find(R"("id":"nas_vpn_on","label":"Use as VPN","value":false)") != std::string::npos);
-  auto r = c.on_event("nas_vpn_on", kChange, "true", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"nas_vpn","on":true})");
-  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":false})", kNow);
-  CHECK(tree.find("couldn't listen on port 47614") != std::string::npos);
-  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":true})", kNow);
-  CHECK(tree.find("On \xC2\xB7 port 47614. Forward it on your router") != std::string::npos);
-  CHECK(tree.find(R"("id":"nas_vpn_on","label":"Use as VPN","value":true)") != std::string::npos);
-  r = c.on_event("nas_vpn_line", kClick, "", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"nas_vpn","on":true})");
-  tree = c.build(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":true,
-    "relay_code":"mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y"})", kNow);
-  require_valid(tree);
-  CHECK(tree.find("mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y") != std::string::npos);
-  CHECK(tree.find("\"id\":\"nas_vpn_line\"") == std::string::npos);
-  r = c.on_event("nas_vpn_on", kChange, "false", kNow);
-  REQUIRE(r.size() == 1);
-  CHECK(r[0] == R"({"do":"nas_vpn","on":false})");
+  CHECK(tree.find("Use your server as your laptop's VPN in Settings") != std::string::npos);
+  std::string st = c.vpn_state(off);
+  CHECK(member(st, "where") == "server");
+  CHECK(member(st, "title") == "VPN through your server");
+  CHECK(member(st, "on") == "false");
+  CHECK(c.vpn_request(off, "vpn_set", true) == R"({"do":"nas_vpn","on":true})");
+  CHECK(member(c.vpn_state(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":false})"),
+               "line") == "On, but your server couldn't listen on port 47614.");
+  const char* on = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":true,
+    "relay_code":"mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y"})";
+  st = c.vpn_state(on);
+  CHECK(member(st, "line").rfind("On \xC2\xB7 port 47614. Forward it on your router", 0) == 0);
+  CHECK(member(st, "on") == "true");
+  CHECK(member(st, "code") == "mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y");
+  CHECK(c.vpn_request(on, "vpn_code", false) == R"({"do":"nas_vpn","on":true})");  // on again: the key once more
+  CHECK(c.vpn_request(on, "vpn_set", false) == R"({"do":"nas_vpn","on":false})");
+  CHECK(c.build(on, kNow).find("k3yk3yk3y") == std::string::npos);  // the card never shows the code now
 }
 
 TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup", "[phone-addon]") {

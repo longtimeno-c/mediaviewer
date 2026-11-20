@@ -7,7 +7,7 @@
 
 #include "driftwire_fixture.h"
 #include "tunnel_fixture.h"
-#include "addons/driftwire/tunnel.h"
+#include "addons/vpn/tunnel.h"
 
 #include <algorithm>
 #include <random>

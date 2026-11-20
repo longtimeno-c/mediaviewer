@@ -302,6 +302,7 @@ public static partial class IslandHost
                 "places" => ("Places", "The add-on and its place database."),
                 "import" => ("Import", "The add-on."),
                 "driftwire" => ("Driftwire", "The add-on."),
+                "vpn" => ("VPN", "The add-on."),
                 "enhance" => ("Enhance", "The add-on and the models it downloaded."),
                 _ => (folder, "An add-on and its data."),
             };

@@ -32,7 +32,7 @@
 #include "addons/driftwire/cli/host_setup.h"
 #include "addons/driftwire/cli/qr.h"
 #include "addons/driftwire/ddns.h"
-#include "addons/driftwire/tunnel.h"
+#include "addons/vpn/tunnel.h"
 #include "core/json.h"
 #include "import_fixture.h"
 #include "io/child_process.h"

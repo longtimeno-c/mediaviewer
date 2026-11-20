@@ -86,6 +86,16 @@ class screen {
   // Whether the last build had something that changes each second (the code's countdown).
   [[nodiscard]] bool ticking() const noexcept { return !qr_.empty(); }
 
+  // The VPN add-on's Host section (docs/plans/vpn-addon.md), from the link's
+  // `state_json`: {"where":"here"|"server"|"none", and for the first two
+  // "title", "line", "on"; "busy"; "code" while the VPN code shows; "error"}.
+  [[nodiscard]] std::string vpn_state(std::string_view state_json) const;
+  // The link's request for the VPN add-on's `method` ("vpn_set" with `on`,
+  // "vpn_code", "vpn_code_hide", "vpn_domain" with `domain`: the own domain or
+  // "none", this computer only); "" when there is nothing to host on.
+  [[nodiscard]] std::string vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                        std::string_view domain = {}) const;
+
   // A phone's ("ph", its key) or a shared folder's ("fo", its id) row id prefix.
   [[nodiscard]] static std::string row_id(const char* prefix, const std::string& of);
 
@@ -124,9 +134,6 @@ class screen {
   std::string duck_name_, duck_token_;  // duck_token_ secure
   bool duck_change_ = false;  // this computer's DuckDNS name being changed, after setup
   std::string duck_note_;     // why Save didn't send, drawn by the form, until the next event
-  // The VPN's own domain (docs/plans/vpn-stealth.md §3; `host name domain`), being changed.
-  std::string domain_name_;
-  bool domain_change_ = false;
   bool server_here_ = false;  // the server is this computer (its folders are picked, not typed)
   std::string note_;  // this screen's own line ("Choose a folder…"), until the next event
   bool seeded_local_ = false, seeded_public_ = false;

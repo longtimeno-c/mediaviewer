@@ -1,6 +1,6 @@
 # Driftwire Tunnel: the Mac packet tunnel provider (slice 5)
 
-A thin pump for Driftwire's VPN mode (`src/addons/driftwire/vpn.h`, `vpn_mac.mm`). It sets the
+A thin pump for Driftwire's VPN mode (`src/addons/vpn/vpn.h`, `vpn_mac.mm`). It sets the
 interface's address, routes and DNS from the configuration the add-on saves, and passes packets
 to and from the add-on over loopback. It holds no relay, key or TCP/IP stack.
 
