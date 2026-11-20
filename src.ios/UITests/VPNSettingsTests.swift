@@ -82,7 +82,7 @@ final class VPNSettingsTests: XCTestCase {
       XCTAssertTrue(field.waitForExistence(timeout: 10))
       field.tap()
       XCTAssertTrue(app.buttons["vpn.connect"].exists)
-      // Return connects, as Connect does (a tap on Connect can land while the sheet grows for the keyboard).
+      // Return connects; the good code below goes through the Connect button.
       field.typeText("not a code\n")
       let error = element(app, "vpn.codeError")
       XCTAssertTrue(error.waitForExistence(timeout: 10), "A wrong code said nothing.")
@@ -90,7 +90,12 @@ final class VPNSettingsTests: XCTestCase {
       save("code-error", appearance)
       field.tap()
       field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 12))
-      field.typeText(goodCode + "\n")
+      field.typeText(goodCode)
+      let connect = app.buttons["vpn.connect"]
+      XCTAssertTrue(connect.waitForExistence(timeout: 5))
+      XCTAssertTrue(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: connect)],
+                                     timeout: 10) == .completed, "Connect is not where a finger can reach it.")
+      connect.tap()
       let toggle = element(app, "vpn.toggle")
       XCTAssertTrue(toggle.waitForExistence(timeout: 10), "A good code did not set it up.")
       XCTAssertFalse(isOn(toggle), "Pasting a code switched it on.")

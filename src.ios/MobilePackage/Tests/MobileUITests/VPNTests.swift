@@ -3,6 +3,7 @@
 // docs/plans/phone-vpn.md: the VPN through your server is opt-in, asks before the first switch-on,
 // says plainly when this build has none, and the sample's demo routes nothing and says so.
 import MobileKit
+import SwiftUI
 @testable import MobileUI
 import XCTest
 
@@ -193,5 +194,222 @@ final class VPNTests: XCTestCase {
     let demo = demo()
     XCTAssertTrue(AppModel.vpnService(isSample: true, demo: demo, real: NoVPN()).current.isDemo)
     XCTAssertEqual(AppModel.vpnService(isSample: false, demo: demo, real: NoVPN()).current.status, .notInThisBuild)
+  }
+}
+
+// MARK: DemoVPN under overlapping calls
+
+final class DemoVPNOverlapTests: XCTestCase {
+  /// On while on changes nothing: no second "Connecting…", the same since.
+  func testOnWhileOnChangesNothing() async {
+    let vpn = DemoVPN(connectingFor: .zero, now: { Date(timeIntervalSince1970: 1_000) })
+    await vpn.acceptConsent()
+    await vpn.setOn(true)
+    var updates = vpn.updates().makeAsyncIterator()
+    _ = await updates.next()
+    await vpn.setOn(true)
+    await vpn.setOn(false)
+    let next = await updates.next()
+    XCTAssertEqual(next?.status, .off, "A second on published something.")
+  }
+
+  /// On, off, on again while the first is still connecting: the first never lands Connected.
+  func testAnEarlierOnNeverFinishesOverALaterOne() async {
+    let vpn = DemoVPN(connectingFor: .seconds(3_600), now: { Date(timeIntervalSince1970: 1_000) })
+    await vpn.acceptConsent()
+    var updates = vpn.updates().makeAsyncIterator()
+    _ = await updates.next()
+    let first = Task { await vpn.setOn(true) }
+    let connecting = await updates.next()
+    XCTAssertEqual(connecting?.status, .connecting)
+    await vpn.setOn(false)
+    let second = Task { await vpn.setOn(true) }
+    _ = await updates.next()  // off
+    _ = await updates.next()  // connecting again
+    first.cancel()  // wakes the first from its sleep
+    await first.value
+    XCTAssertEqual(vpn.current.status, .connecting, "The first switch-on finished over the second.")
+    second.cancel()
+    await second.value
+    XCTAssertEqual(vpn.current.status, .connected(since: Date(timeIntervalSince1970: 1_000)))
+  }
+
+  /// Remove while connecting: the connect gives up.
+  func testRemoveStopsAConnect() async {
+    let vpn = DemoVPN(connectingFor: .seconds(3_600))
+    await vpn.acceptConsent()
+    var updates = vpn.updates().makeAsyncIterator()
+    _ = await updates.next()
+    let on = Task { await vpn.setOn(true) }
+    _ = await updates.next()
+    await vpn.remove()
+    on.cancel()
+    await on.value
+    XCTAssertEqual(vpn.current, VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true))
+  }
+}
+
+// MARK: AppModel follows the VPN the library uses
+
+@MainActor
+final class AppModelVPNTests: XCTestCase {
+  private func snapshot(sample: Bool) -> ConnectionSnapshot {
+    var s = ConnectionSnapshot.noLibrary
+    s.isSample = sample
+    return s
+  }
+
+  private func eventually(_ what: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+    for _ in 0..<20_000 {
+      if condition() { return }
+      await Task.yield()
+    }
+    XCTFail(what, file: file, line: line)
+  }
+
+  func testTheSampleDemoIsFollowedThenForgottenWhenTheSampleGoes() async {
+    let demo = DemoVPN(connectingFor: .zero, now: { Date(timeIntervalSince1970: 1_000) })
+    let connection = SwitchingConnection(snapshot(sample: true))
+    let model = AppModel(services: StubServices.make(connection: connection), scanner: NoScan(), demoVPN: demo)
+    XCTAssertTrue(model.vpn.isDemo)
+    let run = Task { await model.run() }
+    defer { run.cancel() }
+
+    await demo.acceptConsent()
+    await demo.setOn(true)
+    await eventually("The demo's Connected did not reach the model.") { model.vpn.isOn }
+    model.showsVPN = true
+
+    // Another library replaces the sample (as pairing does): this build's VPN, the demo forgotten.
+    connection.publish(snapshot(sample: false))
+    await eventually("The model still shows the demo.") { !model.vpn.isDemo }
+    XCTAssertEqual(model.vpn.status, .notInThisBuild)
+    await eventually("The demo was not forgotten with the sample.") { !demo.current.consented && demo.current.status == .off }
+    XCTAssertFalse(model.showsVPN)
+
+    // The demo's later changes no longer reach the model.
+    await demo.acceptConsent()
+    await demo.setOn(true)
+    for _ in 0..<200 { await Task.yield() }
+    XCTAssertEqual(model.vpn.status, .notInThisBuild, "The demo still reaches the model.")
+
+    // Back to the sample, then Forget: the demo is forgotten again.
+    connection.publish(snapshot(sample: true))
+    await eventually("The sample's demo did not come back.") { model.vpn.isDemo && model.vpn.isOn }
+    model.forgetLibrary()
+    await eventually("Forget did not finish.") { model.stage == .welcome && connection.forgot }
+    await eventually("Forget left the demo on.") { !demo.current.consented && demo.current.status == .off }
+    XCTAssertFalse(model.vpn.isDemo)
+  }
+
+  /// A second run() takes the follow over; the first one ending does not stop it.
+  func testASecondRunKeepsFollowing() async {
+    let demo = DemoVPN(connectingFor: .zero)
+    let connection = SwitchingConnection(snapshot(sample: true))
+    let model = AppModel(services: StubServices.make(connection: connection), scanner: NoScan(), demoVPN: demo)
+    let first = Task { await model.run() }
+    for _ in 0..<50 { await Task.yield() }
+    let second = Task { await model.run() }
+    for _ in 0..<50 { await Task.yield() }
+    first.cancel()
+    await first.value
+    defer { second.cancel() }
+    await demo.acceptConsent()
+    await demo.setOn(true)
+    await eventually("The first run's end stopped the second's follow.") { model.vpn.isOn }
+  }
+}
+
+/// A connection whose snapshot the test changes.
+private final class SwitchingConnection: ConnectionService, @unchecked Sendable {
+  private let lock = NSLock()
+  private var snapshot: ConnectionSnapshot
+  private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
+  private var didForget = false
+  var forgot: Bool { lock.withLock { didForget } }
+
+  init(_ start: ConnectionSnapshot) { snapshot = start }
+
+  var current: ConnectionSnapshot { lock.withLock { snapshot } }
+
+  func publish(_ s: ConnectionSnapshot) {
+    lock.withLock {
+      snapshot = s
+      for c in listeners.values { c.yield(s) }
+    }
+  }
+
+  func updates() -> AsyncStream<ConnectionSnapshot> {
+    AsyncStream { c in
+      let id = UUID()
+      lock.withLock {
+        listeners[id] = c
+        c.yield(snapshot)
+      }
+      c.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
+    }
+  }
+
+  func identify(code: String) async throws -> LibraryIdentity { throw MediaFailure.synologyUnreachable }
+  func pair(code: String, confirmed: LibraryIdentity) -> AsyncThrowingStream<PairingEvent, Error> { AsyncThrowingStream { $0.finish() } }
+  func retry() async {}
+  func forget() async {
+    lock.withLock { didForget = true }
+    publish(.noLibrary)
+  }
+}
+
+private struct NoScan: ScanSurfaceProviding {
+  func surface(onCode: @escaping (String) -> Void) -> AnyView { AnyView(EmptyView()) }
+}
+
+/// Services that answer nothing, around the test's connection.
+private enum StubServices {
+  static func make(connection: ConnectionService) -> Services {
+    Services(library: EmptyStore(), images: NoImages(), search: NoSearch(), connection: connection, sync: NoSync(),
+             clips: NoClips(), saver: NoSaver())
+  }
+
+  struct EmptyStore: LibraryStore {
+    func list(in scope: LibraryScope) async throws -> any MediaList { ArrayMediaList([]) }
+    func folders(under parent: Folder?) async throws -> [Folder] { [] }
+    func people() async throws -> [Person] { [] }
+    func details(for item: MediaItem) async throws -> MediaDetails { throw MediaFailure.synologyUnreachable }
+    func preview(of folder: Folder, count: Int) async -> FolderPreview { .empty }
+  }
+
+  struct NoImages: ImageLadder {
+    func cachedImage(for id: MediaID) -> UIImage? { nil }
+    func thumbnail(for item: MediaItem) async -> UIImage? { nil }
+    func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func prefetch(_ items: [MediaItem], fittingPixels: CGSize) {}
+  }
+
+  struct NoSearch: SearchService {
+    func capability() async -> SearchCapability { .ready }
+    func recents() async -> [String] { [] }
+    func remember(_ query: String) async {}
+    func forget(_ query: String) async {}
+    func forgetAll() async {}
+    func search(_ query: String, filters: SearchFilters) async throws -> [SearchHit] { [] }
+    func filterOptions() async -> SearchFilterOptions { SearchFilterOptions(people: [], places: [], dates: [], cameras: []) }
+    func isWarmingUp() async -> Bool { false }
+  }
+
+  struct NoSync: CatalogueSync {
+    var continuesAfterLeaving: Bool { false }
+    func firstCopy(overMobileData: Bool) -> AsyncThrowingStream<CopyEvent, Error> { AsyncThrowingStream { $0.finish() } }
+  }
+
+  struct NoClips: ClipService {
+    func route(for item: MediaItem) async -> ClipRoute { .unavailable(.originalGone) }
+    func moments(for item: MediaItem) async -> [Moment] { [] }
+    func still(of item: MediaItem, at seconds: TimeInterval) async -> UIImage? { nil }
+    func download(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error> { AsyncThrowingStream { $0.finish() } }
+  }
+
+  struct NoSaver: PhotoSaver {
+    func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error> { AsyncThrowingStream { $0.finish() } }
+    func shareable(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error> { AsyncThrowingStream { $0.finish() } }
   }
 }

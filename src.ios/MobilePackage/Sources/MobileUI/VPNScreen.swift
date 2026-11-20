@@ -61,6 +61,8 @@ struct VPNScreen: View {
   @State private var enteringCode = false
   @State private var askingConsent = false
   @State private var confirmingRemove = false
+  /// A switch-on is still being carried out: another is ignored (no double Turn On). Off always goes.
+  @State private var switching = false
 
   private var vpn: VPNSnapshot { model.vpn }
   private var service: VPNService { model.vpnService }
@@ -86,16 +88,16 @@ struct VPNScreen: View {
     .navigationTitle(VPNCopy.section)
     .navigationBarTitleDisplayMode(.inline)
     .sheet(isPresented: $enteringCode) {
+      // Large only: a sheet that grows for the keyboard moves Connect under the finger.
       VPNCodeSheet(service: service)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
     .sheet(isPresented: $askingConsent) {
       VPNConsentSheet(message: VPNFlow.consentMessage(vpn)) {
         askingConsent = false
-        let service = service
-        Task {
-          await service.acceptConsent()
-          await service.setOn(true)
+        switchOn {
+          await $0.acceptConsent()
+          await $0.setOn(true)
         }
       } notNow: {
         askingConsent = false
@@ -187,12 +189,24 @@ struct VPNScreen: View {
   }
 
   private func switchMoved(to on: Bool) {
-    let service = service
     switch VPNFlow.step(switchingTo: on, vpn) {
-    case .askConsent: askingConsent = true
-    case .turnOn: Task { await service.setOn(true) }
-    case .turnOff: Task { await service.setOn(false) }
+    case .askConsent: if !switching { askingConsent = true }
+    case .turnOn: switchOn { await $0.setOn(true) }
+    case .turnOff:
+      let service = service
+      Task { await service.setOn(false) }
     case .nothing: break
+    }
+  }
+
+  /// One switch-on at a time.
+  private func switchOn(_ work: @escaping @MainActor (VPNService) async -> Void) {
+    guard !switching else { return }
+    switching = true
+    let service = service
+    Task { @MainActor in
+      await work(service)
+      switching = false
     }
   }
 }

@@ -84,6 +84,8 @@ public protocol VPNService: Sendable {
   /// Records that the consent screen was accepted. The screen calls this before the first `setOn(true)`.
   func acceptConsent() async
   /// On: asks iOS to add the configuration the first time (its own alert), then starts the tunnel.
+  /// Idempotent: on while already on (or connecting) and off while off change nothing, and when
+  /// calls overlap the last one wins; an earlier call never finishes over a later one.
   func setOn(_ on: Bool) async
   /// Stops the tunnel and removes the code, the key and iOS's VPN configuration.
   func remove() async
@@ -112,6 +114,8 @@ public final class DemoVPN: VPNService, @unchecked Sendable {
   private let lock = NSLock()
   private var snapshot = VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true)
   private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]
+  /// Counts switch moves and removes, so a connect that slept through a later one gives up.
+  private var generation = 0
   private let connectingFor: Duration
   private let now: @Sendable () -> Date
 
@@ -140,17 +144,29 @@ public final class DemoVPN: VPNService, @unchecked Sendable {
   public func acceptConsent() async { publish { $0.consented = true } }
 
   public func setOn(_ on: Bool) async {
-    guard on else { publish { $0.status = .off }; return }
-    guard current.consented else { return }
-    publish { $0.status = .connecting }
+    let mine: Int? = lock.withLock {
+      if on, !snapshot.consented || snapshot.isOn { return nil }
+      if !on, !snapshot.isOn { return nil }
+      generation += 1
+      snapshot.status = on ? .connecting : .off
+      for continuation in listeners.values { continuation.yield(snapshot) }
+      return on ? generation : nil
+    }
+    guard let mine else { return }
     if connectingFor > .zero { try? await Task.sleep(for: connectingFor) }
-    guard current.status == .connecting else { return }
     let since = now()
-    publish { $0.status = .connected(since: since) }
+    lock.withLock {
+      guard generation == mine, snapshot.status == .connecting else { return }
+      snapshot.status = .connected(since: since)
+      for continuation in listeners.values { continuation.yield(snapshot) }
+    }
   }
 
   /// Back to how the sample opened.
-  public func remove() async { publish { $0 = VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true) } }
+  public func remove() async {
+    lock.withLock { generation += 1 }
+    publish { $0 = VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true) }
+  }
 
   private func publish(_ change: (inout VPNSnapshot) -> Void) {
     lock.withLock {

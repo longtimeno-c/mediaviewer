@@ -866,7 +866,7 @@ final class FixtureVPN: VPNService, @unchecked Sendable {
 
   func setOn(_ on: Bool) async {
     guard on else { publish { $0.status = .off }; return }
-    guard current.isSetUp, current.consented else { return }
+    guard current.isSetUp, current.consented, !current.isOn else { return }
     publish { $0.status = .connecting }
     await Task.yield()
     guard current.status == .connecting else { return }
