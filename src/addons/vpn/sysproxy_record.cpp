@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The system proxy's record and the port where an OS has none. Portable.
-#include "addons/driftwire/sysproxy.h"
+#include "addons/vpn/sysproxy.h"
 
 #include <cstdint>
 

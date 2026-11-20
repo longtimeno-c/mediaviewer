@@ -22,4 +22,4 @@ target_link_libraries(mv_mobile_vpn_code PUBLIC mv_project_options mv_wire PRIVA
 
 add_library(mv_mobile_vpn STATIC ${_MV}/vpn_abi.cpp ${_MV}/mv_mobile_vpn.h)
 target_include_directories(mv_mobile_vpn PUBLIC "${MV_SOURCE_ROOT}/src")
-target_link_libraries(mv_mobile_vpn PUBLIC mv_project_options mv_mobile_vpn_code mv_driftwire_engine PRIVATE ${MV_SODIUM_TARGET})
+target_link_libraries(mv_mobile_vpn PUBLIC mv_project_options mv_mobile_vpn_code mv_vpn_engine PRIVATE ${MV_SODIUM_TARGET})

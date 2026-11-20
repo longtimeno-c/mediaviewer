@@ -10,8 +10,8 @@
 #include <cctype>
 #include <deque>
 
-#include "addons/driftwire/netstack.h"
-#include "addons/driftwire/vpn.h"
+#include "addons/vpn/netstack.h"
+#include "addons/vpn/vpn.h"
 #include "core/json.h"
 #include "mobile/mv_mobile_vpn.h"
 #include "wire/serve_wire.h"

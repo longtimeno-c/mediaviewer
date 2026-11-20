@@ -12993,8 +12993,12 @@ void show_tray_menu(app_state* app, POINT at, UINT icon) {
       leave_background(app);
       set_settings_open(app, true);
       app->chrome.show_popup(mv::shell::chrome_popup::settings, mv::shell::kSettingsRevealPhone);
-    } else {
-      (void)app->chrome.open_addon_screen(k.addon, k.screen);
+    } else if (app->chrome.open_addon_screen(k.addon, k.screen) ==
+               mv::shell::chrome_host::addon_screen_opened::settings_page) {
+      // A settings-place screen (docs/plans/vpn-addon.md): the viewer comes
+      // back with Settings open at the add-on's page.
+      leave_background(app);
+      set_settings_open(app, true);
     }
   }
 }

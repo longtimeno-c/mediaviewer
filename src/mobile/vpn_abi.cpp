@@ -15,8 +15,8 @@
 #include <string>
 #include <vector>
 
-#include "addons/driftwire/internet.h"
-#include "addons/driftwire/vpn.h"
+#include "wire/relay_field.h"
+#include "addons/vpn/vpn.h"
 #include "core/json.h"
 #include "mobile/mv_mobile_vpn.h"
 #include "wire/serve_wire.h"

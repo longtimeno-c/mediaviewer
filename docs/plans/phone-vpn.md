@@ -599,6 +599,10 @@ run on a throwaway branch that has both.
 
 ### Where S1 and S2 stand (2026-11-19, branch `claude/phone-vpn-tunnel`)
 
+Since 2026-11-20 the branch has the VPN add-on move (PR #737) merged in: the shared VPN is
+`src/addons/vpn/{vpn,netstack,tunnel}.*` in `mv_vpn_engine` (cmake/vpn.cmake), the relay field
+helpers are `wire/relay_field.h`, and `mv_mobile_vpn` and the extension link `mv_vpn_engine`.
+
 Built, and tested where it can be without a device:
 
 - **The C ABI** `src/mobile/mv_mobile_vpn.h` (`cmake/mobile-vpn.cmake`): `mv_mobile_vpn_code` for

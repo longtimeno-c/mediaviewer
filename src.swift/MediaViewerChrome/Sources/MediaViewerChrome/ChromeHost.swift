@@ -119,10 +119,11 @@ public final class MVChromeHost: NSObject {
     PhotosBackupStore.shared.reveal()
   }
 
-  /// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings
-  /// row. The host has opened Settings; this opens Phone access's add-on page.
-  @MainActor @objc public static func revealPhoneSettings() {
-    AddonNav.shared.show(PhoneAccessStore.addonID)
+  /// A kept entry's Open row for a settings page (docs/plans/self-hosted.md
+  /// "Tray", docs/plans/vpn-addon.md). The host has opened Settings; this
+  /// opens the add-on's page.
+  @MainActor @objc public static func revealAddonSettings(_ addon: String) {
+    AddonNav.shared.show(addon)
   }
 
   /// The host's MV_SCRIPT_SELFTEST rig (main_mac.mm, docs/design/25 PR 57): Settings

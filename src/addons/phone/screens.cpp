@@ -462,17 +462,33 @@ void sym_button(writer& w, const std::string& id, const std::string& label, cons
   w.end_object();
 }
 
-// The VPN's code for the laptop (serve::relay_connect_code), once asked for:
-// what to do with it, the code to copy, and Hide.
-void relay_code_box(writer& w, const std::string& code) {
-  stack(w, "vpn_line_box", 8);
-  text(w, "vpn_line_note",
-       "On your laptop, in MediaViewer: Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 Driftwire \xE2\x86\x92 Connect to a VPN "
-       "host\xE2\x80\xA6, and paste this. It holds the relay's key: keep it to yourself.",
-       "secondary");
-  copyable(w, "vpn_line_text", code, "mono", "VPN code");
-  button(w, "vpn_line_hide", "Hide", false, "plain", "Hide the VPN code");
-  end(w);
+// The VPN's status line for this computer as the server (`host vpn on|off`) and
+// for a NAS that offers it: the VPN add-on's Host section (vpn_state).
+std::string host_vpn_line(const host_row& h, const std::string& me) {
+  if (!h.vpn) {
+    return "Off. On, your laptop's VPN leaves through " + me +
+           " when you're away, so sites see your home's address. Never a way into your home network.";
+  }
+  if (!h.running) return "On once the server runs.";
+  if (!h.vpn_on) return "Turning on\xE2\x80\xA6";
+  const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
+  std::string line = "On \xC2\xB7 relay port " + std::to_string(port);
+  if (h.tls_port > 0) {
+    line += h.tls_failed ? " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port)
+                         : " \xC2\xB7 looks like a web site on port " + std::to_string(h.tls_port);
+  }
+  if (h.duckdns.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
+  return line;
+}
+
+std::string nas_vpn_line(const view& s) {
+  if (s.nas_vpn_port == 0) {
+    return "Off. On, your laptop's VPN leaves through your server when you're away, so sites see your home's "
+           "address. Never a way into your home network.";
+  }
+  if (!s.nas_vpn_running) return "On, but your server couldn't listen on port " + std::to_string(s.nas_vpn_port) + ".";
+  return "On \xC2\xB7 port " + std::to_string(s.nas_vpn_port) +
+         ". Forward it on your router as you did the service's port (DSM offers it).";
 }
 
 // A folder path the server takes (wire/serve.cpp add_root): /… on a NAS or a
@@ -1101,60 +1117,18 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     users_rows(w, s, users_, busy, me, Me, sid);
   };
-  // The VPN through this computer (`host vpn on|off`): its relay carries the
-  // laptop's web traffic out, never into the home network (docs/design/28).
-  const auto host_vpn_rows = [&] {
-    const host_row& h = *s.host;
-    std::string line;
-    if (!h.vpn) {
-      line = "Off. On, your laptop's Driftwire Tunnel or All traffic (VPN) leaves through " + me +
-             " when you're away, so sites see your home's address. Never a way into your home network.";
-    } else if (!h.running) {
-      line = "On once the server runs.";
-    } else if (!h.vpn_on) {
-      line = "Turning on\xE2\x80\xA6";
-    } else {
-      const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
-      line = "On \xC2\xB7 relay port " + std::to_string(port);
-      if (h.tls_port > 0) {
-        line += h.tls_failed ? " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port)
-                             : " \xC2\xB7 looks like a web site on port " + std::to_string(h.tls_port);
-      }
-      if (h.duckdns.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
-    }
-    row(w, "vpn", "VPN through " + me, line);
-    toggle(w, "vpn_on", "Use as VPN", h.vpn, busy);
-    if (h.vpn && s.relay_code.empty()) {
-      button(w, "vpn_line", "VPN code\xE2\x80\xA6", busy, "plain", "Show the code that connects your laptop");
-    }
+  // The VPN through this computer or the server is the VPN add-on's
+  // (docs/plans/vpn-addon.md, owner 2026-11-19): one line says where.
+  const auto vpn_rows = [&] {
+    row(w, "vpn", "VPN",
+        "Use " + (host_here ? me : std::string("your server")) +
+            " as your laptop's VPN in Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN.");
     end_row(w);
-    if (h.vpn && !s.relay_code.empty()) relay_code_box(w, s.relay_code);
-  };
-  // The NAS as a VPN host (a service that offers it: `driftwire serve`, the
-  // Synology's). This computer's own server has the row above instead.
-  const auto nas_vpn_rows = [&] {
-    std::string line;
-    if (s.nas_vpn_port == 0) {
-      line = "Off. On, your laptop's Driftwire Tunnel or All traffic (VPN) leaves through your server when you're "
-             "away, so sites see your home's address. Never a way into your home network.";
-    } else if (!s.nas_vpn_running) {
-      line = "On, but your server couldn't listen on port " + std::to_string(s.nas_vpn_port) + ".";
-    } else {
-      line = "On \xC2\xB7 port " + std::to_string(s.nas_vpn_port) +
-             ". Forward it on your router as you did the service's port (DSM offers it).";
-    }
-    row(w, "nas_vpn", "VPN through your server", line);
-    toggle(w, "nas_vpn_on", "Use as VPN", s.nas_vpn_port != 0, busy);
-    if (s.nas_vpn_port != 0 && s.relay_code.empty()) {
-      button(w, "nas_vpn_line", "VPN code\xE2\x80\xA6", busy, "plain", "Show the code that connects your laptop");
-    }
-    end_row(w);
-    if (s.nas_vpn_port != 0 && !s.relay_code.empty()) relay_code_box(w, s.relay_code);
   };
   if (host_here && !sections) {
     host_rows();
     if (s.claimed) duck_rows();
-    host_vpn_rows();
+    vpn_rows();
     drives_rows(w, s, drives_, busy, me);
     if (s.claimed) here_users_rows();
   }
@@ -1520,8 +1494,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     public_rows(true);
     relay_rows();
     // The VPN: this computer's own server, or a NAS that offers one.
-    if (host_here) host_vpn_rows();
-    else if (s.has("vpn")) nas_vpn_rows();
+    if (host_here || s.has("vpn")) vpn_rows();
     end_section(w);
 
     if (host_here) {
@@ -1813,10 +1786,7 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       edit_reserve_ = v;
     } else if (node == "host_convert") {
       out.push_back(req("host_convert").b("on", value_bool(value_json)).done());
-    } else if (node == "vpn_on") {
-      out.push_back(req("host_vpn").b("on", value_bool(value_json)).done());
-    } else if (node == "nas_vpn_on") {
-      out.push_back(req("nas_vpn").b("on", value_bool(value_json)).done());
+
     } else if (node == "new_backup") {
       new_backup_ = value_bool(value_json);
       // A suggestion the owner changes; the service refuses past what is really free.
@@ -1918,12 +1888,6 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     out.push_back(req("host_start").done());
   } else if (node == "host_stop") {
     out.push_back(req("host_stop").done());
-  } else if (node == "vpn_line") {
-    out.push_back(req("host_vpn_line").done());
-  } else if (node == "nas_vpn_line") {
-    out.push_back(req("nas_vpn").b("on", true).done());  // on again: the same port, the key once more
-  } else if (node == "vpn_line_hide") {
-    out.push_back(req("host_vpn_hide").done());
   } else if (node == "duck_change") {
     duck_change_ = true;
     duck_name_.clear();
@@ -2238,6 +2202,48 @@ void screen::forget_secrets() {
   unlock_wanted_ = false;
   note_.clear();
   duck_note_.clear();
+}
+
+// ---- the VPN add-on's Host section (docs/plans/vpn-addon.md) -------------------------------
+
+std::string screen::vpn_state(std::string_view state_json) const {
+  const view s = parse(state_json);
+  const bool here_host = s.host && s.host->set_up;
+  const bool server = !here_host && s.claimed && s.has("vpn");
+  writer w;
+  w.begin_object();
+  if (here_host) {
+    const host_row& h = *s.host;
+    w.key("where").string("here").key("title").string(std::string("VPN through ") + here());
+    w.key("line").string(host_vpn_line(h, here())).key("on").boolean(h.vpn);
+  } else if (server) {
+    w.key("where").string("server").key("title").string("VPN through your server");
+    w.key("line").string(nas_vpn_line(s)).key("on").boolean(s.nas_vpn_port != 0);
+  } else {
+    w.key("where").string("none");
+  }
+  const bool vpn_busy = s.busy == "host_vpn" || s.busy == "host_vpn_line" || s.busy == "nas_vpn";
+  w.key("busy").boolean(vpn_busy);
+  if ((here_host || server) && !s.relay_code.empty()) w.key("code").string(s.relay_code);
+  if (s.error == "host_vpn") {
+    w.key("error").string(s.host_said.empty() ? "The VPN wasn't changed." : "The VPN wasn't changed: " + s.host_said);
+  }
+  w.end_object();
+  return w.take();
+}
+
+std::string screen::vpn_request(std::string_view state_json, std::string_view method, bool on) const {
+  const view s = parse(state_json);
+  const bool here_host = s.host && s.host->set_up;
+  const bool server = !here_host && s.claimed && s.has("vpn");
+  if (method == "vpn_code_hide") return req("host_vpn_hide").done();
+  if (!here_host && !server) return {};
+  if (method == "vpn_set") return req(here_host ? "host_vpn" : "nas_vpn").b("on", on).done();
+  if (method == "vpn_code") {
+    // On again: the same port, the key once more (the NAS); `host vpn on` again prints its line.
+    return here_host ? req("host_vpn_line").done() : req("nas_vpn").b("on", true).done();
+  }
+  return {};
 }
 
 }  // namespace mv::phone::card
