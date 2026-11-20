@@ -118,6 +118,7 @@ inline constexpr std::uint8_t kForwardUdp = 1;
 inline constexpr std::string_view kDnsHost = "dns.driftwire";
 inline constexpr std::size_t kMaxDatagram = 1500;
 inline constexpr int kUdpIdleMs = 60000;
+inline constexpr int kDnsIdleMs = 10000;  // a lookup's flow (port 53, the resolver)
 inline constexpr std::size_t kWordBytes = 1 + noise::kTagBytes;
 // A connection to a relay server finishes its handshake within this.
 inline constexpr int kHelloMs = 5000;
@@ -129,12 +130,14 @@ inline constexpr int kReregisterMs = 60000;
 // tools/driftwire-relay's port unless told another.
 inline constexpr std::uint16_t kDefaultPort = 47614;
 // In a forwarding port list: every port (a VPN host's "all traffic"), apart
-// from kNeverForwardTcp. Port 0 is no destination, so it can mean this.
+// from never_forward's. Port 0 is no destination, so it can mean this.
 inline constexpr std::uint16_t kAnyPort = 0;
-// SMTP: never forwarded, even with kAnyPort, so a key holder can't send mail
-// straight from the host's home address (spam's way out; mail apps use 587,
-// 465 and 993, which go through).
-inline constexpr std::uint16_t kNeverForwardTcp = 25;
+// Ports kAnyPort leaves out, so a key holder can't use the home's address for
+// what gets it blocklisted: SMTP (25: mail straight from home is spam's way
+// out; mail apps use 587, 465 and 993, which go through), Telnet (23), and
+// Windows RPC, NetBIOS and SMB (135, 137-139, 445: worm and scan targets
+// that no one should reach over the internet). A port named outright passes.
+[[nodiscard]] bool never_forward(std::uint16_t port, bool tcp) noexcept;
 // Whether a forwarding port list lets `port` through (empty: none).
 [[nodiscard]] bool forward_allows(const std::vector<std::uint16_t>& ports, std::uint16_t port, bool tcp);
 // Whether a forward may go to `a` (unless the tests allow any): a public
@@ -142,6 +145,14 @@ inline constexpr std::uint16_t kNeverForwardTcp = 25;
 // net::local_subnets()), so a home device with a global IPv6 address, or
 // this machine itself, is never reached through the VPN (owner call 5).
 [[nodiscard]] bool forward_destination_ok(const net::address& a, std::span<const net::subnet> home) noexcept;
+// The addresses `name` resolves to, looked up again at most every
+// `refresh_s`, as a check for options::forward_refused: true for an address
+// the name had at the last look. For the home's own public name (DuckDNS, the
+// NAS's outside name), so a forward to the home's outside address (the
+// router's, which hairpins to its own forwarded ports and admin page) is
+// refused. Until a lookup has answered, callers wait for it; one that finds
+// nothing is tried again 10 s later. "" refuses nothing. Thread-safe.
+[[nodiscard]] std::function<bool(const net::address&)> refuse_name_addresses(std::string name, int refresh_s = 300);
 // A server key, as typed after '#', at least this long.
 inline constexpr std::size_t kMinKeyChars = 16;
 // A forward's host, as asked: a name or an address, at most this long.
@@ -328,11 +339,20 @@ class server {
     int wait_ms = 10 * 60 * 1000;  // a code lives 10 minutes
     limits lim;
     // Forwarding (the Tunnel): the ports a key holder may reach (empty: no
-    // forwarding at all; kAnyPort: every port but kNeverForwardTcp, as the
-    // VPN hosts set it), forwards at once, and each forward's limits (a
+    // forwarding at all; kAnyPort: every port but never_forward's, as the
+    // VPN hosts set it), TCP forwards at once, and each forward's limits (a
     // browser keeps a connection open a while between requests).
     std::vector<std::uint16_t> forward_ports{80, 443};
     int max_forwards = 64;
+    // UDP datagram flows at once (apart from TCP's, so DNS, calls and QUIC
+    // never starve a page), and the bytes a second they may send out, all
+    // flows together but lookups (0: no cap; a leaked key can't flood from
+    // the home).
+    int max_udp_flows = 64;
+    std::uint64_t udp_out_rate = 0;
+    // More destinations to refuse (the home's own outside address:
+    // refuse_name_addresses). Called on a forward's thread; may block briefly.
+    std::function<bool(const net::address&)> forward_refused;
     limits forward_lim = [] {
       limits l;
       l.idle_ms = 10 * 60 * 1000;
@@ -362,7 +382,8 @@ class server {
     std::uint64_t paired = 0, refused = 0, waiting = 0, active = 0;
     std::uint64_t asked = 0;  // kAsk answered
     std::uint64_t bytes = 0;  // spliced, both ways, every splice that ended
-    std::uint64_t forwarded = 0, forwarding = 0;  // forwards made, and open now
+    std::uint64_t forwarded = 0, forwarding = 0;  // forwards made, and open now (TCP and UDP)
+    std::uint64_t udp_flowing = 0;                // of those open, UDP flows
     std::uint64_t forward_refused = 0;            // key holders' forwards said no to
     std::uint64_t website = 0;                    // TLS connections answered as a web site
   };
@@ -406,6 +427,12 @@ class server {
   tls::knock_key knock_{};
   std::atomic<bool> stop_{false};
   mutable std::mutex m_;
+  // options::udp_out_rate's bucket, all flows together.
+  std::mutex udp_rate_m_;
+  double udp_tokens_ = 0;
+  std::int64_t udp_tokens_ns_ = 0;  // under udp_rate_m_: when last filled
+  // Waits until `bytes` may go out under udp_out_rate (at once without a cap).
+  void udp_rate_wait(std::size_t bytes);
   std::condition_variable cv_;
   std::map<token_id_bytes, std::shared_ptr<waiter>> waiting_;  // under m_, by the token's id
   // Keyed by source_of(): an IPv6 /64 or an IPv4 /24 (#500: one host has a
@@ -421,5 +448,13 @@ class server {
   std::vector<worker> workers_;  // under m_
   counts counts_;                // under m_
 };
+
+// The VPN hosts' forwarding (`driftwire host vpn on`, serve's set_vpn): all
+// traffic, every TCP and UDP port but never_forward's (kAnyPort); room for a
+// few devices' connections (128 TCP, 128 UDP flows); UDP out at most
+// kVpnHostUdpOutRate. Public addresses off the host's own networks only, as
+// always; the caller adds forward_refused for the home's outside name.
+inline constexpr std::uint64_t kVpnHostUdpOutRate = 4ull << 20;  // 4 MiB/s: calls and QUIC uploads, not a flood
+void vpn_host_defaults(server::options& o);
 
 }  // namespace mv::driftwire::relay

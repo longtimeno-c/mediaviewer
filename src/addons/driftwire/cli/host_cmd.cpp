@@ -652,8 +652,22 @@ struct host_service::state {
       ro.forward_ports.clear();  // forwarding (the Tunnel/VPN exit) only with `host vpn on`
       ro.forward_udp_ports.clear();
     } else {
-      ro.forward_ports = {relay::kAnyPort};  // all traffic: every TCP port but SMTP's, every UDP port
-      ro.forward_udp_ports = {relay::kAnyPort};
+      relay::vpn_host_defaults(ro);  // all traffic, never into the home's networks
+      // Nor to the home's outside address (the router's, which hairpins to its forwarded ports).
+      // Both names the home goes by: the DuckDNS one and the own domain (vpn-stealth), either may be set.
+      std::vector<std::function<bool(const net::address&)>> names;
+      if (!settings.ddns.empty()) names.push_back(relay::refuse_name_addresses(ddns::duckdns_name(settings.ddns)));
+      if (!settings.domain.empty()) names.push_back(relay::refuse_name_addresses(settings.domain));
+      if (names.size() == 1) {
+        ro.forward_refused = std::move(names.front());
+      } else if (!names.empty()) {
+        ro.forward_refused = [names = std::move(names)](const net::address& a) {
+          for (const auto& f : names) {
+            if (f(a)) return true;
+          }
+          return false;
+        };
+      }
     }
     if (look_port(settings) != 0) {
       // The web-site look (on by default with the VPN; docs/plans/vpn-stealth.md): Let's
@@ -768,7 +782,7 @@ struct host_service::state {
     const host_settings next = text ? parse_host_settings(*text).value_or(settings) : host_settings{};
     const bool relay_changed = next.vpn != settings.vpn || next.relay_port != settings.relay_port ||
                                look_port(next) != look_port(settings) ||
-                               (look_port(next) != 0 && vpn_name(next) != vpn_name(settings));
+                               (next.vpn && (next.ddns != settings.ddns || next.domain != settings.domain));
     const bool name_changed = next.ddns != settings.ddns || next.ddns_stamp != settings.ddns_stamp ||
                               next.domain != settings.domain;
     const bool pause_changed = next.paused != settings.paused;

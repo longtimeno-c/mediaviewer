@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <deque>
 
 #include "addons/driftwire/netstack.h"
@@ -541,6 +542,68 @@ TEST_CASE("driftwire vpn: the relay carries a key holder's datagram flows, DNS t
   // A kind it does not know: said.
   CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", te.port(), 5000, said, 9));
   CHECK(said == relay::forward_answer::kind);
+}
+
+TEST_CASE("driftwire vpn: a VPN host's limits: UDP flows apart from TCP, its outside address, UDP's rate",
+          "[driftwire]") {
+  relay::server::options d;
+  relay::vpn_host_defaults(d);
+  CHECK(d.forward_ports == std::vector<std::uint16_t>{relay::kAnyPort});
+  CHECK(d.forward_udp_ports == std::vector<std::uint16_t>{relay::kAnyPort});
+  CHECK(d.max_forwards == 128);
+  CHECK(d.max_udp_flows == 128);
+  CHECK(d.udp_out_rate == relay::kVpnHostUdpOutRate);
+
+  tcp_echo te;
+  udp_echo ue;
+  relay::forward_answer said{};
+  SECTION("UDP flows have their own cap: a full one never stops a TCP forward") {
+    auto o = relay_options(te.port(), ue.port());
+    o.max_forwards = 1;
+    o.max_udp_flows = 1;
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    const auto dial = [&] { return std::move(*sp::net::connect({"127.0.0.1", (*s)->port()}, 3000)); };
+    auto u = relay::forward(dial(), kKey, "127.0.0.1", ue.port(), relay::kForwardWaitMs, said, relay::kForwardUdp);
+    REQUIRE(u);
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", ue.port(), 5000, said, relay::kForwardUdp));
+    CHECK(said == relay::forward_answer::busy);
+    auto t = relay::forward(dial(), kKey, "127.0.0.1", te.port(), relay::kForwardWaitMs, said);
+    REQUIRE(t);
+    CHECK(said == relay::forward_answer::ok);
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", te.port(), 5000, said));
+    CHECK(said == relay::forward_answer::busy);
+  }
+  SECTION("the home's outside name: its addresses refused, TCP and UDP") {
+    auto o = relay_options(te.port(), ue.port());
+    o.forward_refused = relay::refuse_name_addresses("127.0.0.1");  // a literal looks up as itself
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    const auto dial = [&] { return std::move(*sp::net::connect({"127.0.0.1", (*s)->port()}, 3000)); };
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", te.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", ue.port(), 5000, said, relay::kForwardUdp));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK(!relay::refuse_name_addresses(""));  // no name: nothing refused
+  }
+  SECTION("UDP out is held to the rate, all flows together") {
+    auto o = relay_options(te.port(), ue.port());
+    o.udp_out_rate = 64 * 1024;  // a 16 KiB burst, then 64 KiB a second
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    auto u = relay::forward(std::move(*sp::net::connect({"127.0.0.1", (*s)->port()}, 3000)), kKey, "127.0.0.1",
+                            ue.port(), relay::kForwardWaitMs, said, relay::kForwardUdp);
+    REQUIRE(u);
+    const std::vector<std::uint8_t> one(1400, 'a');
+    std::vector<std::uint8_t> part, back;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 48; ++i) {  // 67 200 bytes: about 51 KiB past the burst
+      REQUIRE(relay::write_datagram(**u, one));
+      REQUIRE(relay::read_datagram(**u, part, back, 5000));
+    }
+    // A floor, never a ceiling: at least the debt's time (0.78 s), with room.
+    CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(600));
+  }
 }
 
 TEST_CASE("driftwire vpn: an app's TCP and DNS go through the VPN and the relay, end to end", "[driftwire]") {

@@ -1050,7 +1050,7 @@ TEST_CASE("driftwire relay: a key holder's forward reaches the host, sealed both
   CHECK(c.bytes >= 2 * ask.size());
 }
 
-TEST_CASE("driftwire relay: kAnyPort forwards every port but SMTP's", "[driftwire]") {
+TEST_CASE("driftwire relay: kAnyPort forwards every port but the blocklisting ones", "[driftwire]") {
   using relay::forward_allows;
   using relay::kAnyPort;
   const std::vector<std::uint16_t> web{80, 443}, any{kAnyPort}, none{};
@@ -1062,6 +1062,14 @@ TEST_CASE("driftwire relay: kAnyPort forwards every port but SMTP's", "[driftwir
   CHECK(forward_allows(any, 3478, false));  // a call's UDP
   CHECK(forward_allows(any, 25, false));    // only TCP's SMTP is held back
   CHECK_FALSE(forward_allows(any, 25, true));
+  // The other ports that get a home address blocklisted.
+  for (const std::uint16_t p : {23, 135, 137, 138, 139, 445}) {
+    INFO(p);
+    CHECK_FALSE(forward_allows(any, p, true));
+  }
+  for (const std::uint16_t p : {135, 137, 138, 139}) CHECK_FALSE(forward_allows(any, p, false));
+  CHECK(forward_allows(any, 445, false));
+  CHECK(forward_allows(std::vector<std::uint16_t>{445}, 445, true));
   CHECK(forward_allows(std::vector<std::uint16_t>{25}, 25, true));  // named outright: the owner's choice
   CHECK_FALSE(forward_allows(any, 0, true));
   CHECK_FALSE(forward_allows(any, 0, false));
