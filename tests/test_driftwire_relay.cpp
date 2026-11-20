@@ -1048,6 +1048,60 @@ TEST_CASE("driftwire relay: a key holder's forward reaches the host, sealed both
   CHECK(c.bytes >= 2 * ask.size());
 }
 
+TEST_CASE("driftwire relay: kAnyPort forwards every port but the blocklisting ones", "[driftwire]") {
+  using relay::forward_allows;
+  using relay::kAnyPort;
+  const std::vector<std::uint16_t> web{80, 443}, any{kAnyPort}, none{};
+  CHECK(forward_allows(web, 443, true));
+  CHECK_FALSE(forward_allows(web, 22, true));
+  CHECK_FALSE(forward_allows(none, 443, true));
+  CHECK(forward_allows(any, 22, true));
+  CHECK(forward_allows(any, 993, true));
+  CHECK(forward_allows(any, 3478, false));  // a call's UDP
+  CHECK(forward_allows(any, 25, false));    // only TCP's SMTP is held back
+  CHECK_FALSE(forward_allows(any, 25, true));
+  // The other ports that get a home address blocklisted.
+  for (const std::uint16_t p : {23, 135, 137, 138, 139, 445}) {
+    INFO(p);
+    CHECK_FALSE(forward_allows(any, p, true));
+  }
+  for (const std::uint16_t p : {135, 137, 138, 139}) CHECK_FALSE(forward_allows(any, p, false));
+  CHECK(forward_allows(any, 445, false));
+  CHECK(forward_allows(std::vector<std::uint16_t>{445}, 445, true));
+  CHECK(forward_allows(std::vector<std::uint16_t>{25}, 25, true));  // named outright: the owner's choice
+  CHECK_FALSE(forward_allows(any, 0, true));
+  CHECK_FALSE(forward_allows(any, 0, false));
+
+  // Every port is open, so the home's own networks are refused too, not only
+  // private addresses: a home device's global IPv6 address, and the host itself.
+  namespace net = mv::driftwire::net;
+  const auto at = [](const char* t) { return *net::parse_address(t); };
+  const std::vector<net::subnet> home{{at("2a02:c7c:1234:5600::"), 64}, {at("81.2.69.0"), 24}};
+  CHECK_FALSE(relay::forward_destination_ok(at("2a02:c7c:1234:5600::10"), home));  // a home NAS's IPv6
+  CHECK_FALSE(relay::forward_destination_ok(at("81.2.69.160"), home));             // the host's own public IPv4
+  CHECK_FALSE(relay::forward_destination_ok(at("192.168.1.20"), home));            // private, as before
+  CHECK_FALSE(relay::forward_destination_ok(at("::1"), home));
+  CHECK(relay::forward_destination_ok(at("2a00:1450:4009:81f::200e"), home));      // a site
+  CHECK(relay::forward_destination_ok(at("1.1.1.1"), home));
+
+  // A server set to any port: an arbitrary port reaches its host, SMTP is refused.
+  echo_server echo;
+  auto o = forward_options(kAnyPort);
+  auto s = relay::server::start(o);
+  REQUIRE(s);
+  relay::forward_answer said{};
+  auto f = relay::forward(dial((*s)->port()), kKey, "127.0.0.1", echo.port(), relay::kForwardWaitMs, said);
+  REQUIRE(f);
+  CHECK(said == relay::forward_answer::ok);
+  const std::string ask = "ping";
+  REQUIRE((*f)->write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()}));
+  const auto back = read_n(**f, ask.size());
+  CHECK(std::string(back.begin(), back.end()) == "PING");
+  (*f)->shutdown();
+  CHECK_FALSE(relay::forward(dial((*s)->port()), kKey, "127.0.0.1", 25, 5000, said));
+  CHECK(said == relay::forward_answer::port);
+}
+
 TEST_CASE("driftwire relay: no forward without the key, to another port, past the cap, or into a private network",
           "[driftwire]") {
   echo_server echo;
