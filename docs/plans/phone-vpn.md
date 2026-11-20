@@ -1,7 +1,9 @@
 # Plan — Driftwire VPN in MediaViewer for NAS (iPhone)
 
-Status: **plan, not built** (written 2026-11-14). Nothing here starts, and no entitlement is
-requested, before the owner signs off on the calls in §9. The owner's ask: the iPhone app
+Status (2026-11-19): **S1's and S2's code built, on branch `claude/phone-vpn-tunnel`; not run on a
+device.** The owner made calls 1, 5 and 8 on 2026-11-19 (§9). What is built and what is not is in
+§5 "Where S1 and S2 stand"; S1's device measurements are a TODO with their procedure (§2.4).
+Written 2026-11-14 as a plan. The owner's ask: the iPhone app
 "MediaViewer for NAS" gets Driftwire Tunnel's VPN mode, so the phone's traffic leaves through the
 person's own Driftwire relay server.
 
@@ -282,6 +284,43 @@ App Review tests on an IPv6-only network with NAT64 [Apple]. In the tunnel:
   NAT64 synthesises its IPv6 address. The QR already prefers names (mobile.md §7.3).
 - **Test:** the Mac's Internet Sharing "Create NAT64 Network" with the phone on it, the VPN on,
   Safari and an IPv4-only site.
+- **Built so far (S2):** `mv_vpn_settings_json` excludes the relay's addresses from
+  `relay_addresses` (internet.cpp), as the desktop does: a name goes through `getaddrinfo`, but an
+  IPv4 literal is parsed, not resolved, so on NAT64 its synthesised IPv6 address is **not** yet
+  excluded. The extension's own sockets bypass its tunnel anyway, so this does not loop; S3 fixes
+  it when it runs the NAT64 test.
+
+### 2.4 S1 on a device: TODO, and how (2026-11-19)
+
+No iPhone was connected when S1 and S2 were built, and packet tunnels do not run in the Simulator,
+so **none of S1's numbers exist yet**. What is known: the shared code runs unchanged behind the C
+ABI on macOS (`[phone-vpn]`), and the extension builds and archives for iOS. The steps, once the
+owner has done §4.1's profiles:
+
+1. **A relay on the LAN, never public.** On the Mac: `MV_RELAY_KEY=<a fresh key> build/bin/mv-driftwire-relay
+   --port 47614` (or a PC's Use as VPN; check the relay's forwarding flags in its `--help`), and its code `mediaviewer://relay#<mac-ip>:47614#<key>`.
+2. **The build.** `Config/Signing.local.xcconfig` with `DEVELOPMENT_TEAM = 23FQ4A4Q35`, a
+   Release build of the MediaViewer scheme to the device from Xcode (LiveServices already uses
+   `LinkVPN`).
+3. **Start it.** Paste the code, accept the consent screen and iOS's alert, switch it on. Check
+   Settings → VPN shows "MediaViewer — your server" connected.
+4. **Footprint.** Xcode → Debug → Attach to Process → `DriftwireTunnel`; Instruments' Allocations
+   + VM Tracker, or `footprint -p DriftwireTunnel` from a Mac on the same device with
+   `xcrun devicectl`. Record peak `phys_footprint` for (a) Safari opening 10 heavy pages at once
+   (one tab group), (b) a 100 MB download in Safari, (c) 64 parallel `URLSession` tasks (a scratch
+   app or `tools/ios` harness to be written), each with the HTTPS look off and on (on needs S4's
+   switch, or `tls = true` in the Keychain item by a debug build).
+5. **The ceiling.** A debug-only path in the extension that grows an allocation by 1 MiB a second
+   and logs the size (counts only) until jetsam; read the last line from Console.
+6. **Idle.** 30 minutes screen off, tunnel on against off, Xcode's Energy gauge or
+   `sysdiagnose` power log; and the runner's tick count (`mv_vpn_get_state` can expose it if
+   needed) to confirm the ticker sleeps.
+7. **Throughput.** The 100 MB download through the tunnel and direct, alternated, three each.
+8. **The [Apple] rows of S1's verify:** own sockets under `includeAllNetworks`, `excludeLocalNetworks`
+   with the NAS's LAN address, Wi-Fi → cellular reconnect (the provider reasserts on a path change
+   and re-sets the routes), NAT64 (§2.3), excluded routes under `includeAllNetworks`.
+
+Write the numbers here, with the device and iOS version, and the 60 % gate's verdict.
 
 ## 3. The rules
 
@@ -355,7 +394,31 @@ profiles through the App Store Connect API (`RELEASING.md`, "the Driftwire VPN's
 profiles"). The Mac extension's App ID is `io.github.longtimeno-c.mediaviewer.DriftwireTunnel`, and
 the phone's follows the same pattern.
 
-**From a terminal (recommended; S2 builds it).** S2 extends `provision.py` with an iOS mode
+**Where it stands (2026-11-19).** The iOS capability is **not** granted yet. The Mac's
+Developer ID profiles (v0.1.44) carry the macOS variants (`packet-tunnel-provider-systemextension`,
+keychain groups `23FQ4A4Q35.*`); they do nothing for iOS. The project now asks for the plain iOS
+entitlements listed below (`src.ios/App/Entitlements/`), so **a signed device build fails until the
+owner does steps 1–4**. Unsigned archives (`CODE_SIGNING_ALLOWED=NO`) and Simulator builds work.
+`provision.py --ios` is **not** built yet; the hand steps below are the way for now.
+
+**What the owner does, in order:**
+
+1. Portal → Identifiers → `io.github.longtimeno-c.mediaviewer.mobile`: tick **Network Extensions**
+   and **App Groups**; Save.
+2. Portal → Identifiers → App Groups → **+** → `group.io.github.longtimeno-c.mediaviewer.mobile`
+   (description "MediaViewer for NAS"); then back on the app's App ID, App Groups → Edit → tick
+   that group; Save.
+3. Portal → Identifiers → **+** → App IDs → App → explicit
+   `io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel`, description "MediaViewer VPN
+   extension"; tick **Network Extensions** and **App Groups** (the same group); Save.
+4. Profiles: in Xcode with `DEVELOPMENT_TEAM = 23FQ4A4Q35` in `Config/Signing.local.xcconfig`,
+   build the MediaViewer scheme to a device once (iOS **Development** profiles for both App IDs),
+   and archive once (iOS **App Store** profiles for both). Automatic signing makes them; with
+   manual signing, make a Development and an App Store profile for each App ID, with Network
+   Extensions and the App Group, by hand.
+5. Nothing in App Store Connect: the extension ships inside the app's record (6833437185).
+
+**From a terminal (later).** S2 was to extend `provision.py` with an iOS mode
 (`--ios`), using the same API key, the same token code and the same dry run:
 - bundle IDs with `platform: IOS`, for the phone's own `….mobile` and its `.DriftwireTunnel`;
 - `NETWORK_EXTENSIONS` and `APP_GROUPS` on both App IDs (no `SYSTEM_EXTENSION_INSTALL`, which is
@@ -534,6 +597,65 @@ run on a throwaway branch that has both.
 - `licence_check.py --binary MediaViewer.app` passes with the `.appex` inside.
 - The device build archives with automatic signing.
 
+### Where S1 and S2 stand (2026-11-19, branch `claude/phone-vpn-tunnel`)
+
+Built, and tested where it can be without a device:
+
+- **The C ABI** `src/mobile/mv_mobile_vpn.h` (`cmake/mobile-vpn.cmake`): `mv_mobile_vpn_code` for
+  the app (`mv_vpn_parse_code`, `mv_vpn_derive_knock_key`) and `mv_mobile_vpn` for the extension
+  (`mv_vpn_start` / `_packet_in` / `_check` / `_get_state` / `_stop`, a packet-out and an event
+  callback, `mv_vpn_settings_json`). The shared code (vpn.*, netstack.*, the dialer, serve_wire.*)
+  is used unchanged, behind a `vpn::device` over NEPacketTunnelFlow. Start first opens one datagram
+  flow to the server's own resolver to learn it answers and takes the key. `[phone-vpn]` tests run
+  it against an in-process loopback relay.
+- **S1's two shared fixes** (the knock key handed in, the ticker that sleeps) were already on main
+  (PR #675), with the IPv6 routing fix (#677).
+- **The iOS limits profile** (§2.1), after the 2026-11-19 review: `vpn::limits` (netstack.h:
+  connections, datagram flows, send buffer per connection; the desktop's constants by default)
+  passed through `vpn::runner::options::lim` to the stack. The extension runs at
+  `MV_VPN_MAX_TCP` 96, `MV_VPN_MAX_UDP` 64 and `MV_VPN_SEND_BUFFER` 64 KiB; a `[phone-vpn]` test
+  sees the 97th connection reset. The worker pool (a thread per forward today) is still S1's
+  question for the device.
+- **The iOS core** gains BoringSSL (`tools/ios/vcpkg.json`; the triplets build its `bssl` tool as
+  a plain program) and builds the two libraries (`tools/ios/build-core.sh`).
+- **The extension** `DriftwireTunnel.appex` (target in `MediaViewerMobile.xcodeproj`, embedded in
+  the app's PlugIns): `App/DriftwireTunnel/PacketTunnelProvider.swift` reads the tunnel item from
+  the shared Keychain group, starts the VPN, sets IPv4 and IPv6 (every address through the tunnel,
+  the server's addresses and the local networks left out, DNS to the server's resolver), and on a
+  path change reasserts, sets the routes again and checks the server, again with backoff (1 s
+  doubling to 30 s) until both work; iOS's tunnel remote address is the server's first resolved
+  address. Entitlements in
+  `App/Entitlements/` (§4.1). Builds for the Simulator and archives for a device unsigned; it has
+  never run (no device; packet tunnels do not run in the Simulator).
+- **`MobileLink/LinkVPN.swift`**, the real `VPNService`: connect(code:) parses through the C ABI
+  and derives the knock key, and keeps both **in memory only**; acceptConsent is remembered in
+  memory too. Only setOn(true) writes the tunnel item, the host and consent, then saves
+  `NETunnelProviderManager` ("MediaViewer — your server") and starts it; status from
+  `NEVPNStatusDidChange` through `VPNStatusMachine` (an early "disconnected" after the save is not
+  a failure) and the extension's last error; remove() as call 1 says, and a configuration loaded
+  at launch after a remove() stays removed. At launch the Keychain item's existence is checked off
+  the main thread, attributes only. The shared,
+  pure pieces (names, the item, the App Group state, the routes, the problem codes) are in
+  `MobileLinkSupport/VPNTunnel.swift`, tested in `VPNTunnelTests`.
+
+- **Wired:** `LiveServices` uses `services.with(vpn: LinkVPN())`, since the app with the extension
+  builds for the Simulator and archives for a device (`CODE_SIGNING_ALLOWED=NO`), the archive's
+  licence check passing with the `.appex` inside. Which VPN the sample library shows (`DemoVPN`)
+  is the screens' to choose.
+- **Acknowledgements** list BoringSSL (`tools/ios/acknowledgements.py`).
+
+Not built: S1's device measurements (§2.4); `provision.py --ios`; the S2 `[phone-relay]`
+items of option A (call 1 chose the pasted code instead); the "extension cannot read the pairing
+record" check, which needs a signed device build.
+
+Open after the review (2026-11-19), for a device:
+
+- **#10:** iOS may hand the app the provider's NSError wrapped, or as an NEVPNError, so
+  `VPNServerProblem(error:)` might not see the server's code; check on a device what
+  `fetchLastDisconnectError` returns after a refused key, and unwrap `NSUnderlyingErrorKey` if needed.
+- **#12:** the NAS's direct path is not excluded yet (§1.3, "required, not optional"): with the
+  VPN on away from home the library's punched path would enter the tunnel. S3.
+
 ### S3 — The tunnel, routes and IPv6 (shared code and iOS)
 
 - `flow_device`; the provider's settings (§1.3) with IPv6.
@@ -636,6 +758,24 @@ Under A, the demo is clearly a demo:
 | 6 | **If S1's memory gate fails:** multiplex forwards over one connection to the relay (a relay protocol change, shared with the desktop). | Decide only if S1 fails; S1 tries the smaller profile and a worker pool first. |
 | 7 | **When** (§4.4). | A later update, after 1.0 is approved. Spikes and S2–S4 may run on TestFlight before then. |
 | 8 | **The extension's App ID and group names** (§4.1). | `io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel` (the Mac's suffix, #673), the Keychain group `….mobile.vpn` and `group.io.github.longtimeno-c.mediaviewer.mobile`. They cannot be renamed after release without losing the saved VPN configuration. |
+
+**Decided 2026-11-19 (owner):**
+
+- **Call 1: the code, pasted.** Not A, B or C above: the phone gets its forward credential the way
+  the laptop's "Connect to a VPN host…" does, by the person pasting the server's VPN code
+  `mediaviewer://relay#host:port#KEY` (Phone access → Use as VPN → VPN code… on the server). One
+  parser, `serve::parse_relay_connect_code` (src/wire, PR #730), behind the C ABI
+  (`mv_vpn_parse_code`); no second parser in Swift. Built in but opt-in: nothing is saved to iOS's
+  VPN settings or the Keychain until a code is pasted and the switch turned on, and Remove VPN
+  deletes the Keychain item, the App Group's data and the saved configuration.
+- **Call 5: the sample's demo routes nothing.** `DemoVPN` (MobileKit/VPN.swift) walks the real
+  screens and order (consent before the switch) and says on screen that nothing is routed; no VPN
+  configuration is added. No relay of the project's, so "Data Not Collected" stands.
+- **Call 8: as recommended.** App ID `io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel`,
+  Keychain group `$(AppIdentifierPrefix)io.github.longtimeno-c.mediaviewer.mobile.vpn`, App Group
+  `group.io.github.longtimeno-c.mediaviewer.mobile`.
+- **Scope: S1 + S2**, the extension running the whole VPN; the knock key derived in the app
+  (Argon2id, 64 MiB) and handed to the extension as 32 bytes, never derived there.
 
 Not owner calls, but owed elsewhere and named so they are not lost:
 
