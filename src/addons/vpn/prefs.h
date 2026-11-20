@@ -53,8 +53,9 @@ inline constexpr const char* kProxyRecordFile = "vpn_proxy.json";
 // something was taken.
 bool adopt_driftwire(const std::string& driftwire_dir, const std::string& data_dir, const std::string& prefs_path,
                      secrets::store* driftwire, secrets::store* mine);
-// <root>/vpn/data -> <root>/driftwire/data (the host keeps each add-on's data
-// in <root>/<id>/data); "" when `data_dir` has no such parent.
+// <root>/VPN/data -> <root>/Driftwire/data on the Mac, <root>/vpn/data ->
+// <root>/driftwire/data elsewhere (the host keeps each add-on's data in
+// <root>/<name or id>/data); "" when `data_dir` has no such parent.
 [[nodiscard]] std::string driftwire_data_dir(const std::string& data_dir);
 
 }  // namespace mv::driftwire::vpn

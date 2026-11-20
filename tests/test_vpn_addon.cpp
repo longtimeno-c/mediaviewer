@@ -58,8 +58,13 @@ TEST_CASE("vpn: the first start takes Driftwire's Tunnel: its switches, the key 
           "[vpn]") {
   scratch_dir s("vpn_adopt");
   // The host's layout: <root>/<id>/data.
+#if defined(__APPLE__)
+  const fs::path theirs = s / "addons" / "Driftwire" / "data";  // the add-on's name on the Mac
+  const fs::path mine = s / "addons" / "VPN" / "data";
+#else
   const fs::path theirs = s / "addons" / "driftwire" / "data";
   const fs::path mine = s / "addons" / "vpn" / "data";
+#endif
   fs::create_directories(theirs);
   fs::create_directories(mine);
   CHECK(vpn::driftwire_data_dir(utf8(mine)) == utf8(theirs));
@@ -200,6 +205,43 @@ TEST_CASE("vpn: the Host section is Phone access's answer; its switch and code a
   for (const auto& [method, json] : host.asked()) {
     CHECK((method == "vpn_state" || method == "vpn_set" || method == "vpn_code" || method == "vpn_code_hide"));
   }
+}
+
+TEST_CASE("vpn: a switch Phone access refuses says so; a switch then a close sends both, in order", "[vpn]") {
+  vpn_test::fake_host host;
+  std::mutex m;
+  bool refuse = true;
+  host.phone = [&](const std::string& method, const std::string&) -> std::optional<std::string> {
+    std::lock_guard lock(m);
+    if (method != "vpn_state" && refuse) return std::nullopt;  // busy, or gone meanwhile
+    return R"({"where":"here","title":"VPN through this Mac","line":"On","on":true,"busy":false,
+      "code":"mediaviewer://relay#home.example:47614#k3y"})";
+  };
+  vpn::service::options o;
+  o.offline = true;
+  vpn::service svc(host, o);
+  svc.settings_opened();
+  REQUIRE(eventually([&] { return svc.snapshot().host_where == "here"; }));
+  svc.on_event("host_on", 2, "false");
+  svc.settle();
+  REQUIRE(eventually([&] { return svc.snapshot().host_error.find("didn't take that") != std::string::npos; }));
+  CHECK(host.settings().find("didn't take that") != std::string::npos);
+  {
+    std::lock_guard lock(m);
+    refuse = false;
+  }
+  // Use as VPN, then the page closes at once (a code shows): both reach Phone access.
+  svc.on_event("host_on", 2, "true");
+  host.show(false);
+  svc.settings_closed();
+  svc.settle();
+  std::vector<std::string> sent;
+  for (const auto& [method, json] : host.asked()) {
+    if (method != "vpn_state") sent.push_back(method + json);
+  }
+  REQUIRE(sent.size() >= 2);
+  CHECK(sent[sent.size() - 2] == R"(vpn_set{"on":true})");
+  CHECK(sent.back().rfind("vpn_code_hide", 0) == 0);
 }
 
 TEST_CASE("vpn: without Phone access, or nothing to host on, the Host section says where to set it up", "[vpn]") {

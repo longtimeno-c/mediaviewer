@@ -145,7 +145,7 @@ void service::control_loop() {
       if (t != none) due = due == none ? t : std::min(due, t);
     }
     const auto woken = [&] {
-      return stopping_.load() || reconcile_wanted_ || save_wanted_ || phone_wanted_ || phone_action_ ||
+      return stopping_.load() || reconcile_wanted_ || save_wanted_ || phone_wanted_ || !phone_actions_.empty() ||
              done_ < asked_;
     };
     if (due != none) {
@@ -176,16 +176,15 @@ void service::control_loop() {
       lock.lock();
     }
     // Phone access: what was clicked first, then a fresh look.
-    if (phone_action_) {
-      const std::string method = std::move(*phone_action_);
-      const bool on = phone_action_on_;
-      phone_action_.reset();
+    bool refused = false;
+    if (!phone_actions_.empty()) {
+      const auto actions = std::move(phone_actions_);
+      phone_actions_.clear();
       lock.unlock();
-      json::writer w;
-      w.begin_object().key("on").boolean(on).end_object();
-      if (!host_.ask_phone(method, w.take())) {
-        std::lock_guard held(m_);
-        v_.host_error = "Phone access didn't take that. Try again in a moment.";
+      for (const auto& [method, on] : actions) {
+        json::writer w;
+        w.begin_object().key("on").boolean(on).end_object();
+        if (!host_.ask_phone(method, w.take())) refused = true;
       }
       lock.lock();
       phone_wanted_ = true;
@@ -195,6 +194,14 @@ void service::control_loop() {
       phone_due_ = none;
       lock.unlock();
       ask_phone_now();
+      if (refused) {
+        // After the fresh look, which would otherwise clear it.
+        {
+          std::lock_guard held(m_);
+          v_.host_error = "Phone access didn't take that. Try again in a moment.";
+        }
+        post();
+      }
       lock.lock();
     }
     if (post_pending_ && clock::now() >= post_due_) {
@@ -212,6 +219,11 @@ void service::control_loop() {
 }
 
 void service::save_now() {
+  // The flag first: a change made while this copies asks again, and is written next.
+  {
+    std::lock_guard lock(control_m_);
+    save_wanted_ = false;
+  }
   prefs p;
   {
     std::lock_guard lock(m_);
@@ -223,10 +235,6 @@ void service::save_now() {
     p.tls_port = tls_port_;
     p.all_traffic = v_.all_traffic;
     p.block = v_.block;
-  }
-  {
-    std::lock_guard lock(control_m_);
-    save_wanted_ = false;
   }
   // The key after '#' goes to the secret store and the file keeps the
   // address; with no store (the portable build) the file keeps both.
@@ -363,7 +371,7 @@ void service::settings_closed() {
   phone_due_ = {};
   // The VPN code shown (it holds the relay's key) goes when the page does.
   if (code) {
-    phone_action_ = "vpn_code_hide";
+    phone_actions_.emplace_back("vpn_code_hide", false);
     control_cv_.notify_all();
   }
 }
@@ -737,8 +745,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     }
     {
       std::lock_guard lock(control_m_);
-      phone_action_ = "vpn_set";
-      phone_action_on_ = value->b;
+      phone_actions_.emplace_back("vpn_set", value->b);
       control_cv_.notify_all();
     }
     post_throttled();
@@ -746,7 +753,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
   }
   if ((node == "host_code" || node == "host_code_hide") && kind == kClick) {
     std::lock_guard lock(control_m_);
-    phone_action_ = node == "host_code" ? "vpn_code" : "vpn_code_hide";
+    phone_actions_.emplace_back(node == "host_code" ? "vpn_code" : "vpn_code_hide", false);
     control_cv_.notify_all();
     return;
   }

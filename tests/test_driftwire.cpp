@@ -806,6 +806,22 @@ TEST_CASE("driftwire: the Tunnel moved to the VPN add-on; its settings are kept 
   CHECK(after->tunnel_block);
 }
 
+TEST_CASE("driftwire: a system proxy the Tunnel left set shows the card too", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_moved_record");
+  fs::create_directories(dir / "data");
+  write_text(dir / "data" / "driftwire_proxy.json", R"({"pac_url":"http://127.0.0.1:50123/x.pac","saved":""})");
+  fake_host host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = utf8(dir / "data" / sp::kPrefsFile);
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  sp::engine eng(host, o);
+  CHECK(eng.snapshot().tunnel_moved);
+  CHECK(sp::build_settings_tree(eng.snapshot()).find("puts back this computer's proxy setting") != std::string::npos);
+}
+
 TEST_CASE("driftwire: the Tunnel's card goes once the VPN add-on answers", "[driftwire]") {
   scratch_dir dir("driftwire_tunnel_moved_present");
   sp::prefs before;

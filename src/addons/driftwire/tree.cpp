@@ -628,7 +628,8 @@ void tunnel_moved_card(writer& w, const view& v) {
   text(w, "tunnel_moved_title", "Tunnel", "heading");
   text(w, "tunnel_moved_note",
        "The Tunnel is now the VPN add-on, with Connect to a VPN host and All traffic. Add it in Settings "
-       "\xE2\x86\x92 Add-ons \xE2\x86\x92 VPN: it keeps your Tunnel's settings.",
+       "\xE2\x86\x92 Add-ons \xE2\x86\x92 VPN: it keeps your Tunnel's settings, and puts back this computer's "
+       "proxy setting if the Tunnel left it set.",
        "caption");
   end(w);
 }

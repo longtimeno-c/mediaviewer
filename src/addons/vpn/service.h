@@ -28,6 +28,8 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "addons/vpn/prefs.h"
 #include "addons/vpn/sysproxy.h"
@@ -184,8 +186,9 @@ class service {
   std::atomic<bool> stopping_{false};
   bool reconcile_wanted_ = false, save_wanted_ = false, post_pending_ = false;  // under control_m_
   bool phone_wanted_ = false;                                                  // under control_m_
-  std::optional<std::string> phone_action_;  // under control_m_: "vpn_set" / "vpn_code" / "vpn_code_hide"
-  bool phone_action_on_ = false;             // under control_m_
+  // Under control_m_: what was clicked for Phone access, in order ("vpn_set"
+  // with its value, "vpn_code", "vpn_code_hide"), sent by the control thread.
+  std::vector<std::pair<std::string, bool>> phone_actions_;
   std::uint64_t asked_ = 0, done_ = 0;       // under control_m_ (settle)
   std::chrono::steady_clock::time_point post_due_{}, phone_due_{}, keep_due_{};  // under control_m_
   std::atomic<std::chrono::steady_clock::time_point> last_post_{};

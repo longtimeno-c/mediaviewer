@@ -1400,8 +1400,7 @@ struct session::impl {
               {std::string("/vpn ") + opt.word + " on or off changes it (kept for next time)."});
           return;
         }
-        vev(node, 2, *on ? "true" : "false");
-        vsvc->settle();
+        vev(node, 2, *on ? "true" : "false");  // never waited on: the Mac may ask for a password meanwhile
         refresh_view();
         say(tone::info, std::string(*on ? "On: " : "Off: ") + opt.label);
         return;
@@ -1417,7 +1416,6 @@ struct session::impl {
       }
       const bool was = vv.tunnel;
       vev("tunnel", 2, *on ? "true" : "false");
-      vsvc->settle();
       refresh_view();
       if (!*on) say(tone::info, std::string("Off: VPN") + (was ? "" : " (it already was)"));
       else if (was) say_tunnel();  // already on: the address now; else on_tunnel says it once it listens

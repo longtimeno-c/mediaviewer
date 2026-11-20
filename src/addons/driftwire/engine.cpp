@@ -161,7 +161,10 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   // The Tunnel is the VPN add-on's now (docs/plans/vpn-addon.md): its
   // settings are kept as they were, for that add-on to take.
   moved_ = kept;
-  v_.tunnel_moved = kept.tunnel;
+  // A system proxy the Tunnel set and a crash left (driftwire_proxy.json):
+  // only the VPN add-on puts it back now, so the card shows for that too.
+  const std::string record = data_file("driftwire_proxy.json");
+  v_.tunnel_moved = kept.tunnel || (!record.empty() && io::stat_path(record).has_value());
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -1555,7 +1558,17 @@ void engine::screen_opened(const std::string& path) {
   post();
 }
 
-void engine::settings_opened() { post(); }
+void engine::settings_opened() {
+  bool ask = false;
+  {
+    // The VPN add-on may have come since the last look: ask again.
+    std::lock_guard lock(m_);
+    ask = v_.tunnel_moved;
+    if (ask) moved_asked_ = false;
+  }
+  if (ask) request_reconcile();
+  post();
+}
 
 void engine::screen_closed() {
   bool closing_connecting = false;

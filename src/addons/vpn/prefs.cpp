@@ -119,7 +119,12 @@ bool save_prefs(const std::string& path, const prefs& p) {
 std::string driftwire_data_dir(const std::string& data_dir) {
   const std::string root(io::parent_of(io::parent_of(data_dir)));
   if (data_dir.empty() || root.empty()) return {};
+  // The host names the folder after the add-on: its name on the Mac, its id elsewhere (addon/store.cpp).
+#if defined(__APPLE__)
+  return io::join_path(io::join_path(root, "Driftwire"), "data");
+#else
   return io::join_path(io::join_path(root, "driftwire"), "data");
+#endif
 }
 
 bool adopt_driftwire(const std::string& driftwire_dir, const std::string& data_dir, const std::string& prefs_path,
