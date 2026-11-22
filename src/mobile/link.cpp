@@ -46,7 +46,9 @@ serve::client::options options_for(const service_config& c) {
   o.id = c.device_id;
   o.name = c.device_name;
   // Backup (1.1) as well: a service from before it leaves `write` out of its caps.
-  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp;
+  // Changing the shared folders (docs/design/28 "Changing files"): asked for always; a
+  // service older than them, or a "view" device, leaves them out or refuses each request.
+  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp | serve::kChangeOps;
   if (c.upgrade) o.ops |= serve::kUpgradeOp;  // granted only on a relayed link
   return o;
 }
@@ -862,6 +864,61 @@ result<serve::client::write_done> link_session::write(const std::string& root, c
   if (!c) return err(c.error());
   const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
   auto r = (*c)->write(root, rel, size, hash_hex, at, read, progress, stop, why, meta);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<bool> link_session::changes_files() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return (*c)->changes_files();
+}
+
+result<serve::client::change_done> link_session::add(const std::string& root, const std::string& rel,
+                                                    std::uint64_t size, const std::string& hash_hex,
+                                                    std::uint64_t at, const serve::client::read_fn& read,
+                                                    const std::function<void(std::uint64_t)>& progress,
+                                                    const cancel_flag* cancel, serve::client::change_refused* why) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
+  auto r = (*c)->add(root, rel, size, hash_hex, at, read, progress, stop, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::make_folder(const std::string& root, const std::string& rel,
+                                                            serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->make_folder(root, rel, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::move(const std::string& root, const std::string& rel,
+                                                     const std::string& to_root, const std::string& to_rel,
+                                                     serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->move(root, rel, to_root, to_rel, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::remove(const std::string& root, const std::string& rel,
+                                                       serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->remove(root, rel, why);
   if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
   return r;
 }

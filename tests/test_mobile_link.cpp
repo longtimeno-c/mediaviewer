@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <algorithm>
 #include <filesystem>
 #include <map>
@@ -27,6 +28,7 @@
 #include "wire/serve.h"
 #include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
+#include "io/content_hash.h"
 #include "mobile/files.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
@@ -2721,4 +2723,54 @@ TEST_CASE("link: where a catalogue folder may be when no service folder has its 
   for (std::size_t i = 0; i < top.size(); ++i) {
     for (std::size_t j = i + 1; j < top.size(); ++j) CHECK_FALSE(top[i] == top[j]);
   }
+}
+
+TEST_CASE("link: change ops pass through to the service, never replacing", "[mobile-link]") {
+  rig r(1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  auto changes = s.changes_files();
+  REQUIRE(changes);
+  CHECK(*changes);  // asked for kChangeOps, and this service has them
+
+  const std::string root = "a1a1a1a1a1a1a1a1";
+  serve::client::change_refused why;
+  auto made = s.make_folder(root, "Trips/2026", &why);
+  REQUIRE(made);
+  CHECK(fs::is_directory(r.photos / "Trips" / "2026"));
+
+  const std::string bytes(5000, 'x');
+  const std::string hash =
+      mv::io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()))
+          .hex();
+  const serve::client::read_fn read = [&bytes](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    if (at >= bytes.size()) return std::size_t{0};
+    const std::size_t n = std::min<std::size_t>(into.size(), bytes.size() - static_cast<std::size_t>(at));
+    std::memcpy(into.data(), bytes.data() + at, n);
+    return n;
+  };
+  auto added = s.add(root, "Trips/2026/a.jpg", bytes.size(), hash, 0, read, {}, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/2026/a.jpg");
+  CHECK(fs::file_size(r.photos / "Trips" / "2026" / "a.jpg") == bytes.size());
+
+  // A taken destination is refused, typed, and nothing is replaced.
+  REQUIRE(s.make_folder(root, "Other", &why));
+  auto other = s.add(root, "Other/a.jpg", bytes.size(), hash, 0, read, {}, nullptr, &why);
+  REQUIRE(other);
+  auto clash = s.move(root, "Trips/2026/a.jpg", root, "Other/a.jpg", &why);
+  CHECK_FALSE(clash);
+  CHECK(why.why == serve::client::change_why::exists);
+
+  auto moved = s.move(root, "Trips/2026/a.jpg", root, "Other/b.jpg", &why);
+  REQUIRE(moved);
+  CHECK(moved->rel == "Other/b.jpg");
+  CHECK(fs::exists(r.photos / "Other" / "b.jpg"));
+  CHECK_FALSE(fs::exists(r.photos / "Trips" / "2026" / "a.jpg"));
+
+  auto gone = s.remove(root, "Other/b.jpg", &why);
+  REQUIRE(gone);
+  CHECK_FALSE(fs::exists(r.photos / "Other" / "b.jpg"));  // in the server's trash, not listed
 }
