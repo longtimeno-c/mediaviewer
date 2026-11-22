@@ -190,3 +190,138 @@ TEST_CASE("transfer_board: rows report progress, finish, cancel and clear", "[fi
   CHECK(board.generation() != g);
   CHECK(board.ids().empty());
 }
+
+namespace {
+
+// A server's folder as remote_ops over a local folder: "remote:0123456789abcdef/a1a1a1a1a1a1a1a1/<rel>".
+struct fake_server {
+  fs::path root;
+  int removes = 0;
+  bool refuse_remove = false;
+  std::string prefix = "remote:0123456789abcdef/a1a1a1a1a1a1a1a1/";
+  fs::path at(const std::string& key) const {
+    std::string rel = key.substr(prefix.size());
+    if (!rel.empty() && rel.back() == '/') rel.pop_back();
+    return rel.empty() ? root : root / fs::path(rel);
+  }
+  remote_ops ops() {
+    remote_ops o;
+    o.exists = [this](const std::string& k) -> mv::result<bool> { return fs::exists(at(k)); };
+    o.make_folder = [this](const std::string& parent, const std::string& name) -> mv::result<std::string> {
+      if (fs::exists(at(parent) / name)) return mv::err(mv::status::permission_denied);
+      fs::create_directories(at(parent) / name);
+      return parent + name + "/";
+    };
+    o.add = [this](const std::string& parent, const std::string& local, const std::string& name,
+                   const std::atomic<bool>*, std::atomic<std::uint64_t>*) -> mv::result<std::string> {
+      fs::copy_file(local, at(parent) / name);  // throws on a taken name: the test would see it
+      return parent + name;
+    };
+    o.move = [this](const std::string& key, const std::string& to, const std::string& name,
+                    bool& taken) -> mv::result<std::string> {
+      if (fs::exists(at(to) / name)) {
+        taken = true;
+        return mv::err(mv::status::permission_denied);
+      }
+      fs::rename(at(key), at(to) / name);
+      return to + name;
+    };
+    o.remove = [this](const std::string& key) -> mv::result<std::string> {
+      if (refuse_remove) return mv::err(mv::status::permission_denied);
+      ++removes;
+      fs::remove_all(at(key));
+      return std::string("2026-11-22/x");
+    };
+    o.fetch = [this](const std::string& key, const std::atomic<bool>*, std::atomic<std::uint64_t>*) -> mv::result<std::string> {
+      return utf8(at(key));  // the host's cache stands in for it
+    };
+    return o;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("file_transfer: files and folders go up to a server's folder, never replacing", "[file_transfer]") {
+  scratch_dir s("xfer_up");
+  fake_server srv{s / "server"};
+  fs::create_directories(srv.root / "Trips");
+  write_text(srv.root / "Trips" / "a.jpg", "theirs");
+  write_text(s / "local/a.jpg", "mine");
+  write_text(s / "local/day1/b.jpg", "b");
+  auto target = mixed_target(srv.ops());
+  transfer_progress progress;
+  const auto r = run_transfer(drop_verb::copy, {utf8(s / "local/a.jpg"), utf8(s / "local/day1")}, srv.prefix + "Trips/",
+                              *target, progress);
+  CHECK(r.succeeded() == 2);
+  CHECK(text_of(srv.root / "Trips" / "a.jpg") == "theirs");
+  CHECK(text_of(srv.root / "Trips" / "a (2).jpg") == "mine");
+  CHECK(text_of(srv.root / "Trips" / "day1" / "b.jpg") == "b");
+  CHECK(fs::exists(s / "local/a.jpg"));  // a copy up leaves the original
+}
+
+TEST_CASE("file_transfer: a move off the server removes it there only after the copy here is whole",
+          "[file_transfer]") {
+  scratch_dir s("xfer_down");
+  fake_server srv{s / "server"};
+  write_text(srv.root / "Trips" / "a.jpg", "a");
+  fs::create_directories(s / "here");
+  auto target = mixed_target(srv.ops());
+  transfer_progress progress;
+  auto r = run_transfer(drop_verb::move, {srv.prefix + "Trips/a.jpg"}, utf8(s / "here"), *target, progress);
+  CHECK(r.succeeded() == 1);
+  CHECK(text_of(s / "here" / "a.jpg") == "a");
+  CHECK_FALSE(fs::exists(srv.root / "Trips" / "a.jpg"));
+  CHECK(srv.removes == 1);
+
+  // The server will not let it go: the copy here is taken back, so it is never two.
+  write_text(srv.root / "Trips" / "b.jpg", "b");
+  srv.refuse_remove = true;
+  auto target2 = mixed_target(srv.ops());
+  r = run_transfer(drop_verb::move, {srv.prefix + "Trips/b.jpg"}, utf8(s / "here"), *target2, progress);
+  CHECK(r.failed() == 1);
+  CHECK(fs::exists(srv.root / "Trips" / "b.jpg"));
+  CHECK_FALSE(fs::exists(s / "here" / "b.jpg"));
+
+  // A copy down never touches the server.
+  srv.refuse_remove = false;
+  r = run_transfer(drop_verb::copy, {srv.prefix + "Trips/b.jpg"}, utf8(s / "here"), *target2, progress);
+  CHECK(r.succeeded() == 1);
+  CHECK(fs::exists(srv.root / "Trips" / "b.jpg"));
+  CHECK(srv.removes == 1);
+}
+
+TEST_CASE("file_transfer: within one server a move is its own, and a taken name keeps both", "[file_transfer]") {
+  scratch_dir s("xfer_within");
+  fake_server srv{s / "server"};
+  write_text(srv.root / "Trips" / "a.jpg", "a");
+  write_text(srv.root / "Trips" / "day1" / "c.jpg", "c");
+  fs::create_directories(srv.root / "Archive");
+  auto target = mixed_target(srv.ops());
+  transfer_progress progress;
+  auto r = run_transfer(drop_verb::move, {srv.prefix + "Trips/a.jpg", srv.prefix + "Trips/day1/"},
+                        srv.prefix + "Archive/", *target, progress);
+  CHECK(r.succeeded() == 2);
+  CHECK(text_of(srv.root / "Archive" / "a.jpg") == "a");
+  CHECK(text_of(srv.root / "Archive" / "day1" / "c.jpg") == "c");
+  CHECK(srv.removes == 0);  // a move, not a copy and a delete
+
+  // The name was free when planned and taken by the time it moved: keep both.
+  write_text(srv.root / "Trips" / "a.jpg", "second");
+  struct racing : transfer_target {
+    std::unique_ptr<transfer_target> real;
+    fake_server* srv;
+    int asked = 0;
+    bool exists(const std::string& p) override { return ++asked == 1 ? false : real->exists(p); }
+    mv::status make_directory(const std::string& p) override { return real->make_directory(p); }
+    mv::status put_file(const std::string& a, const std::string& b, bool v, const std::atomic<bool>* c,
+                        std::atomic<std::uint64_t>* d) override { return real->put_file(a, b, v, c, d); }
+    rename_outcome rename(const std::string& a, const std::string& b) override { return real->rename(a, b); }
+    mv::status remove(const std::string& p) override { return real->remove(p); }
+  } race;
+  race.real = mixed_target(srv.ops());
+  race.srv = &srv;
+  r = run_transfer(drop_verb::move, {srv.prefix + "Trips/a.jpg"}, srv.prefix + "Archive/", race, progress);
+  REQUIRE(r.succeeded() == 1);
+  CHECK(text_of(srv.root / "Archive" / "a.jpg") == "a");
+  CHECK(text_of(srv.root / "Archive" / "a (2).jpg") == "second");
+}

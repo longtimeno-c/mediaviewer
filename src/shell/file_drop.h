@@ -40,7 +40,8 @@ enum class drop_refusal : std::uint8_t {
   remote_target = 3,     // another computer's folder this device cannot change
   into_itself = 4,       // a folder onto itself or into one of its own folders
   already_there = 5,     // a move of files that are already in that folder
-  remote_source = 6,     // another computer's file: copy it here first
+  remote_source = 6,     // a folder on another computer (a file comes down; a folder not yet),
+                         // or files on another server than the target's
 };
 
 enum class place_kind : std::uint8_t { writable, read_only, remote_read_only, remote_writable };
@@ -65,6 +66,14 @@ namespace drop_detail {
 inline bool is_remote(place_kind k) noexcept {
   return k == place_kind::remote_read_only || k == place_kind::remote_writable;
 }
+// "remote:<server>/…" -> "remote:<server>/" (docs/plans/desktop-client.md keys); "" otherwise.
+inline std::string_view server_of(std::string_view key) {
+  constexpr std::string_view kPrefix = "remote:";
+  if (key.substr(0, kPrefix.size()) != kPrefix) return {};
+  const std::size_t slash = key.find('/', kPrefix.size());
+  return slash == std::string_view::npos ? key : key.substr(0, slash + 1);
+}
+inline bool is_folder_key(std::string_view key) { return !key.empty() && key.back() == '/'; }
 // Trailing separators dropped, except a root's ("/", "C:\\").
 inline std::string trim_dir(std::string_view dir) {
   std::string p(dir);
@@ -91,6 +100,7 @@ inline std::string trim_dir(std::string_view dir) {
   const std::string target_dir = drop_detail::trim_dir(r.target_dir);
   bool all_here = !r.sources.empty();
   bool any_protected = false;
+  bool remote_folder = false;
   for (const std::string& src : r.sources) {
     // A folder onto itself or anything inside it: Finder refuses that too.
     if (browse_path::within(target_dir, src)) {
@@ -98,11 +108,16 @@ inline std::string trim_dir(std::string_view dir) {
       return out;
     }
     const place_kind k = classify(src);
-    // Phase 1: another computer's file is fetched by Copy to…, not a drop
-    // (a remote source into a remote folder is the server's own move later).
-    if (drop_detail::is_remote(k) && !drop_detail::is_remote(target)) {
-      out.refusal = drop_refusal::remote_source;
-      return out;
+    if (drop_detail::is_remote(k)) {
+      // Another computer's file comes down (a download) or goes across its own server (the
+      // service's move); nothing goes from one server to another, and a remote folder only
+      // moves within its server (the service has no folder copy, this app no folder download).
+      if (drop_detail::is_remote(target) &&
+          drop_detail::server_of(src) != drop_detail::server_of(target_dir)) {
+        out.refusal = drop_refusal::remote_source;
+        return out;
+      }
+      if (drop_detail::is_folder_key(src)) remote_folder = true;
     }
     if (k == place_kind::read_only || k == place_kind::remote_read_only) any_protected = true;
     if (browse_path::parent_of(src) != target_dir) all_here = false;
@@ -112,6 +127,11 @@ inline std::string trim_dir(std::string_view dir) {
   // What cannot be removed from where it is (a Photos library item, a
   // read-only place) is copied, as Finder copies off a locked volume.
   if (verb == drop_verb::move && any_protected) verb = drop_verb::copy;
+  // A remote folder goes only by the service's move, within its own server.
+  if (remote_folder && (verb != drop_verb::move || !drop_detail::is_remote(target))) {
+    out.refusal = drop_refusal::remote_source;
+    return out;
+  }
   if (verb == drop_verb::move && all_here) {
     out.refusal = drop_refusal::already_there;
     return out;
@@ -128,7 +148,7 @@ inline std::string trim_dir(std::string_view dir) {
     case drop_refusal::remote_target: return "On another computer: read-only from here";
     case drop_refusal::into_itself: return "Can't put a folder inside itself";
     case drop_refusal::already_there: return "Already in this folder";
-    case drop_refusal::remote_source: return "On another computer: copy it here first";
+    case drop_refusal::remote_source: return "A folder on another computer can't be copied here";
     default: return "";
   }
 }

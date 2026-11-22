@@ -61,7 +61,7 @@ public static class DropWords
         Refusal.RemoteTarget => "On another computer: read-only from here",
         Refusal.IntoItself => "Can't put a folder inside itself",
         Refusal.AlreadyThere => "Already in this folder",
-        Refusal.RemoteSource => "On another computer: copy it here first",
+        Refusal.RemoteSource => "A folder on another computer can't be copied here",
         _ => "",
     };
 

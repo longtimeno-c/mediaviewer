@@ -75,11 +75,32 @@ TEST_CASE("file_drop: moving files onto the folder they are in does nothing; cop
   CHECK(decide({"/p/a.jpg", "/q/b.jpg"}, "/p", true).verb == drop_verb::move);
 }
 
-TEST_CASE("file_drop: what cannot leave where it is is copied, and remote files wait for Copy to",
-          "[file_drop]") {
+TEST_CASE("file_drop: what cannot leave where it is is copied", "[file_drop]") {
   CHECK(decide({"photos:ABC"}, "/p", true).verb == drop_verb::copy);
   CHECK(decide({"/ro/x.jpg", "/q/y.jpg"}, "/p", true).verb == drop_verb::copy);
-  CHECK(decide({"remote:nas/Trips/a.jpg"}, "/p", true).refusal == drop_refusal::remote_source);
+  // A view device's file comes down as a copy; it is never removed from the server.
+  CHECK(decide({"remote:nas/Trips/a.jpg"}, "/p", true).verb == drop_verb::copy);
+}
+
+TEST_CASE("file_drop: a change device's remote folders take drops and give files", "[file_drop]") {
+  // Up: from Finder a copy, from this window a move (the local file goes once the copy is there).
+  CHECK(decide({"/p/a.jpg"}, "remote:rw/Trips/", false).verb == drop_verb::copy);
+  CHECK(decide({"/p/a.jpg"}, "remote:rw/Trips/", true).verb == drop_verb::move);
+  CHECK(decide({"/p/day1"}, "remote:rw/Trips/", false).verb == drop_verb::copy);  // a local folder goes up whole
+  // Within its server: the service's move, files or folders; a move onto its own folder is nothing.
+  CHECK(decide({"remote:rw/Trips/a.jpg"}, "remote:rw/Trips/2026/", true).verb == drop_verb::move);
+  CHECK(decide({"remote:rw/Trips/day1/"}, "remote:rw/Archive/", true).verb == drop_verb::move);
+  CHECK(decide({"remote:rw/Trips/a.jpg"}, "remote:rw/Trips/", true).refusal == drop_refusal::already_there);
+  // A copy within it comes down and goes up again (a file); a folder has no such copy.
+  CHECK(decide({"remote:rw/Trips/a.jpg"}, "remote:rw/Archive/", true, true).verb == drop_verb::copy);
+  CHECK(decide({"remote:rw/Trips/day1/"}, "remote:rw/Archive/", true, true).refusal == drop_refusal::remote_source);
+  // Down: a file is a download (a move removes it from the server only after); a folder is not.
+  CHECK(decide({"remote:rw/Trips/a.jpg"}, "/p", true).verb == drop_verb::move);
+  CHECK(decide({"remote:rw/Trips/a.jpg"}, "/p", true, true).verb == drop_verb::copy);
+  CHECK(decide({"remote:rw/Trips/day1/"}, "/p", true).refusal == drop_refusal::remote_source);
+  // Never from one server to another.
+  CHECK(decide({"remote:nas/Trips/a.jpg"}, "remote:rw/Trips/", true).refusal == drop_refusal::remote_source);
+  CHECK(decide({"remote:rw/Trips/a.jpg"}, "remote:rw2/Trips/", true).refusal == drop_refusal::remote_source);
 }
 
 TEST_CASE("file_drop: no folder, or no files of ours, is no drop", "[file_drop]") {

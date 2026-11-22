@@ -648,6 +648,183 @@ TEST_CASE("unreachable, offline and ended are said plainly", "[desktop-client]")
 // resolution (fetch + full decode), and arrow-to-next for a neighbour the
 // viewer already fetched (the ±2 prefetch) and for one it did not. Beside
 // them, the same file from a local disk. MV_REMOTE_BENCH_JSON=path writes them.
+// Plan §6: the host's admin lets this desktop change files, as `driftwire host` does it
+// (serve.cpp set_access): "change" for every folder with no limit is the paired list; "view"
+// is the grants list with backup off. The next connect learns the role.
+void allow_changes(host& h, bool allow) {
+  std::vector<dw::serve::grants::grant> granted;
+  REQUIRE(dw::serve::grants::load(*h.store, granted));
+  auto devices = dw::known::load(*h.store);
+  if (allow) {
+    const auto g = std::find_if(granted.begin(), granted.end(), [](const auto& x) { return x.name == "Test Desktop"; });
+    REQUIRE(g != granted.end());
+    dw::known::device d;
+    d.name = g->name;
+    d.key = g->key;
+    devices.push_back(d);
+    granted.erase(g);
+    REQUIRE(dw::known::save(*h.store, devices));
+  } else {
+    const auto d = std::find_if(devices.begin(), devices.end(), [](const auto& x) { return x.name == "Test Desktop"; });
+    REQUIRE(d != devices.end());
+    dw::serve::grants::grant g;
+    g.name = d->name;
+    g.key = d->key;
+    g.backup = false;
+    g.created = 1;
+    granted.push_back(g);
+    devices.erase(d);
+    REQUIRE(dw::serve::grants::save(*h.store, granted));
+    REQUIRE(dw::known::save(*h.store, devices));
+  }
+  if (allow) {
+    REQUIRE(dw::serve::grants::save(*h.store, granted));
+  }
+  // The service keeps who may write between requests; the admin op clears that, a hand-edited
+  // list needs a restart (same port, so the paired address still answers).
+  const std::uint16_t port = h.port;
+  h.stop();
+  h.start(port);
+}
+
+TEST_CASE("changing files: a view desktop is refused, a change desktop adds, makes, moves and deletes",
+          "[desktop-client][remote-change]") {
+  host h;
+  put_file(h.photos / "2024" / "a.jpg", photo(64, 48, 1));
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  const std::string year = photos + "2024/";
+
+  // View (owner call 1): read-only, with a reason a command can show, and every change refused.
+  CHECK_FALSE(d.lib->can_write(year));
+  CHECK(d.lib->write_problem(year).find("view only") != std::string::npos);
+  rm::library::change_refused why;
+  auto refused = d.lib->make_folder(year, "Trip", &why);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error() == mv::status::permission_denied);
+  CHECK(why.why == dw::serve::client::change_why::not_allowed);
+  CHECK_FALSE(fs::exists(h.photos / "2024" / "Trip"));
+
+  // The admin allows changes: a new run learns it from the caps and the folders' answer.
+  allow_changes(h, true);
+  d.relaunch();
+  {
+    auto l = d.lib->list(rm::server_key(*id));
+    if (!l) FAIL("list after allow: " << mv::status_name(l.error()) << " state " << rm::reach_name(d.lib->servers()[0].state));
+  }
+  CHECK(d.lib->servers()[0].role == "change");
+  CHECK(d.lib->can_write(year));
+  CHECK(d.lib->can_write(year + "a.jpg"));
+  CHECK(d.lib->write_problem(year).empty());
+
+  // New folder, then the same name again: never a second one under it.
+  auto trip = d.lib->make_folder(year, "Trip");
+  REQUIRE(trip);
+  CHECK(*trip == year + "Trip/");
+  CHECK(fs::is_directory(h.photos / "2024" / "Trip"));
+  auto again = d.lib->make_folder(year, "Trip", &why);
+  CHECK_FALSE(again);
+  CHECK(why.why == dw::serve::client::change_why::exists);
+
+  // A listing kept from before the change is not what the next list shows.
+  auto before = d.lib->list(year);
+  REQUIRE(before);
+  CHECK(before->folders.size() == 1);
+
+  // Add a local file, and the same name again: " (2)", never a replace.
+  scratch_dir local{"desktop_local"};
+  put_file(local / "b.jpg", photo(32, 24, 5));
+  auto added = d.lib->add_file(trip.value(), utf8(local / "b.jpg"), "b.jpg");
+  REQUIRE(added);
+  CHECK(*added == year + "Trip/b.jpg");
+  put_file(local / "other.jpg", photo(32, 24, 6));
+  auto second = d.lib->add_file(trip.value(), utf8(local / "other.jpg"), "b.jpg");
+  REQUIRE(second);
+  CHECK(*second == year + "Trip/b (2).jpg");
+  CHECK(fs::file_size(h.photos / "2024" / "Trip" / "b.jpg") == fs::file_size(local / "b.jpg"));
+  auto listed = d.lib->list(trip.value());
+  REQUIRE(listed);
+  CHECK(listed->files.size() == 2);  // at once, not the listing kept from before
+
+  // Rename and move: a taken name is refused as exists, nothing replaced.
+  auto clash = d.lib->move(year + "a.jpg", trip.value(), "b.jpg", &why);
+  CHECK_FALSE(clash);
+  CHECK(why.why == dw::serve::client::change_why::exists);
+  auto moved = d.lib->move(year + "a.jpg", trip.value(), "a.jpg");
+  REQUIRE(moved);
+  CHECK(*moved == year + "Trip/a.jpg");
+  CHECK_FALSE(fs::exists(h.photos / "2024" / "a.jpg"));
+  auto renamed = d.lib->move(*moved, trip.value(), "beach.jpg");
+  REQUIRE(renamed);
+  CHECK(fs::exists(h.photos / "2024" / "Trip" / "beach.jpg"));
+  auto after = d.lib->list(year);
+  REQUIRE(after);
+  CHECK(after->files.empty());
+  REQUIRE(d.lib->exists(*renamed));
+  CHECK(d.lib->exists(*renamed).value());
+
+  // Delete: into the server's trash, gone from every listing.
+  auto gone = d.lib->remove(*renamed);
+  REQUIRE(gone);
+  CHECK(gone->find("beach.jpg") != std::string::npos);
+  CHECK_FALSE(fs::exists(h.photos / "2024" / "Trip" / "beach.jpg"));
+  CHECK_FALSE(d.lib->exists(*renamed).value());
+
+  // Taken back: the next run is view again and says so.
+  allow_changes(h, false);
+  d.relaunch();
+  REQUIRE(d.lib->list(rm::server_key(*id)));
+  CHECK_FALSE(d.lib->can_write(year));
+}
+
+TEST_CASE("changing files: an upload cut short goes on from what reached the server", "[desktop-client][remote-change]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  REQUIRE(d.lib->can_write(photos));
+
+  scratch_dir local{"desktop_upload"};
+  std::vector<std::uint8_t> big(6u << 20);
+  std::mt19937 rng(7);
+  for (auto& b : big) b = static_cast<std::uint8_t>(rng());
+  put_file(local / "clip.mov", big);
+
+  // Cut after the first megabytes, as a closed lid or a lost network would.
+  struct {
+    mv::mobile::cancel_flag flag;
+  } cancel;
+  std::uint64_t first_sent = 0;
+  auto cut = d.lib->add_file(photos, utf8(local / "clip.mov"), "clip.mov", &cancel.flag, [&](std::uint64_t sent) {
+    first_sent = sent;
+    if (sent >= (2u << 20)) cancel.flag.stop.store(true);
+  });
+  REQUIRE_FALSE(cut);
+  CHECK(cut.error() == mv::status::cancelled);
+  CHECK_FALSE(fs::exists(h.photos / "clip.mov"));
+
+  // Again: it goes on from the server's unfinished copy, not from the start.
+  std::uint64_t lowest = UINT64_MAX;
+  auto done = d.lib->add_file(photos, utf8(local / "clip.mov"), "clip.mov", nullptr, [&](std::uint64_t sent) {
+    lowest = std::min(lowest, sent);
+  });
+  REQUIRE(done);
+  CHECK(*done == photos + "clip.mov");
+  CHECK(lowest > 0);  // the first bytes it reported were past the start
+  auto landed = mv::io::read_all(utf8(h.photos / "clip.mov"));
+  REQUIRE(landed);
+  CHECK(landed.value() == big);
+}
+
 TEST_CASE("remote folder timings over loopback", "[.perf-bench][.desktop-client-perf]") {
   using clock = std::chrono::steady_clock;
   const auto ms = [](clock::time_point t0) { return std::chrono::duration<double, std::milli>(clock::now() - t0).count(); };

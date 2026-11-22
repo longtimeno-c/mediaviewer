@@ -125,6 +125,11 @@ std::uint64_t size_of(const std::string& path) {
 mv::status copy_tree(const std::string& src, const std::string& dest, bool verify, transfer_target& target,
                      transfer_progress& progress, const std::atomic<bool>* cancel) {
   if (cancel && cancel->load()) return mv::status::cancelled;
+  // Another computer's file: the target fetches it (a folder there never comes this way).
+  if (is_remote_path(src)) {
+    if (src.back() == '/') return mv::status::unsupported_format;
+    return target.put_file(src, dest, verify, cancel, &progress.done_bytes);
+  }
   std::error_code ec;
   const fs::path p = to_path(src);
   const auto st = fs::symlink_status(p, ec);
@@ -153,9 +158,75 @@ bool is_directory(const std::string& path) {
 
 std::string quoted_leaf(const std::string& path) { return std::string(browse_path::leaf(path)); }
 
+std::string remote_parent(const std::string& key) {
+  std::string_view k = key;
+  if (!k.empty() && k.back() == '/') k.remove_suffix(1);
+  const std::size_t cut = k.rfind('/');
+  return cut == std::string_view::npos ? std::string() : std::string(k.substr(0, cut + 1));
+}
+
+class mixed : public transfer_target {
+ public:
+  explicit mixed(remote_ops ops) : ops_(std::move(ops)) {}
+
+  bool exists(const std::string& path) override {
+    if (!is_remote_path(path)) return here_.exists(path);
+    if (!ops_.exists) return true;  // unknown: never a name that might be taken
+    auto r = ops_.exists(path);
+    return !r || r.value();
+  }
+
+  mv::status make_directory(const std::string& path) override {
+    if (!is_remote_path(path)) return here_.make_directory(path);
+    if (!ops_.make_folder) return mv::status::permission_denied;
+    auto r = ops_.make_folder(remote_parent(path), browse_path::leaf(path));
+    return r ? mv::status::ok : r.error();
+  }
+
+  mv::status put_file(const std::string& src, const std::string& dest, bool verify, const std::atomic<bool>* cancel,
+                      std::atomic<std::uint64_t>* done_bytes) override {
+    std::string local = src;
+    if (is_remote_path(src)) {
+      if (!ops_.fetch) return mv::status::permission_denied;
+      auto got = ops_.fetch(src, cancel, nullptr);
+      if (!got) return got.error();
+      local = std::move(got).value();
+    }
+    if (!is_remote_path(dest)) return here_.put_file(local, dest, verify || is_remote_path(src), cancel, done_bytes);
+    if (!ops_.add) return mv::status::permission_denied;
+    // The service checks the whole file's hash as it lands: what reached its disk is what was sent.
+    auto r = ops_.add(remote_parent(dest), local, browse_path::leaf(dest), cancel, done_bytes);
+    return r ? mv::status::ok : r.error();
+  }
+
+  rename_outcome rename(const std::string& src, const std::string& dest) override {
+    const bool from = is_remote_path(src), to = is_remote_path(dest);
+    if (!from && !to) return here_.rename(src, dest);
+    if (from != to || drop_detail::server_of(src) != drop_detail::server_of(dest)) return rename_outcome::other_volume;
+    if (!ops_.move) return rename_outcome::failed;
+    bool taken = false;
+    auto r = ops_.move(src, remote_parent(dest), browse_path::leaf(dest), taken);
+    if (r) return rename_outcome::done;
+    return taken ? rename_outcome::taken : rename_outcome::failed;
+  }
+
+  mv::status remove(const std::string& path) override {
+    if (!is_remote_path(path)) return here_.remove(path);
+    if (!ops_.remove) return mv::status::permission_denied;
+    auto r = ops_.remove(path);
+    return r ? mv::status::ok : r.error();
+  }
+
+ private:
+  remote_ops ops_;
+  local here_;
+};
+
 }  // namespace
 
 std::unique_ptr<transfer_target> local_target() { return std::make_unique<local>(); }
+std::unique_ptr<transfer_target> mixed_target(remote_ops ops) { return std::make_unique<mixed>(std::move(ops)); }
+bool is_remote_path(std::string_view path) noexcept { return path.substr(0, 7) == "remote:"; }
 
 transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sources, const std::string& target_dir,
                              transfer_target& target, transfer_progress& progress,
@@ -180,7 +251,19 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
     const std::uint64_t bytes = size_of(step.source);
     bool renamed = false;
     if (verb == drop_verb::move) {
-      switch (target.rename(step.source, step.dest)) {
+      auto outcome = target.rename(step.source, step.dest);
+      if (outcome == transfer_target::rename_outcome::taken) {
+        // Taken since the plan (another app, the server's other user): keep both, as Finder does.
+        const std::string parent = item.dest.substr(0, item.dest.size() - browse_path::leaf(item.dest).size());
+        const std::string again = io::unique_name(browse_path::leaf(step.source), [&](std::string_view candidate) {
+          return target.exists(parent + std::string(candidate));
+        });
+        if (!again.empty()) {
+          item.dest = parent + again;
+          outcome = target.rename(step.source, item.dest);
+        }
+      }
+      switch (outcome) {
         case transfer_target::rename_outcome::done: renamed = true; break;
         case transfer_target::rename_outcome::other_volume: break;
         case transfer_target::rename_outcome::taken:
@@ -191,8 +274,16 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
       // Across volumes a move's copy is read back before the original goes.
       item.status = copy_tree(step.source, step.dest, verb == drop_verb::move, target, progress, cancel);
       if (item.status != mv::status::ok) {
-        (void)target.remove(step.dest);  // what we wrote under a name that was free
+        // What we wrote under a name that was free; a remote one never got a name at all
+        // (the service keeps an unfinished upload aside, to resume).
+        if (!is_remote_path(step.dest)) (void)target.remove(step.dest);
         if (item.status == mv::status::cancelled) out.cancelled = true;
+      } else if (verb == drop_verb::move && is_remote_path(step.source)) {
+        // Down from the server, read back right here: only now it goes to the server's trash.
+        if (target.remove(step.source) != mv::status::ok) {
+          (void)target.remove(step.dest);  // never two
+          item.status = mv::status::io;
+        }
       } else if (verb == drop_verb::move) {
         const bool folder = is_directory(step.source);
         std::error_code ec;

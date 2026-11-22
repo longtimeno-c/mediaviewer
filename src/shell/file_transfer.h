@@ -22,11 +22,13 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "core/result.h"
 #include "core/status.h"
 #include "shell/file_drop.h"
 
@@ -52,6 +54,33 @@ class transfer_target {
 };
 
 [[nodiscard]] std::unique_ptr<transfer_target> local_target();
+
+// Another computer's folders (docs/plans/desktop-client.md §6): what a host's remote library
+// does, each call blocking (the worker). Keys are `remote:` keys; a folder key ends in '/'.
+// A null function is a refusal (a host without the library).
+struct remote_ops {
+  std::function<result<bool>(const std::string& key)> exists;
+  // A new folder `name` in `parent_key`; its key. An existing one is a refusal.
+  std::function<result<std::string>(const std::string& parent_key, const std::string& name)> make_folder;
+  // A local file up into `parent_key` as `name` (the service never replaces: " (2)").
+  std::function<result<std::string>(const std::string& parent_key, const std::string& local_path,
+                                    const std::string& name, const std::atomic<bool>* cancel,
+                                    std::atomic<std::uint64_t>* done_bytes)> add;
+  // The service's own move or rename, within one server. `taken`: the name is someone else's.
+  std::function<result<std::string>(const std::string& key, const std::string& to_parent_key, const std::string& name,
+                                    bool& taken)> move;
+  // Into the folder's trash on the server.
+  std::function<result<std::string>(const std::string& key)> remove;
+  // The original here, whole (the host's cache): its local path.
+  std::function<result<std::string>(const std::string& key, const std::atomic<bool>* cancel,
+                                    std::atomic<std::uint64_t>* done_bytes)> fetch;
+};
+
+// `remote:` paths through `ops`, local paths as local_target(). A file goes up by `add`, down
+// by `fetch` then a verified local copy (so a move off the server removes it only once the copy
+// here reads back right), and across one server by its `move`.
+[[nodiscard]] std::unique_ptr<transfer_target> mixed_target(remote_ops ops);
+[[nodiscard]] bool is_remote_path(std::string_view path) noexcept;
 
 // Live counters a job's row reads while it runs (any thread).
 struct transfer_progress {
