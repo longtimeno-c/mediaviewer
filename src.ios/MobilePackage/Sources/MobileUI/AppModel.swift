@@ -493,15 +493,85 @@ public final class AppModel {
   }
 }
 
+/// What one folder's page lists. Kept per folder, so a folder opened before is laid out at once.
+struct FolderListing {
+  var subfolders: [Folder]
+  var others: [OtherFile]
+  var sections: [GridSection]
+  var entries: GridSource
+}
+
+/// One page of the library's navigation stack: All media at the bottom, a page per folder above
+/// it. Each keeps what it shows while it is on the stack, so going back finds it as it was, scroll
+/// position and all.
+@MainActor
+@Observable
+public final class FolderPage: Identifiable, Hashable {
+  /// The folders from the top of the library down to this one; empty is All media.
+  public let path: [Folder]
+  /// The folders inside this one.
+  public internal(set) var subfolders: [Folder] = []
+  /// The files in this one that are not photos or clips (file mode only), by name.
+  public internal(set) var others: [OtherFile] = []
+  public internal(set) var sections: [GridSection] = []
+  public internal(set) var entries = GridSource.empty
+  /// Nothing listed yet.
+  public internal(set) var isLoading = true
+  /// Why the latest load failed. Whatever was on screen stays there.
+  public internal(set) var failure: String?
+  @ObservationIgnored var loading: Task<Void, Never>?
+
+  init(path: [Folder]) { self.path = path }
+
+  public nonisolated static func == (a: FolderPage, b: FolderPage) -> Bool { a === b }
+  public nonisolated func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+
+  public var folder: Folder? { path.last }
+  public var scope: LibraryScope { path.last.map(LibraryScope.folder) ?? .everything }
+  public var title: String { path.last?.name ?? "All media" }
+  /// The grid's name: a viewer closes onto a tile in the page that opened it, never one under it.
+  public var context: String { path.last.map { "library:\($0.id)" } ?? "library" }
+
+  /// Only what changed is replaced, so a listing asked for again redraws nothing that stayed.
+  func apply(_ listing: FolderListing) {
+    if subfolders != listing.subfolders { subfolders = listing.subfolders }
+    if others != listing.others { others = listing.others }
+    if sections != listing.sections { sections = listing.sections }
+    entries = listing.entries
+    failure = nil
+    isLoading = false
+  }
+
+  func clear() {
+    loading?.cancel()
+    subfolders = []
+    others = []
+    sections = []
+    entries = .empty
+    failure = nil
+    isLoading = true
+  }
+}
+
 @MainActor
 @Observable
 public final class LibraryModel {
-  /// The folders from the top of the library down to the one on screen; empty is All media.
-  public private(set) var trail: [Folder] = []
-  /// The folders inside the one on screen.
-  public private(set) var subfolders: [Folder] = []
-  /// The files in the one on screen that are not photos or clips (file mode only), by name.
-  public private(set) var others: [OtherFile] = []
+  /// All media: the bottom of the stack, always there.
+  public let root = FolderPage(path: [])
+  /// The folders opened above All media, in order: the navigation stack's path. The system's back
+  /// (the button, its menu of earlier folders, the edge swipe) shortens it.
+  public var stack: [FolderPage] = [] {
+    didSet {
+      // A page taken off stops loading; a file being fetched for the page left stops too.
+      for page in oldValue where !stack.contains(page) { page.loading?.cancel() }
+      if oldValue.last != stack.last {
+        // Gone back while a tap waited for its listing: that folder is no longer wanted.
+        if pending != nil { cancelEntering() }
+        cancelOpening()
+        openFailure = nil
+      }
+    }
+  }
   /// The other file being fetched for the phone's preview. Changes only when one starts or ends,
   /// so a list of files is not redrawn on every progress step.
   public private(set) var openingID: String?
@@ -513,47 +583,80 @@ public final class LibraryModel {
   /// Why the last other file could not be opened, on its row.
   public private(set) var openFailure: (id: String, message: String)?
   @ObservationIgnored private var openTask: Task<Void, Never>?
-  public private(set) var sections: [GridSection] = []
-  public private(set) var entries = GridSource.empty
-  public private(set) var isLoading = true
-  /// Why the latest load failed. Whatever was on screen stays there.
-  public private(set) var failure: String?
 
   private let store: LibraryStore
-  private var loading: Task<Void, Never>?
   /// The top level's ask for the server's offline folders, after its own folders are on screen.
   private var offlineCheck: Task<Void, Never>?
-  /// Where the newest load is going. `trail` follows only once it has arrived.
-  private var requested: [Folder] = []
   /// Folder tiles' pictures by folder id, so a folder gone back to shows its tiles at once. Not
   /// observed: a tile asks for its own and keeps it.
   @ObservationIgnored private var previews: [String: FolderPreview] = [:]
   static let previewCount = 3
+  /// What each folder listed last, by its path, so a folder opened again slides in laid out. The
+  /// newest few only.
+  @ObservationIgnored private var listings: [String: FolderListing] = [:]
+  @ObservationIgnored private var listingOrder: [String] = []
+  static let listingsKept = 24
+  /// How long a tapped folder waits for its listing before it slides in anyway: a listing from the
+  /// phone's catalogue or a server nearby comes first, so the page slides in laid out, never
+  /// filling in under the transition; a slow one slides in at once after, with its skeleton.
+  var pushWait = Duration.milliseconds(150)
+  /// The tap waiting for its listing, and the page it will push.
+  @ObservationIgnored var entering: Task<Void, Never>?
+  @ObservationIgnored private var pending: FolderPage?
 
   init(store: LibraryStore) { self.store = store }
 
-  public var scope: LibraryScope { trail.last.map(LibraryScope.folder) ?? .everything }
+  /// The page on screen.
+  public var current: FolderPage { stack.last ?? root }
+  /// The folders from the top of the library down to the one on screen; empty is All media.
+  public var trail: [Folder] { current.path }
+  public var scope: LibraryScope { current.scope }
 
   public func enter(_ folder: Folder) {
+    let from = current
     // A folder whose drive is not connected has nothing to show: say so, stay here. The notice's
     // Try again reloads this level, which asks the server again.
     guard !folder.offline else {
-      failure = FailureCopy.driveNotConnected(folder.name)
+      from.failure = FailureCopy.driveNotConnected(folder.name)
       return
     }
-    show(trail + [folder])
+    cancelEntering()
+    let page = FolderPage(path: from.path + [folder])
+    if let known = listings[Self.key(page.path)] {
+      page.apply(known)
+      stack.append(page)
+      // A catalogue's folders change only with a new catalogue, which forgets every listing; a
+      // folder listed live from the server may have changed since.
+      if folder.itemCount < 0 { load(page) }
+      return
+    }
+    pending = page
+    let listed = load(page)
+    let wait = pushWait
+    entering = Task {
+      await Self.first(of: listed, orAfter: wait)
+      guard !Task.isCancelled, pending === page, current === from else { return }
+      pending = nil
+      stack.append(page)
+    }
   }
-
-  public func goBack(to index: Int) { show(Array(trail.prefix(index + 1))) }
-
-  public func goToAllMedia() { show([]) }
 
   /// Jumps straight to a place in the tree.
   public func show(_ path: [Folder]) {
-    requested = path
-    cancelOpening()
-    openFailure = nil
-    Task { await load() }
+    cancelEntering()
+    stack = path.indices.map { end in
+      let page = FolderPage(path: Array(path.prefix(end + 1)))
+      if let known = listings[Self.key(page.path)] { page.apply(known) }
+      load(page)
+      return page
+    }
+  }
+
+  private func cancelEntering() {
+    entering?.cancel()
+    entering = nil
+    pending?.loading?.cancel()
+    pending = nil
   }
 
   /// A folder tile's preview, known or asked for (LibraryStore.preview). Cancellable: a tile
@@ -607,61 +710,106 @@ public final class LibraryModel {
     openingID = nil
   }
 
-  func forgetPreviews() { previews = [:] }
+  /// A new catalogue: its items are other ids, and its folders may hold other things.
+  func forgetPreviews() {
+    previews = [:]
+    listings = [:]
+    listingOrder = []
+    // A tap waiting for its listing lists again from the new catalogue: its old listing is never kept.
+    if let pending { load(pending) }
+  }
 
   func reset() {
-    previews = [:]
-    loading?.cancel()
+    forgetPreviews()
+    cancelEntering()
     offlineCheck?.cancel()
-    requested = []
-    trail = []
-    subfolders = []
-    others = []
+    stack = []
+    root.clear()
     cancelOpening()
     openFailure = nil
     previewing = nil
-    sections = []
-    entries = .empty
-    failure = nil
-    isLoading = true
   }
 
-  /// Only the newest load counts; switching folders drops the one before.
+  /// Lists every page on the stack again (a new catalogue): what is on screen stays until each
+  /// page's new listing is ready.
   public func load() async {
-    loading?.cancel()
-    let task = Task { await perform() }
-    loading = task
-    await task.value
+    let tasks = ([root] + stack).map { load($0) }
+    for task in tasks { await task.value }
   }
 
-  private func perform() async {
-    // What is on screen (photos, folders or files) stays until the next folder arrives.
-    isLoading = sections.isEmpty && subfolders.isEmpty && others.isEmpty
-    let path = requested
-    let scope = path.last.map(LibraryScope.folder) ?? .everything
+  /// Lists one page again (its Try again); only its newest load counts.
+  @discardableResult
+  func load(_ page: FolderPage) -> Task<Void, Never> {
+    page.loading?.cancel()
+    let task = Task { await perform(page) }
+    page.loading = task
+    return task
+  }
+
+  private func perform(_ page: FolderPage) async {
+    let path = page.path
     let parent = path.last
     do {
-      async let found = store.list(in: scope)
+      async let found = store.list(in: page.scope)
       async let inside = parent?.hasSubfolders == false ? [] : store.folders(under: parent)
       async let loose = Self.otherFiles(store, in: parent)
       let list = try await found
       let folders = try await inside
       let otherFiles = try await loose
       let built = await Task.detached(priority: .userInitiated) { Self.grid(of: list) }.value
-      guard !Task.isCancelled, path == requested else { return }
-      trail = path
+      guard !Task.isCancelled else { return }
       // The top level keeps the offline folders it showed until the server answers again (no flicker).
-      subfolders = path.isEmpty ? Self.merging(subfolders.filter(\.offline), into: folders) : folders
-      sections = built.sections
-      entries = built.entries
-      if others != otherFiles { others = otherFiles }
-      failure = nil
+      let subfolders = path.isEmpty ? Self.merging(page.subfolders.filter(\.offline), into: folders) : folders
+      let listing = FolderListing(subfolders: subfolders, others: otherFiles, sections: built.sections, entries: built.entries)
+      remember(listing, for: path)
+      page.apply(listing)
       if path.isEmpty { addOfflineFolders(over: folders) }
     } catch {
       guard !Task.isCancelled, !(error is CancellationError) else { return }
-      failure = FailureCopy.libraryFailed
+      page.failure = FailureCopy.libraryFailed
     }
-    isLoading = false
+    page.isLoading = false
+  }
+
+  private func remember(_ listing: FolderListing, for path: [Folder]) {
+    let key = Self.key(path)
+    listings[key] = listing
+    listingOrder.removeAll { $0 == key }
+    listingOrder.append(key)
+    while listingOrder.count > Self.listingsKept { listings[listingOrder.removeFirst()] = nil }
+  }
+
+  private static func key(_ path: [Folder]) -> String { path.last?.id ?? "" }
+
+  /// Returns when `task` has ended or `wait` has passed, whichever comes first, or at once when the
+  /// caller is cancelled.
+  static func first(of task: Task<Void, Never>, orAfter wait: Duration) async {
+    let gate = Gate()
+    await withTaskCancellationHandler {
+      await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+        gate.waiting = done
+        Task { @MainActor in
+          await task.value
+          gate.open()
+        }
+        gate.timer = Task { @MainActor in
+          try? await Task.sleep(for: wait)
+          gate.open()
+        }
+      }
+    } onCancel: {
+      Task { @MainActor in gate.open() }
+    }
+  }
+
+  private final class Gate: @unchecked Sendable {
+    var waiting: CheckedContinuation<Void, Never>?
+    var timer: Task<Void, Never>?
+    func open() {
+      waiting?.resume()
+      waiting = nil
+      timer?.cancel()
+    }
   }
 
   nonisolated private static func otherFiles(_ store: LibraryStore, in folder: Folder?) async throws -> [OtherFile] {
@@ -673,12 +821,12 @@ public final class LibraryModel {
   /// own folders never wait for the server to answer.
   private func addOfflineFolders(over own: [Folder]) {
     offlineCheck?.cancel()
-    offlineCheck = Task { [store] in
+    offlineCheck = Task { [store, root] in
       let offline = await store.offlineFolders()
-      guard !Task.isCancelled, requested.isEmpty, trail.isEmpty else { return }
+      guard !Task.isCancelled else { return }
       // The answer replaces the offline folders shown before: a drive plugged back in drops out.
       let merged = Self.merging(offline, into: own)
-      if merged != subfolders { subfolders = merged }
+      if merged != root.subfolders { root.subfolders = merged }
     }
   }
 

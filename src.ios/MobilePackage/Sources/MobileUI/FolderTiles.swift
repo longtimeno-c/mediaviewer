@@ -49,6 +49,8 @@ struct FolderShelf: View {
 struct FolderTile: View {
   let folder: Folder
   @Environment(AppModel.self) private var model
+  @Environment(\.folderNamespace) private var namespace
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Asked for once the tile is on screen; a folder already seen paints its preview at once.
   @State private var asked: FolderPreview?
 
@@ -59,18 +61,18 @@ struct FolderTile: View {
         FolderCover(items: preview?.items ?? [], known: preview != nil, documents: preview?.others ?? 0,
                     offline: folder.offline, images: model.services.images)
           .aspectRatio(4 / 3, contentMode: .fit)
+          .modifier(TileSource(id: folder.id, namespace: namespace))
         VStack(alignment: .leading, spacing: 1) {
           Text(folder.name)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(folder.offline ? Theme.body : Theme.title)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
-          if let line = detail(preview) {
-            Text(line)
-              .font(.caption.monospacedDigit())
-              .foregroundStyle(Theme.body)
-              .lineLimit(1)
-          }
+          // Its line is held while a folder's counts are coming, so the tile never grows.
+          Text(detail(preview) ?? " ")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Theme.body)
+            .lineLimit(1)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -81,10 +83,13 @@ struct FolderTile: View {
     .accessibilityLabel([folder.name, detail(preview)].compactMap { $0 }.joined(separator: ", "))
     .accessibilityAddTraits(.isButton)
     .accessibilityHint("Opens the folder")
+    // Never spoken: lets a test name which folder a tile is.
+    .accessibilityIdentifier("folder:\(folder.id)")
     .task(id: folder.id) {
       guard asked == nil, model.library.knownPreview(of: folder) == nil, !folder.offline else { return }
       let got = await model.library.preview(of: folder)
-      if !Task.isCancelled { asked = got }
+      // Its pictures fade in, in the space already held for them.
+      if !Task.isCancelled { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { asked = got } }
     }
   }
 
@@ -106,6 +111,20 @@ struct FolderTile: View {
 
   private static func count(_ n: Int, _ noun: String) -> String {
     n == 1 ? "1 \(noun)" : "\(n.formatted()) \(noun)s"
+  }
+}
+
+/// The folder's page grows out of its picture (iOS 18's zoom). Not with Reduce Motion.
+private struct TileSource: ViewModifier {
+  let id: String
+  let namespace: Namespace.ID?
+
+  func body(content: Content) -> some View {
+    if let namespace {
+      content.matchedTransitionSource(id: id, in: namespace)
+    } else {
+      content
+    }
   }
 }
 
@@ -240,6 +259,7 @@ private struct PaperSheet: View {
 private struct CoverPicture: View {
   let item: MediaItem
   let images: ImageLadder
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var loaded: (id: MediaID, image: UIImage)?
   /// No picture could be had (a format this phone cannot draw): the tile's glyph instead.
   @State private var missing: MediaID?
@@ -250,6 +270,7 @@ private struct CoverPicture: View {
       .overlay {
         if let shown {
           Image(uiImage: shown).resizable().interpolation(.medium).scaledToFill()
+            .transition(.opacity)
         } else if missing == item.id {
           Image(systemName: item.kind == .clip ? "film" : "photo").foregroundStyle(Theme.body.opacity(0.6))
         }
@@ -258,7 +279,9 @@ private struct CoverPicture: View {
       .task(id: item.id) {
         guard images.cachedImage(for: item.id) == nil else { return }
         if let image = await images.thumbnail(for: item) {
-          if !Task.isCancelled { loaded = (item.id, image) }
+          if !Task.isCancelled {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { loaded = (item.id, image) }
+          }
         } else if !Task.isCancelled {
           missing = item.id
         }

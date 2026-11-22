@@ -472,7 +472,11 @@ segmenter in `MobileLinkSupport/MpegTs.swift`); iOS opens none of them as files.
 TS, LPCM sound, MKV, WebM, AVI and MPG play when the server converts them (`docs/plans/phone-clip-convert.md`:
 the service lists `convert`, and `MobileLink/ConvertedClips.swift` serves its 4 s segments through the same
 loopback server); a server without it leaves them "can't play here", with the download. Folders show as
-tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`).
+tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`); each
+folder is a page on a `NavigationStack` (`LibraryModel.stack` of `FolderPage`s, `LibraryScreens.swift`).
+Its tests: `MobileUITests/FolderNavigationTests` (the model) and `UITests/FolderNavigationTests` (the
+fixtures app several folders deep and back), with the hitch figures in
+`ScrollHitchTests/testFolderNavigationHitches`. The fixture state `library.slowLink` lists each folder a second late, to see a slow connection.
 
 The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
 `DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git

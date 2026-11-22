@@ -33,6 +33,8 @@ final class FixtureWorld: @unchecked Sendable {
   var identifyFailures = 0
   var personFailures = 0
   var foldersFail = false
+  /// How long a folder takes to list, as over a slow connection.
+  var folderListDelay: Duration?
   /// Save to Photos is refused, as when the person said no to adding to Photos.
   var photosRefused = false
   var searchFails = false
@@ -201,6 +203,7 @@ struct FixtureStore: LibraryStore {
       return FixtureLibrary.everything
     case .folder(let folder):
       if world.foldersFail { throw MediaFailure.synologyUnreachable }
+      if let delay = world.folderListDelay { try await Task.sleep(for: delay) }
       return ArrayMediaList(FixtureLibrary.items(under: folder.id))
     case .person(let person):
       if world.personFailures > 0 {

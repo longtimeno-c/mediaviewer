@@ -58,7 +58,7 @@ final class SampleLibraryModelTests: XCTestCase {
     let model = LibraryModel(store: OfflineStore())
     model.enter(Folder(id: "t", name: "Travel drive", itemCount: -1, hasSubfolders: false, offline: true))
     XCTAssertTrue(model.trail.isEmpty)
-    XCTAssertEqual(model.failure, FailureCopy.driveNotConnected("Travel drive"))
+    XCTAssertEqual(model.current.failure, FailureCopy.driveNotConnected("Travel drive"))
   }
 
   func testAnIdentityFromAComputerIsNotTheSample() {

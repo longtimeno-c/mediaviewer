@@ -733,7 +733,7 @@ over: native PhotoKit, and streaming rather than staging originals.
 | Welcome | One action: scan the code from MediaViewer on your Mac or Windows PC | No library yet |
 | Connect | Nothing to type: the scan pairs the phone with the Mac and the Synology, then tests the outside route over mobile data | Code expired; code not readable; Synology not reachable (names which address failed); reachable only at home |
 | First copy | One progress line | "Copying library · 48 of 161 MB · about 25 seconds left" |
-| Library | Date-ordered grid, folder switch | Route chip only when it matters |
+| Library | Date-ordered grid, folders as pages | Route chip only when it matters |
 | Search | Field, recent searches, then results | Typing, results, nothing found |
 | Viewer | One photo, pinch and swipe | Refining; original unreachable |
 | Clip | Player and moment ticks | Too big to stream |
@@ -799,6 +799,10 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 - **Dark by default**, as the viewer is. Depth from a lighter surface, not shadow.
 - **Touch feedback starts on the input.** Only marketing motion is slow.
 - **A photo opens as one object:** the thumbnail grows into the viewer and sharpens in place.
+- **A folder opens as a page** of the system's navigation stack: it grows out of its tile (a plain
+  push with Reduce Motion), already laid out (the tap waits up to 150 ms for the listing; a folder
+  opened before is shown from what it held), and the edge swipe or the back button's menu goes back
+  to pages that kept their place (2026-11-22).
 
 ### 11.3 Failure copy, written now
 

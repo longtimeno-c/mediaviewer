@@ -51,6 +51,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryFailed = "library.failed"
   case libraryUnreachableThenStale = "library.unreachableThenStale"
   case libraryFolderEmpty = "library.folderEmpty"
+  /// A slow connection: a folder takes a second to list and its pictures come slowly.
+  case librarySlowLink = "library.slowLink"
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
   case backupChoose = "backup.chooseFolder"
@@ -189,6 +191,9 @@ final class FixtureRun {
       world.copyContinuesAfterLeaving = false
     case .viewerRefiningUnknown: world.imageMode = .slowUnknownSize
     case .viewerSlowNetwork: world.imageMode = .slowNetwork
+    case .librarySlowLink:
+      world.imageMode = .slowNetwork
+      world.folderListDelay = .seconds(1)
     case .viewerServiceTooOld: world.imageMode = .fails(.serviceTooOld)
     case .viewerPublisherChanged: world.imageMode = .fails(.publisherChanged)
     case .searchWarming: world.searchMode = .modelLoading
@@ -346,7 +351,7 @@ final class FixtureRun {
     model.tab = .library
     Task {
       await waitForLibrary()
-      let items = model.library.entries
+      let items = model.library.current.entries
       guard let index = items.indices.first(where: {
         items[$0].item.kind == kind && (!shapeless || items[$0].item.aspect < 1)
       }) else { return }
@@ -361,13 +366,13 @@ final class FixtureRun {
         let item = items[index].item
         entries = items.replacing(index, with: GridEntry(item: item, moment: FixtureLibrary.moments(for: item)[1], position: index))
       }
-      model.open(ViewerRequest(context: "library", entries: entries, startIndex: index, showDetails: details, playClip: play),
+      model.open(ViewerRequest(context: model.library.current.context, entries: entries, startIndex: index, showDetails: details, playClip: play),
                  reduceMotion: UIAccessibility.isReduceMotionEnabled)
     }
   }
 
   private func waitForLibrary() async {
-    while model.library.entries.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
+    while model.library.current.entries.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
     try? await Task.sleep(for: .milliseconds(250))
   }
 }
