@@ -1438,7 +1438,7 @@ struct fake_os {
   std::mutex m;
   std::string url = "http://wpad.example/proxy.pac";  // the person's own, before
   int sets = 0, restores = 0;
-  bool deny = false;
+  bool deny = false, deny_restore = false;
   std::string now() {
     std::lock_guard lock(m);
     return url;
@@ -1460,6 +1460,7 @@ struct fake_port final : sysproxy::port {
   bool restore(const std::string& saved, const std::string& pac) override {
     std::lock_guard lock(os->m);
     ++os->restores;
+    if (os->deny_restore) return false;  // the person cancelled the dialog
     if (os->url == pac) os->url = saved;  // only if still ours
     return true;
   }
@@ -1651,6 +1652,8 @@ TEST_CASE("vpn tunnel: while the OS asks to allow the system proxy, the page, th
   // The dialog is up: the proxy listens, the page says what it waits for, the menu-bar item is there.
   REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
   REQUIRE(eventually([&] { return host.settings().find("Waiting for you to allow the proxy change") != std::string::npos; }));
+  CHECK(host.settings().find("asks for your password to point this computer's proxy setting at the Tunnel") !=
+        std::string::npos);
   REQUIRE(eventually([&] { return host.kept(); }));
   CHECK(curl_connect(static_cast<std::uint16_t>(std::stoi(eng.snapshot().tunnel_address.substr(10))),
                      "127.0.0.1:" + std::to_string(echo.port())));
@@ -1668,6 +1671,39 @@ TEST_CASE("vpn tunnel: while the OS asks to allow the system proxy, the page, th
   REQUIRE(eventually([&] { return host.settings().find("Waiting for you to allow") == std::string::npos; }));
 }
 
+TEST_CASE("vpn tunnel: a proxy setting the person would not let go back is said plainly, with how to undo it",
+          "[vpn]") {
+  echo_server echo;
+  auto server = relay::server::start(forward_options(echo.port()));
+  REQUIRE(server);
+  auto os = std::make_shared<fake_os>();
+  vpn_test::fake_host host;
+  vpn::service::options o;
+  o.make_sysproxy = [os] { return std::make_unique<fake_port>(os); };
+  vpn::service eng(host, o);
+  // Before: what Use for all apps does, and that it may ask for a password.
+  eng.on_event("server", 3, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  CHECK(vpn::build_settings_tree(eng.snapshot()).find("\"id\":\"tunnel\"") != std::string::npos);
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().system; }));
+  {
+    std::lock_guard lock(os->m);
+    os->deny_restore = true;
+  }
+  eng.on_event("tunnel", 2, "false");
+  REQUIRE(eventually([&] { return eng.snapshot().system_note.find("still points at the Tunnel") != std::string::npos; }));
+  const auto tree = vpn::build_settings_tree(eng.snapshot());
+  CHECK(tree.find("still points at the Tunnel") != std::string::npos);  // shown with the Tunnel off
+  CHECK(tree.find("turn off the automatic proxy") != std::string::npos);
+  // Allowed next time: put back.
+  {
+    std::lock_guard lock(os->m);
+    os->deny_restore = false;
+  }
+  eng.on_event("all_apps", 2, "false");
+  REQUIRE(eventually([&] { return os->now() == "http://wpad.example/proxy.pac"; }));
+}
+
 TEST_CASE("vpn: Your VPN server is a secure field; the page names the address, never the key", "[vpn]") {
   vpn_test::fake_host host;
   vpn::service::options o;
@@ -1675,6 +1711,7 @@ TEST_CASE("vpn: Your VPN server is a secure field; the page names the address, n
   vpn::service eng(host, o);
   auto tree = vpn::build_settings_tree(eng.snapshot());
   CHECK(tree.find(R"("id":"server","label":"Your VPN server","value":"","secure":true)") != std::string::npos);
+  CHECK(tree.find(R"("id":"server_done","label":"Set")") != std::string::npos);  // a button, not only Return
   const std::string field = "relay.example:47614#" + std::string(kKey);
   // Typing alone changes nothing; Return sets it.
   eng.on_event("server", 2, "\"" + field + "\"");

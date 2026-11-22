@@ -537,12 +537,26 @@ void service::apply_system_proxy(std::uint16_t port, bool want) {
   } else {
     // What is set and no longer wanted (off, another port, a crash's leftover) goes back first.
     if (proxy_record_ && proxy_record_->pac_url != url) {
-      if (sysproxy_->restore(proxy_record_->saved, proxy_record_->pac_url)) {
+      {
+        std::lock_guard lock(m_);
+        v_.system_asking = "restore";
+      }
+      if (!stopping_.load()) post();
+      const bool back = sysproxy_->restore(proxy_record_->saved, proxy_record_->pac_url);
+      {
+        std::lock_guard lock(m_);
+        v_.system_asking.clear();
+      }
+      if (back) {
         proxy_record_.reset();
         write_proxy_record();
         host_.log(2, "vpn: system proxy restored");
       } else {
-        note = "This computer's proxy setting could not be put back yet: it is tried again next time.";
+        // Declined (or it failed): said plainly, with how to undo it by hand.
+        note = "This computer's proxy setting still points at the Tunnel: putting it back was not allowed. Apps "
+               "that follow it go direct while the Tunnel is off. It is put back the next time you allow it (turn "
+               "Use for all apps off, or start MediaViewer again); or turn off the automatic proxy in this "
+               "computer's network settings.";
         host_.log(1, "vpn: system proxy not restored");
       }
     }
@@ -553,13 +567,13 @@ void service::apply_system_proxy(std::uint16_t port, bool want) {
       // The OS may ask the person now (a Mac's administrator dialog): say so while it does.
       {
         std::lock_guard lock(m_);
-        v_.system_asking = true;
+        v_.system_asking = "set";
       }
       post();
       auto saved = sysproxy_->set(url);
       {
         std::lock_guard lock(m_);
-        v_.system_asking = false;
+        v_.system_asking.clear();
       }
       if (saved) {
         proxy_record_ = sysproxy::record{url, *saved};

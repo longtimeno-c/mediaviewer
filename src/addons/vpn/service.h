@@ -50,7 +50,9 @@ struct view {
   bool tunnel = false;           // the switch (node "tunnel", also the menu row)
   std::string tunnel_address;    // "127.0.0.1:<port>" while the proxy listens, else ""
   std::string tunnel_note;       // why it does not run, or the server's last problem
-  bool system_asking = false;    // the OS is asking the person to allow the system proxy change
+  // The OS is asking the person to allow a system proxy change now: "set"
+  // (pointing it at the Tunnel), "restore" (putting it back), "" for neither.
+  std::string system_asking;
   std::uint32_t tunnel_open = 0;     // connections through it now
   std::uint64_t tunnel_streams = 0;  // made this run (tests)
   bool all_apps = true;          // Use for all apps

@@ -84,11 +84,30 @@ void path_node(writer& w, const view& v, const std::string& label, const char* t
   w.key("caption").string(caption).end_object();
 }
 
+// While the OS asks (a Mac's administrator dialog): why, and what declining does.
+void system_asking_note(writer& w, const view& v) {
+  text(w, "system_note",
+       v.system_asking == "restore"
+           ? "Waiting for you to allow the proxy change\xE2\x80\xA6 MediaViewer asks for your password to put this "
+             "computer's proxy setting back as it was. If you cancel, it stays pointed at the Tunnel, which is off, "
+             "and apps that follow it go direct."
+           : "Waiting for you to allow the proxy change\xE2\x80\xA6 MediaViewer asks for your password to point this "
+             "computer's proxy setting at the Tunnel. If you cancel, the Tunnel still runs: set the address below in "
+             "the apps you want to use it.",
+       "caption");
+}
+
 // The switch (node "tunnel": the menu row has the same id), and while it is
 // on, the path, the proxy's address with Copy, and how to use it.
 void tunnel_controls(writer& w, const view& v) {
   toggle(w, "tunnel", tunnel_label(v), v.tunnel);
   if (!v.tunnel) {
+    // Putting the proxy setting back after the Tunnel went off.
+    if (!v.system_asking.empty()) {
+      system_asking_note(w, v);
+    } else if (!v.system_note.empty()) {
+      text(w, "system_note", v.system_note, "caption");
+    }
     text(w, "tunnel_note",
          v.server.empty() ? "For a network that blocks sites, or away from home: your traffic leaves through your own "
                             "server. Set your VPN server first."
@@ -132,10 +151,15 @@ void tunnel_controls(writer& w, const view& v) {
     }
   }
   toggle(w, "all_apps", "Use for all apps", v.all_apps);
-  if (v.all_apps && v.system_asking) {
-    text(w, "system_note", "Waiting for you to allow the proxy change\xE2\x80\xA6", "caption");
+  if (v.all_apps && !v.system_asking.empty()) {
+    system_asking_note(w, v);
   } else if (v.all_apps && !v.system_note.empty()) {
     text(w, "system_note", v.system_note, "caption");
+  } else if (v.all_apps && !v.system) {
+    text(w, "system_how",
+         "Points this computer's proxy setting at the Tunnel, so apps that follow it use it. Changing the setting "
+         "may ask for an administrator's password, now and when the Tunnel goes off.",
+         "caption");
   }
   if (v.tunnel_address.empty()) return;
   const std::string caption =
@@ -187,11 +211,9 @@ void connect_card(writer& w, const view& v) {
     w.begin_object().key("type").string("text_field").key("id").string("server");
     w.key("label").string("Your VPN server").key("value").string("").key("secure").boolean(true);
     w.key("placeholder").string("address:port#key, as your relay server prints it").end_object();
-    if (v.server_editing) {
-      stack(w, "server_buttons", 8, "horizontal");
-      button(w, "server_done", "Done", "plain");
-      end(w);
-    }
+    stack(w, "server_buttons", 8, "horizontal");
+    button(w, "server_done", v.server.empty() ? "Set" : "Done", "plain");
+    end(w);
   } else {
     stack(w, "server_buttons", 8, "horizontal");
     button(w, "server_change", "Change server\xE2\x80\xA6", "plain");

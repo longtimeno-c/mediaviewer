@@ -28,4 +28,12 @@ public class KeptSettingsPageTests
         string main = Code("src", "shell", "main.cpp");
         Assert.Matches(@"addon_screen_opened::settings_page\)\s*\{\s*leave_background\(app\);\s*set_settings_open\(app, true\);", main);
     }
+
+    // The VPN's route ends at the web: a globe, not "TW" in a circle (desktop UI test, 2026-11-22).
+    [Fact]
+    public void TheTunnelsFarEndIsAGlobe()
+    {
+        string screens = Code("src.managed", "MediaViewer.Chrome", "IslandHost.Screens.cs");
+        Assert.Contains("Device(via == \"tunnel\" ? \"\\uE774\" : null, JStr(n, \"to\")", screens);
+    }
 }
