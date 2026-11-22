@@ -91,6 +91,9 @@
 #include "shell/gesture.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
+#include "shell/browse_history.h"
+#include "shell/file_drop.h"
+#include "shell/file_transfer.h"
 #include "shell/commands.h"
 #include "shell/command_coverage.h"
 #include "shell/crash_reporter_mac.h"
@@ -818,7 +821,23 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)openCrumbAtIndex:(NSInteger)index;
 - (BOOL)canGoUp;
 - (BOOL)navigateUp;
+// docs/design/16 "Folder navigation": Back / Forward (browse_history.h).
+- (BOOL)canGoBack;
+- (BOOL)canGoForward;
+- (BOOL)navigateHistory:(int)direction;
+- (uint64_t)historyGeneration;
+// "Drag and drop into folders" (file_drop.h, file_transfer.h): what a drop on
+// `target` would do, doing it, and the keyboard's twins.
+- (mv::shell::drop_decision)dropDecision:(const std::vector<std::string>&)paths
+                                    into:(const std::string&)target
+                                   flags:(int32_t)flags;
+- (BOOL)dropPaths:(const std::vector<std::string>&)paths into:(const std::string&)target flags:(int32_t)flags;
+- (uint64_t)dropGeneration;
+- (BOOL)newFolderHere;
+- (BOOL)pasteFilesHere;
+- (mv::shell::transfer_board&)transfers;
 - (NSInteger)folderCursor;
+- (void)setFolderCursorFromChrome:(NSInteger)index;
 - (BOOL)folderCursorStep:(NSInteger)delta;
 // `?` cheat sheet (SwiftUI HelpView), an overlay like the gallery.
 - (BOOL)helpVisible;
@@ -1464,6 +1483,49 @@ extern "C" bool mv_chrome_can_go_up(void) {
 }
 extern "C" void mv_chrome_navigate_up(void) {
   if (g_chrome_app) [g_chrome_app navigateUp];
+}
+static std::int64_t MvTransferNowMs() { return static_cast<std::int64_t>(CACurrentMediaTime() * 1000.0); }
+extern "C" bool mv_chrome_can_go_back(void) { return g_chrome_app && [g_chrome_app canGoBack]; }
+extern "C" bool mv_chrome_can_go_forward(void) { return g_chrome_app && [g_chrome_app canGoForward]; }
+extern "C" void mv_chrome_go_back(void) {
+  if (g_chrome_app && ![g_chrome_app navigateHistory:-1]) NSBeep();
+}
+extern "C" void mv_chrome_go_forward(void) {
+  if (g_chrome_app && ![g_chrome_app navigateHistory:1]) NSBeep();
+}
+extern "C" uint64_t mv_chrome_history_generation(void) {
+  return g_chrome_app ? [g_chrome_app historyGeneration] : 0;
+}
+static std::vector<std::string> MvPathList(const char* const* paths, int32_t count) {
+  std::vector<std::string> out;
+  for (int32_t i = 0; paths && i < count; ++i) {
+    if (paths[i] && *paths[i]) out.emplace_back(paths[i]);
+  }
+  return out;
+}
+extern "C" int32_t mv_chrome_drop_verdict(const char* const* paths, int32_t count, const char* target, int32_t flags) {
+  if (!g_chrome_app || !target) return static_cast<int32_t>(mv::shell::drop_refusal::nothing) << 8;
+  const auto d = [g_chrome_app dropDecision:MvPathList(paths, count) into:target flags:flags];
+  return static_cast<int32_t>(d.verb) | (static_cast<int32_t>(d.refusal) << 8);
+}
+extern "C" bool mv_chrome_drop_files(const char* const* paths, int32_t count, const char* target, int32_t flags) {
+  return g_chrome_app && target && [g_chrome_app dropPaths:MvPathList(paths, count) into:target flags:flags];
+}
+extern "C" uint64_t mv_chrome_drop_generation(void) {
+  return g_chrome_app ? [g_chrome_app dropGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_drop_refusal_text(int32_t refusal, char* buf, int32_t size) {
+  const std::string_view words = mv::shell::drop_refusal_words(static_cast<mv::shell::drop_refusal>(refusal));
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(words.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, words.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(words.size());
+}
+// One click on a folder tile selects it (Finder); two open it.
+extern "C" void mv_chrome_set_folder_cursor(int32_t index) {
+  if (g_chrome_app) [g_chrome_app setFolderCursorFromChrome:index];
 }
 extern "C" int32_t mv_chrome_folder_cursor(void) {
   return g_chrome_app ? static_cast<int32_t>([g_chrome_app folderCursor]) : -1;
@@ -2413,21 +2475,42 @@ extern "C" bool mv_chrome_jobs_visible(void) {
   return g_chrome_app && [g_chrome_app jobsVisible];
 }
 extern "C" uint64_t mv_chrome_jobs_generation(void) {
-  return g_chrome_app ? [g_chrome_app jobsGeneration] : 0;
+  return g_chrome_app ? [g_chrome_app jobsGeneration] + [g_chrome_app transfers].generation() : 0;
 }
+// "Drag and drop into folders": a drop's or a paste's row (transfer_board),
+// beside the clip jobs; its ids carry kTransferJobBit.
+static bool MvTransferJob(uint64_t id) { return (id & mv::shell::kTransferJobBit) != 0; }
 extern "C" int32_t mv_chrome_jobs(uint64_t* ids, int32_t cap) {
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
-  if (!jobs) return 0;
+  std::vector<std::uint64_t> all;
   std::uint32_t count = 0;
-  if (jobs->jobs(nullptr, 0, &count) != mv::status::ok || count == 0) return 0;
-  std::vector<std::uint64_t> all(count);
-  if (jobs->jobs(all.data(), count, &count) != mv::status::ok) return 0;
-  all.resize(std::min<std::size_t>(count, all.size()));
+  if (jobs && jobs->jobs(nullptr, 0, &count) == mv::status::ok && count > 0) {
+    all.resize(count);
+    if (jobs->jobs(all.data(), count, &count) != mv::status::ok) count = 0;
+    all.resize(std::min<std::size_t>(count, all.size()));
+  }
+  if (g_chrome_app) {
+    const auto t = [g_chrome_app transfers].ids();
+    all.insert(all.end(), t.begin(), t.end());
+  }
+  if (all.empty()) return 0;
   std::reverse(all.begin(), all.end());  // newest first
   if (ids != nullptr && cap > 0) std::copy_n(all.begin(), std::min<std::size_t>(all.size(), cap), ids);
   return static_cast<int32_t>(all.size());
 }
 extern "C" bool mv_chrome_job_info(uint64_t id, mv_chrome_job* out) {
+  if (MvTransferJob(id)) {
+    mv::shell::transfer_job_view v;
+    if (!g_chrome_app || !out || ![g_chrome_app transfers].view(id, MvTransferNowMs(), v)) return false;
+    *out = mv_chrome_job{};
+    out->id = v.id;
+    out->state = v.state;
+    out->fraction = v.fraction;
+    out->elapsed_ms = v.elapsed_ms;
+    out->eta_ms = -1;
+    out->output_count = v.done_items;
+    return true;
+  }
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
   mv_clip_progress p{};
   if (!jobs || !out || jobs->progress(id, p) != mv::status::ok) return false;
@@ -2443,6 +2526,13 @@ extern "C" bool mv_chrome_job_info(uint64_t id, mv_chrome_job* out) {
   return true;
 }
 extern "C" int32_t mv_chrome_job_text(uint64_t id, int32_t which, char* buf, int32_t size) {
+  if (MvTransferJob(id)) {
+    mv::shell::transfer_job_view v;
+    if (!g_chrome_app || ![g_chrome_app transfers].view(id, MvTransferNowMs(), v)) return MvCopyText({}, buf, size);
+    if (which == 0) return MvCopyText(v.title, buf, size);
+    if (which == 1) return MvCopyText(std::string(mv::shell::browse_path::leaf(v.target)), buf, size);
+    return MvCopyText(v.target, buf, size);
+  }
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
   if (!jobs) return MvCopyText({}, buf, size);
   if (which == 2) {
@@ -2456,15 +2546,28 @@ extern "C" int32_t mv_chrome_job_text(uint64_t id, int32_t which, char* buf, int
   return MvCopyText(which == 0 ? p.title_utf8 : p.source_name_utf8, buf, size);
 }
 extern "C" void mv_chrome_job_cancel(uint64_t id) {
+  if (MvTransferJob(id)) {
+    if (g_chrome_app) [g_chrome_app transfers].cancel(id);
+    return;
+  }
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
   if (jobs) (void)jobs->cancel(id);
 }
 extern "C" void mv_chrome_job_retry(uint64_t id) {
+  if (MvTransferJob(id)) return;  // drop it again: the files say what is left
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
   std::uint64_t again = 0;
   if (jobs) (void)jobs->retry(id, again);
 }
 extern "C" void mv_chrome_job_reveal(uint64_t id) {
+  if (MvTransferJob(id)) {
+    mv::shell::transfer_job_view v;
+    if (!g_chrome_app || ![g_chrome_app transfers].view(id, MvTransferNowMs(), v) || v.target.empty()) return;
+    if (NSString* p = [NSString stringWithUTF8String:v.target.c_str()]) {
+      [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:p isDirectory:YES]];
+    }
+    return;
+  }
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
   if (!jobs) return;
   char path[4096];
@@ -2475,6 +2578,7 @@ extern "C" void mv_chrome_job_reveal(uint64_t id) {
   [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:p] ]];
 }
 extern "C" void mv_chrome_jobs_clear_finished(void) {
+  if (g_chrome_app) [g_chrome_app transfers].clear_finished();
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
   if (jobs) jobs->clear_finished();
 }
@@ -3640,6 +3744,18 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // Child folder we just left. Applied once, when that parent's listing arrives,
   // so Up and a breadcrumb click land on the tile that was open.
   std::string _revealChild;
+  // docs/design/16 "Folder navigation": Back / Forward, with the selection each
+  // folder had. `_historyMove` while a Back or Forward opens its folder (not
+  // itself a visit); `_historyReveal` is the tile it lands on.
+  mv::shell::browse_history _history;
+  BOOL _historyMove;
+  std::string _historyReveal;
+  uint64_t _historyGeneration;
+  // "Drag and drop into folders": drops, pastes and New Folder run on the pool;
+  // their rows sit in the Jobs pane beside clip jobs. `_dropGeneration` moves
+  // when one lands, so the chrome refreshes its folder tiles' counts.
+  mv::shell::transfer_board _transfers;
+  uint64_t _dropGeneration;
   // Sibling folders of the one open, so Cmd+Left / Cmd+Right can move sideways
   // without listing the parent on the UI thread. Filled from the listing we
   // left, then confirmed by a background read of the parent.
@@ -5509,6 +5625,11 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 
 // `dir` is a folder; `select_path` the file in it to show, or empty.
 - (void)openDir:(const std::string&)dir select:(const std::string&)select_path navigation:(BOOL)navigation {
+  // Back / Forward (browse_history.h): the place being left, read before
+  // anything below clears it. Every way to another folder lands here.
+  if (!_historyMove && !_listOpen && !_currentDir.empty() && dir != _currentDir) {
+    _history.visit([self herePlace], dir);
+  }
   // Moving up into a folder that contains the one we are leaving: remember
   // that child so its tile is selected when the parent listing arrives.
   if (navigation && !_currentDir.empty() && dir != _currentDir &&
@@ -5517,6 +5638,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   } else {
     _revealChild.clear();
   }
+  // Back / Forward land on the tile the keyboard was on when the folder was left.
+  if (_historyMove) _revealChild = _historyReveal;
   // The destination is one of the folders on screen: those paths are its
   // siblings, already in memory, so sideways navigation does not wait.
   bool seeded = false;
@@ -6808,9 +6931,6 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   ++_marksGeneration;
   [self updateMarkSnapshot];
 }
-- (BOOL)folderStrip {
-  return !_subdirs.empty() && !_items.empty();
-}
 // File search (2026-09-28): whether its name filter decides what the
 // gallery's keys move over. Only while the grid is up and only for the listing
 // it was made from (a relist waits for Swift's next push, ≤ 150 ms).
@@ -6857,22 +6977,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     _folderCursor = -1;
     if (folders > 0 && count == 0) fpos = 0;
   }
-  // Mixed folder: the tiles are one horizontal row above the photos, not a
-  // block in the same grid. Down leaves that row for the first photo row.
-  if ([self folderStrip]) {
-    if (fpos >= 0) {
-      if (rows < 0 || count == 0) return;
-      const NSInteger col = std::min(fpos, cols - 1);
-      _folderCursor = -1;
-      [self selectIndex:[self galleryItemAt:std::min(col, count - 1)]];
-      return;
-    }
-    const NSInteger cur = std::max<NSInteger>(0, [self galleryItemPosition]);
-    if (rows < 0 && cur < cols) {
-      if (folders > 0) _folderCursor = [self galleryFolderAt:std::min(cur, folders - 1)];
-      return;
-    }
-  }
+  // docs/design/16 "Folder navigation": the tiles are a block of rows in the
+  // same grid, ahead of the photos (Finder's folders first), in every folder.
   // No images to move over (a folder of folders): the tiles are all there is.
   if (count == 0) {
     if (folders == 0) return;
@@ -7000,6 +7106,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 
 - (NSInteger)folderCursor {
   return _folderCursor;
+}
+- (void)setFolderCursorFromChrome:(NSInteger)index {
+  if (index < -1 || index >= static_cast<NSInteger>(_subdirs.size())) return;
+  [self clearGalleryRange];
+  _folderCursor = index;
+  [self publish];
 }
 
 - (NSInteger)subfolderCount {
@@ -7246,6 +7358,220 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
   if (parent.empty()) return NO;
   return [self openPath:parent.c_str() navigation:YES];
 }
+
+// The folder on screen and what is selected in it, for Back / Forward. A
+// result list is no place (its items live in other folders).
+- (mv::shell::browse_place)herePlace {
+  mv::shell::browse_place p;
+  if (_listOpen) return p;
+  p.dir = _currentDir;
+  if (!_items.empty() && _index.current() < _items.size()) p.item = _items[_index.current()].path_utf8;
+  if (_galleryVisible && _folderCursor >= 0 && static_cast<std::size_t>(_folderCursor) < _subdirs.size()) {
+    p.folder = _subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8;
+  }
+  return p;
+}
+- (BOOL)canGoBack { return _history.can_back(); }
+- (BOOL)canGoForward { return _history.can_forward(); }
+- (uint64_t)historyGeneration { return _historyGeneration; }
+
+// ⌘[ / ⌘] (and the bar's arrows). The folder opens as any navigation does,
+// from its cached listing, with the item and tile it had selected; a folder
+// that has gone since fails in folder_model::open() and beeps, as Up does.
+- (BOOL)navigateHistory:(int)direction {
+  const mv::shell::browse_place here = [self herePlace];
+  std::optional<mv::shell::browse_place> next = direction < 0 ? _history.back(here) : _history.forward(here);
+  if (!next) return NO;
+  _historyMove = YES;
+  _historyReveal = next->folder;
+  ++_historyGeneration;
+  [self openDir:next->dir select:next->item navigation:YES];
+  _historyMove = NO;
+  _historyReveal.clear();
+  return YES;
+}
+
+// What a folder is to a drop (file_drop.h). Another computer's folder is
+// read-only until the service says this Mac may change it (plan §6).
+static mv::shell::place_kind MvPlaceKind(std::string_view path) {
+  if (mv::shell::is_remote(path)) return mv::shell::place_kind::remote_read_only;
+  if (mv::shell::write_protected(path)) return mv::shell::place_kind::read_only;
+  return mv::shell::place_kind::writable;
+}
+
+- (mv::shell::drop_decision)dropDecision:(const std::vector<std::string>&)paths
+                                    into:(const std::string&)target
+                                   flags:(int32_t)flags {
+  mv::shell::drop_request r;
+  r.sources = paths;
+  r.target_dir = target;
+  r.from_app = (flags & 1) != 0;
+  r.copy_key = (flags & 2) != 0;
+  r.move_key = (flags & 4) != 0;
+  return mv::shell::decide_drop(r, MvPlaceKind);
+}
+
+- (BOOL)dropPaths:(const std::vector<std::string>&)paths into:(const std::string&)target flags:(int32_t)flags {
+  const mv::shell::drop_decision d = [self dropDecision:paths into:target flags:flags];
+  if (!d.allowed()) {
+    if (d.refusal != mv::shell::drop_refusal::nothing && d.refusal != mv::shell::drop_refusal::none) {
+      NSBeep();
+      [self noticeShow:mv::shell::drop_refusal_words(d.refusal)];
+    }
+    return NO;
+  }
+  [self startTransfer:d.verb sources:paths target:target];
+  return YES;
+}
+
+- (uint64_t)dropGeneration { return _dropGeneration; }
+- (mv::shell::transfer_board&)transfers { return _transfers; }
+
+// The file work of a drop or a paste, on the pool at background priority (a
+// copy the user started finishes even if they browse on), with a row in the
+// Jobs pane. Never on the main thread: plan_transfer's stats, the copies and
+// the verify all run in the job.
+- (void)startTransfer:(mv::shell::drop_verb)verb
+              sources:(const std::vector<std::string>&)sources
+               target:(const std::string&)target {
+  const bool move = verb == mv::shell::drop_verb::move;
+  const std::string what = sources.size() == 1 ? std::string(mv::shell::browse_path::leaf(sources[0]))
+                                               : std::to_string(sources.size()) + " items";
+  // The Jobs row names the folder beside its title ("Moving Day2 — Trip");
+  // the notice says it whole.
+  const std::string title = std::string(move ? "Moving " : "Copying ") + what;
+  std::shared_ptr<mv::shell::transfer_board::job> job = _transfers.add(title, target, MvTransferNowMs());
+  [self noticeShowUntilCleared:title + " to " + std::string(mv::shell::browse_path::leaf(target)) + "…"];
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [job, verb, sources, target, weakSelf](const mv::job_context&) -> mv::status {
+    job->state.store(2);
+    // docs/design/26: a Photos item lands as its original, as F7 copies it.
+    std::vector<std::string> local;
+    local.reserve(sources.size());
+    for (const std::string& s : sources) {
+      if (!mv::shell::photos::is_key(s)) {
+        local.push_back(s);
+      } else if (auto r = mv::shell::photos::resolve(s, true)) {
+        local.push_back(std::move(r).value().path);
+      }
+    }
+    auto t = mv::shell::local_target();
+    auto result = std::make_shared<mv::shell::transfer_result>(
+        mv::shell::run_transfer(verb, local, target, *t, job->progress, &job->cancel));
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      [strongSelf transferEnded:job result:*result target:target];
+    });
+    return result->failed() == 0 ? mv::status::ok : mv::status::io;
+  });
+  // A long one shows its row, as Finder shows its progress window.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    MvLabApp* strongSelf = weakSelf;
+    if (strongSelf && job->state.load() <= 2 && ![strongSelf jobsVisible]) [strongSelf setJobsVisible:YES focus:NO];
+  });
+}
+
+- (void)transferEnded:(const std::shared_ptr<mv::shell::transfer_board::job>&)job
+               result:(const mv::shell::transfer_result&)result
+               target:(const std::string&)target {
+  _transfers.finish(job, result, MvTransferNowMs());
+  ++_jobsGeneration;
+  if (result.failed() > 0) NSBeep();
+  [self noticeShow:mv::shell::transfer_summary(result, target)];
+  if (result.verb == mv::shell::drop_verb::move) {
+    for (const auto& item : result.items) {
+      if (item.status == mv::status::ok) _marks.erase(item.source);
+    }
+    [self marksDidChange];
+  }
+  // The watcher would relist too; this does not wait for FSEvents.
+  if (!_listOpen) _folder.relist();
+  ++_dropGeneration;
+  [self publish];
+}
+
+// ⇧⌘N, File ▸ New Folder: named first in a sheet-sized alert (Finder's
+// untitled folder, selected), made on the pool, then selected as a tile.
+- (BOOL)newFolderHere {
+  if (_listOpen || _currentDir.empty()) return NO;
+  const mv::shell::place_kind kind = MvPlaceKind(_currentDir);
+  if (kind != mv::shell::place_kind::writable) {
+    NSBeep();
+    [self noticeShow:mv::shell::drop_refusal_words(kind == mv::shell::place_kind::read_only
+                                                       ? mv::shell::drop_refusal::read_only_target
+                                                       : mv::shell::drop_refusal::remote_target)];
+    return YES;
+  }
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = [NSString stringWithFormat:@"New folder in “%s”",
+                                                 std::string(mv::shell::browse_path::leaf(_currentDir)).c_str()];
+  [alert addButtonWithTitle:@"Create"];
+  [alert addButtonWithTitle:@"Cancel"];
+  NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  field.stringValue = @"untitled folder";
+  alert.accessoryView = field;
+  alert.window.initialFirstResponder = field;
+  [alert layout];
+  [field selectText:nil];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return YES;
+  NSString* trimmed = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  if (trimmed.length == 0 || [trimmed containsString:@"/"] || [trimmed isEqualToString:@"."] ||
+      [trimmed isEqualToString:@".."] || [trimmed containsString:@":"]) {
+    NSBeep();
+    [self noticeShow:"A folder name can't be empty or hold / or :"];
+    return YES;
+  }
+  const std::string name = trimmed.UTF8String;
+  const std::string parent = _currentDir;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [name, parent, weakSelf](const mv::job_context&) -> mv::status {
+    auto t = mv::shell::local_target();
+    const std::string made = mv::shell::make_new_folder(parent, name, *t);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      [strongSelf newFolderMade:made in:parent];
+    });
+    return made.empty() ? mv::status::io : mv::status::ok;
+  });
+  return YES;
+}
+
+- (void)newFolderMade:(const std::string&)made in:(const std::string&)parent {
+  if (made.empty()) {
+    NSBeep();
+    [self noticeShow:"Could not make the folder"];
+    return;
+  }
+  [self noticeShow:"Made “" + std::string(mv::shell::browse_path::leaf(made)) + "”"];
+  if (_currentDir != parent || _listOpen) return;
+  // Selected once the relist lists it, the way Up lands on the tile it left.
+  _revealChild = made;
+  _folder.relist();
+  ++_dropGeneration;
+}
+
+// ⌘V, File ▸ Paste Files Here: the files on the clipboard (⌘C here or in
+// Finder) are copied into the folder on screen, as a drop from Finder is.
+// The pasteboard read is an in-memory list of URLs, not file I/O.
+- (BOOL)pasteFilesHere {
+  if (_listOpen || _currentDir.empty()) return NO;
+  NSArray<NSURL*>* urls = [NSPasteboard.generalPasteboard
+      readObjectsForClasses:@[ NSURL.class ]
+                    options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+  std::vector<std::string> paths;
+  for (NSURL* url in urls) {
+    if (url.path) paths.emplace_back(url.path.UTF8String);
+  }
+  if (paths.empty()) {
+    NSBeep();
+    [self noticeShow:"Nothing to paste: copy files first"];
+    return YES;
+  }
+  (void)[self dropPaths:paths into:_currentDir flags:0];
+  return YES;
+}
 - (void)adjustGalleryCellSize:(NSInteger)direction {
   [MVChromeHost adjustGalleryCellSize:direction];
 }
@@ -7327,6 +7653,11 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuPrint: return print;
     case kMenuNewWindow: return new_window;
     case kMenuRename: return rename_file;
+    case kMenuBack: return folder_back;
+    case kMenuForward: return folder_forward;
+    case kMenuEnclosing: return folder_up;
+    case kMenuNewFolder: return new_folder;
+    case kMenuPasteFiles: return paste_files;
     default: return none;
   }
 }
@@ -7509,6 +7840,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuHelp: [self toggleHelp]; break;
     case kMenuSettings: [self setSettingsVisible:!_settingsVisible]; break;
     case kMenuHome: [self goHome]; break;
+    case kMenuBack: if (![self navigateHistory:-1]) NSBeep(); break;
+    case kMenuForward: if (![self navigateHistory:1]) NSBeep(); break;
+    case kMenuEnclosing: if (![self navigateUp]) NSBeep(); break;
+    case kMenuNewFolder: if (![self newFolderHere]) NSBeep(); break;
+    case kMenuPasteFiles: if (![self pasteFilesHere]) NSBeep(); break;
     case kMenuOverlay: [self runCommand:mv::shell::command_id::overlay back:mv::shell::back_target::none]; break;
     case kMenuReveal: [self runCommand:mv::shell::command_id::reveal_in_explorer back:mv::shell::back_target::none]; break;
     case kMenuMetadata: [self runCommand:mv::shell::command_id::metadata_pane back:mv::shell::back_target::none]; break;
@@ -7770,6 +8106,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   openRecent.submenu = _openRecentMenu;
   [file addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Mark / Unmark" cmd:kMenuMark key:@"" mods:0 toMenu:file];
+  // "Drag and drop into folders": the keyboard's twins of a drop.
+  [self addMenuItem:@"New Folder…" cmd:kMenuNewFolder key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Paste Files Here" cmd:kMenuPasteFiles key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Marked To…" cmd:kMenuCopyTo key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Move Marked To…" cmd:kMenuMoveTo key:@"" mods:0 toMenu:file];
   // No key equivalent: F2 is a row in the remappable table.
@@ -7861,6 +8200,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Start Slideshow" cmd:kMenuSlideshow key:@"" mods:0 toMenu:view];
 
   NSMenu* go = submenu(@"Go");
+  // docs/design/16 "Folder navigation": Finder's Go menu, chords from the table.
+  [self addMenuItem:@"Back" cmd:kMenuBack key:@"" mods:0 toMenu:go];
+  [self addMenuItem:@"Forward" cmd:kMenuForward key:@"" mods:0 toMenu:go];
+  [self addMenuItem:@"Enclosing Folder" cmd:kMenuEnclosing key:@"" mods:0 toMenu:go];
+  [go addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Next" cmd:kMenuNext key:@"" mods:0 toMenu:go];
   [self addMenuItem:@"Previous" cmd:kMenuPrev key:@"" mods:0 toMenu:go];
   [self addMenuItem:@"First" cmd:kMenuFirst key:@"" mods:0 toMenu:go];
@@ -8548,6 +8892,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case folder_up: return [self navigateUp];
     case folder_prev: return [self navigateSibling:-1];
     case folder_next: return [self navigateSibling:1];
+    case folder_back: return [self navigateHistory:-1];
+    case folder_forward: return [self navigateHistory:1];
+    case new_folder: return [self newFolderHere];
+    case paste_files: return [self pasteFilesHere];
     case typeahead: {
       const bool on_folders = _galleryVisible && !_subdirs.empty() &&
                               (_folderCursor >= 0 || _items.empty());

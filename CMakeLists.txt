@@ -941,6 +941,10 @@ add_executable(mediaviewer_lab WIN32
   src/shell/key_router.h
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
+  src/shell/browse_history.h
+  src/shell/file_drop.h
+  src/shell/file_transfer.cpp
+  src/shell/file_transfer.h
   src/shell/marks.h
   src/shell/share_menu.h
   src/shell/meta_store.cpp
@@ -1221,6 +1225,9 @@ if(MV_BUILD_TESTS)
     tests/test_tree_watch.cpp
     tests/test_dir_tree.cpp
     tests/test_browse_path.cpp
+    tests/test_browse_history.cpp
+    tests/test_file_drop.cpp
+    tests/test_file_transfer.cpp
     tests/test_folder.cpp
     tests/test_presenter.cpp
     tests/test_colour_desc.cpp
@@ -1387,6 +1394,7 @@ if(MV_BUILD_TESTS)
     src/shell/keymap.cpp
     src/shell/key_router.cpp
     src/shell/file_jobs.cpp
+    src/shell/file_transfer.cpp
     src/shell/open_request.cpp
     src/shell/os_integration.cpp
     src/shell/settings.cpp

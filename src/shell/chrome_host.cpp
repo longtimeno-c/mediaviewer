@@ -1224,13 +1224,13 @@ void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noex
   (void)scale_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
 }
 
-void chrome_host::apply_browse(std::int32_t folder_cursor, bool can_go_up,
+void chrome_host::apply_browse(std::int32_t folder_cursor, std::int32_t moves,
                                const std::string& crumbs, bool finding,
                                const std::string& query) noexcept {
   if (!attached_ || !apply_browse_) return;
   chrome_browse_args args{};
   args.folder_cursor = folder_cursor;
-  args.can_go_up = can_go_up ? 1 : 0;
+  args.can_go_up = moves;
   args.crumbs_bytes = static_cast<std::int32_t>(crumbs.size());
   args.query_bytes = finding ? static_cast<std::int32_t>(query.size()) : -1;
   args.crumbs_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(crumbs.data()));

@@ -16,9 +16,12 @@
 // Started from a SwiftUI DragGesture (`fileDrag` below) rather than an
 // AppKit overlay view: the cells keep their own tap, hover and scroll handling
 // untouched, and a click that does not move past the threshold is still a tap.
-// Copy-only, like the canvas's ⌘-drag (main_mac.mm): dropping in Finder on the
-// same volume copies, never moves, an original. Refused inside the app, so a
-// slip onto our own window does not reopen the folder. Only files on disk are
+// Copy-only outside the app, like the canvas's ⌘-drag (main_mac.mm): dropping in
+// Finder on the same volume copies, never moves, an original. Inside the app a
+// folder tile, a breadcrumb or a sidebar place takes it as a move (Option
+// copies; docs/design/16 "Drag and drop into folders"): `began` / `ended` tell
+// the chrome's DropState which files are ours. The canvas still refuses it, so
+// a slip onto the picture does not reopen the folder. Only files on disk are
 // dragged: a Photos library item ("photos:<id>", docs/design/26) is a key, not
 // a path, and would leave as a bogus file URL.
 import AppKit
@@ -30,6 +33,10 @@ final class FileDragSource: NSObject, NSDraggingSource {
 
   /// A session is running: a gesture's late onChanged must not start another.
   @MainActor private var active = false
+  /// The paths of the drag starting and its end (the main chrome's drop
+  /// targets; nil in a module that has none).
+  @MainActor var began: (([String]) -> Void)?
+  @MainActor var ended: (() -> Void)?
 
   /// Starts a drag of the files `list()` names (path, thumbnail) from the
   /// mouse event being handled. `list` runs only when a drag really starts.
@@ -63,6 +70,7 @@ final class FileDragSource: NSObject, NSDraggingSource {
       items.append(item)
     }
     active = true
+    began?(files.map(\.path))
     let session = view.beginDraggingSession(with: items, event: event, source: self)
     session.animatesToStartingPositionsOnCancelOrFail = true
     session.draggingFormation = .default
@@ -85,12 +93,15 @@ final class FileDragSource: NSObject, NSDraggingSource {
 
   func draggingSession(_ session: NSDraggingSession,
                        sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-    context == .outsideApplication ? .copy : []
+    context == .outsideApplication ? .copy : [.copy, .move, .generic]
   }
 
   func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint,
                        operation: NSDragOperation) {
-    MainActor.assumeIsolated { active = false }
+    MainActor.assumeIsolated {
+      active = false
+      ended?()
+    }
   }
 }
 

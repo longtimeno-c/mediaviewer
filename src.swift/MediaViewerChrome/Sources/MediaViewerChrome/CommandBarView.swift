@@ -478,7 +478,7 @@ private struct UpdateBarItem: View {
 }
 
 /// The trail from the highest folder reached to the one on screen, in the
-/// command bar just left of `?`. Up and Root are icons outside the scrolling
+/// command bar just left of `?`. Back, Forward, Up and Root are icons outside the scrolling
 /// ancestor trail; the current name stays pinned and a long middle becomes an
 /// ancestor menu; a search icon ends it. Shown whenever a folder is open,
 /// including while a photo is on the canvas.
@@ -502,6 +502,13 @@ struct PathBar: View {
     let crumbs = store.crumbs
     let shown = display(crumbs)
     HStack(spacing: MVTheme.space(2)) {
+      // docs/design/16 "Folder navigation": Finder's Back / Forward.
+      PathIcon(symbol: "chevron.backward", enabled: store.canGoBack) { store.goBack() }
+        .help("Back to the folder before (⌘[)")
+        .accessibilityLabel("Back")
+      PathIcon(symbol: "chevron.forward", enabled: store.canGoForward) { store.goForward() }
+        .help("Forward (⌘])")
+        .accessibilityLabel("Forward")
       PathIcon(symbol: "arrow.up", enabled: store.canGoUp) { store.navigateUp() }
         .help("Open the enclosing folder (⌘↑)")
         .accessibilityLabel("Up one folder")
@@ -528,13 +535,17 @@ struct PathBar: View {
               .help("Open a parent folder")
               .accessibilityLabel("Hidden parent folders")
             } else {
+              let path = crumbs.first(where: { $0.index == crumb.index })?.path ?? ""
               Button(crumb.name) { store.openCrumb(crumb.index) }
                 .buttonStyle(.borderless)
                 .foregroundStyle(MVTheme.body)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 120)
-                .help(crumbs.first(where: { $0.index == crumb.index })?.path ?? crumb.name)
+                .help(path.isEmpty ? crumb.name : path)
+                // Drop files on a segment: they go into that folder.
+                .padding(.horizontal, MVTheme.space(2))
+                .folderDropTarget(path, name: crumb.name, radius: MVTheme.radius(4), inset: 1)
             }
             Image(systemName: "chevron.right")
               .font(.system(size: 8, weight: .bold))
@@ -573,6 +584,7 @@ struct PathBar: View {
           .onPreferenceChange(NameWidthKey.self) { nameWidth = $0 }
           .layoutPriority(1)
           .help(crumbs.last?.path ?? current.name)
+          .folderDropTarget(crumbs.last?.path ?? "", name: current.name, radius: MVTheme.radius(4), inset: 3)
       }
       PathSearchButton()
       // docs/design/25 PR 59: the add-ons' path-bar icons.

@@ -168,6 +168,12 @@ an admin grants a desktop, from the app or `driftwire` on the host, is #686 §2'
 Move, rename, Trash and metadata through to a service write op; until then it is read-only whatever
 the service says.
 
+The desktop's side is ready for it (docs/design/16 "Drag and drop into folders"): every drop,
+paste and New Folder asks `shell/file_drop.h` with a `place_kind` per folder — a remote folder is
+`remote_read_only` today, `remote_writable` once `writable` and the role say so — and does the work
+through `shell/file_transfer.h`'s `transfer_target`, which a remote folder supplies over the
+service's add / mkdir / move calls.
+
 ## 7. Not in this slice
 
 - Streaming playback through `read_range` (seek before the clip has arrived).

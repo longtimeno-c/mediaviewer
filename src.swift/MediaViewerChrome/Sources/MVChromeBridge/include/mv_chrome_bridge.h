@@ -55,6 +55,8 @@ enum MvMenuCmd : int32_t {
   kMenuToolBrush, kMenuToolRedEye, kMenuToolExtend, kMenuToolFaces,
   // The bar's Home: back to the welcome card, nothing open (owner 2026-11-18).
   kMenuHome,
+  // docs/design/16 "Folder navigation" / "Drag and drop into folders".
+  kMenuBack, kMenuForward, kMenuEnclosing, kMenuNewFolder, kMenuPasteFiles,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -321,8 +323,28 @@ bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size);
 void mv_chrome_open_crumb(int32_t index);
 bool mv_chrome_can_go_up(void);
 void mv_chrome_navigate_up(void);
+// docs/design/16 "Folder navigation": Back / Forward (shell/browse_history.h).
+// The generation moves on each Back or Forward, so the gallery knows to put
+// the scroll back where that folder had it.
+bool mv_chrome_can_go_back(void);
+bool mv_chrome_can_go_forward(void);
+void mv_chrome_go_back(void);
+void mv_chrome_go_forward(void);
+uint64_t mv_chrome_history_generation(void);
+// "Drag and drop into folders" (shell/file_drop.h): what dropping `paths` on
+// the folder `target` does -- verb (0 none, 1 copy, 2 move) | refusal << 8 --
+// with flags 1 dragged from this window, 2 Option held, 4 Command held. No
+// I/O: asked on every drag-over. An outside drag passes no paths (they are read
+// on drop). mv_chrome_drop_files does it (a job, its row in the Jobs pane) and
+// says whether it started; the drop generation moves when one lands.
+int32_t mv_chrome_drop_verdict(const char* const* paths, int32_t count, const char* target, int32_t flags);
+bool mv_chrome_drop_files(const char* const* paths, int32_t count, const char* target, int32_t flags);
+uint64_t mv_chrome_drop_generation(void);
+int32_t mv_chrome_drop_refusal_text(int32_t refusal, char* buf, int32_t size);
 // The gallery's keyboard position while on a folder tile; -1 when on images.
 int32_t mv_chrome_folder_cursor(void);
+// A click on a folder tile: the gallery's keyboard moves onto it (-1: the images).
+void mv_chrome_set_folder_cursor(int32_t index);
 // The in-progress folder-name query (`/`, folder row active). False when idle;
 // an empty string means the query is open and nothing has been typed yet.
 bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);

@@ -66,6 +66,9 @@
 #include "shell/faces_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
+#include "shell/browse_history.h"
+#include "shell/file_drop.h"
+#include "shell/file_transfer.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
 #include "shell/text_in_image.h"
@@ -175,6 +178,10 @@ constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 // stopped (wparam 2). Posted by the core's listener, on any thread.
 constexpr UINT kMsgScripts = WM_APP + 0x7C;
 constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
+// docs/design/16 "Drag and drop into folders": a drop's / paste's transfer, and
+// New Folder, finished on the pool (lparam: an owned result).
+constexpr UINT kMsgTransferDone = WM_APP + 0x62;
+constexpr UINT kMsgNewFolderDone = WM_APP + 0x63;
 constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files were gathered (pool posts)
 // #452 (docs/design/28 "In the background"): the notification-area icon's
 // callback, and the chrome saying the add-ons' keep-alive list changed
@@ -301,6 +308,13 @@ struct app_state {
   int gallery_columns = 1;
   std::string gallery_if_empty_dir;
   std::string reveal_child;   // path of the folder we left, selected after Up
+  // docs/design/16 "Folder navigation": Back / Forward with each folder's
+  // selection; history_move while one of them opens its folder.
+  mv::shell::browse_history history;
+  bool history_move = false;
+  std::string history_reveal;
+  // "Drag and drop into folders": drops and pastes in flight (and done).
+  mv::shell::transfer_board transfers;
   std::vector<std::string> siblings;
   int sibling_index = -1;
   std::uint64_t sibling_generation = 0;
@@ -1129,11 +1143,30 @@ void refresh_siblings(app_state* app);
 bool navigate_sibling(app_state* app, int delta);
 int chrome_bar_px(app_state* app, std::uint32_t dpi) noexcept;
 
+std::string current_item_path(app_state* app);
+
+// The folder on screen and what is selected in it, for Back / Forward. A
+// result list is no place (its items live in other folders).
+mv::shell::browse_place here_place(app_state* app) {
+  mv::shell::browse_place p;
+  if (!app->list_title.empty()) return p;
+  p.dir = app->current_dir;
+  p.item = current_item_path(app);
+  if (app->gallery_visible && app->folder_cursor >= 0) {
+    p.folder = subfolder_path_at(app, static_cast<std::uint32_t>(app->folder_cursor));
+  }
+  return p;
+}
+
 void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view wide_select,
                  bool navigation = false) {
   if (!app || !app->session || wide_dir.empty()) return;
   const std::string dir = utf8_from_wide(wide_dir);
   if (dir.empty()) return;
+  // Back / Forward (browse_history.h): every way to another folder lands here.
+  if (!app->history_move && app->list_title.empty() && !app->current_dir.empty() && dir != app->current_dir) {
+    app->history.visit(here_place(app), dir);
+  }
   const std::string select = utf8_from_wide(wide_select);
   if (mv::remote::is_key(dir)) {
     // 0.44 (docs/plans/desktop-client.md): another computer's folder is a list
@@ -1172,6 +1205,8 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   } else {
     app->reveal_child.clear();
   }
+  // Back / Forward land on the tile the keyboard was on when it was left.
+  if (app->history_move) app->reveal_child = app->history_reveal;
   seed_siblings_for(app, dir);
   app->folder_find = false;
   app->folder_query.clear();
@@ -6216,8 +6251,10 @@ void push_browse_state(app_state* app) {
     blob += "\t\n";
   }
   const bool finding = folder_find_live(app);
-  app->chrome.apply_browse(app->folder_cursor, list || !app->trail.parent().empty(), blob, finding,
-                           app->folder_query);
+  // Bit 0 Up, bit 1 Back, bit 2 Forward (IslandHost.Gallery.cs ApplyBrowse).
+  const std::int32_t moves = (list || !app->trail.parent().empty() ? 1 : 0) |
+                             (app->history.can_back() ? 2 : 0) | (app->history.can_forward() ? 4 : 0);
+  app->chrome.apply_browse(app->folder_cursor, moves, blob, finding, app->folder_query);
 }
 
 // A result list opened from the empty window (a search from the welcome)
@@ -6316,6 +6353,181 @@ bool navigate_folder_up(app_state* app) {
   const std::string parent = app->trail.parent();
   if (parent.empty()) return false;
   open_utf8_dir(app, parent, true);
+  return true;
+}
+
+// Ctrl+[ / Ctrl+] (and the bar's arrows): the folder before, with the item
+// and tile it had selected; it opens as any navigation does.
+bool navigate_history(app_state* app, int direction) {
+  if (!app) return false;
+  const mv::shell::browse_place here = here_place(app);
+  std::optional<mv::shell::browse_place> next = direction < 0 ? app->history.back(here) : app->history.forward(here);
+  if (!next) return false;
+  app->history_move = true;
+  app->history_reveal = next->folder;
+  app->mode = open_mode::folder;
+  open_folder(app, wide_from_utf8(next->dir), wide_from_utf8(next->item), true);
+  app->history_move = false;
+  app->history_reveal.clear();
+  return true;
+}
+
+// What a folder is to a drop (file_drop.h). Another computer's folder is
+// read-only until the service says this PC may change it (plan §6).
+mv::shell::place_kind win_place_kind(std::string_view path) {
+  if (mv::remote::is_key(path)) return mv::shell::place_kind::remote_read_only;
+  return mv::shell::place_kind::writable;
+}
+
+struct transfer_done {
+  std::shared_ptr<mv::shell::transfer_board::job> job;
+  mv::shell::transfer_result result;
+  std::string target;
+};
+
+// The file work of a drop or a paste: the pool, at background priority (a copy
+// the user started finishes even if they browse on); the result comes back as
+// kMsgTransferDone. Never on the UI thread.
+void start_transfer(app_state* app, mv::shell::drop_verb verb, std::vector<std::string> sources,
+                    std::string target) {
+  const bool move = verb == mv::shell::drop_verb::move;
+  const std::string what = sources.size() == 1 ? mv::shell::browse_path::leaf(sources[0])
+                                               : std::to_string(sources.size()) + " items";
+  const std::string title = std::string(move ? "Moving " : "Copying ") + what;
+  auto job = app->transfers.add(title, target, static_cast<std::int64_t>(::GetTickCount64()));
+  notice_show(app, title + " to " + mv::shell::browse_path::leaf(target) + "…");
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [job, verb, sources = std::move(sources), target, hwnd](const mv::job_context&) -> mv::status {
+                        job->state.store(2);
+                        auto local = mv::shell::local_target();
+                        auto done = std::make_unique<transfer_done>();
+                        done->job = job;
+                        done->target = target;
+                        done->result = mv::shell::run_transfer(verb, sources, target, *local, job->progress, &job->cancel);
+                        const bool ok = done->result.failed() == 0;
+                        if (::PostMessageW(hwnd, kMsgTransferDone, 0, reinterpret_cast<LPARAM>(done.get()))) {
+                          (void)done.release();
+                        }
+                        return ok ? mv::status::ok : mv::status::io;
+                      });
+}
+
+void on_transfer_done(app_state* app, std::unique_ptr<transfer_done> done) {
+  if (!done) return;
+  app->transfers.finish(done->job, done->result, static_cast<std::int64_t>(::GetTickCount64()));
+  if (done->result.failed() > 0) ::MessageBeep(MB_ICONWARNING);
+  // The folder watcher relists what moved in or out.
+  notice_show(app, mv::shell::transfer_summary(done->result, done->target));
+}
+
+// A drop on a folder tile, a crumb or the grid (IslandHost.DragDrop.cs), or
+// Paste: shell/file_drop.h decides, the pool does it. `flags` as the Mac's:
+// 1 from this window, 2 copy key (Ctrl), 4 move key (Shift).
+mv::shell::drop_decision drop_decision_for(const std::vector<std::string>& paths, const std::string& target,
+                                           int flags) {
+  mv::shell::drop_request r;
+  r.sources = paths;
+  r.target_dir = target;
+  r.from_app = (flags & 1) != 0;
+  r.copy_key = (flags & 2) != 0;
+  r.move_key = (flags & 4) != 0;
+  return mv::shell::decide_drop(r, win_place_kind);
+}
+
+bool drop_files(app_state* app, std::vector<std::string> paths, const std::string& target, int flags) {
+  const mv::shell::drop_decision d = drop_decision_for(paths, target, flags);
+  if (!d.allowed()) {
+    if (d.refusal != mv::shell::drop_refusal::nothing && d.refusal != mv::shell::drop_refusal::none) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, mv::shell::drop_refusal_words(d.refusal));
+    }
+    return false;
+  }
+  start_transfer(app, d.verb, std::move(paths), target);
+  return true;
+}
+
+// The island's drop payload: flags, then the folder, then one path per line.
+bool parse_drop_payload(std::wstring_view blob, int& flags, std::string& target, std::vector<std::string>& paths) {
+  const std::string text = utf8_from_wide(blob);
+  std::size_t start = 0;
+  int field = 0;
+  while (start <= text.size()) {
+    std::size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    const std::string line = text.substr(start, end - start);
+    if (field == 0) {
+      flags = std::atoi(line.c_str());
+    } else if (field == 1) {
+      target = line;
+    } else if (!line.empty()) {
+      paths.push_back(line);
+    }
+    ++field;
+    start = end + 1;
+  }
+  return field >= 2;
+}
+
+// Ctrl+Shift+N: "New folder" (then "New folder (2)"…) in the folder on screen,
+// made on the pool, then selected as a tile when the listing shows it.
+bool new_folder_here(app_state* app) {
+  if (!app || !app->list_title.empty() || app->current_dir.empty()) return false;
+  if (win_place_kind(app->current_dir) != mv::shell::place_kind::writable) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, mv::shell::drop_refusal_words(mv::shell::drop_refusal::remote_target));
+    return true;
+  }
+  const std::string parent = app->current_dir;
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [parent, hwnd](const mv::job_context&) -> mv::status {
+    auto local = mv::shell::local_target();
+    auto made = std::make_unique<std::pair<std::string, std::string>>(
+        parent, mv::shell::make_new_folder(parent, "New folder", *local));
+    const bool ok = !made->second.empty();
+    if (::PostMessageW(hwnd, kMsgNewFolderDone, 0, reinterpret_cast<LPARAM>(made.get()))) (void)made.release();
+    return ok ? mv::status::ok : mv::status::io;
+  });
+  return true;
+}
+
+void on_new_folder_done(app_state* app, std::unique_ptr<std::pair<std::string, std::string>> made) {
+  if (!made) return;
+  if (made->second.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Could not make the folder");
+    return;
+  }
+  notice_show(app, "Made “" + mv::shell::browse_path::leaf(made->second) + "”");
+  // Selected once the watcher's relist lists it, as Up lands on the tile it left.
+  if (app->current_dir == made->first) app->reveal_child = made->second;
+}
+
+// Ctrl+V: the files on the clipboard (Ctrl+C here or in Explorer) are copied
+// into the folder on screen, as a drop from Explorer is. An in-memory list.
+bool paste_files_here(app_state* app) {
+  if (!app || !app->list_title.empty() || app->current_dir.empty()) return false;
+  std::vector<std::string> paths;
+  if (::OpenClipboard(app->window)) {
+    if (HANDLE h = ::GetClipboardData(CF_HDROP)) {
+      auto drop = reinterpret_cast<HDROP>(h);
+      const UINT count = ::DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      for (UINT i = 0; i < count; ++i) {
+        const UINT len = ::DragQueryFileW(drop, i, nullptr, 0);
+        if (len == 0) continue;
+        std::wstring path(len, L'\0');
+        if (::DragQueryFileW(drop, i, path.data(), len + 1) == len) paths.push_back(utf8_from_wide(path));
+      }
+    }
+    ::CloseClipboard();
+  }
+  if (paths.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Nothing to paste: copy files first");
+    return true;
+  }
+  (void)drop_files(app, std::move(paths), app->current_dir, 0);
   return true;
 }
 
@@ -7629,6 +7841,15 @@ chrome_dispatch chrome_canvas_command(app_state* app, int command, float arg) {
     case mv::shell::chrome_cmd_go_home:
       go_home(app);
       return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_folder_cursor: {
+      // One click on a folder tile selects it (Finder, Explorer); two open it.
+      const int index = static_cast<int>(arg);
+      if (index >= -1 && (index < 0 || !subfolder_path_at(app, static_cast<std::uint32_t>(index)).empty())) {
+        app->folder_cursor = index;
+        push_browse_state(app);
+      }
+      return chrome_dispatch::done;
+    }
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (docs/design/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
@@ -10925,6 +11146,14 @@ bool run_canvas_command(app_state* app, mv::shell::command_id command) noexcept 
       return navigate_sibling(app, -1);
     case folder_next:
       return navigate_sibling(app, 1);
+    case folder_back:
+      return navigate_history(app, -1);
+    case folder_forward:
+      return navigate_history(app, 1);
+    case new_folder:
+      return new_folder_here(app);
+    case paste_files:
+      return paste_files_here(app);
     default:
       // command_coverage.inc sent this id here. A missing case is a
       // no-op, the same as the old switch's default.
@@ -13536,7 +13765,25 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case WM_COPYDATA: {
       const auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lparam);
-      if (!cds || cds->dwData != 0x4D560001ul || !cds->lpData || cds->cbData < 2) return 0;
+      if (!cds || !cds->lpData || cds->cbData < 2) return 0;
+      // docs/design/16 "Drag and drop into folders": 0x4D560003 asks what a drop
+      // would do (verb | refusal << 8, no I/O: the island asks on every drag
+      // over), 0x4D560002 does it. Payload: flags, folder, paths, by line.
+      if (cds->dwData == 0x4D560002ul || cds->dwData == 0x4D560003ul) {
+        std::wstring_view payload(static_cast<const wchar_t*>(cds->lpData),
+                                  static_cast<std::size_t>(cds->cbData) / sizeof(wchar_t));
+        if (!payload.empty() && payload.back() == L'\0') payload.remove_suffix(1);
+        int drop_flags = 0;
+        std::string drop_target;
+        std::vector<std::string> drop_paths;
+        if (!parse_drop_payload(payload, drop_flags, drop_target, drop_paths)) return 0;
+        if (cds->dwData == 0x4D560003ul) {
+          const auto d = drop_decision_for(drop_paths, drop_target, drop_flags);
+          return static_cast<LRESULT>(static_cast<int>(d.verb) | (static_cast<int>(d.refusal) << 8));
+        }
+        return drop_files(app, std::move(drop_paths), drop_target, drop_flags) ? 1 : 0;
+      }
+      if (cds->dwData != 0x4D560001ul) return 0;
       const auto* w = static_cast<const wchar_t*>(cds->lpData);
       const std::size_t n = static_cast<std::size_t>(cds->cbData) / sizeof(wchar_t);
       // An island forwarding our own drag back to us: nothing to open.
@@ -13593,6 +13840,15 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgToolJob:
       on_tool_job(app, std::unique_ptr<tool_job_result>(reinterpret_cast<tool_job_result*>(lparam)));
+      return 0;
+
+    case kMsgTransferDone:
+      on_transfer_done(app, std::unique_ptr<transfer_done>(reinterpret_cast<transfer_done*>(lparam)));
+      return 0;
+
+    case kMsgNewFolderDone:
+      on_new_folder_done(app, std::unique_ptr<std::pair<std::string, std::string>>(
+                                  reinterpret_cast<std::pair<std::string, std::string>*>(lparam)));
       return 0;
 
     case kMsgTextRead:
