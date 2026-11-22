@@ -161,12 +161,22 @@ that gets its own measurement.
 
 ## 6. Write access (owner call 1, with #686 §2)
 
-The service already says, per folder, whether this device may write there (`root_info.writable`),
-and the write op is the backup write path's, with its checks. The role (*can change files*) that
-an admin grants a desktop, from the app or `driftwire` on the host, is #686 §2's work
-(`smb-users`, through `src/wire/grants.*`). When it lands, the desktop reads `writable` and lets
-Move, rename, Trash and metadata through to a service write op; until then it is read-only whatever
-the service says.
+The service side is built (docs/design/28 "Changing files"). A desktop whose role is `change`
+(granted from the app or `driftwire serve grant NAME --role change`) may, in every folder its grant
+sees but the Catalogue:
+
+- add a file: `serve::client::add` (the `write` stream: hash-checked, resumable, never replaces; a
+  taken name gets " (2)");
+- make a folder: `make_folder`;
+- move or rename a file or folder, within a folder or into another writable one: `move` (never
+  replaces: `exists` means pick another name);
+- delete: `remove`, into the folder's hidden trash on the host, which only the owner empties.
+
+Refusals come back typed (`client::change_why`: `not_allowed`, `path`, `exists`, `busy`, `name`,
+`limit`, `full`, `offline`, `not_found`, `unsupported`, `failed`). Show the commands only when
+`client::changes_files()` (the service lists `kChangeOps`; an older one does not) and the folder's
+`root_info.writable` is true; read `roots()` again after the role changes. Every call blocks: worker
+threads only. Sidecars are not moved with their file yet. The desktop chrome is not built.
 
 The desktop's side is ready for it (docs/design/16 "Drag and drop into folders"): every drop,
 paste and New Folder asks `shell/file_drop.h` with a `place_kind` per folder — a remote folder is

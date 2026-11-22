@@ -20,14 +20,17 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 8> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 11> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
                                                              {op::admin, "admin"},
                                                              {op::upgrade, "upgrade"},
                                                              {op::write, "write"},
-                                                             {op::convert, "convert"}}};
+                                                             {op::convert, "convert"},
+                                                             {op::mkdir, "mkdir"},
+                                                             {op::move, "move"},
+                                                             {op::remove, "delete"}}};
 
 bool lower_hex64(std::string_view s) noexcept {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
@@ -200,6 +203,7 @@ std::vector<std::uint8_t> encode_open(const open_request& r) {
     w.key("hash").string(r.hash);
   }
   if (r.kind == op::convert) w.key("seg").integer(r.segment);
+  if (r.kind == op::move) w.key("to_root").string(r.to_root).key("to_rel").string(r.to_rel);
   if (r.meta) w.key("meta").boolean(true);
   if (r.credit != 0) w.key("credit").integer(static_cast<std::int64_t>(r.credit));
   w.end_object();
@@ -262,6 +266,13 @@ std::optional<open_request> parse_open(std::span<const std::uint8_t> body, bool&
     const auto seg = doc->integer("seg");
     if (!in_range(seg, -1, kMaxConvertSegments - 1) || r.rel.empty()) return std::nullopt;
     r.segment = *seg;
+  }
+  if (r.kind == op::move) {
+    const std::string* to_root = doc->str("to_root");
+    const std::string* to_rel = doc->str("to_rel");
+    if (!to_root || !to_rel) return std::nullopt;
+    r.to_root = *to_root;
+    r.to_rel = *to_rel;
   }
   if (const json::value* m = doc->find("meta")) {
     if (m->k != json::kind::boolean) return std::nullopt;
@@ -331,6 +342,8 @@ std::string roots_json(std::span<const root_info> roots) {
     w.begin_object().key("id").string(r.id).key("label").string(r.label);
     // Only on a backup folder, so a reader from before 1.1 sees exactly what it did.
     if (r.backup) w.key("backup").boolean(true).key("writable").boolean(r.writable);
+    // Elsewhere only when true: a reader from before kChangeOps reads it on a backup folder alone.
+    if (!r.backup && r.writable) w.key("writable").boolean(true);
     if (r.offline) w.key("offline").boolean(true);
     w.end_object();
   }
@@ -350,7 +363,7 @@ std::optional<std::vector<root_info>> parse_roots(std::string_view text) {
     if (!id || !valid_id(*id) || !label || label->size() > kMaxLabelBytes) return std::nullopt;
     root_info info{*id, *label};
     info.backup = v.boolean("backup").value_or(false);
-    info.writable = info.backup && v.boolean("writable").value_or(false);
+    info.writable = v.boolean("writable").value_or(false);
     info.offline = v.boolean("offline").value_or(false);
     out.push_back(std::move(info));
   }
