@@ -294,6 +294,10 @@ final class FolderStore: ObservableObject {
   }
 
   private func reloadListTitle() {
+    var keyBuf = [CChar](repeating: 0, count: 4096)
+    _ = keyBuf.withUnsafeMutableBufferPointer { mv_chrome_remote_open_key($0.baseAddress, Int32($0.count)) }
+    let remote = String(cString: keyBuf)
+    if remote != remoteFolder { remoteFolder = remote }
     let title: String? = mv_chrome_list_open() ? Self.bridgeString { mv_chrome_list_title($0, $1) } : nil
     guard title != listTitle else { return }
     listTitle = title
@@ -426,7 +430,13 @@ final class FolderStore: ObservableObject {
   }
   /// The folder on screen, for a drop on the grid itself; nil with none (a
   /// result list, the empty window).
-  var currentDir: String? { listTitle == nil ? crumbs.last?.path : nil }
+  var currentDir: String? {
+    if listTitle == nil { return crumbs.last?.path }
+    // Another computer's folder is shown as a list: drops go into it (plan §6).
+    return remoteFolder.isEmpty ? nil : remoteFolder
+  }
+  /// The remote folder the list on screen is, "" otherwise (mv_chrome_remote_open_key).
+  @Published private(set) var remoteFolder = ""
   func goBack() { mv_chrome_go_back() }
   func goForward() { mv_chrome_go_forward() }
 

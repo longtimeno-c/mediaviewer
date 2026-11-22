@@ -114,6 +114,8 @@ final class FolderTreeStore: ObservableObject {
   @Published private(set) var remoteOpen = ""
   private var serversGeneration: UInt64 = 0
   private var revealedKey = ""
+  /// A drop, a paste, New Folder, a rename or a Trash landed: open rows list again.
+  private var dropGeneration: UInt64 = 0
 
   private init() {
     // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
@@ -137,6 +139,11 @@ final class FolderTreeStore: ObservableObject {
       if nowVisible { revealedKey = "" }
     }
     guard nowVisible else { return }
+    let drops = mv_chrome_drop_generation()
+    if drops != dropGeneration {
+      dropGeneration = drops
+      refreshOpenRows()
+    }
     let photos = mv_chrome_photos_library_available()
     if photos != photosAvailable { photosAvailable = photos }
     let photosShown = mv_chrome_photos_library_open()
@@ -181,6 +188,18 @@ final class FolderTreeStore: ObservableObject {
     Task {
       await root.reveal(chain)
       scrollTick += 1
+    }
+  }
+
+  /// Every expanded row lists its subfolders again, off the main actor (TreeNode.refresh);
+  /// what was listed stays until each new listing lands.
+  private func refreshOpenRows() {
+    var stack: [TreeNode] = servers.map(\.node)
+    if let root { stack.append(root) }
+    while let node = stack.popLast() {
+      guard node.isExpanded else { continue }
+      node.refresh()
+      stack.append(contentsOf: node.children ?? [])
     }
   }
 
@@ -300,7 +319,9 @@ private struct RemoteServerRow: View {
       .buttonStyle(.plain)
       .foregroundStyle(current.hasPrefix(server.key) ? MVTheme.accent : MVTheme.title)
       .fontWeight(current.hasPrefix(server.key) ? .semibold : .regular)
-      .help("\(server.name): another computer's folders, read-only from here.")
+      .help(server.role == "change" || server.role == "admin"
+            ? "\(server.name): another computer's folders. Drop files on a folder to add them there."
+            : "\(server.name): another computer's folders, read-only from here.")
       .folderDropTarget(server.key, name: server.name, radius: MVTheme.radius(4)) { [node] in
         node.isExpanded = true
       }

@@ -67,7 +67,7 @@ final class DropState: ObservableObject {
     if verdict != v { verdict = v }
     let n = ownPaths?.count ?? info.itemProviders(for: [UTType.fileURL]).count
     if count != n { count = n }
-    let words = v.refusedVisibly ? Self.refusalText(v.refusal) : ""
+    let words = v.refusedVisibly ? Self.reason(v, target: target) : ""
     if reason != words { reason = words }
     if let springOpen {
       let work = DispatchWorkItem { [weak self] in
@@ -91,7 +91,7 @@ final class DropState: ObservableObject {
       let v = ask(target, now)
       if verdict != v {
         verdict = v
-        reason = v.refusedVisibly ? Self.refusalText(v.refusal) : ""
+        reason = v.refusedVisibly ? Self.reason(v, target: target) : ""
       }
     }
     switch verdict.verb {
@@ -152,6 +152,19 @@ final class DropState: ObservableObject {
     _ = withCStrings(paths) { ptrs in
       target.withCString { mv_chrome_drop_files(ptrs, Int32(paths.count), $0, flags.rawValue) }
     }
+  }
+
+  /// A remote folder this computer may not change says why in the server's terms
+  /// ("Home lets this computer view only…"); every other refusal is the rule's words.
+  private static func reason(_ v: DropVerdict, target: String) -> String {
+    if v.refusal == .remoteTarget {
+      var buf = [CChar](repeating: 0, count: 512)
+      let n = buf.withUnsafeMutableBufferPointer { ptr in
+        target.withCString { mv_chrome_write_problem($0, ptr.baseAddress, Int32(ptr.count)) }
+      }
+      if n > 0 { return String(cString: buf) }
+    }
+    return refusalText(v.refusal)
   }
 
   private static func refusalText(_ r: DropVerdict.Refusal) -> String {

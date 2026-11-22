@@ -1484,6 +1484,7 @@ extern "C" bool mv_chrome_can_go_up(void) {
 extern "C" void mv_chrome_navigate_up(void) {
   if (g_chrome_app) [g_chrome_app navigateUp];
 }
+static std::string MvPlaceName(const std::string& path);
 static std::int64_t MvTransferNowMs() { return static_cast<std::int64_t>(CACurrentMediaTime() * 1000.0); }
 extern "C" bool mv_chrome_can_go_back(void) { return g_chrome_app && [g_chrome_app canGoBack]; }
 extern "C" bool mv_chrome_can_go_forward(void) { return g_chrome_app && [g_chrome_app canGoForward]; }
@@ -1510,6 +1511,18 @@ extern "C" int32_t mv_chrome_drop_verdict(const char* const* paths, int32_t coun
 }
 extern "C" bool mv_chrome_drop_files(const char* const* paths, int32_t count, const char* target, int32_t flags) {
   return g_chrome_app && target && [g_chrome_app dropPaths:MvPathList(paths, count) into:target flags:flags];
+}
+extern "C" int32_t mv_chrome_write_problem(const char* key, char* buf, int32_t size) {
+  std::string words;
+  if (key && mv::remote::is_key(key)) {
+    if (mv::remote::library* lib = mv::remote::library::shared()) words = lib->write_problem(key);
+  }
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(words.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, words.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(words.size());
 }
 extern "C" uint64_t mv_chrome_drop_generation(void) {
   return g_chrome_app ? [g_chrome_app dropGeneration] : 0;
@@ -2530,7 +2543,7 @@ extern "C" int32_t mv_chrome_job_text(uint64_t id, int32_t which, char* buf, int
     mv::shell::transfer_job_view v;
     if (!g_chrome_app || ![g_chrome_app transfers].view(id, MvTransferNowMs(), v)) return MvCopyText({}, buf, size);
     if (which == 0) return MvCopyText(v.title, buf, size);
-    if (which == 1) return MvCopyText(std::string(mv::shell::browse_path::leaf(v.target)), buf, size);
+    if (which == 1) return MvCopyText(MvPlaceName(v.target), buf, size);
     return MvCopyText(v.target, buf, size);
   }
   mv::abi::clip_session* jobs = g_chrome_app ? [g_chrome_app clipJobs] : nullptr;
@@ -2563,6 +2576,10 @@ extern "C" void mv_chrome_job_reveal(uint64_t id) {
   if (MvTransferJob(id)) {
     mv::shell::transfer_job_view v;
     if (!g_chrome_app || ![g_chrome_app transfers].view(id, MvTransferNowMs(), v) || v.target.empty()) return;
+    if (mv::remote::is_key(v.target)) {
+      [g_chrome_app openRemoteFolder:v.target];  // on another computer: shown here, not in Finder
+      return;
+    }
     if (NSString* p = [NSString stringWithUTF8String:v.target.c_str()]) {
       [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:p isDirectory:YES]];
     }
@@ -6293,6 +6310,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 - (BOOL)renameCurrentItem {
   const mv::io::dir_entry* entry = [self currentEntry];
   if (!entry) return NO;
+  if (mv::remote::is_key(entry->path_utf8)) return [self renameRemoteEntry:*entry];
   if (_listOpen) {
     [self noticeShow:"Rename it from its own folder"];
     return YES;
@@ -6431,7 +6449,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   if (_items.empty()) return;
   const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
   if (entries.empty()) return;
-  if (move && [self refuseWriteToEntries:entries]) return;  // copying out is fine
+  const bool remote = mv::remote::is_key(entries[0].path_utf8);
+  if (move && !remote && [self refuseWriteToEntries:entries]) return;  // copying out is fine
 
   if (pick || !_lastDestination) {
     NSOpenPanel* panel = [NSOpenPanel openPanel];
@@ -6445,6 +6464,14 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   }
 
   NSURL* destDir = _lastDestination;
+  if (remote) {
+    // Another computer's files come down through the drop rule: a move takes them off the
+    // server only after the copy here reads back right (file_transfer.h).
+    std::vector<std::string> keys;
+    for (const auto& e : entries) keys.push_back(e.path_utf8);
+    (void)[self dropPaths:keys into:destDir.path.UTF8String flags:1 | (move ? 0 : 2)];
+    return;
+  }
   std::vector<std::string> src_paths;
   std::vector<std::string> src_names;
   src_paths.reserve(entries.size());
@@ -6560,6 +6587,10 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   if (_items.empty()) return;
   const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
   if (entries.empty()) return;
+  if (mv::remote::is_key(entries[0].path_utf8)) {
+    [self deleteRemoteEntries:entries];
+    return;
+  }
   if ([self refuseWriteToEntries:entries]) return;
 
   NSAlert* alert = [[NSAlert alloc] init];
@@ -6595,6 +6626,126 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
           [strongSelf publish];
         });
       }];
+}
+
+// Plan §6: Delete on another computer's files sends them to that folder's trash on the
+// server (its service's delete), which only the server's owner empties.
+- (void)deleteRemoteEntries:(const std::vector<mv::io::dir_entry>&)entries {
+  for (const auto& e : entries) {
+    if (!mv::shell::change_allowed(e.path_utf8, mv::shell::file_change::remove)) {
+      [self refuseChangeAt:e.path_utf8];
+      return;
+    }
+  }
+  const std::string server = MvPlaceName(mv::remote::server_key(mv::remote::parse_key(entries[0].path_utf8)->server));
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = entries.size() == 1
+      ? [NSString stringWithFormat:@"Move “%s” to the trash on %s?", entries[0].name_utf8.c_str(), server.c_str()]
+      : [NSString stringWithFormat:@"Move %lu items to the trash on %s?", (unsigned long)entries.size(), server.c_str()];
+  alert.informativeText = [NSString stringWithFormat:@"They leave every listing. Only %s's owner can empty that trash, on that computer.",
+                                                     server.c_str()];
+  alert.alertStyle = NSAlertStyleWarning;
+  [alert addButtonWithTitle:@"Move to Trash"];
+  [alert addButtonWithTitle:@"Cancel"];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return;
+  std::vector<std::string> keys;
+  for (const auto& e : entries) keys.push_back(e.path_utf8);
+  [self noticeShowUntilCleared:"Moving to the trash on " + server + "…"];
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [keys, server, weakSelf](const mv::job_context&) -> mv::status {
+    mv::remote::library* lib = mv::remote::library::shared();
+    auto gone = std::make_shared<std::vector<std::string>>();
+    std::string problem;
+    for (const auto& k : keys) {
+      mv::remote::library::change_refused why;
+      auto r = lib ? lib->remove(k, &why) : mv::result<std::string>(mv::err(mv::status::not_found));
+      if (r) {
+        gone->push_back(k);
+      } else if (problem.empty()) {
+        problem = lib ? lib->write_problem(k) : std::string();
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      for (const auto& k : *gone) strongSelf->_marks.erase(k);
+      [strongSelf marksDidChange];
+      const std::size_t n = gone->size();
+      if (n < keys.size()) NSBeep();
+      std::string words = n == 0 ? "Nothing moved to the trash on " + server
+                          : n == 1 ? "Moved 1 item to the trash on " + server
+                                   : "Moved " + std::to_string(n) + " items to the trash on " + server;
+      if (n < keys.size()) words += problem.empty() ? std::string(" · the rest could not go") : " · " + problem;
+      [strongSelf noticeShow:words];
+      [strongSelf relistRemoteFolder];
+      ++strongSelf->_dropGeneration;
+      [strongSelf publish];
+    });
+    return mv::status::ok;
+  });
+}
+
+// F2 on another computer's file: the service's rename (a move within its folder). A taken
+// name keeps both, as a drop does: the next free "name (2).ext", and the notice says so.
+- (BOOL)renameRemoteEntry:(const mv::io::dir_entry&)entry {
+  const std::string key = entry.path_utf8;
+  if (!mv::shell::change_allowed(key, mv::shell::file_change::rename)) {
+    [self refuseChangeAt:key];
+    return YES;
+  }
+  const std::string oldStem(mv::io::stem_of(entry.name_utf8));
+  const std::string ext = entry.name_utf8.substr(oldStem.size());
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Rename";
+  alert.informativeText = [NSString stringWithFormat:@"On %s.", MvPlaceName(mv::remote::parent_key(key)).c_str()];
+  [alert addButtonWithTitle:@"Rename"];
+  [alert addButtonWithTitle:@"Cancel"];
+  NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+  field.stringValue = [NSString stringWithUTF8String:oldStem.c_str()] ?: @"";
+  alert.accessoryView = field;
+  alert.window.initialFirstResponder = field;
+  [alert layout];
+  [field selectText:nil];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return YES;
+  NSString* trimmed = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  if (trimmed.length == 0 || [trimmed containsString:@"/"] || [trimmed hasPrefix:@"."]) {
+    NSBeep();
+    [self noticeShow:"A name can't be empty, start with a dot or hold /"];
+    return YES;
+  }
+  const std::string name = std::string(trimmed.UTF8String) + ext;
+  if (name == entry.name_utf8) return YES;
+  const std::string folder = mv::remote::parent_key(key);
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [key, folder, name, weakSelf](const mv::job_context&) -> mv::status {
+    mv::remote::library* lib = mv::remote::library::shared();
+    std::string words;
+    if (!lib) {
+      words = "Could not rename it";
+    } else {
+      mv::remote::library::change_refused why;
+      auto r = lib->move(key, folder, name, &why);
+      if (!r && why.why == mv::driftwire::serve::client::change_why::exists) {
+        const std::string kept = mv::io::unique_name(name, [&](std::string_view c) {
+          auto there = lib->exists(folder + std::string(c));
+          return !there || there.value();
+        });
+        if (!kept.empty()) r = lib->move(key, folder, kept, &why);
+        words = r ? "“" + name + "” was taken: renamed to “" + kept + "”" : std::string();
+      } else if (r) {
+        words = "Renamed to “" + name + "”";
+      }
+      if (!r) words = lib->write_problem(key).empty() ? std::string("Could not rename it") : lib->write_problem(key);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      [strongSelf noticeShow:words];
+      [strongSelf relistRemoteFolder];
+    });
+    return mv::status::ok;
+  });
+  return YES;
 }
 
 - (void)toggleFullscreen {
@@ -7394,7 +7545,11 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 // What a folder is to a drop (file_drop.h). Another computer's folder is
 // read-only until the service says this Mac may change it (plan §6).
 static mv::shell::place_kind MvPlaceKind(std::string_view path) {
-  if (mv::shell::is_remote(path)) return mv::shell::place_kind::remote_read_only;
+  if (mv::remote::is_key(path)) {
+    return mv::shell::change_allowed(path, mv::shell::file_change::add) ? mv::shell::place_kind::remote_writable
+                                                                         : mv::shell::place_kind::remote_read_only;
+  }
+  if (mv::shell::is_remote(path)) return mv::shell::place_kind::read_only;  // a cached original stands for one
   if (mv::shell::write_protected(path)) return mv::shell::place_kind::read_only;
   return mv::shell::place_kind::writable;
 }
@@ -7427,6 +7582,73 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
 - (uint64_t)dropGeneration { return _dropGeneration; }
 - (mv::shell::transfer_board&)transfers { return _transfers; }
 
+// What a place is called in a notice: a remote folder's own name, else the leaf.
+static std::string MvPlaceName(const std::string& path) {
+  if (mv::remote::is_key(path)) {
+    mv::remote::library* lib = mv::remote::library::shared();
+    std::string name = lib ? lib->display_name(path) : std::string();
+    return name.empty() ? std::string("the server") : name;
+  }
+  return std::string(mv::shell::browse_path::leaf(path));
+}
+
+// The remote side of the transfer seam (file_transfer.h remote_ops) over the remote
+// library; each call blocks, on the pool. The runner's cancel reaches the library's flag
+// through the progress callbacks.
+static mv::shell::remote_ops MvRemoteOps() {
+  mv::shell::remote_ops o;
+  o.exists = [](const std::string& key) -> mv::result<bool> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::not_found);
+    return lib->exists(key);
+  };
+  o.make_folder = [](const std::string& parent, const std::string& name) -> mv::result<std::string> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::not_found);
+    return lib->make_folder(parent, name);
+  };
+  o.add = [](const std::string& parent, const std::string& local, const std::string& name,
+             const std::atomic<bool>* cancel, std::atomic<std::uint64_t>* done) -> mv::result<std::string> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::not_found);
+    mv::mobile::cancel_flag flag;
+    if (cancel && cancel->load()) return mv::err(mv::status::cancelled);
+    std::uint64_t last = 0;
+    return lib->add_file(parent, local, name, &flag, [&](std::uint64_t sent) {
+      if (cancel && cancel->load()) flag.stop.store(true);
+      if (done && sent > last) done->fetch_add(sent - last);
+      last = std::max(last, sent);
+    });
+  };
+  o.move = [](const std::string& key, const std::string& to, const std::string& name,
+              bool& taken) -> mv::result<std::string> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::not_found);
+    mv::remote::library::change_refused why;
+    auto r = lib->move(key, to, name, &why);
+    taken = !r && why.why == mv::driftwire::serve::client::change_why::exists;
+    return r;
+  };
+  o.remove = [](const std::string& key) -> mv::result<std::string> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::not_found);
+    return lib->remove(key);
+  };
+  o.fetch = [](const std::string& key, const std::atomic<bool>* cancel,
+               std::atomic<std::uint64_t>* done) -> mv::result<std::string> {
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib) return mv::err(mv::status::not_found);
+    mv::mobile::cancel_flag flag;
+    std::uint64_t last = 0;
+    return lib->fetch(key, &flag, [&](std::uint64_t got, std::uint64_t) {
+      if (cancel && cancel->load()) flag.stop.store(true);
+      if (done && got > last) done->fetch_add(got - last);
+      last = std::max(last, got);
+    });
+  };
+  return o;
+}
+
 // The file work of a drop or a paste, on the pool at background priority (a
 // copy the user started finishes even if they browse on), with a row in the
 // Jobs pane. Never on the main thread: plan_transfer's stats, the copies and
@@ -7441,7 +7663,7 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
   // the notice says it whole.
   const std::string title = std::string(move ? "Moving " : "Copying ") + what;
   std::shared_ptr<mv::shell::transfer_board::job> job = _transfers.add(title, target, MvTransferNowMs());
-  [self noticeShowUntilCleared:title + " to " + std::string(mv::shell::browse_path::leaf(target)) + "…"];
+  [self noticeShowUntilCleared:title + " to " + MvPlaceName(target) + "…"];
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [job, verb, sources, target, weakSelf](const mv::job_context&) -> mv::status {
     job->state.store(2);
@@ -7455,7 +7677,8 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
         local.push_back(std::move(r).value().path);
       }
     }
-    auto t = mv::shell::local_target();
+    // Local paths as they are; another computer's through its service (plan §6).
+    auto t = mv::shell::mixed_target(MvRemoteOps());
     auto result = std::make_shared<mv::shell::transfer_result>(
         mv::shell::run_transfer(verb, local, target, *t, job->progress, &job->cancel));
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -7478,34 +7701,98 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
   _transfers.finish(job, result, MvTransferNowMs());
   ++_jobsGeneration;
   if (result.failed() > 0) NSBeep();
-  [self noticeShow:mv::shell::transfer_summary(result, target)];
+  [self noticeShow:mv::shell::transfer_summary(result, MvPlaceName(target))];
   if (result.verb == mv::shell::drop_verb::move) {
     for (const auto& item : result.items) {
       if (item.status == mv::status::ok) _marks.erase(item.source);
     }
     [self marksDidChange];
   }
-  // The watcher would relist too; this does not wait for FSEvents.
+  // The watcher would relist too; this does not wait for FSEvents. A remote folder on
+  // screen has no watcher: it is listed again, quietly, keeping the selection.
   if (!_listOpen) _folder.relist();
+  [self relistRemoteFolder];
   ++_dropGeneration;
   [self publish];
+}
+
+// The remote folder on screen, listed again after a change made here, without the
+// "Opening…" notice and on the item that was selected (else the first).
+- (void)relistRemoteFolder {
+  if (!_listOpen || _remoteFolderKey.empty()) return;
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) return;
+  const std::string key = _remoteFolderKey;
+  const mv::io::dir_entry* cur = [self currentEntry];
+  const std::string selected = cur ? cur->path_utf8 : std::string();
+  const std::uint64_t open_seq = _remoteOpenSeq;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, selected, open_seq](const mv::job_context&) -> mv::status {
+    auto listed = lib->list(key, /*person=*/true);
+    auto out = std::make_shared<std::optional<mv::remote::listing>>();
+    if (listed) *out = std::move(listed).value();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf || !*out || open_seq != strongSelf->_remoteOpenSeq || strongSelf->_remoteFolderKey != key) return;
+      const mv::remote::listing& l = **out;
+      if (l.files.empty()) {
+        [strongSelf openRemoteFolder:key];  // nothing left to show: as opening it says
+        return;
+      }
+      std::vector<mv::shell::folder_model::list_entry> entries;
+      std::size_t select = 0;
+      for (const auto& f : l.files) {
+        if (f.key == selected) select = entries.size();
+        mv::shell::folder_model::list_entry e;
+        e.path_utf8 = f.key;
+        e.is_virtual = true;
+        e.name_utf8 = f.name;
+        e.mtime_unix = f.mtime;
+        e.size = f.size;
+        entries.push_back(std::move(e));
+      }
+      const std::string title = l.title.empty() ? MvPlaceName(key) : l.title;
+      if ([strongSelf openListTitled:title entries:std::move(entries) select:select gallery:strongSelf->_galleryVisible]) {
+        strongSelf->_remoteFolderKey = key;
+      }
+    });
+    return mv::status::ok;
+  });
+}
+
+- (std::string)remoteProblem:(const std::string&)key {
+  mv::remote::library* lib = mv::remote::library::shared();
+  return lib ? lib->write_problem(key) : std::string(mv::shell::kRemoteWriteProtectedNotice);
+}
+
+// The folder New Folder and Paste act on: the one on screen, or the remote folder shown.
+- (std::string)changeFolder {
+  if (!_listOpen) return _currentDir;
+  return _remoteFolderKey;
+}
+
+// A refusal's words for `path`: the server's reason for a remote one, else the guard's.
+- (void)refuseChangeAt:(const std::string&)path {
+  NSBeep();
+  if (mv::remote::is_key(path)) {
+    mv::remote::library* lib = mv::remote::library::shared();
+    [self noticeShow:lib ? lib->write_problem(path) : std::string(mv::shell::kRemoteWriteProtectedNotice)];
+    return;
+  }
+  [self noticeShow:mv::shell::drop_refusal_words(mv::shell::drop_refusal::read_only_target)];
 }
 
 // ⇧⌘N, File ▸ New Folder: named first in a sheet-sized alert (Finder's
 // untitled folder, selected), made on the pool, then selected as a tile.
 - (BOOL)newFolderHere {
-  if (_listOpen || _currentDir.empty()) return NO;
-  const mv::shell::place_kind kind = MvPlaceKind(_currentDir);
-  if (kind != mv::shell::place_kind::writable) {
-    NSBeep();
-    [self noticeShow:mv::shell::drop_refusal_words(kind == mv::shell::place_kind::read_only
-                                                       ? mv::shell::drop_refusal::read_only_target
-                                                       : mv::shell::drop_refusal::remote_target)];
+  const std::string parent = [self changeFolder];
+  if (parent.empty()) return NO;
+  if (!mv::shell::change_allowed(parent, mv::shell::file_change::make_folder)) {
+    [self refuseChangeAt:parent];
     return YES;
   }
   NSAlert* alert = [[NSAlert alloc] init];
-  alert.messageText = [NSString stringWithFormat:@"New folder in “%s”",
-                                                 std::string(mv::shell::browse_path::leaf(_currentDir)).c_str()];
+  alert.messageText = [NSString stringWithFormat:@"New folder in “%s”", MvPlaceName(parent).c_str()];
   [alert addButtonWithTitle:@"Create"];
   [alert addButtonWithTitle:@"Cancel"];
   NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
@@ -7523,10 +7810,9 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
     return YES;
   }
   const std::string name = trimmed.UTF8String;
-  const std::string parent = _currentDir;
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [name, parent, weakSelf](const mv::job_context&) -> mv::status {
-    auto t = mv::shell::local_target();
+    auto t = mv::shell::mixed_target(MvRemoteOps());
     const std::string made = mv::shell::make_new_folder(parent, name, *t);
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
@@ -7545,18 +7831,20 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
     return;
   }
   [self noticeShow:"Made “" + std::string(mv::shell::browse_path::leaf(made)) + "”"];
+  ++_dropGeneration;  // the folder pane lists it
+  if (mv::remote::is_key(parent)) return;  // a remote folder's subfolders are in the pane
   if (_currentDir != parent || _listOpen) return;
   // Selected once the relist lists it, the way Up lands on the tile it left.
   _revealChild = made;
   _folder.relist();
-  ++_dropGeneration;
 }
 
 // ⌘V, File ▸ Paste Files Here: the files on the clipboard (⌘C here or in
 // Finder) are copied into the folder on screen, as a drop from Finder is.
 // The pasteboard read is an in-memory list of URLs, not file I/O.
 - (BOOL)pasteFilesHere {
-  if (_listOpen || _currentDir.empty()) return NO;
+  const std::string here = [self changeFolder];
+  if (here.empty()) return NO;
   NSArray<NSURL*>* urls = [NSPasteboard.generalPasteboard
       readObjectsForClasses:@[ NSURL.class ]
                     options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
@@ -7569,7 +7857,7 @@ static mv::shell::place_kind MvPlaceKind(std::string_view path) {
     [self noticeShow:"Nothing to paste: copy files first"];
     return YES;
   }
-  (void)[self dropPaths:paths into:_currentDir flags:0];
+  (void)[self dropPaths:paths into:here flags:0];
   return YES;
 }
 - (void)adjustGalleryCellSize:(NSInteger)direction {
@@ -7971,8 +8259,26 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuOpenPhotos:
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
-    case kMenuRename:
-      return [self currentEntry] != nullptr && !_listOpen && !_slideshowActive && !_edits.crop_active();
+    case kMenuRename: {
+      const mv::io::dir_entry* e = [self currentEntry];
+      if (e && mv::remote::is_key(e->path_utf8)) {
+        // Plan §6: on a server that lets this computer change files; else greyed, the reason in its tip.
+        const bool ok = mv::shell::change_allowed(e->path_utf8, mv::shell::file_change::rename);
+        item.toolTip = ok ? nil : @([self remoteProblem:e->path_utf8].c_str());
+        return ok && !_slideshowActive;
+      }
+      return e != nullptr && !_listOpen && !_slideshowActive && !_edits.crop_active();
+    }
+    case kMenuNewFolder:
+    case kMenuPasteFiles: {
+      const std::string here = [self changeFolder];
+      if (here.empty()) return NO;
+      const bool ok = mv::shell::change_allowed(here, mv::shell::file_change::add);
+      item.toolTip = ok ? nil : @((mv::remote::is_key(here) ? [self remoteProblem:here]
+                                                             : std::string(mv::shell::drop_refusal_words(
+                                                                   mv::shell::drop_refusal::read_only_target))).c_str());
+      return ok;
+    }
     case kMenuTrash:
       // The menu answers ⌘⌫ before any first responder sees it (issue #180).
       // A text field's ⌘⌫ is "delete to start of line"; in trim and crop
@@ -7987,14 +8293,17 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
       // Photos library files are never trashed or moved (issue #72). The
       // marks themselves, not a copy of their entries: this runs per validation.
       if (![self hasFolder]) return NO;
+      // Plan §6: another computer's files move off it, or go to its trash, where it allows.
+      const auto op = tag == kMenuTrash ? mv::shell::file_change::remove : mv::shell::file_change::move;
       if (!_marks.empty()) {
         for (const std::string& path : _marks) {
-          if (mv::shell::write_protected(path)) return NO;
+          if (mv::shell::write_protected(path) && !mv::shell::change_allowed(path, op)) return NO;
         }
         return YES;
       }
       const mv::io::dir_entry* entry = [self currentEntry];
-      return entry == nullptr || !mv::shell::write_protected(entry->path_utf8);
+      return entry == nullptr || !mv::shell::write_protected(entry->path_utf8) ||
+             mv::shell::change_allowed(entry->path_utf8, op);
     }
     // A pane with nothing to show is off; one already up can still be closed.
     // The tree lists the open folder (even an empty one) and the Photos row.
@@ -15652,6 +15961,11 @@ class remote_clip_source final : public mv::player::byte_source {
   const std::string cache_dir = std::string(caches.UTF8String) + "/MediaViewer/Remote";
   // Its originals are another computer's files: read-only here (owner call 1).
   mv::shell::set_remote_cache_prefix(cache_dir);
+  // Plan §6: a device the server lets change files adds, moves, renames and deletes there.
+  mv::shell::set_remote_writable([](std::string_view key) {
+    mv::remote::library* lib = mv::remote::library::shared();
+    return lib && lib->can_write(key);
+  });
   _folder.set_virtual_items(std::string(mv::remote::kKeyPrefix), [](const std::string& key) -> mv::result<std::vector<std::uint8_t>> {
     mv::remote::library* lib = mv::remote::library::shared();
     if (!lib) return mv::err(mv::status::unsupported_format);

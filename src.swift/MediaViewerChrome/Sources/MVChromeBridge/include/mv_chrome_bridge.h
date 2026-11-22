@@ -341,6 +341,9 @@ int32_t mv_chrome_drop_verdict(const char* const* paths, int32_t count, const ch
 bool mv_chrome_drop_files(const char* const* paths, int32_t count, const char* target, int32_t flags);
 uint64_t mv_chrome_drop_generation(void);
 int32_t mv_chrome_drop_refusal_text(int32_t refusal, char* buf, int32_t size);
+// docs/plans/desktop-client.md §6: why this computer may not change files at a remote key
+// ("Home lets this computer view only…"); "" when it may, or for a local path. No I/O.
+int32_t mv_chrome_write_problem(const char* key, char* buf, int32_t size);
 // The gallery's keyboard position while on a folder tile; -1 when on images.
 int32_t mv_chrome_folder_cursor(void);
 // A click on a folder tile: the gallery's keyboard moves onto it (-1: the images).
