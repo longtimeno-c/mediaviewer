@@ -65,12 +65,13 @@ void book::space(const root_config& root, stat_info& out) {
 book::verdict book::reserve(const root_config& root, std::uint64_t bytes, bool meta) {
   const std::uint64_t free = free_of(root.path);
   std::unique_lock lock(m_);
-  auto& c = count(root, lock);
-  if (!meta && c.used + c.held + std::max(bytes, kMinFileCost) > root.limit) return verdict::limit;
+  auto& c = root.backup ? count(root, lock) : roots_[root.id];
+  if (root.backup && !meta && c.used + c.held + std::max(bytes, kMinFileCost) > root.limit) return verdict::limit;
   // Held bytes are not on the disk yet: every folder's, since folders may share a volume.
   std::uint64_t held_all = 0;
   for (const auto& [id, other] : roots_) held_all += other.held;
-  if (sub(free, held_all) < bytes + root.reserve) return verdict::full;
+  const std::uint64_t keep = root.backup ? root.reserve : kDefaultReserve;
+  if (sub(free, held_all) < bytes + keep) return verdict::full;
   c.held += bytes;
   return verdict::ok;
 }

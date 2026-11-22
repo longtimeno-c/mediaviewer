@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <climits>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -30,6 +31,7 @@
 #include "wire/serve_backup.h"
 #include "wire/share_users.h"
 #include "core/json.h"
+#include "io/content_hash.h"
 #include "io/file_port.h"
 
 namespace mv::driftwire::serve {
@@ -372,6 +374,7 @@ struct server::state {
   std::function<result<std::unique_ptr<link>>(const std::string&, std::uint16_t, int)> relay_connect;
   std::function<void()> before_gather;  // the tests
   std::function<bool(const root_config&)> root_present;  // the host's (options::root_present)
+  bool copy_moves = false;                                // the tests (options::copy_moves)
   std::function<std::string()> storage;  // options::storage
   std::mutex conv_m;
   std::shared_ptr<convert::service> conv;  // under conv_m (options::converter)
@@ -429,10 +432,13 @@ struct server::state {
   backup::book book;  // phone backup: limits and unfinished copies, across sessions
   // The tests' stand-in for the grants (server::options::may_write); empty: the grants decide.
   std::function<bool(const std::array<std::uint8_t, 32>&)> may_write_override;
-  // Phone backup (B2): whether this session's device may create files in `root` now. Read
-  // fresh at each write, so a grant changed on the card applies to the next file.
+  // Whether this session's device may change files in `root` now: its role is "change"
+  // (self-host-users-smb.md §9: unlimited, or a grant with `backup` on) and its grant reaches the
+  // folder. Phone backup's writes into backup folders and kChangeOps's everywhere else alike.
+  // Read fresh at each request, so a grant changed on the card applies to the next one. The
+  // owner's session never; the Catalogue never.
   [[nodiscard]] bool device_may_write(const conn& c, const root_config& root) {
-    if (c.is_owner || !root.backup) return false;
+    if (c.is_owner || is_catalogue(root)) return false;
     if (may_write_override) return may_write_override(c.device);
     const auto acc = access_for_write(c.device);
     if (acc.a == access::full) return true;
@@ -555,7 +561,7 @@ class session_state {
         {
           std::lock_guard lock(m_);
           // Writes count too: each holds an open file until its commit is done.
-          full = opens_.size() + streams_.size() + live_writes_.load() >= kMaxStreams;
+          full = opens_.size() + streams_.size() + live_writes_.load() + live_changes_.load() >= kMaxStreams;
           if (!full) {
             opens_.push_back(std::move(*r));
             cv_.notify_all();
@@ -648,6 +654,7 @@ class session_state {
 
   void stop() {
     leave_inbox();
+    changes_stop_ = true;  // a change not yet begun is not begun now
     {
       std::lock_guard lock(m_);
       stopping_ = true;
@@ -820,17 +827,19 @@ class session_state {
       for (const auto& c : cfg->roots) {
         root_info info{c.id, c.label};
         info.backup = c.backup;
-        info.writable = c.backup && may_write(c);
+        info.writable = may_change(c);
         info.offline = !root_online(c);
         out.push_back(std::move(info));
       }
       return send_end(r.id, end_code::ok, roots_json(out));
     }
+    // Changing the folders: answered from the worker, with its own checks.
+    if (r.kind == op::mkdir || r.kind == op::move || r.kind == op::remove) return open_change(r, cfg);
     const root_config* root = find_root(*cfg, r.root);
     // Before any file is looked at.
     if (!root || (!r.rel.empty() && !safe_relative(r.rel))) return send_end(r.id, end_code::refused);
     // The meta folder: only a backup folder's, only to a device that may write there.
-    if (r.meta && !may_write(*root)) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
+    if (r.meta && (!root->backup || !may_write(*root))) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
     if (r.kind == op::write) return open_write(r, *root);
     if (r.kind == op::convert) return r.meta ? send_end(r.id, end_code::refused) : open_convert(r, *root);
     const std::string rel = r.meta ? (r.rel.empty() ? std::string(kBackupMetaFolder) : std::string(kBackupMetaFolder) + "/" + r.rel) : r.rel;
@@ -949,7 +958,12 @@ class session_state {
   // ---- writes (phone backup) ----------------------------------------------------------------
 
   [[nodiscard]] bool may_write(const root_config& root) const {
-    if (!book_ || (ops_ & kWriteOp) == 0 || !root.backup) return false;
+    if (!book_ || (ops_ & kWriteOp) == 0 || is_catalogue(root)) return false;
+    return may_write_ ? may_write_(root) : book_->allowed(root, device_);
+  }
+  // Whether this device may change files in `root` (root_info.writable): write, mkdir, move, delete.
+  [[nodiscard]] bool may_change(const root_config& root) const {
+    if (!book_ || (ops_ & (kWriteOp | kChangeOps)) == 0 || is_catalogue(root)) return false;
     return may_write_ ? may_write_(root) : book_->allowed(root, device_);
   }
 
@@ -1197,29 +1211,331 @@ class session_state {
   }
 
   void hand_to_commit(std::shared_ptr<write_stream> w) {
+    run_later([this, w = std::move(w)] {
+      const auto [code, json] = commit(*w);
+      book_->drop(w->part);
+      --live_writes_;
+      // A session already gone cannot hear it; the copy is whole on disk either way.
+      (void)send_end(w->id, code, json);
+    });
+  }
+
+  // The worker's queue: write commits and changes, in order, off the pump (a hash or a copy
+  // across volumes takes a while; this session's reads go on meanwhile).
+  void run_later(std::function<void()> job) {
     std::lock_guard lock(cm_);
-    commits_.push_back(std::move(w));
+    jobs_.push_back(std::move(job));
     if (!committer_.joinable()) committer_ = std::thread([this] { commit_loop(); });
     ccv_.notify_all();
   }
 
   void commit_loop() {
     for (;;) {
-      std::shared_ptr<write_stream> w;
+      std::function<void()> job;
       {
         std::unique_lock lock(cm_);
-        ccv_.wait(lock, [&] { return commit_stop_ || !commits_.empty(); });
-        if (commits_.empty()) return;
-        w = std::move(commits_.front());
-        commits_.pop_front();
+        ccv_.wait(lock, [&] { return commit_stop_ || !jobs_.empty(); });
+        if (jobs_.empty()) return;
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
       }
-      const auto [code, json] = commit(*w);
-      book_->drop(w->part);
-      --live_writes_;
-      // A session already gone cannot hear it; the copy is whole on disk either way.
-      (void)send_end(w->id, code, json);
+      job();
     }
   }
+
+  // ---- changing the shared folders (kChangeOps; serve_wire.h "changing") -------------------
+  // Every path is a root id and a rel that passes safe_relative (no "..", no hidden part, no
+  // absolute path), reached part by part with no link at any part (the *_beneath walks) before
+  // anything is renamed. Nothing here logs a path or a name (rule 6).
+
+  using answer = std::pair<end_code, std::string>;
+  static answer refused_why(const char* why) { return {end_code::refused, why_json(why)}; }
+
+  // The pump's: queued for the worker, which answers.
+  bool open_change(const open_request& r, std::shared_ptr<const config> cfg) {
+    ++live_changes_;
+    run_later([this, r, cfg = std::move(cfg)] {
+      const answer a = changes_stop_.load() ? answer{end_code::error, {}} : change(r, *cfg);
+      --live_changes_;
+      (void)send_end(r.id, a.first, a.second);
+    });
+    return true;
+  }
+
+  answer change(const open_request& r, const config& cfg) {
+    const root_config* root = find_root(cfg, r.root);
+    // A folder this device's grant does not reach is not in its view at all.
+    if (!root || !may_change(*root)) return refused_why(kWhyNotAllowed);
+    // Never the folder itself, never a hidden name (the trash, the backup meta folder, a part).
+    if (r.meta || r.rel.empty() || !safe_relative(r.rel)) return refused_why(kWhyPath);
+    if (!online_for_change(*root)) return {end_code::not_found, why_json(kWhyOffline)};
+    switch (r.kind) {
+      case op::mkdir: return make_folder(r, *root);
+      case op::move: {
+        const root_config* to = find_root(cfg, r.to_root);
+        if (!to || !may_change(*to)) return refused_why(kWhyNotAllowed);
+        if (r.to_rel.empty() || !safe_relative(r.to_rel)) return refused_why(kWhyPath);
+        if (!online_for_change(*to)) return {end_code::not_found, why_json(kWhyOffline)};
+        return move_entry(r, *root, *to);
+      }
+      case op::remove: return trash_entry(r, *root);
+      default: return {end_code::unsupported, {}};
+    }
+  }
+
+  // A folder on a mount point or a volume the host keeps is looked at first: unmounted, it is
+  // an empty folder on the system disk, and a change would land there.
+  bool online_for_change(const root_config& root) const {
+    return !(root.mount || !root.volume.empty()) || root_online(root);
+  }
+
+  static std::pair<std::string, std::string> split_rel(const std::string& rel) {
+    const auto slash = rel.rfind('/');
+    if (slash == std::string::npos) return {std::string(), rel};
+    return {rel.substr(0, slash), rel.substr(slash + 1)};
+  }
+  static std::string path_of(const root_config& root, const std::string& rel) {
+    return io::join_path(root.path, io::native_relative(rel));
+  }
+  // A source that could not be reached: a link at a part (refused), its drive gone, or not there.
+  answer missing(const root_config& root, status e) const {
+    if (e == status::permission_denied) return refused_why(kWhyPath);
+    if (!root_online(root)) return {end_code::not_found, why_json(kWhyOffline)};
+    return {end_code::not_found, {}};
+  }
+  // Holds names against every other session's change of them: two at once is "busy".
+  struct claims {
+    backup::book* book = nullptr;
+    std::vector<std::string> held;
+    bool take(const std::string& path) {
+      if (!book->claim("\x01" + path)) return false;
+      held.push_back("\x01" + path);
+      return true;
+    }
+    ~claims() {
+      for (const auto& h : held) book->drop(h);
+    }
+  };
+
+  answer make_folder(const open_request& r, const root_config& root) {
+    if (split_rel(r.rel).second.size() > kMaxWriteName) return refused_why(kWhyName);
+    if (auto st = io::stat_beneath(root.path, r.rel)) {
+      if (st->is_directory) return {end_code::ok, name_json({}, r.rel, true)};
+      return refused_why(kWhyExists);
+    } else if (st.error() == status::permission_denied) {
+      return refused_why(kWhyPath);
+    }
+    if (auto made = io::make_directories_beneath(root.path, r.rel); !made) {
+      return made.error() == status::permission_denied ? refused_why(kWhyPath) : missing(root, status::io);
+    }
+    return {end_code::ok, name_json({}, r.rel, false)};
+  }
+
+  answer move_entry(const open_request& r, const root_config& from, const root_config& to) {
+    const auto [to_dir, to_name] = split_rel(r.to_rel);
+    if (to_name.size() > kMaxWriteName) return refused_why(kWhyName);
+    const bool same_root = from.id == to.id;
+    if (same_root && r.rel == r.to_rel) return refused_why(kWhyPath);
+    auto src = io::stat_beneath(from.path, r.rel);
+    if (!src) return missing(from, src.error());
+    // A folder into itself or below itself.
+    if (src->is_directory && same_root && r.to_rel.starts_with(r.rel + "/")) return refused_why(kWhyPath);
+    if (auto there = io::stat_beneath(to.path, r.to_rel)) return refused_why(kWhyExists);
+    else if (there.error() == status::permission_denied) return refused_why(kWhyPath);  // a link on the way
+    auto dir = to_dir.empty() ? result<std::string>(to.path) : io::make_directories_beneath(to.path, to_dir);
+    if (!dir) return dir.error() == status::permission_denied ? refused_why(kWhyPath) : missing(to, dir.error());
+    const std::string src_path = path_of(from, r.rel);
+    const std::string dst_path = io::join_path(*dir, to_name);
+    claims held{book_, {}};
+    if (!held.take(src_path) || !held.take(dst_path)) return refused_why(kWhyBusy);
+    // What it adds to another folder: a backup folder's limit counts it, and a copy needs room.
+    std::uint64_t bytes = 0;
+    const bool across = !same_root;
+    if (across) bytes = src->is_directory ? io::tree_size(src_path).bytes : src->size;
+    std::uint64_t reserved = 0;
+    const auto hold = [&]() -> const char* {
+      switch (book_->reserve(to, bytes)) {
+        case backup::book::verdict::ok: reserved = bytes; return nullptr;
+        case backup::book::verdict::limit: return kWhyLimit;
+        case backup::book::verdict::full: return kWhyFull;
+      }
+      return kWhyFull;
+    };
+    struct release {
+      backup::book* b;
+      const std::string& id;
+      std::uint64_t& n;
+      ~release() {
+        if (n) b->release(id, n);
+      }
+    } unheld{book_, to.id, reserved};
+    if (across && to.backup) {
+      if (const char* why = hold()) return refused_why(why);
+    }
+    const auto placed = [&]() -> answer {
+      if (across) {
+        if (reserved) book_->wrote(to.id, reserved);
+        reserved = 0;
+        if (from.backup) book_->removed(from.id, bytes);
+      }
+      json::writer w;
+      w.begin_object().key("name").string(r.to_rel).end_object();
+      return {end_code::ok, w.take()};
+    };
+    if (!(across && copy_moves_)) {
+      auto renamed = io::rename_no_replace(src_path, dst_path);
+      if (renamed && *renamed == io::rename_outcome::renamed) return placed();
+      if (renamed) return refused_why(kWhyExists);
+    }
+    // Not one volume (or the tests say so): copied, checked, placed, and only then removed.
+    if (!reserved) {
+      if (!across) bytes = src->is_directory ? io::tree_size(src_path).bytes : src->size;
+      if (const char* why = hold()) return refused_why(why);
+    }
+    const std::string staging = io::join_path(*dir, "." + to_name + "." + device_id_ + ".mvmove");
+    if (!held.take(staging)) return refused_why(kWhyBusy);
+    std::vector<copied> files;
+    std::vector<std::string> dirs;
+    bool ok = false;
+    if (src->is_directory) {
+      // A leftover of this device's from a move that was cut off: its own, so it goes.
+      (void)io::remove_tree(staging);
+      ok = io::make_directories(staging).has_value() && copy_tree(from.path, r.rel, staging, files, dirs, 0);
+    } else {
+      (void)io::remove_file(staging);
+      ok = copy_file(from.path, r.rel, staging, files);
+    }
+    const auto drop_staging = [&] {
+      if (src->is_directory) {
+        (void)io::remove_tree(staging);
+      } else {
+        (void)io::remove_file(staging);
+      }
+    };
+    if (!ok) {
+      drop_staging();
+      return {end_code::error, {}};
+    }
+    if constexpr (io::kHasHiddenFlag) {
+      if (!src->is_directory) (void)io::set_hidden(staging, false);
+    }
+    auto renamed = io::rename_no_replace(staging, dst_path);
+    if (!renamed || *renamed != io::rename_outcome::renamed) {
+      drop_staging();
+      return renamed ? refused_why(kWhyExists) : answer{end_code::error, {}};
+    }
+    // The copy is whole under its name: the source goes, each file only as it was copied (one
+    // changed since stays), each folder only once it is empty.
+    for (const auto& f : files) {
+      const auto now = io::stat_beneath(from.path, f.rel);
+      if (now && !now->is_directory && now->size == f.size && now->mtime_ns == f.mtime_ns) {
+        (void)io::remove_file(path_of(from, f.rel));
+      }
+    }
+    if (src->is_directory) {
+      dirs.push_back(r.rel);  // the walk lists each folder after what is in it
+      for (const auto& d : dirs) {
+        if (const auto st = io::stat_beneath(from.path, d); st && st->is_directory) {
+          std::error_code ec;
+          const std::string p = path_of(from, d);
+          std::filesystem::remove(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(p.data()), p.size())), ec);
+        }
+      }
+    }
+    return placed();
+  }
+
+  struct copied {
+    std::string rel;
+    std::uint64_t size = 0;
+    std::int64_t mtime_ns = 0;
+  };
+  // One file, read as the walk reaches it, written to `into` (new), flushed, and read back:
+  // false unless what is on disk there is what was read.
+  static bool copy_file(const std::string& root, const std::string& rel, const std::string& into,
+                        std::vector<copied>& files) {
+    const auto st = io::stat_beneath(root, rel);
+    if (!st || st->is_directory) return false;
+    io::file_reader in;
+    if (!in.open_beneath(root, rel)) return false;
+    io::file_writer out;
+    if (auto made = out.create_new(into); !made || *made != io::rename_outcome::renamed) return false;
+    if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(into, true);
+    io::hasher h;
+    std::vector<std::uint8_t> buf(1u << 20);
+    std::uint64_t at = 0;
+    for (;;) {
+      auto got = in.read(buf);
+      if (!got) return false;
+      if (*got == 0) break;
+      const auto bytes = std::span<const std::uint8_t>(buf.data(), *got);
+      h.update(bytes);
+      if (!out.write_at(at, bytes)) return false;
+      at += *got;
+    }
+    if (!out.set_mtime(st->mtime_unix) || !out.flush_durable() || !out.close()) return false;
+    const auto back = backup::hash_file(into);
+    if (!back || back.value() != h.finish().hex()) return false;
+    files.push_back({rel, st->size, st->mtime_ns});
+    return true;
+  }
+  static bool copy_tree(const std::string& root, const std::string& rel, const std::string& into,
+                        std::vector<copied>& files, std::vector<std::string>& dirs, int depth) {
+    if (depth > 64) return false;
+    auto children = io::list_beneath(root, rel, true);  // links are left out, and stay
+    if (!children) return false;
+    for (const auto& c : *children) {
+      const std::string child = rel + "/" + c.name;
+      const std::string target = io::join_path(into, c.name);
+      if (c.is_directory) {
+        if (!io::make_directories(target) || !copy_tree(root, child, target, files, dirs, depth + 1)) return false;
+        dirs.push_back(child);
+      } else if (!copy_file(root, child, target, files)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // The folder's own trash, today's part: `<root>/.mediaviewer-trash/YYYY-MM-DD` (UTC).
+  static std::string trash_day() {
+    using namespace std::chrono;
+    const year_month_day d{floor<days>(system_clock::now())};
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%04d-%02u-%02u", static_cast<int>(d.year()), static_cast<unsigned>(d.month()),
+                  static_cast<unsigned>(d.day()));
+    return buf;
+  }
+
+  answer trash_entry(const open_request& r, const root_config& root) {
+    auto src = io::stat_beneath(root.path, r.rel);
+    if (!src) return missing(root, src.error());
+    const std::string src_path = path_of(root, r.rel);
+    claims held{book_, {}};
+    if (!held.take(src_path)) return refused_why(kWhyBusy);
+    const auto [rel_dir, name] = split_rel(r.rel);
+    const std::string day = trash_day();
+    const std::string in_trash = rel_dir.empty() ? day : day + "/" + rel_dir;
+    const bool fresh = !io::stat_beneath(root.path, kTrashFolder);
+    auto dir = io::make_directories_beneath(root.path, std::string(kTrashFolder) + "/" + in_trash);
+    if (!dir) return dir.error() == status::permission_denied ? refused_why(kWhyPath) : missing(root, dir.error());
+    if constexpr (io::kHasHiddenFlag) {
+      if (fresh) (void)io::set_hidden(io::join_path(root.path, kTrashFolder), true);
+    }
+    for (int n = 1; n <= backup::kMaxNumbered; ++n) {
+      const std::string candidate = backup::numbered(name, n);
+      auto renamed = io::rename_no_replace(src_path, io::join_path(*dir, candidate));
+      // Not on the trash's volume (a drive mounted inside the folder): never copied away.
+      if (!renamed) return {end_code::error, {}};
+      if (*renamed == io::rename_outcome::renamed) {
+        json::writer w;
+        w.begin_object().key("trash").string(in_trash + "/" + candidate).end_object();
+        return {end_code::ok, w.take()};
+      }
+    }
+    return refused_why(kWhyExists);
+  }
+
 
   // Flush, hash what is on disk, rename into place without replacing anything (serve_backup.h).
   std::pair<end_code, std::string> commit(write_stream& w) {
@@ -1350,10 +1666,18 @@ class session_state {
   std::map<std::uint32_t, std::shared_ptr<write_stream>> writes_;  // under wm_
   std::mutex cm_;
   std::condition_variable ccv_;
-  std::deque<std::shared_ptr<write_stream>> commits_;  // under cm_
+  std::deque<std::function<void()>> jobs_;             // under cm_
   bool commit_stop_ = false;                           // under cm_
   std::thread committer_;                              // started under cm_
   std::atomic<std::size_t> live_writes_{0};            // opened and not yet closed or committed
+  std::atomic<std::size_t> live_changes_{0};           // changes queued or running on the worker
+  std::atomic<bool> changes_stop_{false};
+  bool copy_moves_ = false;                            // the tests: a move between folders copies
+
+ public:
+  // The tests (server::options::copy_moves): every move between two folders takes the copy
+  // path, as one across volumes does.
+  void set_copy_moves(bool on) { copy_moves_ = on; }
 };
 
 }  // namespace
@@ -1409,7 +1733,7 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       // (A punched one is direct already: not offered again.) Writes (phone
       // backup) to any device but the owner's session; each folder asks its grant.
       const bool punched = c.source.starts_with("punch:");
-      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0) |
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp | kChangeOps) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0) |
                           (converter() ? kConvertOp : 0));
     }
   }
@@ -1423,9 +1747,9 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     extra = g.substr(1, g.size() - 2);
   }
   {
-    // The device's role (kCapsRole; self-host-users-smb.md §9): "change" may write (phone
-    // backup, the service's one write), "view" may not, "admin" is the owner's session. A
-    // client that writes nothing (a desktop opening the host's folders) reads it to say so.
+    // The device's role (kCapsRole; self-host-users-smb.md §9): "change" may write, make
+    // folders, move and delete (kChangeOps) where root_info.writable says, "view" may not,
+    // "admin" is the owner's session. Clients show their commands by it.
     const char* role = c.is_owner ? "admin" : (!c.grant || c.grant->backup) ? "change" : "view";
     json::writer w;
     w.begin_object().key(kCapsRole).string(role).end_object();
@@ -1474,6 +1798,7 @@ void server::state::session(conn& c, std::optional<message> first_message) {
                   &book, c.device, [this, &c](const root_config& root) { return device_may_write(c, root); });
   s.set_root_present(root_present);
   s.set_converter([this] { return converter(); });
+  s.set_copy_moves(copy_moves);
   s.count_into(&c.bytes_read, &c.bytes_written);
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
@@ -2991,6 +3316,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.relay_connect = o.relay_connect;
   st.before_gather = o.before_gather;
   st.root_present = o.root_present;
+  st.copy_moves = o.copy_moves;
   st.storage = o.storage;
   st.conv = o.converter;
   st.acceptor = std::thread([&st] { st.accept_loop(); });
