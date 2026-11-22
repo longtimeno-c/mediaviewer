@@ -132,7 +132,11 @@ void tunnel_controls(writer& w, const view& v) {
     }
   }
   toggle(w, "all_apps", "Use for all apps", v.all_apps);
-  if (v.all_apps && !v.system_note.empty()) text(w, "system_note", v.system_note, "caption");
+  if (v.all_apps && v.system_asking) {
+    text(w, "system_note", "Waiting for you to allow the proxy change\xE2\x80\xA6", "caption");
+  } else if (v.all_apps && !v.system_note.empty()) {
+    text(w, "system_note", v.system_note, "caption");
+  }
   if (v.tunnel_address.empty()) return;
   const std::string caption =
       v.tunnel_open > 0 ? "Through your VPN server: " + std::to_string(v.tunnel_open) +
@@ -162,8 +166,8 @@ void connect_card(writer& w, const view& v) {
        "caption");
   if (v.connect_open) {
     text(w, "connect_how",
-         "On your server, in MediaViewer: Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN \xE2\x86\x92 Use as VPN, then "
-         "VPN code\xE2\x80\xA6. Copy it and paste it here.",
+         "On your server, in MediaViewer: Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN, under Host: Use as VPN, "
+         "then VPN code\xE2\x80\xA6 Copy the code and paste it here.",
          "caption");
     w.begin_object().key("type").string("text_field").key("id").string("connect_code").key("label").string("VPN code");
     w.key("value").string("").key("secure").boolean(true).key("placeholder").string("mediaviewer://relay#\xE2\x80\xA6");
@@ -177,10 +181,23 @@ void connect_card(writer& w, const view& v) {
            v.server_shown.empty() ? "Connect to a VPN host\xE2\x80\xA6" : "Connect to another\xE2\x80\xA6", "plain");
   }
   if (!v.connect_note.empty()) text(w, "connect_note", v.connect_note, "secondary");
-  // The server as typed, for a relay server of one's own (tools/driftwire-relay).
-  w.begin_object().key("type").string("text_field").key("id").string("server");
-  w.key("label").string("Your VPN server").key("value").string(v.server);
-  w.key("placeholder").string("address:port#key, as your relay server prints it").end_object();
+  // The server typed by hand, for a relay server of one's own (tools/driftwire-relay):
+  // a secure field (the key), never shown back; the intro names the address.
+  if (v.server.empty() || v.server_editing) {
+    w.begin_object().key("type").string("text_field").key("id").string("server");
+    w.key("label").string("Your VPN server").key("value").string("").key("secure").boolean(true);
+    w.key("placeholder").string("address:port#key, as your relay server prints it").end_object();
+    if (v.server_editing) {
+      stack(w, "server_buttons", 8, "horizontal");
+      button(w, "server_done", "Done", "plain");
+      end(w);
+    }
+  } else {
+    stack(w, "server_buttons", 8, "horizontal");
+    button(w, "server_change", "Change server\xE2\x80\xA6", "plain");
+    button(w, "server_clear", "Remove", "plain");
+    end(w);
+  }
   tunnel_controls(w, v);
   end(w);
 }
@@ -195,7 +212,8 @@ void host_card(writer& w, const view& v) {
          "caption");
   } else if (v.host_where != "here" && v.host_where != "server") {
     text(w, "host_none",
-         "To use this computer or your server as your laptop's VPN, set it up in Settings \xE2\x86\x92 Phone access: "
+         "To use this computer or your server as your laptop's VPN, set it up in Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 "
+         "Phone access: "
          "this computer as your server, or a server that offers a VPN.",
          "caption");
   } else {

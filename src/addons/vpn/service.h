@@ -44,11 +44,13 @@ struct view {
   // ---- Connect
   std::string server;            // "Your VPN server", as typed (it holds the key)
   std::string server_shown;      // its address, without the key ("" when none)
+  bool server_editing = false;   // its secure field shows (Change server…), or none is set
   bool connect_open = false;     // the VPN code's field shows
   std::string connect_note;      // what the last code did, or why not
   bool tunnel = false;           // the switch (node "tunnel", also the menu row)
   std::string tunnel_address;    // "127.0.0.1:<port>" while the proxy listens, else ""
   std::string tunnel_note;       // why it does not run, or the server's last problem
+  bool system_asking = false;    // the OS is asking the person to allow the system proxy change
   std::uint32_t tunnel_open = 0;     // connections through it now
   std::uint64_t tunnel_streams = 0;  // made this run (tests)
   bool all_apps = true;          // Use for all apps
@@ -144,7 +146,14 @@ class service {
   void post();
   void post_throttled();
   void sync_tunnel();
-  void sync_system_proxy(std::uint16_t port, bool want);
+  // The control thread: what the system proxy should point at (port 0: at
+  // nothing of ours), handed to the proxy thread, the latest wins.
+  void want_system_proxy(std::uint16_t port, bool want);
+  // The proxy thread (and the destructor, after it): changes the setting. On
+  // a Mac this can wait on the administrator's dialog for as long as it shows,
+  // so nothing else ever runs here.
+  void apply_system_proxy(std::uint16_t port, bool want);
+  void proxy_loop();
   bool sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_t tls_port, bool block);
   void tunnel_changed();
   void sync_keep();
@@ -160,6 +169,7 @@ class service {
   std::uint16_t tunnel_port_ = 0;  // under m_: the port to try first (kept in the prefs)
   std::uint16_t tls_port_ = 443;   // under m_: the prefs'
   std::string typed_code_;         // under m_: the VPN code as typed (it holds a key), wiped after use
+  std::string typed_server_;       // under m_: the server field as typed, until Done or Return
 
   std::mutex secrets_m_;
   std::unique_ptr<secrets::store> secrets_;
@@ -178,6 +188,12 @@ class service {
   std::optional<sysproxy::record> proxy_record_;
   std::atomic<bool> proxy_retry_{false};
   std::string proxy_gave_up_for_, proxy_gave_up_note_;
+  // The proxy thread and what it was asked (under proxy_m_).
+  std::mutex proxy_m_;
+  std::condition_variable proxy_cv_;
+  std::optional<std::pair<std::uint16_t, bool>> proxy_want_;
+  bool proxy_stop_ = false;
+  std::thread proxy_thread_;
 
   // The control thread and what it was asked.
   std::mutex control_m_;
