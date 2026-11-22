@@ -43,7 +43,7 @@ script add-ons still have no network. The same engine runs in a terminal as `dri
 
 A terminal host of the same engine ([12](12-decision-log.md#driftwire)) on Linux, Windows and
 macOS, wire-compatible with the add-on, installed without MediaViewer ([Installing](#installing)),
-never in the app's payload. Manual page `packaging/linux/driftwire.1`.
+never in the app's payload (the Phone access add-on carries its own copy for [This computer](#on-your-own-computer-driftwire-host)). Manual page `packaging/linux/driftwire.1`.
 
 ```
 driftwire                        the session: visible nearby while it runs; send and receive
@@ -722,7 +722,8 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
   run. The entry runs the program's stable path (a Homebrew Cellar path becomes its `opt` link).
   A host started while one runs says so and exits 0.
 - **Updates.** The supervisor looks at its program every minute; replaced (an install channel's
-  update, `driftwire update`), it stops the child and ends 75, and the entry starts the new one.
+  update, `driftwire update`, or a new Phone access add-on installing its copy), it stops the child
+  and ends 75, and the entry starts the new one: the phones see one reconnect, `serve/` is untouched.
 - **Sleep.** While hosting it holds the OS's "system required" request through `power::hold_for`
   ("Driftwire is hosting your server"): the display may still sleep. `host stay-awake off` drops it.
 - **Elevation.** Refused as root or elevated, as `serve`.
@@ -758,7 +759,15 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
   Set up the service… → **This computer** runs the installed program's `host share` and
   `host start-at-login on` on the phone link's thread, writes the DuckDNS name where slice 5's
   `host name duckdns` does, claims the host over loopback and shows a code; its status row reads `state.json` and
-  `host.lock`. The app does not carry the program ([12](12-decision-log.md#driftwire), 2026-11-14).
+  `host.lock`. **The Phone access add-on carries its own `driftwire`** (`phone/bundled.h`, owner
+  2026-11-14, [plan](../plans/phone-access-addon.md) §8; the app itself still does not). At each
+  load it installs that copy into `<feature dir>/bin`, which survives add-on updates and is what the
+  login entry runs, recorded in `bin/installed.json` (nothing copied when that version is there).
+  Never written in place: copied beside as `driftwire.new` and renamed in; on Windows the running
+  `.exe` is renamed aside first (`driftwire.old-N.exe`, removed at a later install). The card
+  prefers this copy over an installed one; a host whose login entry runs a separately installed
+  `driftwire` is not moved (setting up This computer again does it) and is left alone when the
+  add-on is removed, which otherwise turns its own host's start-at-login off and removes `bin/`.
 - **Not yet:** watching for a volume arriving (the minute's recheck only).
 - **Tested** (`"[host]"`, loopback only): the arguments, `host.json`, sharing rules, the three entries'
   texts and the files written into a home of the test's own (the OS's tools never run in a test), the
