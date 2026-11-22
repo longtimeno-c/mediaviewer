@@ -175,7 +175,8 @@ TEST_CASE("vpn: the Host section is Phone access's answer; its switch and code a
   o.phone_every = std::chrono::milliseconds(50);
   vpn::service svc(host, o);
   svc.settings_opened();
-  REQUIRE(eventually([&] { return svc.snapshot().host_where == "here"; }));
+  // The posted tree, not the snapshot: it is posted just after the snapshot changes.
+  REQUIRE(eventually([&] { return host.settings().find("VPN through this Mac") != std::string::npos; }));
   auto tree = host.settings();
   INFO(tree);
   CHECK(tree.find("VPN through this Mac") != std::string::npos);
@@ -225,7 +226,7 @@ TEST_CASE("vpn: a switch Phone access refuses says so; a switch then a close sen
   svc.on_event("host_on", 2, "false");
   svc.settle();
   REQUIRE(eventually([&] { return svc.snapshot().host_error.find("didn't take that") != std::string::npos; }));
-  CHECK(host.settings().find("didn't take that") != std::string::npos);
+  REQUIRE(eventually([&] { return host.settings().find("didn't take that") != std::string::npos; }));
   {
     std::lock_guard lock(m);
     refuse = false;
