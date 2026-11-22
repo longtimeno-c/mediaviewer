@@ -182,6 +182,7 @@ constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was rea
 // New Folder, finished on the pool (lparam: an owned result).
 constexpr UINT kMsgTransferDone = WM_APP + 0x62;
 constexpr UINT kMsgNewFolderDone = WM_APP + 0x63;
+constexpr UINT kMsgRemoteTrashDone = WM_APP + 0x64;  // plan §6: Delete on a server's files
 constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files were gathered (pool posts)
 // #452 (docs/design/28 "In the background"): the notification-area icon's
 // callback, and the chrome saying the add-ons' keep-alive list changed
@@ -6375,8 +6376,112 @@ bool navigate_history(app_state* app, int direction) {
 // What a folder is to a drop (file_drop.h). Another computer's folder is
 // read-only until the service says this PC may change it (plan §6).
 mv::shell::place_kind win_place_kind(std::string_view path) {
-  if (mv::remote::is_key(path)) return mv::shell::place_kind::remote_read_only;
+  if (mv::remote::is_key(path)) {
+    // Plan §6: where the server lets this PC change files (mv_remote_can_write, no I/O).
+    uint8_t can = 0;
+    const std::string key(path);
+    return mv_remote_can_write(key.c_str(), &can) == MV_OK && can ? mv::shell::place_kind::remote_writable
+                                                                  : mv::shell::place_kind::remote_read_only;
+  }
   return mv::shell::place_kind::writable;
+}
+
+// The server's own words for why this PC may not change files at `key`.
+std::string remote_write_problem(const std::string& key) {
+  std::string words(512, '\0');
+  uint32_t need = 0;
+  if (mv_remote_write_problem(key.c_str(), words.data(), static_cast<uint32_t>(words.size()), &need) != MV_OK) {
+    return mv::shell::drop_refusal_words(mv::shell::drop_refusal::remote_target);
+  }
+  words.resize(need > 0 ? need - 1 : 0);
+  return words.empty() ? std::string(mv::shell::drop_refusal_words(mv::shell::drop_refusal::remote_target)) : words;
+}
+
+// What a place is called in a notice: a remote folder is "the server's folder" (its key
+// names nothing a person knows), a local one its leaf.
+std::string place_name(const std::string& path) {
+  return mv::remote::is_key(path) ? std::string("the server's folder") : mv::shell::browse_path::leaf(path);
+}
+
+// The remote side of the transfer seam (file_transfer.h) over the core's mv_remote_* calls;
+// each blocks, on the pool.
+std::string abi_text(const std::function<mv_status(char*, uint32_t, uint32_t*)>& call, mv_status& st) {
+  std::string out(1024, '\0');
+  uint32_t need = 0;
+  st = call(out.data(), static_cast<uint32_t>(out.size()), &need);
+  if (st == MV_ERR_INVALID_ARG && need > out.size()) {
+    out.assign(need, '\0');
+    st = call(out.data(), static_cast<uint32_t>(out.size()), &need);
+  }
+  out.resize(st == MV_OK && need > 0 ? need - 1 : 0);
+  return out;
+}
+
+struct abi_progress {
+  const std::atomic<bool>* cancel = nullptr;
+  std::atomic<std::uint64_t>* done = nullptr;
+  std::uint64_t last = 0;
+  static int32_t MV_CALL call(uint64_t bytes, void* user) {
+    auto* p = static_cast<abi_progress*>(user);
+    if (p->done && bytes > p->last) p->done->fetch_add(bytes - p->last);
+    p->last = std::max(p->last, bytes);
+    return p->cancel && p->cancel->load() ? 1 : 0;
+  }
+};
+
+mv::shell::remote_ops win_remote_ops() {
+  mv::shell::remote_ops o;
+  o.exists = [](const std::string& key) -> mv::result<bool> {
+    uint8_t there = 0;
+    const mv_status st = mv_remote_exists(key.c_str(), &there);
+    if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+    return there != 0;
+  };
+  o.make_folder = [](const std::string& parent, const std::string& name) -> mv::result<std::string> {
+    mv_status st = MV_OK;
+    std::string key = abi_text([&](char* b, uint32_t c, uint32_t* n) {
+      return mv_remote_make_folder(parent.c_str(), name.c_str(), b, c, n);
+    }, st);
+    if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+    return key;
+  };
+  o.add = [](const std::string& parent, const std::string& local, const std::string& name,
+             const std::atomic<bool>* cancel, std::atomic<std::uint64_t>* done) -> mv::result<std::string> {
+    abi_progress prog{cancel, done};
+    mv_status st = MV_OK;
+    std::string key = abi_text([&](char* b, uint32_t c, uint32_t* n) {
+      return mv_remote_add(parent.c_str(), local.c_str(), name.c_str(), &abi_progress::call, &prog, b, c, n);
+    }, st);
+    if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+    return key;
+  };
+  o.move = [](const std::string& key, const std::string& to, const std::string& name,
+              bool& taken) -> mv::result<std::string> {
+    uint8_t t = 0;
+    mv_status st = MV_OK;
+    std::string moved = abi_text([&](char* b, uint32_t c, uint32_t* n) {
+      return mv_remote_move(key.c_str(), to.c_str(), name.c_str(), &t, b, c, n);
+    }, st);
+    taken = t != 0;
+    if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+    return moved;
+  };
+  o.remove = [](const std::string& key) -> mv::result<std::string> {
+    const mv_status st = mv_remote_remove(key.c_str());
+    if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+    return std::string();
+  };
+  o.fetch = [](const std::string& key, const std::atomic<bool>* cancel,
+               std::atomic<std::uint64_t>* done) -> mv::result<std::string> {
+    abi_progress prog{cancel, done};
+    mv_status st = MV_OK;
+    std::string path = abi_text([&](char* b, uint32_t c, uint32_t* n) {
+      return mv_remote_fetch(key.c_str(), &abi_progress::call, &prog, b, c, n);
+    }, st);
+    if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+    return path;
+  };
+  return o;
 }
 
 struct transfer_done {
@@ -6395,12 +6500,13 @@ void start_transfer(app_state* app, mv::shell::drop_verb verb, std::vector<std::
                                                : std::to_string(sources.size()) + " items";
   const std::string title = std::string(move ? "Moving " : "Copying ") + what;
   auto job = app->transfers.add(title, target, static_cast<std::int64_t>(::GetTickCount64()));
-  notice_show(app, title + " to " + mv::shell::browse_path::leaf(target) + "…");
+  notice_show(app, title + " to " + place_name(target) + "…");
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [job, verb, sources = std::move(sources), target, hwnd](const mv::job_context&) -> mv::status {
                         job->state.store(2);
-                        auto local = mv::shell::local_target();
+                        // Local paths as they are; a server's through its service (plan §6).
+                        auto local = mv::shell::mixed_target(win_remote_ops());
                         auto done = std::make_unique<transfer_done>();
                         done->job = job;
                         done->target = target;
@@ -6417,8 +6523,10 @@ void on_transfer_done(app_state* app, std::unique_ptr<transfer_done> done) {
   if (!done) return;
   app->transfers.finish(done->job, done->result, static_cast<std::int64_t>(::GetTickCount64()));
   if (done->result.failed() > 0) ::MessageBeep(MB_ICONWARNING);
-  // The folder watcher relists what moved in or out.
-  notice_show(app, mv::shell::transfer_summary(done->result, done->target));
+  // The folder watcher relists what moved in or out; a server's folder has none, so it is
+  // listed again, as a reopen does.
+  notice_show(app, mv::shell::transfer_summary(done->result, place_name(done->target)));
+  if (mv::remote::is_key(app->current_dir)) open_utf8_dir(app, app->current_dir, true);
 }
 
 // A drop on a folder tile, a crumb or the grid (IslandHost.DragDrop.cs), or
@@ -6440,7 +6548,8 @@ bool drop_files(app_state* app, std::vector<std::string> paths, const std::strin
   if (!d.allowed()) {
     if (d.refusal != mv::shell::drop_refusal::nothing && d.refusal != mv::shell::drop_refusal::none) {
       ::MessageBeep(MB_ICONWARNING);
-      notice_show(app, mv::shell::drop_refusal_words(d.refusal));
+      notice_show(app, d.refusal == mv::shell::drop_refusal::remote_target ? remote_write_problem(target)
+                                                                           : std::string(mv::shell::drop_refusal_words(d.refusal)));
     }
     return false;
   }
@@ -6474,15 +6583,16 @@ bool parse_drop_payload(std::wstring_view blob, int& flags, std::string& target,
 // made on the pool, then selected as a tile when the listing shows it.
 bool new_folder_here(app_state* app) {
   if (!app || !app->list_title.empty() || app->current_dir.empty()) return false;
-  if (win_place_kind(app->current_dir) != mv::shell::place_kind::writable) {
+  const auto kind = win_place_kind(app->current_dir);
+  if (kind != mv::shell::place_kind::writable && kind != mv::shell::place_kind::remote_writable) {
     ::MessageBeep(MB_ICONWARNING);
-    notice_show(app, mv::shell::drop_refusal_words(mv::shell::drop_refusal::remote_target));
+    notice_show(app, remote_write_problem(app->current_dir));
     return true;
   }
   const std::string parent = app->current_dir;
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation, [parent, hwnd](const mv::job_context&) -> mv::status {
-    auto local = mv::shell::local_target();
+    auto local = mv::shell::mixed_target(win_remote_ops());
     auto made = std::make_unique<std::pair<std::string, std::string>>(
         parent, mv::shell::make_new_folder(parent, "New folder", *local));
     const bool ok = !made->second.empty();
@@ -9317,10 +9427,64 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
 
 // Delete: always the Recycle Bin, always asked first (docs/design/16). A location
 // with no bin is refused on the worker, never deleted permanently.
+struct remote_trash_done {
+  std::size_t asked = 0;
+  std::size_t gone = 0;
+  std::string problem;
+};
+
+// Plan §6: Delete on a server's files sends them to that folder's trash on the server (its
+// service's delete), which only the server's owner empties. Asked first, as the Bin is.
+bool start_remote_trash(app_state* app, const std::vector<std::string>& keys) {
+  for (const auto& k : keys) {
+    if (win_place_kind(k) != mv::shell::place_kind::remote_writable) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, remote_write_problem(k));
+      return true;
+    }
+  }
+  const std::wstring text = keys.size() == 1
+      ? L"Move “" + wide_from_utf8(mv::shell::browse_path::leaf(keys[0])) + L"” to the trash on the server?"
+      : L"Move " + std::to_wstring(keys.size()) + L" items to the trash on the server?";
+  if (::MessageBoxW(app->window, (text + L"\n\nOnly the server's owner can empty it, on that computer.").c_str(),
+                    L"Delete", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+    return true;
+  }
+  notice_show(app, "Moving to the trash on the server…");
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [keys, hwnd](const mv::job_context&) -> mv::status {
+    auto done = std::make_unique<remote_trash_done>();
+    done->asked = keys.size();
+    for (const auto& k : keys) {
+      if (mv_remote_remove(k.c_str()) == MV_OK) {
+        ++done->gone;
+      } else if (done->problem.empty()) {
+        done->problem = remote_write_problem(k);
+      }
+    }
+    const bool ok = done->gone == done->asked;
+    if (::PostMessageW(hwnd, kMsgRemoteTrashDone, 0, reinterpret_cast<LPARAM>(done.get()))) (void)done.release();
+    return ok ? mv::status::ok : mv::status::io;
+  });
+  return true;
+}
+
+void on_remote_trash_done(app_state* app, std::unique_ptr<remote_trash_done> done) {
+  if (!done) return;
+  if (done->gone < done->asked) ::MessageBeep(MB_ICONWARNING);
+  std::string words = done->gone == 1 ? std::string("Moved 1 item to the trash on the server")
+                                      : "Moved " + std::to_string(done->gone) + " items to the trash on the server";
+  if (done->gone < done->asked) words += done->problem.empty() ? std::string(" · the rest could not go") : " · " + done->problem;
+  notice_show(app, words);
+  // The server's folder on screen lists again, as a reopen does.
+  if (mv::remote::is_key(app->current_dir)) open_utf8_dir(app, app->current_dir, true);
+}
+
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
   const auto stops = selection_targets(app);
   if (stops.empty()) return false;
+  if (mv::remote::is_key(stops.front())) return start_remote_trash(app, stops);
   // A paired stop goes with both halves, and the question says so (PR 7).
   auto targets = expand_pair_targets(app, stops);
   const auto wide_name = [](const std::string& path) {
@@ -13844,6 +14008,10 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgTransferDone:
       on_transfer_done(app, std::unique_ptr<transfer_done>(reinterpret_cast<transfer_done*>(lparam)));
+      return 0;
+
+    case kMsgRemoteTrashDone:
+      on_remote_trash_done(app, std::unique_ptr<remote_trash_done>(reinterpret_cast<remote_trash_done*>(lparam)));
       return 0;
 
     case kMsgNewFolderDone:

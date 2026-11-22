@@ -159,36 +159,38 @@ that gets its own measurement.
 - **Opening the link**: registering `mediaviewer://` on the desktop would also catch a phone's
   link; owed (§7).
 
-## 6. Write access (owner call 1, with #686 §2)
+## 6. Write access (owner call 1, with #686 §2) — built
 
-The service side is built (docs/design/28 "Changing files"). A desktop whose role is `change`
-(granted from the app or `driftwire serve grant NAME --role change`) may, in every folder its grant
-sees but the Catalogue:
+A desktop starts "view". When the host's admin gives it "change" (`driftwire host users role` /
+`serve grant … --role change`), the next connect's caps say so and the service marks each named
+folder `writable` for it (never the Catalogue). Then, on both hosts:
 
-- add a file: `serve::client::add` (the `write` stream: hash-checked, resumable, never replaces; a
-  taken name gets " (2)");
-- make a folder: `make_folder`;
-- move or rename a file or folder, within a folder or into another writable one: `move` (never
-  replaces: `exists` means pick another name);
-- delete: `remove`, into the folder's hidden trash on the host, which only the owner empties.
+- **What it may do**: add (drops, Paste files here, Copy to), New Folder, move and rename within
+  the server, and Delete, which goes to that folder's hidden trash on the server
+  (`.mediaviewer-trash/<date>/`), emptied only by its owner. Ratings, metadata and edits of a
+  remote original stay refused (`write_guard::change_allowed` lets exactly those five through).
+- **Truthful per folder**: `remote::library::can_write(key)` is the service's change ops
+  (`changes_files`) and that root's `writable`, read with the server's folders and again after a
+  reconnect whose role changed. `write_problem(key)` says why not ("Home lets this computer view
+  only…", "needs an update", "isn't answering"); greyed menu items carry it as their tip, a key
+  or a drop beeps and shows it.
+- **The seam**: every change goes through `shell/file_transfer.h` (`mixed_target` over the host's
+  `remote_ops`: the library on the Mac, the core's `mv_remote_*` 0.45 calls on Windows) and the
+  drop rule in `shell/file_drop.h`. Up is an upload (the service never replaces: " (2)"; it
+  resumes after a dropped link or an offset refusal); down is a fetch then a verified local copy,
+  and a move off the server deletes there only after that copy reads back; within one server a
+  move is the service's own. A remote folder moves only within its server; nothing goes from one
+  server to another.
+- **Fresh at once**: each change drops the kept listing and stamps it touched; the open remote
+  folder and the folder pane list again, keeping the selection.
 
-Refusals come back typed (`client::change_why`: `not_allowed`, `path`, `exists`, `busy`, `name`,
-`limit`, `full`, `offline`, `not_found`, `unsupported`, `failed`). Show the commands only when
-`client::changes_files()` (the service lists `kChangeOps`; an older one does not) and the folder's
-`root_info.writable` is true; read `roots()` again after the role changes. Every call blocks: worker
-threads only. Sidecars are not moved with their file yet. The desktop chrome is not built.
-
-The desktop's side is ready for it (docs/design/16 "Drag and drop into folders"): every drop,
-paste and New Folder asks `shell/file_drop.h` with a `place_kind` per folder — a remote folder is
-`remote_read_only` today, `remote_writable` once `writable` and the role say so — and does the work
-through `shell/file_transfer.h`'s `transfer_target`, which a remote folder supplies over the
-service's add / mkdir / move calls.
+Not yet: downloading a whole remote folder, a copy between two servers, cancelling an upload on
+Windows (the core's add has no cancel handle there), and the server-side "restore from trash".
 
 ## 7. Not in this slice
 
 - Streaming playback through `read_range` (seek before the clip has arrived).
 - The catalogue: searching the host's `.mediaviewer` from the desktop as the phone does.
-- Write access (§6).
 - `mediaviewer://pair` as a registered link on the desktop; a QR read from a webcam.
 - Linux (its host has no folder tree yet).
 

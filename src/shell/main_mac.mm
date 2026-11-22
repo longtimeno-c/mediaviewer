@@ -145,6 +145,7 @@
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
+#include "wire/secrets.h"
 #include "shell/photos_items_mac.h"
 #include "remote/library.h"
 #include "image/thumb.h"
@@ -15957,8 +15958,17 @@ class remote_clip_source final : public mv::player::byte_source {
   NSString* support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
   NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
   if (!support || !caches) return;
-  const std::string data_dir = std::string(support.UTF8String) + "/MediaViewer/Remote Folders";
-  const std::string cache_dir = std::string(caches.UTF8String) + "/MediaViewer/Remote";
+  std::string data_dir = std::string(support.UTF8String) + "/MediaViewer/Remote Folders";
+  std::string cache_dir = std::string(caches.UTF8String) + "/MediaViewer/Remote";
+  // A dev build tried against a throwaway server (as MV_DEV_THUMBS_DIR): its servers, cache and
+  // keys in that folder, never the installed app's list or the Keychain.
+  static std::unique_ptr<mv::driftwire::secrets::store> dev_keys;
+  if (const char* dev = std::getenv("MV_DEV_REMOTE_DIR"); dev && *dev) {
+    data_dir = std::string(dev) + "/data";
+    cache_dir = std::string(dev) + "/cache";
+    const std::string keys = std::string(dev) + "/keys";
+    if (mv::driftwire::secrets::owner_only_folder(keys)) dev_keys = mv::driftwire::secrets::file_store(keys);
+  }
   // Its originals are another computer's files: read-only here (owner call 1).
   mv::shell::set_remote_cache_prefix(cache_dir);
   // Plan §6: a device the server lets change files adds, moves, renames and deletes there.
@@ -15976,6 +15986,7 @@ class remote_clip_source final : public mv::player::byte_source {
     mv::remote::config c;
     c.data_dir = data_dir;
     c.cache_dir = cache_dir;
+    c.store = dev_keys.get();  // null: the Keychain
     NSString* computer = [[NSHost currentHost] localizedName];
     if (computer.length > 0) c.device_name = computer.UTF8String;
     c.still_tile = [](std::span<const std::uint8_t> bytes, const mv::job_context* ctx) {

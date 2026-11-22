@@ -235,8 +235,10 @@ drag-over with no I/O (Mac `mv_chrome_drop_verdict`, Windows a synchronous `WM_C
   app **copies** ("adds"), `⌘` / `Shift` moves. The grid is the folder on screen; a tile, a crumb or
   a sidebar place is that folder. With no folder open a drop opens what it carries, as the canvas.
 - Refused, with words on the target: read-only places (Photos library, read-only lists), another
-  computer's folder (until plan §6 makes `change` devices writable), a folder into itself, a move
-  onto the folder it is already in, and another computer's files as sources.
+  computer's folder this device may not change (the server's reason, plan §6), a folder into
+  itself, a move onto the folder it is already in, a remote folder leaving its server, and files
+  of one server going to another. A remote file dropped on a local folder comes down; a move
+  deletes it on the server (into its trash) only after the local copy reads back.
 - Feedback: accent ring + wash on the target (Mac), a dashed / thin body ring when refused, a line
   "Move 3 items to Trip" at the foot of the grid (Mac) or the drag caption (Windows). A tile rested
   on for 0.7 s opens (spring-loading).
@@ -244,7 +246,8 @@ drag-over with no I/O (Mac `mv_chrome_drop_verdict`, Windows a synchronous `WM_C
   volume is a rename, across volumes a verified copy then removal (a file that will not go takes
   its copy back), a failure removes what it wrote. Each run is a row in the Jobs pane beside clip
   jobs (Mac; it opens after 1.2 s if still running) and ends with a notice. `transfer_target` is the
-  one seam a remote folder's backend slots into.
+  one seam; `mixed_target` sends `remote:` paths through the host's remote library
+  ([desktop-client §6](../plans/desktop-client.md)).
 - Keyboard twins: Paste files here (`Ctrl+V`), New Folder (`Ctrl+Shift+N`; the Mac names it first),
   Move to… / Copy to… (`Shift+F8` / `Shift+F7`).
 

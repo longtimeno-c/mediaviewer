@@ -449,6 +449,9 @@ their keys in the OS store ("MediaViewer Driftwire", `remote_<id>`); the cache i
 
 To try it on one Mac: run `driftwire host` (or `driftwire serve` with a `serve.json`) with a folder shared,
 take the code from `driftwire host pair` or the Phone access card, and paste it in File → Connect to a Server….
+A dev build launched with `MV_DEV_REMOTE_DIR=<folder>` keeps its servers, cache and keys there instead of
+the installed app's list and the Keychain (as `MV_DEV_THUMBS_DIR` does for thumbnails). Changing files
+(plan §6) needs the role: `driftwire serve grant <device key> --role change`, then restart the service.
 
 ```bash
 build/bin/mv_tests "[desktop-client]"          # loopback: pairing, listing, tiles, fetches, unreachable / offline / revoked
