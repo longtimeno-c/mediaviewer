@@ -15,6 +15,8 @@
 #include <sodium.h>
 
 #include "wire/net.h"
+#include "io/file_port.h"
+#include "wire/serve_backup.h"
 #include "wire/serve_wire.h"
 #include "wire/splice.h"
 
@@ -887,6 +889,68 @@ result<serve::client::change_done> link_session::add(const std::string& root, co
   auto r = (*c)->add(root, rel, size, hash_hex, at, read, progress, stop, why);
   if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
   return r;
+}
+
+result<serve::client::change_done> link_session::add_file(const std::string& root, const std::string& rel,
+                                                          const std::string& local_path,
+                                                          const std::function<void(std::uint64_t, std::uint64_t)>& progress,
+                                                          const cancel_flag* cancel, serve::client::change_refused* why) {
+  io::file_reader in;
+  if (auto o = in.open(local_path, io::read_mode::sequential); !o) return err(status::not_found);
+  const std::uint64_t size = in.size();
+  auto hashed = serve::backup::hash_file(local_path);
+  if (!hashed) return err(hashed.error());
+  const serve::client::read_fn read = [&in](std::uint64_t at, std::span<std::uint8_t> into) -> result<std::size_t> {
+    return in.read_at(at, into);
+  };
+  serve::client::change_refused refused;
+  std::uint64_t at = 0;
+  bool reconnected = false;
+  int busy_waits = 0;
+  result<serve::client::change_done> done = err(status::io);
+  for (int attempt = 0; attempt < 12; ++attempt) {
+    refused = {};
+    done = add(root, rel, size, *hashed, at, read,
+               [&](std::uint64_t sent) {
+                 if (progress) progress(sent, size);
+               },
+               cancel, &refused);
+    if (done) break;
+    if (refused.why == serve::client::change_why::offset) {
+      at = refused.have;
+      continue;
+    }
+    if (refused.why == serve::client::change_why::hash) {
+      at = 0;
+      continue;
+    }
+    // "busy": the service still holds the stream a dropped link left on that name, until it
+    // notices it is gone. Asked again after a short wait (a second or two in all).
+    if (refused.why == serve::client::change_why::busy && reconnected && busy_waits < 6) {
+      ++busy_waits;
+      const auto until = clock::now() + std::chrono::milliseconds(100 * busy_waits);
+      while (clock::now() < until) {
+        if (cancel && cancel->stopped()) return err(status::cancelled);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      continue;
+    }
+    // The link dropped mid-file (or was closed under it, which ends the stream as cancelled though
+    // nobody asked): once more on a new one, from where the service's copy ends. add() has already
+    // dropped the client for an io error; a closed one is gone from live_ already.
+    const bool stopped = cancel && cancel->stopped();
+    const bool lost = done.error() == status::io || done.error() == status::timeout ||
+                      (done.error() == status::cancelled && !stopped);
+    if (lost && !reconnected) {
+      reconnected = true;
+      continue;
+    }
+    break;
+  }
+  if (why) *why = refused;
+  // A link that stayed lost is unreachable, never a cancel nobody asked for.
+  if (!done && done.error() == status::cancelled && !(cancel && cancel->stopped())) return err(status::io);
+  return done;
 }
 
 result<serve::client::change_done> link_session::make_folder(const std::string& root, const std::string& rel,
