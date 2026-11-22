@@ -10,6 +10,7 @@
 #include <new>
 
 #include <jpeglib.h>
+#include <jerror.h>
 
 namespace mv::codec {
 namespace {
@@ -30,11 +31,53 @@ struct jpeg_error_trap {
   jmp_buf jump;
   unsigned char* icc;
   void* rows;  // the slow path's sample rows; freed on the longjmp path too
+  void (*emit)(j_common_ptr, int);  // libjpeg's own emit_message
+  bool scan_ended;                  // see jpeg_emit_message
+  int end_marker;                   // the marker the scan ran into
 };
 
 void jpeg_error_exit(j_common_ptr cinfo) {
   auto* trap = reinterpret_cast<jpeg_error_trap*>(cinfo->err);
   longjmp(trap->jump, 1);
+}
+
+// A Huffman scan that runs into a marker other than RSTn (the next SOS, or the
+// EOI libjpeg puts at the end of a truncated file) has no data left: every
+// later block of the scan is decoded as zeros, one flat grey. A file that
+// stops early is common (a card pulled mid-write); so is a fuzzed header that
+// declares 65487x61663 in 418 bytes and then costs 4 GP of zero blocks.
+void jpeg_emit_message(j_common_ptr cinfo, int msg_level) {
+  auto* trap = reinterpret_cast<jpeg_error_trap*>(cinfo->err);
+  if (msg_level == -1 && cinfo->err->msg_code == JWRN_HIT_MARKER && cinfo->is_decompressor) {
+    const int m = reinterpret_cast<j_decompress_ptr>(cinfo)->unread_marker;
+    if (m < JPEG_RST0 || m > JPEG_RST0 + 7) {
+      trap->scan_ended = true;
+      trap->end_marker = m;
+    }
+  }
+  trap->emit(cinfo, msg_level);
+}
+
+// Output rows a single-scan decode can still change after its scan ended:
+// libjpeg decodes up to one iMCU row ahead of the output, the iMCU row that
+// hit the marker holds data, and fancy upsampling blends into the next one.
+// An iMCU row is at most 4 (v sampling) x 8 (DCT size at 1:1) rows high.
+constexpr JDIMENSION kScanEndRows = 4 * 32;
+
+// Once the scan has ended and the rows past kScanEndRows are the flat fill,
+// copies the last row down instead of decoding the rest. True if it did.
+bool fill_after_scan_end(const jpeg_decompress_struct& cinfo, const jpeg_error_trap& trap,
+                         JDIMENSION& ended_at, unsigned char* pixels, std::size_t stride) {
+  if (!trap.scan_ended) return false;
+  const JDIMENSION done = cinfo.output_scanline;
+  if (ended_at == 0) ended_at = done;
+  if (done < ended_at + kScanEndRows || done >= cinfo.output_height) return false;
+  const unsigned char* last = pixels + static_cast<std::size_t>(done - 1) * stride;
+  if (std::memcmp(last - stride, last, stride) != 0) return false;  // not flat: decode on
+  for (JDIMENSION y = done; y < cinfo.output_height; ++y) {
+    std::memcpy(pixels + static_cast<std::size_t>(y) * stride, last, stride);
+  }
+  return true;
 }
 
 // APP2 "ICC_PROFILE\0" + seq + count + payload. Assembled into a malloc'd
@@ -163,6 +206,8 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   cinfo.err = jpeg_std_error(&jerr.pub);
   jerr.pub.error_exit = jpeg_error_exit;
   jerr.pub.output_message = [](j_common_ptr) {};
+  jerr.emit = jerr.pub.emit_message;
+  jerr.pub.emit_message = jpeg_emit_message;
 
   // C4611: longjmp skips C++ destructors. Everything created after this setjmp
   // is POD or a malloc the jump handler frees.
@@ -224,6 +269,13 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
   cinfo.scale_num = 1;
   cinfo.scale_denom = scale_denom;  // lossless decodes at 1:1 whatever is asked
   jpeg_start_decompress(&cinfo);
+  // A progressive or multi-scan file has been read whole by now; only a
+  // single-scan DCT file decodes as its rows are read. Lossless predicts from
+  // the row above, so its rows after the end are not one flat row.
+  jerr.scan_ended = false;
+  const bool can_fill = !lossless;
+  JDIMENSION ended_at = 0;
+  bool filled = false;
 
   const auto width = static_cast<std::uint32_t>(cinfo.output_width);
   const auto height = static_cast<std::uint32_t>(cinfo.output_height);
@@ -285,6 +337,8 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
       const int n = static_cast<int>(std::min<JDIMENSION>(kRowsPerCall, cinfo.output_height - first));
       for (int r = 0; r < n; ++r) rows[r] = pixels + static_cast<std::size_t>(first + r) * stride;
       if (jpeg_read_scanlines(&cinfo, rows, static_cast<JDIMENSION>(n)) == 0) break;
+      filled = can_fill && fill_after_scan_end(cinfo, jerr, ended_at, pixels, stride);
+      if (filled) break;
     }
   } else {
     // Samples are JSAMPLE (2-8 bits), J12SAMPLE (9-12) or J16SAMPLE (13-16),
@@ -334,13 +388,19 @@ result<raster> decode_jpeg(std::span<const std::uint8_t> bytes, const job_contex
         }
       }
       if (got == 0) break;
+      filled = can_fill && fill_after_scan_end(cinfo, jerr, ended_at, pixels, stride);
+      if (filled) break;
     }
     std::free(jerr.rows);
     jerr.rows = nullptr;
   }
 
-  jpeg_finish_decompress(&cinfo);
+  if (!filled) jpeg_finish_decompress(&cinfo);  // it refuses a decode stopped early
   jpeg_destroy_decompress(&cinfo);
+  // What jpeg_finish_decompress would have said: a cut-off file ends at the
+  // EOI libjpeg supplies; anything else after a single scan (a second SOS) is
+  // "Didn't expect more than one scan".
+  if (filled && jerr.end_marker != JPEG_EOI) return err(status::corrupt);
 
   out->format = format_family::jpeg;
   out->intent = transfer_intent::display_referred;
