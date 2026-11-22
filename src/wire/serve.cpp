@@ -3451,7 +3451,7 @@ bool server::state::apply_vpn_locked(std::uint16_t want) {
   ro.loopback_only = loopback_only;
   // The web-site look beside it (docs/plans/vpn-stealth.md), on the next port,
   // self-signed: the code the owner copies points at it.
-  ro.tls_port = static_cast<std::uint16_t>(port < 65535 ? port + 1 : port - 1);
+  ro.tls_port = static_cast<std::uint16_t>(want < 65535 ? want + 1 : want - 1);
   // All traffic, never into the home's networks, nor to the home's outside
   // address (the router's, which hairpins to its forwarded ports): the
   // outside name as the owner's desktop last set it, looked up as it changes.

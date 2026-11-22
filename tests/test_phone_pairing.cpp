@@ -98,6 +98,7 @@ struct nas {
   // What the service gave its VPN relay, before the test's tweak.
   std::mutex vpn_seen_m;
   std::vector<std::uint16_t> vpn_seen_tcp, vpn_seen_udp;
+  std::uint16_t vpn_seen_port = 0, vpn_seen_tls_port = 0;  // the ports asked (loopback listens where the OS says)
   explicit nas(bool real = false, bool with_vpn = false, std::uint16_t site = 0)
       : real_network(real), vpn_site(site), vpn(with_vpn) {
     fs::create_directories(share);
@@ -121,6 +122,8 @@ struct nas {
           std::lock_guard g(vpn_seen_m);
           vpn_seen_tcp = ro.forward_ports;
           vpn_seen_udp = ro.forward_udp_ports;
+          vpn_seen_port = ro.port;
+          vpn_seen_tls_port = ro.tls_port;
         }
         ro.forward_ports = {site};
         ro.forward_private = true;
@@ -2175,6 +2178,9 @@ TEST_CASE("phone pairing: the NAS as a VPN host: Use as VPN, its code, and a lap
     std::lock_guard g(n.vpn_seen_m);
     CHECK(n.vpn_seen_tcp == std::vector<std::uint16_t>{mv::driftwire::relay::kAnyPort});
     CHECK(n.vpn_seen_udp == std::vector<std::uint16_t>{mv::driftwire::relay::kAnyPort});
+    // The web-site look on the VPN's port + 1 (never the service's own port's).
+    CHECK(n.vpn_seen_port == mv::driftwire::relay::kDefaultPort);
+    CHECK(n.vpn_seen_tls_port == mv::driftwire::relay::kDefaultPort + 1);
   }
 
   // The laptop: the code pasted (Connect to a VPN host), its Tunnel proxy, a site through the NAS.
