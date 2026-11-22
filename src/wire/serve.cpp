@@ -387,7 +387,7 @@ struct server::state {
   std::unique_ptr<relay::server> vpn_relay;  // under vpn_m
   std::uint16_t vpn_asked = 0;                // under vpn_m: the port it was started for
   // (Re)starts or stops it for `port` (0: off). False when it could not listen.
-  bool apply_vpn_locked(std::uint16_t port);
+  bool apply_vpn_locked(std::uint16_t want);
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -2757,7 +2757,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     const auto asked = doc->integer("port").value_or(0);
     if (asked < 0 || asked > 65535) return {end_code::bad_request, {}};
     std::string key;
-    std::uint16_t port = 0;
+    std::uint16_t vpn_port_now = 0;
     {
       std::lock_guard lock(claim_m);
       config next = *cfg();
@@ -2773,18 +2773,18 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
             return {end_code::error, {}};
           }
         }
-        port = asked != 0 ? static_cast<std::uint16_t>(asked) : next.vpn_port != 0 ? next.vpn_port : relay::kDefaultPort;
+        vpn_port_now = asked != 0 ? static_cast<std::uint16_t>(asked) : next.vpn_port != 0 ? next.vpn_port : relay::kDefaultPort;
       }
-      next.vpn_port = port;
+      next.vpn_port = vpn_port_now;
       if (!publish_config(std::move(next))) {
         sodium_memzero(key.data(), key.size());
         return {end_code::error, {}};
       }
     }
     std::lock_guard vl(vpn_m);
-    const bool running = apply_vpn_locked(port);
+    const bool running = apply_vpn_locked(vpn_port_now);
     json::writer w;
-    w.begin_object().key("vpn_port").integer(port).key("vpn_running").boolean(running);
+    w.begin_object().key("vpn_port").integer(vpn_port_now).key("vpn_running").boolean(running);
     if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
     if (on) w.key("key").string(key);
     w.end_object();
@@ -3433,19 +3433,19 @@ std::array<std::uint8_t, 32> claim_key(std::string_view token_hex) {
   return k;
 }
 
-bool server::state::apply_vpn_locked(std::uint16_t port) {
+bool server::state::apply_vpn_locked(std::uint16_t want) {
   // Already listening for that port: left as it is, so asking for the code again
   // never cuts a laptop's open forwards.
-  if (vpn_relay && port != 0 && port == vpn_asked) return true;
+  if (vpn_relay && want != 0 && want == vpn_asked) return true;
   vpn_relay.reset();  // its destructor stops it, and its forwards with it
   vpn_asked = 0;
-  if (port == 0 || stopping.load()) return false;
+  if (want == 0 || stopping.load()) return false;
   auto v = store->get(kVpnKeyName);
   if (!v || v->size() < relay::kMinKeyChars) return false;
   relay::server::options ro;
   ro.key.assign(v->begin(), v->end());
   sodium_memzero(v->data(), v->size());
-  ro.port = port;
+  ro.port = want;
   ro.loopback_only = loopback_only;
   // All traffic, never into the home's networks, nor to the home's outside
   // address (the router's, which hairpins to its forwarded ports): the
@@ -3474,7 +3474,7 @@ bool server::state::apply_vpn_locked(std::uint16_t port) {
   sodium_memzero(ro.key.data(), ro.key.size());
   if (!r) return false;
   vpn_relay = std::move(*r);
-  vpn_asked = port;
+  vpn_asked = want;
   return true;
 }
 
