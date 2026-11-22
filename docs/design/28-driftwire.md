@@ -652,19 +652,39 @@ holds up that session's reads.
   commit's is.
 - **`mkdir`**: the folder and any above it; one already there is ok `"existing":true`, a file there
   `exists`.
+- **Which folder is inside which** is decided by identity (`io::identify_entry`: volume and file
+  number), never by names: a case or normalisation variant, or a named folder lying inside the one
+  moved, is the same folder. A folder that is or holds any named folder of the service (all of
+  them, not only the device's), or has a folder on another volume below it (a drive mounted
+  inside), is never moved or trashed (`path`).
 - **`move`** `{"root","rel","to_root","to_rel"}`: never replaces (`exists`); a folder into itself is
-  `path`; folders above `to_rel` are made. `rename_no_replace` first; when that fails (another
-  volume) it copies into a hidden `.<name>.<device id>.mvmove` beside the destination, every file
-  read back and hashed, renames that into place without replacing, and only then removes each
-  source file that is unchanged since it was copied, and each source folder once empty. Into a
-  backup folder from another, the folder's limit counts it first (`limit`, `full`).
-  `server::options::copy_moves` (tests) takes the copy path on one disk.
-- **`delete`**: renames into `<root>/.mediaviewer-trash/<YYYY-MM-DD UTC>/<rel>` (" (2)" when taken)
-  on the folder's own volume; one that would need a copy (a drive mounted inside the folder) is
-  `error`, never copied away. Nothing empties the trash; the owner does, on the host. No restore
-  op yet: the trash path keeps the original `rel`.
+  `path`, checked on the deepest existing part of the destination before anything is made;
+  folders above `to_rel` are then made. On one volume a `rename_no_replace`, and a rename the disk
+  refuses is `error`, never a copy. Only when the destination's volume differs from the source's
+  does it copy: into a hidden `.<name>.<device id>.mvmove` beside the destination, part files
+  (`.mvpart`, `.mvmove`) left out, every file flushed and read back uncached and hashed, every
+  folder made synced, renamed into place without replacing, and only then each source file
+  removed if it is as it was when copied (size and `mtime_ns`), each source folder once empty.
+  Between files (and between chunks for the stop) the copy checks the session is not ending and
+  the device may still change both folders (its access read again at most once a second, at once
+  on `recheck_devices`); stopped, it drops its copy and leaves the source whole (`not-allowed`, or
+  nothing when the session went). `server::options::copy_moves` (tests) takes the copy path
+  between folders on one disk, `during_copy` runs before each file.
+- **`delete`**: renames into `<root>/.mediaviewer-trash/<YYYY-MM-DD UTC>/<rel>` (" (2)" … " (99)",
+  then `exists`) on the folder's own volume; one that would need a copy is `error`, never copied
+  away. Nothing empties the trash; the owner does, on the host. No restore op yet: the trash path
+  keeps the original `rel`.
+- **A backup folder's count** (`book`): what is in its trash still counts against its limit (it is
+  on that disk, in that folder) until the owner empties it and the service starts again, so a
+  delete changes nothing. A move out takes off only the bytes actually removed; a move in counts
+  what was copied or renamed in. Only a counted folder's `used` is kept: one made a backup folder
+  later is walked fresh.
 - **Busy**: each request claims its source and destination names in the service-wide book; a
-  second request on one of them while it runs is `busy`.
+  second request on one of them while it runs is `busy`, as is a move or delete of a folder with a
+  write still open, or another change running, anywhere inside it.
+- **Not built**: the walks check for links part by part, then rename, remove or create by path,
+  as a backup commit does: a writer on the host (or SMB) swapping a folder for a link between the
+  two could redirect one. Renames relative to the walk's own folder handles would close it.
 - Refusal words: `not-allowed`, `path`, `exists`, `busy`, `name`, `limit`, `full`; `not_found`
   (`offline` when the drive is gone); `error`. An older service never lists the ops, so an older
   client is unchanged and a newer one hides the commands. Tests `"[serve-change]"`.
