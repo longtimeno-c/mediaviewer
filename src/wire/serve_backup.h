@@ -47,7 +47,9 @@ class book {
   enum class verdict : std::uint8_t { ok, limit, full };
   // Holds `bytes` against the folder's limit and the volume's reserve. `meta`: a device's ledger
   // copy (at most kMaxLedgerBytes), which only the reserve bounds, so a folder at its limit still
-  // keeps the record of what is in it.
+  // keeps the record of what is in it. A folder that is not a backup folder (a "change" device
+  // adding to it, kChangeOps) has no limit and is never walked: only the volume's free space
+  // bounds it, keeping kDefaultReserve free.
   [[nodiscard]] verdict reserve(const root_config& root, std::uint64_t bytes, bool meta = false);
   void wrote(const std::string& root_id, std::uint64_t bytes);     // held bytes, now on disk
   void release(const std::string& root_id, std::uint64_t bytes);  // held bytes never written
