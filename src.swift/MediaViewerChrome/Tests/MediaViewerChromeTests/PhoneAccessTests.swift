@@ -56,6 +56,12 @@ final class PhoneAccessTests: XCTestCase {
     XCTAssertFalse(notices.contains("mv_chrome_open_phone_settings"))
   }
 
+  // The VPN's route ends at the web: a globe, not "TW" in a circle (desktop UI test, 2026-11-22).
+  func testTheTunnelsFarEndIsAGlobe() throws {
+    let text = try source("ScreenView.swift")
+    XCTAssertTrue(text.contains(#"device(symbol: via == "tunnel" ? "globe" : nil, name: node.string("to") ?? """#))
+  }
+
   // Contribution API 15: a secure field draws dots and never takes a value from the tree.
   func testScreensDrawASecureField() throws {
     let text = try source("ScreenView.swift")

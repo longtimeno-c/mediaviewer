@@ -697,7 +697,7 @@ TEST_CASE("vpn: All traffic (VPN) runs instead of the proxy, from the page and t
   CHECK(eng.snapshot().all_traffic_available);
   CHECK_FALSE(eng.snapshot().all_traffic);  // off by default
   CHECK_FALSE(eng.snapshot().block);
-  eng.on_event("server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  eng.on_event("server", 3, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
   eng.on_event("tunnel", 2, "true");
   REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));  // the proxy first
   auto v = eng.snapshot();
