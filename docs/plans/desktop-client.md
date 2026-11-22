@@ -181,6 +181,12 @@ folder `writable` for it (never the Catalogue). Then, on both hosts:
   and a move off the server deletes there only after that copy reads back; within one server a
   move is the service's own. A remote folder moves only within its server; nothing goes from one
   server to another.
+- **A role changed while linked**: the role comes once, at hello. The service re-reads its lists
+  every 2 s and cuts a link whose limit changed; the desktop learns the new role on its next
+  request. Taken away: the next change is refused `not_allowed`, and the desktop reconnects and
+  re-reads the roots at once (row and `can_write` say "view" from then). Given: the next listing
+  (opening or refreshing a folder) reconnects and re-reads them. No timer; neither side restarts.
+  A `busy` refusal (a write open there) says "try again in a moment", never a failure.
 - **Fresh at once**: each change drops the kept listing and stamps it touched; the open remote
   folder and the folder pane list again, keeping the selection.
 

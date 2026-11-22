@@ -204,8 +204,9 @@ class library {
   [[nodiscard]] std::string write_problem(std::string_view key) const;
   using change_refused = driftwire::serve::client::change_refused;
   // Each BLOCKS (a worker) and answers the new key. A refusal is the service's, typed in
-  // `why` (serve_client.h): status::permission_denied (exists, not_allowed, ...), ::not_found,
-  // ::unsupported_format (an older service), ::io. Afterwards the kept listings of the
+  // `why` (serve_client.h): status::busy (something there is being written now: try again),
+  // ::permission_denied (exists, not_allowed, path, ...), ::not_found, ::unsupported_format
+  // (an older service), ::io. Afterwards the kept listings of the
   // folders it touched are dropped, and a moved or deleted file's stamp, so the next list
   // is the server's.
   // A local file into `folder_key` as `name` (" (2)" if that is taken: never a replace).
@@ -267,6 +268,8 @@ class library {
   [[nodiscard]] driftwire::secrets::store* store();
   // What the service says this device may change: from a roots() answer.
   void note_rights(server_rt& s, const std::vector<driftwire::serve::root_info>& roots);
+  void forget_rights(server_rt& s);  // nothing may be changed there until asked again
+  void recheck_rights(server_rt& s);  // after a not_allowed: a fresh hello and the roots
   // After a change: the kept listing of `folder_key` and, for a file key, its stamp.
   void forget_changed(std::string_view server, std::string_view folder_key, std::string_view item_key);
   [[nodiscard]] result<std::shared_ptr<server_rt>> live_server(const key_parts& k, const mobile::cancel_flag* cancel);

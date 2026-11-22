@@ -579,7 +579,14 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
   if (done) {
     std::string word;
     if (s.link->role(word) >= 0 && s.role.exchange(role_code(word)) != role_code(word)) {
-      s.rights_known.store(false);  // what it may change is read again with its folders
+      // The role is the caps' (sent once, at hello): a new one means what it may change is
+      // read again now, so can_write never answers from the old role meanwhile.
+      s.rights_known.store(false);
+      if (auto roots = s.link->roots()) {
+        note_rights(s, roots.value());
+      } else {
+        forget_rights(s);
+      }
       gen_.fetch_add(1, std::memory_order_acq_rel);  // the rows say what it may do
     }
     keep_addresses(s);
@@ -997,6 +1004,36 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
   return jpeg;
 }
 
+void library::forget_rights(server_rt& s) {
+  s.changes.store(false);
+  s.rights_known.store(false);
+  std::lock_guard lock(stamps_m_);
+  const std::string prefix = s.id + "/";
+  for (auto it = writable_.lower_bound(prefix); it != writable_.end() && it->first.rfind(prefix, 0) == 0; ++it) {
+    it->second = false;
+  }
+}
+
+// A change refused "not-allowed": the role or a folder's grant changed since this link's hello
+// (the service cuts a link whose limit changed, but a change in flight can still meet it). Ask
+// again now -- a fresh hello for the role, the roots for each folder -- so the next answer is
+// the server's, not the one this link started with.
+void library::recheck_rights(server_rt& s) {
+  mobile::route_report report;
+  if (s.link->reconnect(report, nullptr, cfg_.connect_timeout_ms)) {
+    std::string word;
+    if (s.link->role(word) >= 0) s.role.store(role_code(word));
+    if (auto roots = s.link->roots()) {
+      note_rights(s, roots.value());
+    } else {
+      forget_rights(s);
+    }
+  } else {
+    forget_rights(s);
+  }
+  gen_.fetch_add(1, std::memory_order_acq_rel);
+}
+
 void library::note_rights(server_rt& s, const std::vector<serve::root_info>& roots) {
   auto changes = s.link->changes_files();
   const bool can = changes && changes.value();
@@ -1005,6 +1042,8 @@ void library::note_rights(server_rt& s, const std::vector<serve::root_info>& roo
     std::lock_guard lock(stamps_m_);
     for (const auto& r : roots) {
       if (!is_hex16(r.id)) continue;
+      // Its label too: a subfolder opened first (Back, a pin) still names its folder in the trail.
+      labels_[make_key(key_parts{s.id, r.id, {}, true})] = r.label;
       const bool w = can && r.writable && r.label != serve::kCatalogueLabel;
       auto [it, added] = writable_.try_emplace(s.id + "/" + r.id, w);
       if (added || it->second != w) moved = true;
@@ -1066,6 +1105,9 @@ namespace {
 // A change's refusal as the caller's status (serve_client.h's table), with `why` filled.
 status change_status(status st, const serve::client::change_refused& w, serve::client::change_refused* why) {
   if (why) *why = w;
+  // "busy": a write is open on that name, or beneath the folder, right now. Not a refusal
+  // to say no to: the same change works in a moment, and the words say so.
+  if (w.why == serve::client::change_why::busy) return status::busy;
   return st;
 }
 std::string key_in(const key_parts& folder, const std::string& rel, bool is_folder) {
@@ -1116,6 +1158,7 @@ result<std::string> library::add_file(std::string_view folder_key, const std::st
     }
     // The link went: connect again and ask; an unfinished copy answers with an offset.
     if ((r.error() == status::io || r.error() == status::timeout) && --tries > 0) continue;
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
     return err(change_status(r.error(), w, why));
   }
 }
@@ -1129,7 +1172,10 @@ result<std::string> library::make_folder(std::string_view parent_key, const std:
   if (!s) return err(s.error());
   change_refused w;
   auto r = s.value()->link->make_folder(k->root, join_rel(k->rel, name), &w);
-  if (!r) return err(change_status(r.error(), w, why));
+  if (!r) {
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
   forget_changed(k->server, parent_key, {});
   if (r->existing) return err(change_status(status::permission_denied, {serve::client::change_why::exists, "exists", 0}, why));
   return key_in(*k, r->rel, true);
@@ -1147,7 +1193,10 @@ result<std::string> library::move(std::string_view key, std::string_view to_fold
   if (!s) return err(s.error());
   change_refused w;
   auto r = s.value()->link->move(from->root, from->rel, to->root, join_rel(to->rel, name), &w);
-  if (!r) return err(change_status(r.error(), w, why));
+  if (!r) {
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
   forget_changed(from->server, parent_key(key), key);
   forget_changed(to->server, to_folder_key, {});
   return key_in(*to, r->rel, from->folder);
@@ -1160,7 +1209,10 @@ result<std::string> library::remove(std::string_view key, change_refused* why) {
   if (!s) return err(s.error());
   change_refused w;
   auto r = s.value()->link->remove(k->root, k->rel, &w);
-  if (!r) return err(change_status(r.error(), w, why));
+  if (!r) {
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
   forget_changed(k->server, parent_key(key), key);
   return r->rel;
 }

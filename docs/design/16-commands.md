@@ -219,6 +219,9 @@ Finder's and Explorer's model on both hosts (`shell/browse_history.h`, beside `b
   the folder left with its selected item and folder tile; a result list is no place. `Ctrl+[` /
   `Ctrl+]` (Go ▸ Back / Forward on the Mac, the bar's chevrons) reopen it with that selection; a new
   move clears Forward. 64 deep; a folder that went is forgotten.
+- Another computer's folder has the same bar: server › named folder › … (`remote::key_chain`,
+  names from the server), Back / Forward / Up, crumbs that take drops; only a search result list
+  shows its title and count instead. The grid starts right of the folder pane, never under it.
 - The grid's scroll comes back with Back / Forward (Mac `GalleryScroll`, per folder); any other
   arrival starts at the top on what the host selected. Listings load on the pool as before.
 - The folder pane (`Ctrl+Shift+E`, Mac) leads with places: the home folders, every mounted volume

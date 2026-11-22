@@ -519,6 +519,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (BOOL)folderQueryInto:(char*)buf size:(int32_t)size;
 @property(nonatomic, strong) NSView* filmstripHost;
 @property(nonatomic, strong) NSView* galleryHost;
+// The grid starts right of the folder pane while it shows (Finder's sidebar), never under it.
+@property(nonatomic, strong) NSLayoutConstraint* galleryLeading;
 @property(nonatomic, strong) NSView* helpHost;
 @property(nonatomic, strong) NSView* settingsHost;
 // PR 10: the export sheet, built fresh each time it opens so it starts from
@@ -820,6 +822,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (NSInteger)crumbCount;
 - (BOOL)crumbPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
 - (void)openCrumbAtIndex:(NSInteger)index;
+- (BOOL)crumbNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
 - (BOOL)canGoUp;
 - (BOOL)navigateUp;
 // docs/design/16 "Folder navigation": Back / Forward (browse_history.h).
@@ -1475,6 +1478,10 @@ extern "C" int32_t mv_chrome_crumb_count(void) {
 extern "C" bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size) {
   if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
   return [g_chrome_app crumbPathAtIndex:index into:out_buf size:out_buf_size] == YES;
+}
+extern "C" bool mv_chrome_crumb_name(int32_t index, char* out_buf, int32_t out_buf_size) {
+  if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
+  return [g_chrome_app crumbNameAtIndex:index into:out_buf size:out_buf_size] == YES;
 }
 extern "C" void mv_chrome_open_crumb(int32_t index) {
   if (g_chrome_app) [g_chrome_app openCrumbAtIndex:index];
@@ -3769,6 +3776,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   BOOL _historyMove;
   std::string _historyReveal;
   uint64_t _historyGeneration;
+  // The item a Back / Forward onto a remote folder lands on when its listing arrives.
+  std::string _remoteSelectWant;
   // "Drag and drop into folders": drops, pastes and New Folder run on the pool;
   // their rows sit in the Jobs pane beside clip jobs. `_dropGeneration` moves
   // when one lands, so the chrome refreshes its folder tiles' counts.
@@ -4593,8 +4602,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [self.galleryHost setContentHuggingPriority:NSLayoutPriorityDefaultLow
                                 forOrientation:NSLayoutConstraintOrientationHorizontal];
   [container addSubview:self.galleryHost];
+  self.galleryLeading = [self.galleryHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor];
   [NSLayoutConstraint activateConstraints:@[
-    [self.galleryHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    self.galleryLeading,
     [self.galleryHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.galleryHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.galleryHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
@@ -5645,8 +5655,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 - (void)openDir:(const std::string&)dir select:(const std::string&)select_path navigation:(BOOL)navigation {
   // Back / Forward (browse_history.h): the place being left, read before
   // anything below clears it. Every way to another folder lands here.
-  if (!_historyMove && !_listOpen && !_currentDir.empty() && dir != _currentDir) {
-    _history.visit([self herePlace], dir);
+  if (!_historyMove) {
+    const mv::shell::browse_place here = [self herePlace];
+    if (!here.dir.empty() && dir != here.dir) _history.visit(here, dir);
   }
   // Moving up into a folder that contains the one we are leaving: remember
   // that child so its tile is selected when the parent listing arrives.
@@ -6663,7 +6674,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       if (r) {
         gone->push_back(k);
       } else if (problem.empty()) {
-        problem = lib ? lib->write_problem(k) : std::string();
+        problem = r.error() == mv::status::busy ? "in use on " + server + " right now: try again in a moment"
+                  : lib                         ? lib->write_problem(k)
+                                                : std::string();
       }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -6736,7 +6749,11 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       } else if (r) {
         words = "Renamed to “" + name + "”";
       }
-      if (!r) words = lib->write_problem(key).empty() ? std::string("Could not rename it") : lib->write_problem(key);
+      if (!r && r.error() == mv::status::busy) {
+        words = "It is in use on the server right now: try again in a moment";
+      } else if (!r) {
+        words = lib->write_problem(key).empty() ? std::string("Could not rename it") : lib->write_problem(key);
+      }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
@@ -7346,17 +7363,51 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
       });
 }
 
+// docs/design/16 "Folder navigation": another computer's folder has the same path bar as a
+// local one -- its server, its named folder, each folder below (remote::key_chain).
+- (std::string)remoteShown {
+  return _listOpen ? _remoteFolderKey : std::string();
+}
+
 - (NSInteger)crumbCount {
+  const std::string remote = [self remoteShown];
+  if (!remote.empty()) return static_cast<NSInteger>(mv::remote::key_chain(remote).size());
   return static_cast<NSInteger>(_browsePath.crumbs().size());
 }
 
 - (BOOL)crumbPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  const std::string remote = [self remoteShown];
+  if (!remote.empty()) {
+    const auto chain = mv::remote::key_chain(remote);
+    if (index < 0 || static_cast<std::size_t>(index) >= chain.size()) return NO;
+    return MvCopyUtf8(chain[static_cast<std::size_t>(index)], buf, size);
+  }
   const auto crumbs = _browsePath.crumbs();
   if (index < 0 || static_cast<std::size_t>(index) >= crumbs.size()) return NO;
   return MvCopyUtf8(crumbs[static_cast<std::size_t>(index)].path, buf, size);
 }
 
+// What a crumb says: a remote folder's own name (its key names nothing a person knows).
+- (BOOL)crumbNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  const std::string remote = [self remoteShown];
+  if (!remote.empty()) {
+    const auto chain = mv::remote::key_chain(remote);
+    if (index < 0 || static_cast<std::size_t>(index) >= chain.size()) return NO;
+    return MvCopyUtf8(MvPlaceName(chain[static_cast<std::size_t>(index)]), buf, size);
+  }
+  const auto crumbs = _browsePath.crumbs();
+  if (index < 0 || static_cast<std::size_t>(index) >= crumbs.size()) return NO;
+  return MvCopyUtf8(crumbs[static_cast<std::size_t>(index)].name, buf, size);
+}
+
 - (void)openCrumbAtIndex:(NSInteger)index {
+  const std::string remote = [self remoteShown];
+  if (!remote.empty()) {
+    const auto chain = mv::remote::key_chain(remote);
+    if (index < 0 || static_cast<std::size_t>(index) + 1 >= chain.size()) return;  // the last is on screen
+    [self openRemoteFolder:chain[static_cast<std::size_t>(index)]];
+    return;
+  }
   const auto crumbs = _browsePath.crumbs();
   if (index < 0 || static_cast<std::size_t>(index) >= crumbs.size()) return;
   const std::string path = crumbs[static_cast<std::size_t>(index)].path;
@@ -7365,6 +7416,8 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 
 - (BOOL)canGoUp {
+  const std::string remote = [self remoteShown];
+  if (!remote.empty()) return !mv::remote::parent_key(remote).empty();
   return !_browsePath.parent().empty();
 }
 
@@ -7506,6 +7559,13 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 
 - (BOOL)navigateUp {
+  // Up from a remote folder: its parent there, the server's top at most.
+  if (const std::string remote = [self remoteShown]; !remote.empty()) {
+    const std::string parent = mv::remote::parent_key(remote);
+    if (parent.empty()) return NO;
+    [self openRemoteFolder:parent];
+    return YES;
+  }
   const std::string parent = _browsePath.parent();
   if (parent.empty()) return NO;
   return [self openPath:parent.c_str() navigation:YES];
@@ -7515,7 +7575,13 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 // result list is no place (its items live in other folders).
 - (mv::shell::browse_place)herePlace {
   mv::shell::browse_place p;
-  if (_listOpen) return p;
+  if (_listOpen) {
+    // A remote folder is a place (a list of its files here); a search result list is not.
+    if (_remoteFolderKey.empty()) return p;
+    p.dir = _remoteFolderKey;
+    if (const mv::io::dir_entry* e = [self currentEntry]) p.item = e->path_utf8;
+    return p;
+  }
   p.dir = _currentDir;
   if (!_items.empty() && _index.current() < _items.size()) p.item = _items[_index.current()].path_utf8;
   if (_galleryVisible && _folderCursor >= 0 && static_cast<std::size_t>(_folderCursor) < _subdirs.size()) {
@@ -7537,6 +7603,13 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
   _historyMove = YES;
   _historyReveal = next->folder;
   ++_historyGeneration;
+  if (mv::remote::is_key(next->dir)) {
+    _remoteSelectWant = next->item;
+    [self openRemoteFolder:next->dir];
+    _historyMove = NO;
+    _historyReveal.clear();
+    return YES;
+  }
   [self openDir:next->dir select:next->item navigation:YES];
   _historyMove = NO;
   _historyReveal.clear();
@@ -7702,7 +7775,13 @@ static mv::shell::remote_ops MvRemoteOps() {
   _transfers.finish(job, result, MvTransferNowMs());
   ++_jobsGeneration;
   if (result.failed() > 0) NSBeep();
-  [self noticeShow:mv::shell::transfer_summary(result, MvPlaceName(target))];
+  std::string summary = mv::shell::transfer_summary(result, MvPlaceName(target));
+  // Refused because the server changed what this Mac may do since it last said: its reason.
+  if (result.failed() > 0 && mv::remote::is_key(target) &&
+      !mv::shell::change_allowed(target, mv::shell::file_change::add)) {
+    summary += " · " + [self remoteProblem:target];
+  }
+  [self noticeShow:summary];
   if (result.verb == mv::shell::drop_verb::move) {
     for (const auto& item : result.items) {
       if (item.status == mv::status::ok) _marks.erase(item.source);
@@ -15226,6 +15305,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   if (visible == _treeVisible) return;
   _treeVisible = visible;
   self.treeHost.hidden = !visible;
+  // The grid makes room beside the pane at once (no slide: its columns reflow once).
+  self.galleryLeading.constant = visible ? kTreeWidthPoints : 0;
   [self.window makeFirstResponder:visible ? self.treeHost : self.view];
 }
 - (void)treeBlur { [self.window makeFirstResponder:self.view]; }
@@ -16032,6 +16113,12 @@ class remote_clip_source final : public mv::player::byte_source {
     NSBeep();
     return;
   }
+  // Back / Forward: leaving the place on screen for this folder.
+  if (!_historyMove) {
+    const mv::shell::browse_place here = [self herePlace];
+    if (!here.dir.empty() && here.dir != key) _history.visit(here, key);
+    _remoteSelectWant.clear();
+  }
   const std::string shown = lib->display_name(key);
   const std::string opening = "Opening " + (shown.empty() ? std::string("the folder") : shown) + "…";
   [self noticeShowUntilCleared:opening];
@@ -16075,7 +16162,9 @@ class remote_clip_source final : public mv::player::byte_source {
       }
       std::vector<mv::shell::folder_model::list_entry> entries;
       entries.reserve(l.files.size());
+      std::size_t select = 0;
       for (const auto& f : l.files) {
+        if (f.key == strongSelf->_remoteSelectWant) select = entries.size();  // Back lands on it
         mv::shell::folder_model::list_entry e;
         e.path_utf8 = f.key;
         e.is_virtual = true;
@@ -16085,7 +16174,8 @@ class remote_clip_source final : public mv::player::byte_source {
         entries.push_back(std::move(e));
       }
       const std::string title = l.title.empty() ? server_name : l.title;
-      if (![strongSelf openListTitled:title entries:std::move(entries) select:0 gallery:YES]) return;
+      strongSelf->_remoteSelectWant.clear();
+      if (![strongSelf openListTitled:title entries:std::move(entries) select:select gallery:YES]) return;
       strongSelf->_remoteFolderKey = key;
       if (l.stale) [strongSelf noticeShow:mv::remote::stale_words(server_name)];
     });

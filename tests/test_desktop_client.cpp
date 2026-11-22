@@ -234,6 +234,13 @@ TEST_CASE("remote keys: a folder ends in a slash, nothing climbs out", "[desktop
   CHECK(rm::parent_key("remote:" + s + "/" + r + "/2024/IMG 1.JPG") == "remote:" + s + "/" + r + "/2024/");
   CHECK(rm::parent_key("remote:" + s + "/" + r + "/") == "remote:" + s + "/");
   CHECK(rm::leaf_name("remote:" + s + "/" + r + "/2024/IMG 1.JPG") == "IMG 1.JPG");
+  // The path bar's trail: the server, its named folder, each folder below.
+  CHECK(rm::key_chain("remote:" + s + "/" + r + "/2024/Trip/") ==
+        std::vector<std::string>{"remote:" + s + "/", "remote:" + s + "/" + r + "/", "remote:" + s + "/" + r + "/2024/",
+                                 "remote:" + s + "/" + r + "/2024/Trip/"});
+  CHECK(rm::key_chain("remote:" + s + "/") == std::vector<std::string>{"remote:" + s + "/"});
+  CHECK(rm::key_chain("remote:" + s + "/" + r + "/2024/IMG 1.JPG").empty());  // a file has no trail
+  CHECK(rm::key_chain("/Users/x").empty());
   for (const std::string& bad : std::vector<std::string>{"remote:", "remote:xyz/", "remote:" + s, "remote:" + s + "/" + r,
                                 "remote:" + s + "/" + r + "/../x", "remote:" + s + "/" + r + "/a//b",
                                 "remote:" + s + "/" + r + "/a\\b", "photos:abc", "/Users/x.jpg"}) {
@@ -651,7 +658,7 @@ TEST_CASE("unreachable, offline and ended are said plainly", "[desktop-client]")
 // Plan §6: the host's admin lets this desktop change files, as `driftwire host` does it
 // (serve.cpp set_access): "change" for every folder with no limit is the paired list; "view"
 // is the grants list with backup off. The next connect learns the role.
-void allow_changes(host& h, bool allow) {
+void allow_changes(host& h, bool allow, bool restart = true) {
   std::vector<dw::serve::grants::grant> granted;
   REQUIRE(dw::serve::grants::load(*h.store, granted));
   auto devices = dw::known::load(*h.store);
@@ -680,8 +687,12 @@ void allow_changes(host& h, bool allow) {
   if (allow) {
     REQUIRE(dw::serve::grants::save(*h.store, granted));
   }
-  // The service keeps who may write between requests; the admin op clears that, a hand-edited
-  // list needs a restart (same port, so the paired address still answers).
+  // The service keeps who may write between requests; the admin op and its own re-read of the
+  // lists (recheck_devices, also on a timer) clear that. `restart`: as a host restart would.
+  if (!restart) {
+    h.srv->recheck_devices();
+    return;
+  }
   const std::uint16_t port = h.port;
   h.stop();
   h.start(port);
@@ -729,6 +740,11 @@ TEST_CASE("changing files: a view desktop is refused, a change desktop adds, mak
   auto again = d.lib->make_folder(year, "Trip", &why);
   CHECK_FALSE(again);
   CHECK(why.why == dw::serve::client::change_why::exists);
+
+  // A subfolder opened first in a new run still names its folder (the path bar's trail).
+  d.relaunch();
+  REQUIRE(d.lib->list(year));
+  CHECK(d.lib->display_name(photos) == "Photos");
 
   // A listing kept from before the change is not what the next list shows.
   auto before = d.lib->list(year);
@@ -779,6 +795,43 @@ TEST_CASE("changing files: a view desktop is refused, a change desktop adds, mak
   d.relaunch();
   REQUIRE(d.lib->list(rm::server_key(*id)));
   CHECK_FALSE(d.lib->can_write(year));
+}
+
+TEST_CASE("changing files: a role changed while linked is followed without a restart on either side",
+          "[desktop-client][remote-change]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);  // start as a change device (one restart: the setup)
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  REQUIRE(d.lib->can_write(photos));
+  REQUIRE(d.lib->make_folder(photos, "Before"));
+
+  // The admin takes it back while this desktop is linked; the service re-reads its lists (its
+  // timer, or the admin op), cutting the link whose limit changed. Nothing here restarts.
+  allow_changes(h, false, /*restart=*/false);
+  // Before the desktop asks the server anything, it cannot know: the role came at hello.
+  // The next change is refused by the service, and the desktop asks again at once (a fresh
+  // hello and the roots), so the row and can_write say "view" from then on.
+  rm::library::change_refused why;
+  auto refused = d.lib->make_folder(photos, "After", &why);
+  REQUIRE_FALSE(refused);
+  CHECK_FALSE(fs::exists(h.photos / "After"));
+  CHECK_FALSE(d.lib->can_write(photos));
+  CHECK(d.lib->servers()[0].role == "view");
+  CHECK(d.lib->write_problem(photos).find("view only") != std::string::npos);
+
+  // Given again: the next listing (opening or refreshing a folder) reconnects, learns the role
+  // and re-reads what it may change. Still no restart.
+  allow_changes(h, true, /*restart=*/false);
+  REQUIRE(d.lib->list(photos));
+  CHECK(d.lib->servers()[0].role == "change");
+  CHECK(d.lib->can_write(photos));
+  CHECK(d.lib->make_folder(photos, "Again"));
 }
 
 TEST_CASE("changing files: an upload cut short goes on from what reached the server", "[desktop-client][remote-change]") {

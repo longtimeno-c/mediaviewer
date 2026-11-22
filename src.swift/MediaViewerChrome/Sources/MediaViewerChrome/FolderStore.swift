@@ -401,7 +401,8 @@ final class FolderStore: ObservableObject {
     var freshCrumbs: [Crumb] = []
     for i in 0..<Int(mv_chrome_crumb_count()) {
       guard let path = Self.string({ mv_chrome_crumb_path(Int32(i), $0, $1) }) else { continue }
-      let leaf = URL(fileURLWithPath: path).lastPathComponent
+      let named = Self.string({ mv_chrome_crumb_name(Int32(i), $0, $1) }) ?? ""
+      let leaf = named.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : named
       freshCrumbs.append(Crumb(index: i, name: leaf.isEmpty ? path : leaf, path: path))
     }
     if freshCrumbs != crumbs { crumbs = freshCrumbs }

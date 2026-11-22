@@ -207,6 +207,7 @@ class mixed : public transfer_target {
     bool taken = false;
     auto r = ops_.move(src, remote_parent(dest), browse_path::leaf(dest), taken);
     if (r) return rename_outcome::done;
+    if (r.error() == mv::status::busy) return rename_outcome::busy;
     return taken ? rename_outcome::taken : rename_outcome::failed;
   }
 
@@ -266,6 +267,7 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
       switch (outcome) {
         case transfer_target::rename_outcome::done: renamed = true; break;
         case transfer_target::rename_outcome::other_volume: break;
+        case transfer_target::rename_outcome::busy: item.status = mv::status::busy; break;
         case transfer_target::rename_outcome::taken:
         case transfer_target::rename_outcome::failed: item.status = mv::status::io; break;
       }
@@ -280,9 +282,9 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
         if (item.status == mv::status::cancelled) out.cancelled = true;
       } else if (verb == drop_verb::move && is_remote_path(step.source)) {
         // Down from the server, read back right here: only now it goes to the server's trash.
-        if (target.remove(step.source) != mv::status::ok) {
+        if (const mv::status gone = target.remove(step.source); gone != mv::status::ok) {
           (void)target.remove(step.dest);  // never two
-          item.status = mv::status::io;
+          item.status = gone == mv::status::busy ? mv::status::busy : mv::status::io;
         }
       } else if (verb == drop_verb::move) {
         const bool folder = is_directory(step.source);
@@ -327,9 +329,12 @@ std::string transfer_summary(const transfer_result& r, const std::string& target
   std::string what = ok == 1 && all == 1 ? quoted_leaf(r.items[0].source) : count(ok);
   if (r.cancelled) return "Cancelled · " + std::to_string(ok) + " of " + std::to_string(all) + (move ? " moved" : " copied");
   if (ok == all) return std::string(move ? "Moved " : "Copied ") + what + " to " + where;
-  if (ok == 0) return std::string(move ? "Could not move " : "Could not copy ") + (all == 1 ? quoted_leaf(r.items[0].source) : count(all)) + " to " + where;
+  // A server's "busy" (a write open there now) is a moment's wait, not a failure.
+  const bool busy = std::any_of(r.items.begin(), r.items.end(), [](const transfer_item& i) { return i.status == mv::status::busy; });
+  const std::string later = busy ? " · in use there right now: try again in a moment" : "";
+  if (ok == 0) return std::string(move ? "Could not move " : "Could not copy ") + (all == 1 ? quoted_leaf(r.items[0].source) : count(all)) + " to " + where + later;
   return std::string(move ? "Moved " : "Copied ") + std::to_string(ok) + " of " + std::to_string(all) + " to " + where +
-         " · " + std::to_string(all - ok) + " failed";
+         (busy ? later : " · " + std::to_string(all - ok) + " failed");
 }
 
 std::shared_ptr<transfer_board::job> transfer_board::add(std::string title, std::string target, std::int64_t now_ms) {

@@ -75,4 +75,10 @@ final class FolderNavModelTests: XCTestCase {
     XCTAssertGreaterThan(SpringLoad.delay, 0.3)
     XCTAssertLessThan(SpringLoad.delay, 1.2)
   }
+
+  func testARemoteFolderHasTheFolderTrailNotASearchTitle() {
+    XCTAssertEqual(PathBarMode.of(listTitle: nil, remoteFolder: ""), .trail)
+    XCTAssertEqual(PathBarMode.of(listTitle: "Photos", remoteFolder: "remote:0123456789abcdef/a1a1a1a1a1a1a1a1/"), .trail)
+    XCTAssertEqual(PathBarMode.of(listTitle: "beach", remoteFolder: ""), .results("beach"))
+  }
 }

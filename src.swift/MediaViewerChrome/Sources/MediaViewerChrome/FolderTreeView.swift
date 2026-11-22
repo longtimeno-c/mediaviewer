@@ -166,7 +166,8 @@ final class FolderTreeStore: ObservableObject {
     _ = keyBuf.withUnsafeMutableBufferPointer { mv_chrome_remote_open_key($0.baseAddress, Int32($0.count)) }
     let openKey = String(cString: keyBuf)
     if openKey != remoteOpen { remoteOpen = openKey }
-    let crumbs = readCrumbs()
+    // Another computer's folder: its trail is the server's row above, not a local tree.
+    let crumbs = openKey.isEmpty ? readCrumbs() : []
     // Only what moved is published: a poll runs on every pass of the main run
     // loop while the tree is up, and an unchanged write would redraw it.
     guard let first = crumbs.first else {

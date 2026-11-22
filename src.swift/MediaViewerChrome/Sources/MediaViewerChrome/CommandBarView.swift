@@ -484,17 +484,16 @@ private struct UpdateBarItem: View {
 /// including while a photo is on the canvas.
 struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
-  @State private var trailWidth: CGFloat = 0
   @State private var nameWidth: CGFloat = 0
   private let maxTrailWidth: CGFloat = 300
   private let maxNameWidth: CGFloat = 200
 
   var body: some View {
-    // Milestone H: a result list has no folder trail; its title stands in.
-    if let title = store.listTitle {
-      ListTitleBar(title: title)
-    } else {
-      trail
+    // Milestone H: a result list has no folder trail; its title stands in. Another
+    // computer's folder is a folder: the same trail, Back and Forward (PathBarMode).
+    switch PathBarMode.of(listTitle: store.listTitle, remoteFolder: store.remoteFolder) {
+    case .results(let title): ListTitleBar(title: title)
+    case .trail: trail
     }
   }
 
@@ -518,48 +517,17 @@ struct PathBar: View {
       // Issue #444: Share beside Home (ShareMenu.swift).
       BarShareButton()
 
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: MVTheme.space(4)) {
-          ForEach(shown.dropLast()) { crumb in
-            if crumb.isEllipsis {
-              Menu {
-                ForEach(crumbs.dropFirst().dropLast(2)) { ancestor in
-                  Button(ancestor.name) { store.openCrumb(ancestor.index) }
-                    .help(ancestor.path)
-                }
-              } label: { Text("…") }
-              .menuStyle(.borderlessButton)
-              .menuIndicator(.hidden)
-              .fixedSize()
-              .foregroundStyle(MVTheme.body)
-              .help("Open a parent folder")
-              .accessibilityLabel("Hidden parent folders")
-            } else {
-              let path = crumbs.first(where: { $0.index == crumb.index })?.path ?? ""
-              Button(crumb.name) { store.openCrumb(crumb.index) }
-                .buttonStyle(.borderless)
-                .foregroundStyle(MVTheme.body)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 120)
-                .help(path.isEmpty ? crumb.name : path)
-                // Drop files on a segment: they go into that folder.
-                .padding(.horizontal, MVTheme.space(2))
-                .folderDropTarget(path, name: crumb.name, radius: MVTheme.radius(4), inset: 1)
-            }
-            Image(systemName: "chevron.right")
-              .font(.system(size: 8, weight: .bold))
-              .foregroundStyle(MVTheme.body)
-          }
+      // The ancestors at their own width up to a cap; past that they scroll. ViewThatFits,
+      // not a measured width: a width measured into a preference never reached this frame
+      // (the ancestors stayed at zero width, only the current name showing).
+      ViewThatFits(in: .horizontal) {
+        trailRow(shown, crumbs)
+        ScrollView(.horizontal, showsIndicators: false) {
+          trailRow(shown, crumbs)
         }
-        .padding(.leading, MVTheme.space(4))
-        .background(GeometryReader { geo in
-          Color.clear.preference(key: TrailWidthKey.self, value: geo.size.width)
-        })
       }
-      // Only as wide as the trail, up to a cap; past that it scrolls.
-      .frame(width: min(trailWidth, maxTrailWidth))
-      .onPreferenceChange(TrailWidthKey.self) { trailWidth = $0 }
+      .frame(maxWidth: maxTrailWidth)
+      .fixedSize(horizontal: true, vertical: false)
 
       if let current = shown.last {
         // As wide as the name, up to a cap: a bare maxWidth frame took the
@@ -592,6 +560,46 @@ struct PathBar: View {
     }
     .font(MVTheme.font(14))
     .padding(.horizontal, MVTheme.space(6))
+  }
+
+  /// The ancestors and their chevrons, each segment taking drops for its folder.
+  @ViewBuilder
+  private func trailRow(_ shown: [PathPiece], _ crumbs: [Crumb]) -> some View {
+    HStack(spacing: MVTheme.space(4)) {
+      ForEach(shown.dropLast()) { crumb in
+        if crumb.isEllipsis {
+          Menu {
+            ForEach(crumbs.dropFirst().dropLast(2)) { ancestor in
+              Button(ancestor.name) { store.openCrumb(ancestor.index) }
+                .help(ancestor.path)
+            }
+          } label: { Text("…") }
+          .menuStyle(.borderlessButton)
+          .menuIndicator(.hidden)
+          .fixedSize()
+          .foregroundStyle(MVTheme.body)
+          .help("Open a parent folder")
+          .accessibilityLabel("Hidden parent folders")
+        } else {
+          let path = crumbs.first(where: { $0.index == crumb.index })?.path ?? ""
+          Button(crumb.name) { store.openCrumb(crumb.index) }
+            .buttonStyle(.borderless)
+            .foregroundStyle(MVTheme.body)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 120)
+            .help(path.isEmpty ? crumb.name : path)
+            // Drop files on a segment: they go into that folder.
+            .padding(.horizontal, MVTheme.space(2))
+            .folderDropTarget(path, name: crumb.name, radius: MVTheme.radius(4), inset: 1)
+        }
+        Image(systemName: "chevron.right")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(MVTheme.body)
+      }
+    }
+    .padding(.leading, MVTheme.space(4))
+    .padding(.trailing, MVTheme.space(2))  // the last chevron keeps off the current name
   }
 
   private func display(_ crumbs: [Crumb]) -> [PathPiece] {
@@ -666,11 +674,6 @@ private struct PathPiece: Identifiable {
 }
 
 private struct NameWidthKey: PreferenceKey {
-  static let defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct TrailWidthKey: PreferenceKey {
   static let defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

@@ -321,6 +321,8 @@ void mv_chrome_set_folder_cover_callback(mv_chrome_folder_cover_fn callback);
 int32_t mv_chrome_crumb_count(void);
 bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size);
 void mv_chrome_open_crumb(int32_t index);
+// What crumb `index` says: a folder's leaf, a remote folder's own name (its key names nothing).
+bool mv_chrome_crumb_name(int32_t index, char* out_buf, int32_t out_buf_size);
 bool mv_chrome_can_go_up(void);
 void mv_chrome_navigate_up(void);
 // docs/design/16 "Folder navigation": Back / Forward (shell/browse_history.h).

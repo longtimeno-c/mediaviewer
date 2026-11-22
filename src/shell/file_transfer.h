@@ -47,7 +47,8 @@ class transfer_target {
                                             std::atomic<std::uint64_t>* done_bytes) = 0;
   // A move by rename: `taken` when something is at `dest` (never replaced),
   // `other_volume` when only a copy can get it there.
-  enum class rename_outcome : std::uint8_t { done, other_volume, taken, failed };
+  // `busy`: the server has a write open there now (the same move works in a moment).
+  enum class rename_outcome : std::uint8_t { done, other_volume, taken, failed, busy };
   [[nodiscard]] virtual rename_outcome rename(const std::string& src, const std::string& dest) = 0;
   // Removes a file, or a folder and everything in it (a failed copy's own).
   [[nodiscard]] virtual mv::status remove(const std::string& path) = 0;

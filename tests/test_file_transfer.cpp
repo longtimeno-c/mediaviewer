@@ -325,3 +325,29 @@ TEST_CASE("file_transfer: within one server a move is its own, and a taken name 
   CHECK(text_of(srv.root / "Archive" / "a.jpg") == "a");
   CHECK(text_of(srv.root / "Archive" / "a (2).jpg") == "second");
 }
+
+TEST_CASE("file_transfer: a server's busy says try again, not failed", "[file_transfer]") {
+  transfer_result r;
+  r.verb = drop_verb::move;
+  r.items.push_back({"remote:0123456789abcdef/a1a1a1a1a1a1a1a1/a.jpg", "remote:0123456789abcdef/a1a1a1a1a1a1a1a1/Trip/a.jpg",
+                     mv::status::busy});
+  CHECK(transfer_summary(r, "Trip") == "Could not move a.jpg to Trip · in use there right now: try again in a moment");
+  r.items.push_back({"/x/b.jpg", "/t/b.jpg", mv::status::ok});
+  CHECK(transfer_summary(r, "Trip") == "Moved 1 of 2 to Trip · in use there right now: try again in a moment");
+
+  // Through the seam: the service's busy on a move reaches the item as busy.
+  scratch_dir s("xfer_busy");
+  fake_server srv{s / "server"};
+  write_text(srv.root / "a.jpg", "a");
+  fs::create_directories(srv.root / "Trip");
+  auto ops = srv.ops();
+  ops.move = [](const std::string&, const std::string&, const std::string&, bool&) -> mv::result<std::string> {
+    return mv::err(mv::status::busy);
+  };
+  auto target = mixed_target(ops);
+  transfer_progress progress;
+  const auto moved = run_transfer(drop_verb::move, {srv.prefix + "a.jpg"}, srv.prefix + "Trip/", *target, progress);
+  REQUIRE(moved.items.size() == 1);
+  CHECK(moved.items[0].status == mv::status::busy);
+  CHECK(fs::exists(srv.root / "a.jpg"));
+}

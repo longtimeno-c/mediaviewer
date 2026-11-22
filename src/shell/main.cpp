@@ -9456,10 +9456,12 @@ bool start_remote_trash(app_state* app, const std::vector<std::string>& keys) {
     auto done = std::make_unique<remote_trash_done>();
     done->asked = keys.size();
     for (const auto& k : keys) {
-      if (mv_remote_remove(k.c_str()) == MV_OK) {
+      const mv_status st = mv_remote_remove(k.c_str());
+      if (st == MV_OK) {
         ++done->gone;
       } else if (done->problem.empty()) {
-        done->problem = remote_write_problem(k);
+        done->problem = st == MV_ERR_BUSY ? std::string("in use on the server right now: try again in a moment")
+                                          : remote_write_problem(k);
       }
     }
     const bool ok = done->gone == done->asked;

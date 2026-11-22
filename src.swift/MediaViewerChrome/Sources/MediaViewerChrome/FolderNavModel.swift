@@ -112,3 +112,15 @@ enum TileClick: Equatable {
   case select, open
   static func of(clickCount: Int) -> TileClick { clickCount >= 2 ? .open : .select }
 }
+
+/// What the command bar's path area shows: a folder's trail (with Back, Forward, Up and
+/// drop-taking crumbs), local or on another computer, or a search's title and count.
+enum PathBarMode: Equatable {
+  case trail
+  case results(String)
+
+  static func of(listTitle: String?, remoteFolder: String) -> PathBarMode {
+    guard let listTitle else { return .trail }
+    return remoteFolder.isEmpty ? .results(listTitle) : .trail
+  }
+}
