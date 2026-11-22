@@ -709,6 +709,19 @@ TEST_CASE("change: an add carries on after a cancel and after a dropped link, an
     CHECK(again->rel == "clip.mov");
     CHECK(lowest >= (4u << 20));  // never from the start
   }
+  SECTION("stopped while it is still being hashed: nothing is sent") {
+    mob::cancel_flag cancel;
+    cancel.stop = true;
+    bool sent = false;
+    auto stopped = link.add_file(kSharedRoot, "clip.mov", local.string(), [&](std::uint64_t, std::uint64_t) { sent = true; },
+                                 &cancel, &why);
+    REQUIRE_FALSE(stopped);
+    CHECK(stopped.error() == mv::status::cancelled);
+    CHECK_FALSE(sent);
+    CHECK(fs::is_empty(n.shared));
+    // Then sent whole, as the other sections end.
+    REQUIRE(link.add_file(kSharedRoot, "clip.mov", local.string(), nullptr, nullptr, &why));
+  }
   SECTION("the link cut mid-file: reconnected, and carried on") {
     std::atomic<bool> cut{false};
     std::thread cutter;

@@ -15,8 +15,8 @@
 #include <sodium.h>
 
 #include "wire/net.h"
+#include "io/content_hash.h"
 #include "io/file_port.h"
-#include "wire/serve_backup.h"
 #include "wire/serve_wire.h"
 #include "wire/splice.h"
 
@@ -898,19 +898,34 @@ result<serve::client::change_done> link_session::add_file(const std::string& roo
   io::file_reader in;
   if (auto o = in.open(local_path, io::read_mode::sequential); !o) return err(status::not_found);
   const std::uint64_t size = in.size();
-  auto hashed = serve::backup::hash_file(local_path);
-  if (!hashed) return err(hashed.error());
+  // The hash the service checks what reached its disk against (BLAKE3, as serve::backup::hash_file),
+  // read here so a stop ends a big file's hashing too.
+  std::string hashed;
+  {
+    io::hasher h;
+    std::vector<std::uint8_t> buf(1u << 20);
+    for (std::uint64_t at = 0; at < size;) {
+      if (cancel && cancel->stopped()) return err(status::cancelled);
+      auto got = in.read_at(at, std::span<std::uint8_t>(buf.data(), static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), size - at))));
+      if (!got) return err(got.error());
+      if (*got == 0) break;
+      h.update(std::span<const std::uint8_t>(buf.data(), *got));
+      at += *got;
+    }
+    hashed = h.finish().hex();
+  }
   const serve::client::read_fn read = [&in](std::uint64_t at, std::span<std::uint8_t> into) -> result<std::size_t> {
     return in.read_at(at, into);
   };
   serve::client::change_refused refused;
   std::uint64_t at = 0;
   bool reconnected = false;
+  bool resent = false;
   int busy_waits = 0;
   result<serve::client::change_done> done = err(status::io);
   for (int attempt = 0; attempt < 12; ++attempt) {
     refused = {};
-    done = add(root, rel, size, *hashed, at, read,
+    done = add(root, rel, size, hashed, at, read,
                [&](std::uint64_t sent) {
                  if (progress) progress(sent, size);
                },
@@ -920,7 +935,8 @@ result<serve::client::change_done> link_session::add_file(const std::string& roo
       at = refused.have;
       continue;
     }
-    if (refused.why == serve::client::change_why::hash) {
+    if (refused.why == serve::client::change_why::hash && !resent) {
+      resent = true;  // once; a second is the server's disk, said as such
       at = 0;
       continue;
     }
