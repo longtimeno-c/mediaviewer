@@ -144,6 +144,8 @@ class server {
     // Tests: a move between two named folders always copies, checks and removes, as one
     // across volumes does (serve_wire.h "changing"), so that path runs on one disk.
     bool copy_moves = false;
+    // Tests: called on the worker before each file a move copies (a revoke in the middle).
+    std::function<void()> during_copy;
     // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
     // it. Empty: the system clock.
     std::function<std::int64_t()> now_unix;
