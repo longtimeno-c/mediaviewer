@@ -169,7 +169,7 @@ public final class AppModel {
     // with no catalogue on its NAS yet opens as its folders (file mode), and one whose access
     // ended opens on the ended card.
     stage = Self.stage(for: now)
-    library = LibraryModel(store: services.library)
+    library = LibraryModel(store: services.library, changes: services.changes)
     search = SearchModel(service: services.search)
     // §8.4: the catalogue opens before SwiftUI finishes attaching.
     if stage == .main { Task { await loadLibrary() } }
@@ -520,6 +520,16 @@ public final class FolderPage: Identifiable, Hashable {
   /// Why the latest load failed. Whatever was on screen stays there.
   public internal(set) var failure: String?
   @ObservationIgnored var loading: Task<Void, Never>?
+  /// This phone may change files here (FolderChanges): asked once the page has listed.
+  public internal(set) var changeable = false
+  /// Select mode: taps choose instead of opening, and the bottom bar acts on what is chosen.
+  public internal(set) var selecting = false
+  /// The ids (FolderEntry.id) chosen.
+  public internal(set) var selected: Set<String> = []
+  /// Why the last change here was refused, on a card at the top of the page.
+  public internal(set) var changeFailure: String?
+  /// A change is being made here: the bar's commands wait for it.
+  public internal(set) var changing = false
 
   init(path: [Folder]) { self.path = path }
 
@@ -538,6 +548,12 @@ public final class FolderPage: Identifiable, Hashable {
     if others != listing.others { others = listing.others }
     if sections != listing.sections { sections = listing.sections }
     entries = listing.entries
+    // What is chosen and no longer here (moved or deleted, here or elsewhere) is no longer chosen.
+    if !selected.isEmpty {
+      var present = Set(subfolders.map(\.id)).union(others.map(\.id))
+      for i in entries.indices where selected.contains(entries[i].item.id.raw) { present.insert(entries[i].item.id.raw) }
+      selected.formIntersection(present)
+    }
     failure = nil
     isLoading = false
   }
@@ -604,7 +620,15 @@ public final class LibraryModel {
   @ObservationIgnored var entering: Task<Void, Never>?
   @ObservationIgnored private var pending: FolderPage?
 
-  init(store: LibraryStore) { self.store = store }
+  let changes: FolderChanges
+  /// Files being sent to the server, in order. They keep going when their folder is left.
+  public internal(set) var uploads: [Upload] = []
+  @ObservationIgnored var uploading: Task<Void, Never>?
+
+  init(store: LibraryStore, changes: FolderChanges = NoFolderChanges()) {
+    self.store = store
+    self.changes = changes
+  }
 
   /// The page on screen.
   public var current: FolderPage { stack.last ?? root }
@@ -722,6 +746,11 @@ public final class LibraryModel {
   func reset() {
     forgetPreviews()
     cancelEntering()
+    // Another library: nothing waiting to be sent goes to it.
+    uploading?.cancel()
+    uploading = nil
+    uploads.forEach { Self.discard($0.file) }
+    uploads = []
     offlineCheck?.cancel()
     stack = []
     root.clear()
@@ -738,15 +767,16 @@ public final class LibraryModel {
   }
 
   /// Lists one page again (its Try again); only its newest load counts.
+  /// `animated`: after a change, folders and files coming and going move into place.
   @discardableResult
-  func load(_ page: FolderPage) -> Task<Void, Never> {
+  func load(_ page: FolderPage, animated: Bool = false) -> Task<Void, Never> {
     page.loading?.cancel()
-    let task = Task { await perform(page) }
+    let task = Task { await perform(page, animated: animated) }
     page.loading = task
     return task
   }
 
-  private func perform(_ page: FolderPage) async {
+  private func perform(_ page: FolderPage, animated: Bool = false) async {
     let path = page.path
     let parent = path.last
     do {
@@ -762,8 +792,13 @@ public final class LibraryModel {
       let subfolders = path.isEmpty ? Self.merging(page.subfolders.filter(\.offline), into: folders) : folders
       let listing = FolderListing(subfolders: subfolders, others: otherFiles, sections: built.sections, entries: built.entries)
       remember(listing, for: path)
-      page.apply(listing)
+      if animated {
+        withAnimation(Self.changeMotion) { page.apply(listing) }
+      } else {
+        page.apply(listing)
+      }
       if path.isEmpty { addOfflineFolders(over: folders) }
+      if let folder = path.last, !folder.offline { askChangeable(page) }
     } catch {
       guard !Task.isCancelled, !(error is CancellationError) else { return }
       page.failure = FailureCopy.libraryFailed
@@ -780,6 +815,12 @@ public final class LibraryModel {
   }
 
   private static func key(_ path: [Folder]) -> String { path.last?.id ?? "" }
+
+  /// A folder changed: the next time it is opened it is listed afresh, never shown from before.
+  func forgetListing(of folder: Folder) {
+    listings[folder.id] = nil
+    listingOrder.removeAll { $0 == folder.id }
+  }
 
   /// Returns when `task` has ended or `wait` has passed, whichever comes first, or at once when the
   /// caller is cancelled.

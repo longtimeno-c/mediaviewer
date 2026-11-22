@@ -23,9 +23,13 @@ enum LiveServices {
       connection.current
     }
     let search = ModeSearch(catalogue: catalogue.search, files: link.files.search) { connection.current }
-    return Services(library: library, images: images, search: search,
-                    connection: connection, sync: link.connection, clips: link.clips,
-                    saver: PhotoLibrarySaver(originals: link.images), backup: link.backup)
+    var services = Services(library: library, images: images, search: search,
+                            connection: connection, sync: link.connection, clips: link.clips,
+                            saver: PhotoLibrarySaver(originals: link.images), backup: link.backup)
+    // Changing files: only a folder listed live from the server (file mode) has a place there to
+    // change; a catalogue's folders answer that they can't.
+    services.changes = FileModeChanges(files: link.files)
+    return services
   }
 }
 

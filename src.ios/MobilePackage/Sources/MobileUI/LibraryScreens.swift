@@ -49,10 +49,11 @@ struct FolderScreen: View {
   var body: some View {
     content
       .background(Theme.ground)
-      .navigationTitle(page.title)
       .navigationBarTitleDisplayMode(.inline)
+      // Its title, and Add, Select and the bar under what is chosen where this phone may change files.
+      .modifier(FolderEditing(page: page))
       .toolbar {
-        if let chip = model.routeChip {
+        if let chip = model.routeChip, !page.selecting {
           ToolbarItem(placement: .topBarTrailing) {
             RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
           }
@@ -124,6 +125,15 @@ struct FolderScreen: View {
 
   @ViewBuilder
   private var noticeSlot: some View {
+    if let refused = page.changeFailure {
+      NoticeCard(message: refused, onDismiss: {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { model.library.dismissChangeFailure(on: page) }
+      })
+      .padding(.horizontal, Theme.inset)
+      .padding(.vertical, 8)
+      .arrives(reduceMotion: reduceMotion)
+    }
+    UploadRows(page: page)
     if let failure = page.failure {
       NoticeCard(message: failure, actionTitle: "Try again") { model.library.load(page) }
         .padding(.horizontal, Theme.inset)

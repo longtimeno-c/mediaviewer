@@ -50,13 +50,14 @@ struct FolderTile: View {
   let folder: Folder
   @Environment(AppModel.self) private var model
   @Environment(\.folderNamespace) private var namespace
+  @Environment(\.editingPage) private var editingPage
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Asked for once the tile is on screen; a folder already seen paints its preview at once.
   @State private var asked: FolderPreview?
 
   var body: some View {
     let preview = asked ?? model.library.knownPreview(of: folder)
-    Button { model.library.enter(folder) } label: {
+    Button { TileTap(page: editingPage, model: model).run(.folder(folder)) { model.library.enter(folder) } } label: {
       VStack(alignment: .leading, spacing: 6) {
         FolderCover(items: preview?.items ?? [], known: preview != nil, documents: preview?.others ?? 0,
                     offline: folder.offline, images: model.services.images)
@@ -82,7 +83,8 @@ struct FolderTile: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel([folder.name, detail(preview)].compactMap { $0 }.joined(separator: ", "))
     .accessibilityAddTraits(.isButton)
-    .accessibilityHint("Opens the folder")
+    .accessibilityHint(editingPage?.selecting == true ? "Chooses the folder" : "Opens the folder")
+    .choosable(.folder(folder))
     // Never spoken: lets a test name which folder a tile is.
     .accessibilityIdentifier("folder:\(folder.id)")
     .task(id: folder.id) {

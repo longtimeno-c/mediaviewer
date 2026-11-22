@@ -53,6 +53,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryFolderEmpty = "library.folderEmpty"
   /// A slow connection: a folder takes a second to list and its pictures come slowly.
   case librarySlowLink = "library.slowLink"
+  /// A device whose role is "change": Add, Select, Move, Rename and Delete in every folder.
+  case libraryChange = "library.change"
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
   case backupChoose = "backup.chooseFolder"
@@ -191,6 +193,9 @@ final class FixtureRun {
       world.copyContinuesAfterLeaving = false
     case .viewerRefiningUnknown: world.imageMode = .slowUnknownSize
     case .viewerSlowNetwork: world.imageMode = .slowNetwork
+    case .libraryChange:
+      world.mayChange = true
+      FixtureChangeBook.seedDocuments()
     case .librarySlowLink:
       world.imageMode = .slowNetwork
       world.folderListDelay = .seconds(1)

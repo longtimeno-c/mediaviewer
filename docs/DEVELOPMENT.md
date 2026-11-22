@@ -476,7 +476,10 @@ tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.pre
 folder is a page on a `NavigationStack` (`LibraryModel.stack` of `FolderPage`s, `LibraryScreens.swift`).
 Its tests: `MobileUITests/FolderNavigationTests` (the model) and `UITests/FolderNavigationTests` (the
 fixtures app several folders deep and back), with the hitch figures in
-`ScrollHitchTests/testFolderNavigationHitches`. The fixture state `library.slowLink` lists each folder a second late, to see a slow connection.
+`ScrollHitchTests/testFolderNavigationHitches`. The fixture state `library.slowLink` lists each folder a second late, to see a slow connection. Changing files (Add, New Folder, Move, Rename, Delete; file mode, a "change" device):
+`MobileUI/LibraryChanges.swift` and `FolderEditing.swift` over `FolderChanges` (`MobileLink/LinkChanges.swift`,
+`mv_files_add`/`_mkdir`/`_move`/`_delete`); the fixture state `library.change` runs it over an in-memory
+server, and `UITests/FolderChangeTests` walks it. The link's side: `mv_mobile_link_tests "change:*"`.
 
 The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
 `DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git

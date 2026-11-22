@@ -342,7 +342,7 @@ else: no search, no models, no decoding.
 | Remember devices | Needs a desktop keyring (`28-driftwire.md:1210-1215`) | Use the file store (`secrets::file_store`, today test-only), owner-only permissions |
 | Serve parts of files | Whole-file push only (`wire.h:103-138`); `file_reader::read_at` exists | Stream multiplexing, per-stream credit, cancel, and `read_range`, in new message ids 25+ behind a capability check (old peers end the link on unknown ones, `wire.h:121-122`) |
 | Responsive seeking | 256 KiB chunks and 16 MiB windows (`wire.h:51,79`) | Chunks of 64 KiB or less for interactive streams |
-| Standing access | Accept on every transfer | A read-only library grant on a paired device; from 1.1, writes only to the backup folder |
+| Standing access | Accept on every transfer | A read-only library grant on a paired device; from 1.1, writes to the backup folder; a device whose role is "change" also adds, moves and deletes in the folders it may change (§11.1 "Changing files") |
 | Ignore strangers | `XXhfs` does the ML-KEM work and reveals the NAS's identity before it knows who is connecting (`noise.h`) | Use the existing `XXhfs+psk0` with a 32-byte library access key from the QR. A stranger fails at the first read, so the NAS does no key work and says nothing. Device keys are still checked after that, and `source_limit` (`admission.h`) caps attempts. |
 | Install | None | A package a person can install on their Synology, chosen by S5 |
 | Stay updated | `driftwire update` only notifies and re-runs the desktop and Linux install channels (`cli/update.h`) | Signed, unattended updates for the NAS package. An internet-facing service cannot wait for someone to notice a notice. |
@@ -742,6 +742,20 @@ over: native PhotoKit, and streaming rather than staging originals.
 | Backup (1.1) | Folder, folder layout, how much is done, what is left | Running; paused off Wi-Fi; folder not allowed by the service; storage limit reached; NAS full |
 | Connection | Synology status, where the catalogue came from and when, cache size, forget | Each failure names its cause |
 
+**Changing files (built 2026-11-22; service: `serve_client.h` "changing the shared folders").** On a
+folder's page, a device whose role lets it change files there gets Add (from Photos or Files), New
+Folder, and Select: a bar of Move, Rename (one item) and Delete under what is chosen, and the same
+three on a tile's long press. Move picks a destination among only the folders this phone may change.
+Delete asks first and says the items go to the trash on the server, where they can be restored. A
+file being sent shows on its folder's page with its progress and a stop; it keeps going when the
+folder is left, and Try again carries on from where the server's copy ended (a dropped link is
+picked up once by itself). The page updates in place. A refusal (a taken name, full, the drive not
+connected, not allowed) is said on the page and nothing is replaced. None of it shows for a "view"
+device, on a folder the device may not change, or with a service older than these changes. Only
+file mode has it: a catalogue's folders are what the computer last published, so a change would not
+show there until the next publish; that, and the sample library (a static copy on GitHub, no
+service), are not built. The fixtures' `library.change` shows the whole flow over an in-memory server.
+
 **App Review, and anyone without a NAS (built 2026-11-12, owner):** the code `SAMPLE`, typed on
 the Scan screen ("Enter a code"), or `mediaviewer://sample` as a QR code or link, opens the **sample
 library**: 44 photos and 3 short clips from Wikimedia Commons, CC0 or public domain, with no
@@ -838,7 +852,7 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | Cloud backup copies the catalogue | Excluded from backup (§8.3) |
 | The catalogue on the NAS reveals names, places, text | No worse than the share it sits on, which already holds the files. Encrypting it with a key from the QR is a later option. |
 | Biometrics | Never published (call 7) |
-| The phone can write to the NAS (1.1) | Only through the service, only into the backup folder, under a storage limit; it creates files and never replaces or deletes one |
+| The phone can write to the NAS (1.1) | Only through the service. Backup creates files in the backup folder, under a storage limit. A "change" device may add, make folders, move, rename and delete in folders its role allows; nothing is ever replaced (a taken name is refused, or " (2)" for an added file), and delete moves into the folder's hidden trash on the server, which only its owner empties |
 | Telemetry | None. Crash reports follow the existing privacy line: default off, ask first, no paths, names, pixels or EXIF. |
 
 Also required for the store [Apple]: a privacy manifest that declares the required-reason APIs the
