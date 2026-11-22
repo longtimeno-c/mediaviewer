@@ -74,6 +74,14 @@ inline std::string_view server_of(std::string_view key) {
   return slash == std::string_view::npos ? key : key.substr(0, slash + 1);
 }
 inline bool is_folder_key(std::string_view key) { return !key.empty() && key.back() == '/'; }
+// ASCII letters folded to lower case: names that a case-insensitive volume takes as one.
+inline std::string folded(std::string_view name) {
+  std::string out(name);
+  for (char& c : out) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return out;
+}
 // Trailing separators dropped, except a root's ("/", "C:\\").
 inline std::string trim_dir(std::string_view dir) {
   std::string p(dir);
@@ -183,13 +191,15 @@ template <class Exists>
     // A Photos item key ("photos:<id>") has no name of its own here; the host
     // resolves it to its original before the plan (copy only).
     if (leaf.empty()) continue;
+    // Taken by an earlier source of this batch: compared case-folded, as APFS and NTFS compare
+    // names by default (IMG_1.JPG and img_1.jpg are one name there).
     std::string name = io::unique_name(leaf, [&](std::string_view candidate) {
       std::string full = join(candidate);
-      return taken.count(full) != 0 || exists(full);
+      return taken.count(drop_detail::folded(full)) != 0 || exists(full);
     });
     if (name.empty()) continue;  // every "(n)" up to the cap is taken
     std::string dest = join(name);
-    taken.insert(dest);
+    taken.insert(drop_detail::folded(dest));
     out.push_back({src, std::move(dest)});
   }
   return out;

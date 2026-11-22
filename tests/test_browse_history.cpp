@@ -106,3 +106,29 @@ TEST_CASE("browse_history: Windows paths step back the same way", "[browse_histo
   REQUIRE(h.back_depth() == 1);
   CHECK(h.back({"C:\\", "", ""})->folder == "C:\\Photos\\2024");
 }
+
+TEST_CASE("browse_history: a moved folder is followed, a deleted one forgotten", "[browse_history]") {
+  browse_history h;
+  h.visit({"/p/trip", "/p/trip/a.jpg", "/p/trip/day1"}, "/p/trip/day1");
+  h.visit({"/p/trip/day1", "", ""}, "/q");
+  h.renamed("/p/trip", "/p/2024 trip");
+  auto day = h.back({"/q", "", ""});
+  REQUIRE(day);
+  CHECK(day->dir == "/p/2024 trip/day1");
+  auto trip = h.back(*day);
+  REQUIRE(trip);
+  CHECK(trip->dir == "/p/2024 trip");
+  CHECK(trip->item == "/p/2024 trip/a.jpg");
+  CHECK(trip->folder == "/p/2024 trip/day1");
+  // A sibling whose name starts the same is not inside it.
+  browse_history g;
+  g.visit({"/p/tripx", "", ""}, "/q");
+  g.renamed("/p/trip", "/p/other");
+  CHECK(g.back({"/q", "", ""})->dir == "/p/tripx");
+  // Deleted: Back skips it, never opening an empty folder.
+  browse_history d;
+  d.visit({"/a", "", ""}, "/gone");
+  d.visit({"/gone", "", ""}, "/b");
+  d.forget("/gone");
+  CHECK(d.back({"/b", "", ""})->dir == "/a");
+}

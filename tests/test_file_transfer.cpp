@@ -351,3 +351,139 @@ TEST_CASE("file_transfer: a server's busy says try again, not failed", "[file_tr
   CHECK(moved.items[0].status == mv::status::busy);
   CHECK(fs::exists(srv.root / "a.jpg"));
 }
+
+namespace {
+// The local folder, but its first `blind` exists() calls say "free": the plan sees an empty
+// folder while another job or app has already put a file there.
+class blind_planner : public transfer_target {
+ public:
+  std::unique_ptr<transfer_target> real = local_target();
+  int blind = 0;
+  bool exists(const std::string& p) override { return blind-- > 0 ? false : real->exists(p); }
+  mv::status make_directory(const std::string& p) override { return real->make_directory(p); }
+  mv::status put_file(const std::string& s, const std::string& d, bool v, const std::atomic<bool>* c,
+                      std::atomic<std::uint64_t>* b) override {
+    return real->put_file(s, d, v, c, b);
+  }
+  rename_outcome rename(const std::string& s, const std::string& d) override { return real->rename(s, d); }
+  mv::status remove(const std::string& p) override { return real->remove(p); }
+};
+}  // namespace
+
+TEST_CASE("file_transfer: a name taken after the plan gets a fresh name; the other file stays", "[file_transfer]") {
+  scratch_dir s("xfer_raced");
+  write_text(s / "src/a.jpg", "mine");
+  // Another job's (or app's) file, there before this copy but after its plan.
+  write_text(s / "dst/a.jpg", "theirs");
+  blind_planner target;
+  target.blind = 1;  // the plan's one look
+  transfer_progress progress;
+  const auto r = run_transfer(drop_verb::copy, {utf8(s / "src/a.jpg")}, utf8(s / "dst"), target, progress);
+  REQUIRE(r.items.size() == 1);
+  CHECK(r.items[0].status == mv::status::ok);
+  CHECK(r.items[0].dest == utf8(s / "dst/a (2).jpg"));
+  CHECK(text_of(s / "dst/a.jpg") == "theirs");  // never deleted
+  CHECK(text_of(s / "dst/a (2).jpg") == "mine");
+
+  // A cross-volume move the same way: the other file stays, the source goes only once copied.
+  write_text(s / "src/b.jpg", "moved");
+  write_text(s / "dst/b.jpg", "foreign");
+  other_volume ov;
+  struct blind_ov : transfer_target {
+    other_volume* real;
+    int blind = 1;
+    bool exists(const std::string& p) override { return blind-- > 0 ? false : real->exists(p); }
+    mv::status make_directory(const std::string& p) override { return real->make_directory(p); }
+    mv::status put_file(const std::string& a, const std::string& b, bool v, const std::atomic<bool>* c,
+                        std::atomic<std::uint64_t>* d) override { return real->put_file(a, b, v, c, d); }
+    rename_outcome rename(const std::string& a, const std::string& b) override { return real->rename(a, b); }
+    mv::status remove(const std::string& p) override { return real->remove(p); }
+  } bov;
+  bov.real = &ov;
+  const auto m = run_transfer(drop_verb::move, {utf8(s / "src/b.jpg")}, utf8(s / "dst"), bov, progress);
+  REQUIRE(m.succeeded() == 1);
+  CHECK(text_of(s / "dst/b.jpg") == "foreign");
+  CHECK(text_of(s / "dst/b (2).jpg") == "moved");
+  CHECK_FALSE(fs::exists(s / "src/b.jpg"));
+}
+
+TEST_CASE("file_transfer: names that differ only in case are two names in one batch", "[file_transfer]") {
+  auto none = [](std::string_view) { return false; };
+  const auto plan = plan_transfer({"/x/IMG_1.JPG", "/y/img_1.jpg"}, "/t", drop_verb::copy, none);
+  REQUIRE(plan.size() == 2);
+  CHECK(plan[0].dest == "/t/IMG_1.JPG");
+  CHECK(plan[1].dest == "/t/img_1 (2).jpg");
+}
+
+TEST_CASE("file_transfer: keep-both after a taken rename copies to, cleans and reports the new name",
+          "[file_transfer]") {
+  scratch_dir s("xfer_keepboth");
+  write_text(s / "src/a.jpg", "mine");
+  fs::create_directories(s / "dst");
+  // A rename that finds the name taken (and it is: another app's file), then crosses volumes.
+  struct taken_then_far : transfer_target {
+    std::unique_ptr<transfer_target> real = local_target();
+    int renames = 0;
+    bool fail_put = false;
+    bool exists(const std::string& p) override { return real->exists(p); }
+    mv::status make_directory(const std::string& p) override { return real->make_directory(p); }
+    mv::status put_file(const std::string& a, const std::string& b, bool v, const std::atomic<bool>* c,
+                        std::atomic<std::uint64_t>* d) override {
+      return fail_put ? mv::status::io : real->put_file(a, b, v, c, d);
+    }
+    rename_outcome rename(const std::string&, const std::string& d) override {
+      if (++renames == 1) {
+        write_text(fs::path(d), "theirs");  // it appeared just now
+        return rename_outcome::taken;
+      }
+      return rename_outcome::other_volume;
+    }
+    mv::status remove(const std::string& p) override { return real->remove(p); }
+  } t;
+  transfer_progress progress;
+  auto r = run_transfer(drop_verb::move, {utf8(s / "src/a.jpg")}, utf8(s / "dst"), t, progress);
+  REQUIRE(r.succeeded() == 1);
+  CHECK(r.items[0].dest == utf8(s / "dst/a (2).jpg"));
+  CHECK(text_of(s / "dst/a.jpg") == "theirs");
+  CHECK(text_of(s / "dst/a (2).jpg") == "mine");
+
+  // The same, and the copy fails: the taken name's file is left alone.
+  write_text(s / "src/c.jpg", "mine");
+  taken_then_far t2;
+  t2.fail_put = true;
+  r = run_transfer(drop_verb::move, {utf8(s / "src/c.jpg")}, utf8(s / "dst"), t2, progress);
+  CHECK(r.failed() == 1);
+  CHECK(text_of(s / "dst/c.jpg") == "theirs");
+  CHECK(fs::exists(s / "src/c.jpg"));
+}
+
+TEST_CASE("file_transfer: a failed folder copy leaves what another app put in it", "[file_transfer]") {
+  scratch_dir s("xfer_foreign");
+  write_text(s / "src/trip/1.jpg", "1");
+  write_text(s / "src/trip/2.jpg", "2");
+  fs::create_directories(s / "dst");
+  other_volume target;
+  target.fail_after = 1;
+  // Something else saves into the new folder while it fills.
+  struct saving : transfer_target {
+    other_volume* real;
+    fs::path foreign;
+    bool exists(const std::string& p) override { return real->exists(p); }
+    mv::status make_directory(const std::string& p) override { return real->make_directory(p); }
+    mv::status put_file(const std::string& a, const std::string& b, bool v, const std::atomic<bool>* c,
+                        std::atomic<std::uint64_t>* d) override {
+      if (!fs::exists(foreign)) write_text(foreign, "keep me");
+      return real->put_file(a, b, v, c, d);
+    }
+    rename_outcome rename(const std::string& a, const std::string& b) override { return real->rename(a, b); }
+    mv::status remove(const std::string& p) override { return real->remove(p); }
+  } t;
+  t.real = &target;
+  t.foreign = s / "dst/trip/notes.txt";
+  transfer_progress progress;
+  const auto r = run_transfer(drop_verb::move, {utf8(s / "src/trip")}, utf8(s / "dst"), t, progress);
+  CHECK(r.failed() == 1);
+  CHECK(text_of(s / "dst/trip/notes.txt") == "keep me");  // not this item's: never removed
+  CHECK_FALSE(fs::exists(s / "dst/trip/1.jpg"));           // this item's: taken back
+  CHECK(text_of(s / "src/trip/1.jpg") == "1");
+}

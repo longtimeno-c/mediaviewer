@@ -825,6 +825,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (BOOL)crumbNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
 - (BOOL)canGoUp;
 - (BOOL)navigateUp;
+- (void)folderOpenFailed:(const std::string&)dir historyStep:(int)step;
 // docs/design/16 "Folder navigation": Back / Forward (browse_history.h).
 - (BOOL)canGoBack;
 - (BOOL)canGoForward;
@@ -3776,6 +3777,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   BOOL _historyMove;
   std::string _historyReveal;
   uint64_t _historyGeneration;
+  int _historyDirection;  // -1 Back, 1 Forward, while _historyMove
   // The item a Back / Forward onto a remote folder lands on when its listing arrives.
   std::string _remoteSelectWant;
   // "Drag and drop into folders": drops, pastes and New Folder run on the pool;
@@ -3783,6 +3785,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // when one lands, so the chrome refreshes its folder tiles' counts.
   mv::shell::transfer_board _transfers;
   uint64_t _dropGeneration;
+  id _unmountObserver;
   // Sibling folders of the one open, so Cmd+Left / Cmd+Right can move sideways
   // without listing the parent on the UI thread. Filled from the listing we
   // left, then confirmed by a background read of the parent.
@@ -5759,11 +5762,13 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // because a folder_model *can* be destroyed mid-job in general.
   mv::shell::folder_model* folder = &_folder;
   mv::job_system* jobs = &_jobs;
+  // A Back / Forward onto a folder that has gone steps on past it (folderOpenFailed).
+  const int history_step = _historyMove ? _historyDirection : 0;
   const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   std::atomic<std::uint64_t>* open_generation = &_openGeneration;
   std::mutex* open_mutex = &_folderOpenMutex;
   _jobs.submit_at(mv::background_generation,
-                  [folder, jobs, dir, my_generation, open_generation, open_mutex](
+                  [folder, jobs, dir, my_generation, open_generation, open_mutex, history_step](
                       const mv::job_context&) -> mv::status {
                     // A newer -openDir: call already arrived: calling
                     // folder->open() now would race that one's own open()
@@ -5778,6 +5783,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                     if (!opened) {
                       dispatch_async(dispatch_get_main_queue(), ^{
                         NSBeep();
+                        if (g_chrome_app) [g_chrome_app folderOpenFailed:dir historyStep:history_step];
                       });
                       return opened.error();
                     }
@@ -6185,6 +6191,16 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                     object:nil
                      queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification*) { [weakSelf syncHomeAppearance]; }];
+    // An ejected card or drive leaves Back / Forward (docs/design/16 "Folder navigation").
+    _unmountObserver = [[NSWorkspace sharedWorkspace].notificationCenter
+        addObserverForName:NSWorkspaceDidUnmountNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification* note) {
+                  NSURL* volume = note.userInfo[NSWorkspaceVolumeURLKey];
+                  MvLabApp* strongSelf = weakSelf;
+                  if (strongSelf && volume.path.UTF8String) strongSelf->_history.forget(volume.path.UTF8String);
+                }];
     // Default's accent is the system's: follow a change made in System Settings.
     _systemColoursObserver = [NSNotificationCenter.defaultCenter
         addObserverForName:NSSystemColorsDidChangeNotification
@@ -7589,6 +7605,18 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
   }
   return p;
 }
+// A folder that could not be opened (deleted, renamed elsewhere, its volume gone) leaves
+// Back / Forward, with everything below it; reached by one of them, the next one on.
+- (void)folderOpenFailed:(const std::string&)dir historyStep:(int)step {
+  _history.forget(dir);
+  [self noticeShow:"“" + std::string(mv::shell::browse_path::leaf(dir)) + "” is not there any more"];
+  if (step != 0 && dir == _currentDir) {
+    (void)[self navigateHistory:step];
+    _history.forget(dir);  // stepping on put the place it left (this one) on the other stack
+  }
+  [self publish];
+}
+
 - (BOOL)canGoBack { return _history.can_back(); }
 - (BOOL)canGoForward { return _history.can_forward(); }
 - (uint64_t)historyGeneration { return _historyGeneration; }
@@ -7601,6 +7629,7 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
   std::optional<mv::shell::browse_place> next = direction < 0 ? _history.back(here) : _history.forward(here);
   if (!next) return NO;
   _historyMove = YES;
+  _historyDirection = direction;
   _historyReveal = next->folder;
   ++_historyGeneration;
   if (mv::remote::is_key(next->dir)) {
@@ -7784,7 +7813,9 @@ static mv::shell::remote_ops MvRemoteOps() {
   [self noticeShow:summary];
   if (result.verb == mv::shell::drop_verb::move) {
     for (const auto& item : result.items) {
-      if (item.status == mv::status::ok) _marks.erase(item.source);
+      if (item.status != mv::status::ok) continue;
+      _marks.erase(item.source);
+      _history.renamed(item.source, item.dest);  // Back finds a moved folder where it went
     }
     [self marksDidChange];
   }

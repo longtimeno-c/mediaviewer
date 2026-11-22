@@ -89,10 +89,12 @@ class local : public transfer_target {
 #endif
   }
 
+  // One entry: a file, or a folder only when it is empty. The runner removes what an item
+  // made itself, one by one; a recursive delete could take what another job or app put there.
   mv::status remove(const std::string& path) override {
     std::error_code ec;
-    fs::remove_all(to_path(path), ec);
-    return ec ? mv::status::io : mv::status::ok;
+    const bool gone = fs::remove(to_path(path), ec);
+    return ec || !gone ? mv::status::io : mv::status::ok;
   }
 };
 
@@ -122,33 +124,47 @@ std::uint64_t size_of(const std::string& path) {
 
 // `src` (a local file or folder) to `dest`, which is free. A link inside is
 // not followed or copied: the item fails, so a move never drops it.
+// `made` gets each entry this call created, in order (a folder before what is in it), so a
+// failure removes exactly those and nothing that was there already or came from elsewhere.
 mv::status copy_tree(const std::string& src, const std::string& dest, bool verify, transfer_target& target,
-                     transfer_progress& progress, const std::atomic<bool>* cancel) {
+                     transfer_progress& progress, const std::atomic<bool>* cancel, std::vector<std::string>& made) {
   if (cancel && cancel->load()) return mv::status::cancelled;
   // Another computer's file: the target fetches it (a folder there never comes this way).
   if (is_remote_path(src)) {
     if (src.back() == '/') return mv::status::unsupported_format;
-    return target.put_file(src, dest, verify, cancel, &progress.done_bytes);
+    const mv::status s = target.put_file(src, dest, verify, cancel, &progress.done_bytes);
+    if (s == mv::status::ok) made.push_back(dest);
+    return s;
   }
   std::error_code ec;
   const fs::path p = to_path(src);
   const auto st = fs::symlink_status(p, ec);
   if (ec || st.type() == fs::file_type::not_found) return mv::status::not_found;
   if (st.type() == fs::file_type::regular) {
-    return target.put_file(src, dest, verify, cancel, &progress.done_bytes);
+    const mv::status s = target.put_file(src, dest, verify, cancel, &progress.done_bytes);
+    if (s == mv::status::ok) made.push_back(dest);
+    return s;
   }
   if (st.type() != fs::file_type::directory) return mv::status::unsupported_format;
   if (const mv::status s = target.make_directory(dest); s != mv::status::ok) return s;
+  made.push_back(dest);
   std::vector<fs::path> children;
   for (fs::directory_iterator it(p, ec), end; !ec && it != end; it.increment(ec)) children.push_back(it->path());
   if (ec) return mv::status::io;
   std::sort(children.begin(), children.end());
   for (const fs::path& child : children) {
     const mv::status s = copy_tree(to_utf8(child), join(dest, to_utf8(child.filename())), verify, target,
-                                   progress, cancel);
+                                   progress, cancel, made);
     if (s != mv::status::ok) return s;
   }
   return mv::status::ok;
+}
+
+// Takes back what an item made, newest first (a folder's files before the folder). On a
+// server each goes to its trash. Anything that was not this item's stays where it is.
+void undo_made(transfer_target& target, std::vector<std::string>& made) {
+  for (auto it = made.rbegin(); it != made.rend(); ++it) (void)target.remove(*it);
+  made.clear();
 }
 
 bool is_directory(const std::string& path) {
@@ -251,16 +267,17 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
     const std::uint64_t before = progress.done_bytes.load();
     const std::uint64_t bytes = size_of(step.source);
     bool renamed = false;
+    // The folder the item lands in, with its separator: where a fresh name is picked.
+    const std::string parent_dir = item.dest.substr(0, item.dest.size() - browse_path::leaf(item.dest).size());
     if (verb == drop_verb::move) {
-      auto outcome = target.rename(step.source, step.dest);
+      auto outcome = target.rename(step.source, item.dest);
       if (outcome == transfer_target::rename_outcome::taken) {
         // Taken since the plan (another app, the server's other user): keep both, as Finder does.
-        const std::string parent = item.dest.substr(0, item.dest.size() - browse_path::leaf(item.dest).size());
         const std::string again = io::unique_name(browse_path::leaf(step.source), [&](std::string_view candidate) {
-          return target.exists(parent + std::string(candidate));
+          return target.exists(parent_dir + std::string(candidate));
         });
         if (!again.empty()) {
-          item.dest = parent + again;
+          item.dest = parent_dir + again;
           outcome = target.rename(step.source, item.dest);
         }
       }
@@ -272,18 +289,35 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
         case transfer_target::rename_outcome::failed: item.status = mv::status::io; break;
       }
     }
+    std::vector<std::string> made;
     if (!renamed && item.status == mv::status::ok) {
       // Across volumes a move's copy is read back before the original goes.
-      item.status = copy_tree(step.source, step.dest, verb == drop_verb::move, target, progress, cancel);
+      for (int attempt = 0;; ++attempt) {
+        item.status = copy_tree(step.source, item.dest, verb == drop_verb::move, target, progress, cancel, made);
+        if (item.status == mv::status::ok) break;
+        // Only what this item made goes; an unfinished upload never got a name (the service
+        // keeps it aside, to resume).
+        const bool none_made = made.empty();
+        undo_made(target, made);
+        if (item.status == mv::status::cancelled) {
+          out.cancelled = true;
+          break;
+        }
+        // The name was taken after the plan (another job into this folder, another app): a
+        // fresh free name, never the other one's file removed.
+        if (!none_made || attempt >= 3 || !target.exists(item.dest)) break;
+        const std::string again = io::unique_name(browse_path::leaf(step.source), [&](std::string_view candidate) {
+          return target.exists(parent_dir + std::string(candidate));
+        });
+        if (again.empty()) break;
+        item.dest = parent_dir + again;
+      }
       if (item.status != mv::status::ok) {
-        // What we wrote under a name that was free; a remote one never got a name at all
-        // (the service keeps an unfinished upload aside, to resume).
-        if (!is_remote_path(step.dest)) (void)target.remove(step.dest);
-        if (item.status == mv::status::cancelled) out.cancelled = true;
+        // (cleaned up above)
       } else if (verb == drop_verb::move && is_remote_path(step.source)) {
         // Down from the server, read back right here: only now it goes to the server's trash.
         if (const mv::status gone = target.remove(step.source); gone != mv::status::ok) {
-          (void)target.remove(step.dest);  // never two
+          undo_made(target, made);  // never two
           item.status = gone == mv::status::busy ? mv::status::busy : mv::status::io;
         }
       } else if (verb == drop_verb::move) {
@@ -298,7 +332,7 @@ transfer_result run_transfer(drop_verb verb, const std::vector<std::string>& sou
           // A file that will not go: take the copy back, so a move is never two.
           // A folder may have half gone; then the copy is all that is whole, so
           // it stays and the item reports the failure.
-          if (!folder) (void)target.remove(step.dest);
+          if (!folder) undo_made(target, made);
           item.status = mv::status::io;
         }
       }

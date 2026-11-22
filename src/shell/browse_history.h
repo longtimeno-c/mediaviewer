@@ -62,6 +62,25 @@ class browse_history {
     std::erase_if(forward_, gone);
   }
 
+  // A folder moved or renamed (a drop, a rename): every entry at or below `from` follows it
+  // to `to`, the selection's paths with it.
+  void renamed(std::string_view from, std::string_view to) {
+    const std::string old_dir = std::string(trim(from));
+    const std::string new_dir = std::string(trim(to));
+    if (old_dir.empty() || new_dir.empty() || old_dir == new_dir) return;
+    auto follow = [&](std::string& path) {
+      if (path.empty() || !within(path, old_dir)) return;
+      path = new_dir + path.substr(old_dir.size());
+    };
+    for (auto* stack : {&back_, &forward_}) {
+      for (auto& p : *stack) {
+        follow(p.dir);
+        follow(p.item);
+        follow(p.folder);
+      }
+    }
+  }
+
   void clear() noexcept {
     back_.clear();
     forward_.clear();
