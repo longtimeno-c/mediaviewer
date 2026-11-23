@@ -177,9 +177,12 @@ struct waiting_code {
 
 // The Catalogue root, which every grant may read (docs/plans/nas-owner-and-guests.md §5.2).
 bool is_catalogue(const root_config& r) {
-  const std::string tail = std::string("/") + kCatalogueFolder;
-  return r.label == kCatalogueLabel && r.path.size() >= tail.size() &&
-         r.path.compare(r.path.size() - tail.size(), tail.size(), tail) == 0;
+  // Either separator: a path that came from Windows (a config written by hand, a native
+  // path) ends "\\.mediaviewer", and missing it would make the Catalogue an ordinary folder.
+  const std::string_view name = kCatalogueFolder;
+  if (r.label != kCatalogueLabel || r.path.size() <= name.size()) return false;
+  const char sep = r.path[r.path.size() - name.size() - 1];
+  return (sep == '/' || sep == '\\') && std::string_view(r.path).substr(r.path.size() - name.size()) == name;
 }
 
 std::array<std::uint8_t, 32> code_hash(std::string_view code) {

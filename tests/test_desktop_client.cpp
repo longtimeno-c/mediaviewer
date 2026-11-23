@@ -371,6 +371,29 @@ TEST_CASE("a desktop whose OS store refuses the keys says so, not unreachable", 
   CHECK(words.find("could not keep the keys") != std::string::npos);
 }
 
+// A dev run against a throwaway server (MV_DEV_REMOTE_DIR): its keys in files in that folder,
+// read back by the next run, and the library makes that store itself (the hosts sit above wire/).
+TEST_CASE("a desktop given a dev keys folder keeps its keys there and finds them again", "[desktop-client]") {
+  host h;
+  scratch_dir dir{"desktop_dev_keys"};
+  const fs::path keys = dir.root() / "keys";
+  rm::config cfg = desktop_config(dir.root(), nullptr);
+  cfg.dev_keys_dir = utf8(keys);
+  {
+    rm::library lib(cfg);
+    REQUIRE(lib.load());
+    auto id = lib.pair(h.code(), std::time(nullptr));
+    if (!id) FAIL("pair: " << mv::status_name(id.error()));
+  }
+  REQUIRE(fs::is_directory(keys));
+  CHECK_FALSE(fs::is_empty(keys));
+  rm::library again(cfg);
+  REQUIRE(again.load());
+  const auto servers = again.servers();
+  REQUIRE(servers.size() == 1);
+  CHECK(servers[0].state != rm::reach::access_ended);  // its keys were found
+}
+
 // 2026-11-18: a local Mac build has no keychain group, so the OS store is null;
 // with a servers.json from an earlier run, the app crashed loading it at launch.
 TEST_CASE("a desktop with no keys for a server it paired lists it to pair again and can forget it",

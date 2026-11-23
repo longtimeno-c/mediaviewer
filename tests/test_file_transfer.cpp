@@ -381,7 +381,7 @@ TEST_CASE("file_transfer: a name taken after the plan gets a fresh name; the oth
   const auto r = run_transfer(drop_verb::copy, {utf8(s / "src/a.jpg")}, utf8(s / "dst"), target, progress);
   REQUIRE(r.items.size() == 1);
   CHECK(r.items[0].status == mv::status::ok);
-  CHECK(r.items[0].dest == utf8(s / "dst/a (2).jpg"));
+  CHECK(fs::path(r.items[0].dest) == s / "dst/a (2).jpg");
   CHECK(text_of(s / "dst/a.jpg") == "theirs");  // never deleted
   CHECK(text_of(s / "dst/a (2).jpg") == "mine");
 
@@ -443,7 +443,7 @@ TEST_CASE("file_transfer: keep-both after a taken rename copies to, cleans and r
   transfer_progress progress;
   auto r = run_transfer(drop_verb::move, {utf8(s / "src/a.jpg")}, utf8(s / "dst"), t, progress);
   REQUIRE(r.succeeded() == 1);
-  CHECK(r.items[0].dest == utf8(s / "dst/a (2).jpg"));
+  CHECK(fs::path(r.items[0].dest) == s / "dst/a (2).jpg");
   CHECK(text_of(s / "dst/a.jpg") == "theirs");
   CHECK(text_of(s / "dst/a (2).jpg") == "mine");
 

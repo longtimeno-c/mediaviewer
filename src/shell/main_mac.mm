@@ -145,7 +145,6 @@
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
-#include "wire/secrets.h"
 #include "shell/photos_items_mac.h"
 #include "remote/library.h"
 #include "image/thumb.h"
@@ -16084,12 +16083,11 @@ class remote_clip_source final : public mv::player::byte_source {
   std::string cache_dir = std::string(caches.UTF8String) + "/MediaViewer/Remote";
   // A dev build tried against a throwaway server (as MV_DEV_THUMBS_DIR): its servers, cache and
   // keys in that folder, never the installed app's list or the Keychain.
-  static std::unique_ptr<mv::driftwire::secrets::store> dev_keys;
+  std::string dev_keys_dir;
   if (const char* dev = std::getenv("MV_DEV_REMOTE_DIR"); dev && *dev) {
     data_dir = std::string(dev) + "/data";
     cache_dir = std::string(dev) + "/cache";
-    const std::string keys = std::string(dev) + "/keys";
-    if (mv::driftwire::secrets::owner_only_folder(keys)) dev_keys = mv::driftwire::secrets::file_store(keys);
+    dev_keys_dir = std::string(dev) + "/keys";
   }
   // Its originals are another computer's files: read-only here (owner call 1).
   mv::shell::set_remote_cache_prefix(cache_dir);
@@ -16104,11 +16102,11 @@ class remote_clip_source final : public mv::player::byte_source {
     return lib->tile(key, nullptr);
   });
   MvLabApp* __weak weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [weakSelf, data_dir, cache_dir](const mv::job_context&) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [weakSelf, data_dir, cache_dir, dev_keys_dir](const mv::job_context&) -> mv::status {
     mv::remote::config c;
     c.data_dir = data_dir;
     c.cache_dir = cache_dir;
-    c.store = dev_keys.get();  // null: the Keychain
+    c.dev_keys_dir = dev_keys_dir;  // empty: the Keychain
     NSString* computer = [[NSHost currentHost] localizedName];
     if (computer.length > 0) c.device_name = computer.UTF8String;
     c.still_tile = [](std::span<const std::uint8_t> bytes, const mv::job_context* ctx) {

@@ -255,7 +255,14 @@ class link_reader final : public range_reader {
 library::library(config c) : cfg_(std::move(c)), cache_(cfg_.cache_dir, cfg_.cache_cap) {
   (void)sodium_init();
   // Made here, once: pairing, forgetting and loading run on different threads.
-  if (!cfg_.store) own_store_ = driftwire::secrets::os_store(driftwire::secrets::kAppService);
+  if (cfg_.store) return;
+  if (!cfg_.dev_keys_dir.empty()) {
+    // Never the OS store as a fallback: a dev run must not touch the installed app's keys.
+    if (driftwire::secrets::owner_only_folder(cfg_.dev_keys_dir))
+      own_store_ = driftwire::secrets::file_store(cfg_.dev_keys_dir);
+    return;
+  }
+  own_store_ = driftwire::secrets::os_store(driftwire::secrets::kAppService);
 }
 
 library::~library() {

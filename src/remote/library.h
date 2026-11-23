@@ -104,6 +104,9 @@ struct config {
   std::string device_name = "Computer";  // what the service lists this desktop as
   // Keys live here; null: the OS store (Keychain, DPAPI) under kAppService.
   driftwire::secrets::store* store = nullptr;
+  // A dev build tried against a throwaway server: keys in files in this folder instead (used
+  // only when `store` is null and the folder is, or can be made, owner-only).
+  std::string dev_keys_dir;
   bool loopback_only = false;  // the tests
   int connect_timeout_ms = 5000;
   // After a server failed to answer, calls fail at once for this long unless

@@ -2458,6 +2458,30 @@ TEST_CASE("serve change: a view device and a scoped grant are refused outside wh
   }
 }
 
+// A path that came from Windows: "...\\.mediaviewer". Missed, the Catalogue was an ordinary
+// folder a change device could empty (CI's first Windows run of this file).
+TEST_CASE("serve change: a Catalogue named with a backslash is still the Catalogue", "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  const std::string id = "f6f6f6f6f6f6f6f6";
+  // One odd folder name on POSIX, a folder inside "other" on Windows: the same bytes either way.
+  fs::path folder = s.dir.root() / "other";
+  folder += std::string("\\") + serve::kCatalogueFolder;
+  const std::string path = utf8(folder);
+  write_file(folder / "catalogue.db", "db");
+  s.extra_roots.push_back({id, "Catalogue", path});
+  s.start(10000);
+  auto c = s.open_client();
+  auto roots = c->roots();
+  REQUIRE(roots);
+  REQUIRE(root_of(*roots, id));
+  CHECK_FALSE(root_of(*roots, id)->writable);
+  serve::client::change_refused why;
+  CHECK_FALSE(c->remove(id, "catalogue.db", &why));
+  CHECK(why.why == serve::client::change_why::not_allowed);
+  CHECK_FALSE(c->make_folder(id, "New", &why));
+  CHECK(slurp(folder / "catalogue.db") == "db");
+}
+
 TEST_CASE("serve change: the folder itself, hidden names, escapes and the Catalogue are refused",
           "[driftwire-serve][serve-change]") {
   service_fixture s;
