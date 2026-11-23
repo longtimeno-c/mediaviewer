@@ -38,7 +38,7 @@ final class FixtureWorld: @unchecked Sendable {
   /// This device's role lets it change files in the folders (library.change).
   var mayChange = false
   /// What was added, made, moved, renamed and deleted (FixtureChanges.swift).
-  let changeBook = FixtureChangeBook()
+  let changeBook = LocalChanges(directory: nil)
   /// A sent file's pretend link: this many steps, this long each.
   var uploadSteps = 8
   var uploadStep = Duration.milliseconds(150)

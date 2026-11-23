@@ -750,11 +750,16 @@ Delete asks first and says the items go to the trash on the server, where they c
 file being sent shows on its folder's page with its progress and a stop; it keeps going when the
 folder is left, and Try again carries on from where the server's copy ended (a dropped link is
 picked up once by itself). The page updates in place. A refusal (a taken name, full, the drive not
-connected, not allowed) is said on the page and nothing is replaced. None of it shows for a "view"
-device, on a folder the device may not change, or with a service older than these changes. Only
-file mode has it: a catalogue's folders are what the computer last published, so a change would not
-show there until the next publish; that, and the sample library (a static copy on GitHub, no
-service), are not built. The fixtures' `library.change` shows the whole flow over an in-memory server.
+connected, not allowed) is said on the page and nothing is replaced; in a batch, the rest still go
+and the page says how many did. Files going into a folder being moved or deleted are held first,
+and dropped only if it went. None of it shows for a "view" device, on a folder the device may not
+change, or with a service older than these changes. On a server, only file mode has it: a
+catalogue's folders are what the computer last published, so a change would not show there until
+the next publish. **The sample library** (a static copy on GitHub, no server) has it as a demo, said
+on its pages: the changes are kept on this iPhone in the library's own folder
+(`MobileKit/LocalChanges.swift`, `MobileLink/SampleChanges.swift`), laid over the sample, and go
+when the sample is opened again or forgotten; nothing is sent, and the published sample is
+unchanged. The fixtures' `library.change` runs the same over an in-memory record.
 
 **App Review, and anyone without a NAS (built 2026-11-12, owner):** the code `SAMPLE`, typed on
 the Scan screen ("Enter a code"), or `mediaviewer://sample` as a QR code or link, opens the **sample
@@ -814,9 +819,12 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 - **Touch feedback starts on the input.** Only marketing motion is slow.
 - **A photo opens as one object:** the thumbnail grows into the viewer and sharpens in place.
 - **A folder opens as a page** of the system's navigation stack: it grows out of its tile (a plain
-  push with Reduce Motion), already laid out (the tap waits up to 150 ms for the listing; a folder
-  opened before is shown from what it held), and the edge swipe or the back button's menu goes back
-  to pages that kept their place (2026-11-22).
+  push with Reduce Motion) the moment it is tapped, laid out when its tile was on screen (folders
+  whose tiles show are listed ahead; one opened before is shown from what it held), with its
+  skeleton otherwise, and the edge swipe or the back button's menu goes back to pages that kept
+  their place (2026-11-22, 23). Measured in the Simulator with no test attached
+  (`tools/ios/folder-walk.sh`): about 1.5 late frames per folder change, as for an empty page pushed;
+  the page's own content adds about 5 ms. The hard cut it replaced had none of the transition's.
 
 ### 11.3 Failure copy, written now
 

@@ -29,7 +29,9 @@ enum LiveServices {
     // Changing files: only a folder listed live from the server (file mode) has a place there to
     // change; a catalogue's folders answer that they can't.
     services.changes = FileModeChanges(files: link.files)
-    return services
+    // The sample library (a static copy, no server): its folders changeable on this phone, as a demo.
+    return SampleChanges.wrap(services, isSample: { connection.current.isSample },
+                              stamp: { connection.current.catalogue.map { "\($0.epoch)" } ?? "" })
   }
 }
 

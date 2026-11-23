@@ -6,13 +6,62 @@
 import MobileKit
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// What a long press on a tile can do, handed down to the tiles of a page that can be changed.
 struct FolderActions {
-  let rename: (FolderEntry) -> Void
-  let move: ([FolderEntry]) -> Void
-  let delete: ([FolderEntry]) -> Void
+  enum Command {
+    case rename(FolderEntry)
+    case move([FolderEntry])
+    case delete([FolderEntry])
+  }
+
+  /// A command chosen in the menu: asked once the menu has gone (an alert, dialog or sheet shown
+  /// while the menu is still closing is closed with it).
+  let chose: (Command) -> Void
+}
+
+/// The system's context menu, still on screen while it closes.
+@MainActor
+enum ContextMenuGone {
+  /// Returns on the first frame the menu's view has left every window (at most a second or so).
+  static func wait() async {
+    for _ in 0..<90 where shown() {
+      await withCheckedContinuation { (next: CheckedContinuation<Void, Never>) in
+        let link = FrameWaiter(next)
+        link.start()
+      }
+    }
+  }
+
+  private static func shown() -> Bool {
+    let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+    return windows.contains { window in
+      window.subviews.contains { String(describing: type(of: $0)).contains("ContextMenu") }
+    }
+  }
+
+  /// Resumes once, on the next display frame.
+  private final class FrameWaiter: NSObject {
+    private var next: CheckedContinuation<Void, Never>?
+    private var link: CADisplayLink?
+
+    init(_ next: CheckedContinuation<Void, Never>) { self.next = next }
+
+    func start() {
+      let link = CADisplayLink(target: self, selector: #selector(frame))
+      link.add(to: .main, forMode: .common)
+      self.link = link
+    }
+
+    @objc private func frame() {
+      link?.invalidate()
+      link = nil
+      next?.resume()
+      next = nil
+    }
+  }
 }
 
 extension EnvironmentValues {
@@ -69,11 +118,19 @@ struct FolderEditing: ViewModifier {
       .onChange(of: photos) { _, picked in
         guard !picked.isEmpty else { return }
         photos = []
-        Task { model.library.add(await Outgoing.files(from: picked), to: page) }
+        // Each shows at once, then is sent once copied from Photos.
+        let rows = model.library.preparing(picked.map { _ in "Photo" }, for: page)
+        Task {
+          for (row, item) in zip(rows, picked) { model.library.prepared(row, await Outgoing.file(from: item)) }
+        }
       }
       .fileImporter(isPresented: $pickingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
         guard case .success(let urls) = result else { return }
-        Task { model.library.add(await Outgoing.files(from: urls), to: page) }
+        // Each shows at once by its name, then is sent once copied from Files.
+        let rows = model.library.preparing(urls.map(\.lastPathComponent), for: page)
+        Task {
+          for (row, url) in zip(rows, urls) { model.library.prepared(row, await Outgoing.file(from: url)) }
+        }
       }
       .alert(ChangeCopy.newFolder, isPresented: $naming) {
         // Return makes it, as Create does.
@@ -105,7 +162,7 @@ struct FolderEditing: ViewModifier {
         }
         Button("Cancel", role: .cancel) {}
       } message: {
-        Text(ChangeCopy.deleteMessage(deleting.count))
+        Text(ChangeCopy.deleteMessage(deleting.count, sample: model.connection.isSample))
       }
       .sheet(item: $moving) { request in
         MovePicker(request: request) { destination in
@@ -115,18 +172,24 @@ struct FolderEditing: ViewModifier {
       }
   }
 
-  /// A long press's commands. Each asks only once the menu has gone: an alert, dialog or sheet shown
-  /// while the menu is still closing is closed with it.
+  /// A long press's commands, run as soon as the menu has left the window: an alert, dialog or sheet
+  /// shown while it is still closing is closed with it.
   private var actions: FolderActions {
-    FolderActions(rename: { entry in afterMenu { startRename(entry) } },
-                  move: { entries in afterMenu { moving = MoveRequest(entries: entries, from: page.folder) } },
-                  delete: { entries in afterMenu { deleting = entries; confirmingDelete = true } })
+    FolderActions(chose: { command in
+      Task { @MainActor in
+        await ContextMenuGone.wait()
+        run(command)
+      }
+    })
   }
 
-  private func afterMenu(_ ask: @escaping @MainActor () -> Void) {
-    Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(450))
-      ask()
+  private func run(_ command: FolderActions.Command) {
+    switch command {
+    case .rename(let entry): startRename(entry)
+    case .move(let entries): moving = MoveRequest(entries: entries, from: page.folder)
+    case .delete(let entries):
+      deleting = entries
+      confirmingDelete = true
     }
   }
 
@@ -208,9 +271,9 @@ struct Choosable: ViewModifier {
         if let actions, page?.selecting != true {
           // One change at a time on a page: the menu waits as the bar does.
           let busy = page?.changing == true
-          Button { actions.rename(entry) } label: { Label("Rename", systemImage: "pencil") }.disabled(busy)
-          Button { actions.move([entry]) } label: { Label("Move", systemImage: "folder") }.disabled(busy)
-          Button(role: .destructive) { actions.delete([entry]) } label: { Label("Delete", systemImage: "trash") }
+          Button { actions.chose(.rename(entry)) } label: { Label("Rename", systemImage: "pencil") }.disabled(busy)
+          Button { actions.chose(.move([entry])) } label: { Label("Move", systemImage: "folder") }.disabled(busy)
+          Button(role: .destructive) { actions.chose(.delete([entry])) } label: { Label("Delete", systemImage: "trash") }
             .disabled(busy)
         }
       }
@@ -270,17 +333,19 @@ private struct UploadRow: View {
   var body: some View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 4) {
-        Text(ChangeCopy.uploading(upload.file.name))
+        Text(ChangeCopy.uploading(upload.name))
           .font(.subheadline)
           .foregroundStyle(Theme.title)
           .lineLimit(1)
           .truncationMode(.middle)
         switch upload.state {
-        case .waiting:
+        case .preparing:
+          Text(ChangeCopy.uploadPreparing).font(.caption).foregroundStyle(Theme.body)
+        case .waiting, .held:
           Text(ChangeCopy.uploadWaiting).font(.caption).foregroundStyle(Theme.body)
         case .sending:
           ProgressTrack(fraction: upload.fraction).frame(height: 3).padding(.vertical, 3)
-          Text(ProgressWords.amounts(upload.done, of: upload.file.bytes))
+          Text(ProgressWords.amounts(upload.done, of: upload.file?.bytes ?? 0))
             .font(.caption.monospacedDigit())
             .foregroundStyle(Theme.body)
         case .failed(let why):
@@ -296,7 +361,7 @@ private struct UploadRow: View {
           .frame(width: 44, height: 44)
           .contentShape(Rectangle())
       }
-      .accessibilityLabel("Stop adding \(upload.file.name)")
+      .accessibilityLabel("Stop adding \(upload.name)")
     }
     .padding(.leading, Theme.inset)
     .padding(.vertical, 6)
@@ -308,29 +373,23 @@ private struct UploadRow: View {
 /// sent after the picker has gone, and sent again after a stop.
 enum Outgoing {
   /// Through a file coordinator, so a file in iCloud Drive not yet on the phone is fetched first.
-  /// A folder picked is passed over: only files are sent.
-  static func files(from urls: [URL]) async -> [OutgoingFile] {
+  /// nil for a folder (only files are sent) or a file that could not be read.
+  static func file(from url: URL) async -> OutgoingFile? {
     await Task.detached(priority: .userInitiated) {
-      urls.compactMap { url in
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true else { return nil }
-        var made: OutgoingFile?
-        var error: NSError?
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [.withoutChanges], error: &error) { readable in
-          made = copy(readable, named: url.lastPathComponent)
-        }
-        return made
+      let scoped = url.startAccessingSecurityScopedResource()
+      defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+      guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true else { return nil }
+      var made: OutgoingFile?
+      var error: NSError?
+      NSFileCoordinator().coordinate(readingItemAt: url, options: [.withoutChanges], error: &error) { readable in
+        made = copy(readable, named: url.lastPathComponent)
       }
+      return made
     }.value
   }
 
-  static func files(from items: [PhotosPickerItem]) async -> [OutgoingFile] {
-    var out: [OutgoingFile] = []
-    for item in items {
-      if let picked = try? await item.loadTransferable(type: PickedFile.self) { out.append(picked.file) }
-    }
-    return out
+  static func file(from item: PhotosPickerItem) async -> OutgoingFile? {
+    (try? await item.loadTransferable(type: PickedFile.self))?.file
   }
 
   /// A copy in a folder of its own, under its own name.

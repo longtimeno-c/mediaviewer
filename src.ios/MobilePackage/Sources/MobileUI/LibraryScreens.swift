@@ -52,6 +52,7 @@ struct FolderScreen: View {
       .navigationBarTitleDisplayMode(.inline)
       // Its title, and Add, Select and the bar under what is chosen where this phone may change files.
       .modifier(FolderEditing(page: page))
+      .environment(\.shownPage, page)
       .toolbar {
         if let chip = model.routeChip, !page.selecting {
           ToolbarItem(placement: .topBarTrailing) {
@@ -70,7 +71,7 @@ struct FolderScreen: View {
   private var content: some View {
     if page.isLoading {
       // All media at launch shows its skeleton at once; a folder's page, only if its listing is slow.
-      GridSkeleton(after: page.path.isEmpty ? .zero : .milliseconds(400)).background(Theme.ground)
+      GridSkeleton().background(Theme.ground)
         .transition(.opacity)
     } else if page.sections.isEmpty, !page.subfolders.isEmpty || !page.others.isEmpty {
       // A folder of folders (a year, an archive, the top of a server) or of documents: its folders
@@ -133,6 +134,13 @@ struct FolderScreen: View {
       .padding(.vertical, 8)
       .arrives(reduceMotion: reduceMotion)
     }
+    // The sample's changes are kept on this phone: said wherever they can be made.
+    if model.connection.isSample, page.changeable {
+      NoticeCard(message: FailureCopy.sampleChangesDemo)
+        .padding(.horizontal, Theme.inset)
+        .padding(.vertical, 8)
+        .accessibilityIdentifier("sample-changes-demo")
+    }
     UploadRows(page: page)
     if let failure = page.failure {
       NoticeCard(message: failure, actionTitle: "Try again") { model.library.load(page) }
@@ -157,6 +165,8 @@ struct FolderScreen: View {
 extension EnvironmentValues {
   /// The library's folder tiles, which each folder's page grows out of; nil with Reduce Motion.
   @Entry var folderNamespace: Namespace.ID? = nil
+  /// The page a view is on.
+  @Entry var shownPage: FolderPage? = nil
 }
 
 /// The app's one chip: a fill and its words, in a 44 pt touch area. Chosen, it lifts.
@@ -290,7 +300,8 @@ private struct PersonScreen: View {
     .task(id: attempt) {
       do {
         let list = try await model.services.library.list(in: .person(person))
-        grid = await Task.detached(priority: .userInitiated) { LibraryModel.grid(of: list) }.value
+        let built = await Task.detached(priority: .userInitiated) { LibraryModel.grid(of: list) }.value
+        grid = (built.sections, built.entries)
       } catch {
         guard !Task.isCancelled, !(error is CancellationError) else { return }
         failed = true

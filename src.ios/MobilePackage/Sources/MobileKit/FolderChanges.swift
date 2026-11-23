@@ -55,6 +55,8 @@ public enum ChangeFailure: Error, Equatable, Sendable {
   case unreachable
   /// What arrived was not what was sent.
   case damaged
+  /// The file on the phone could not be read (gone, or a folder).
+  case unreadable
   case failed
 }
 

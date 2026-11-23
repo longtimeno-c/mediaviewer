@@ -1,33 +1,42 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Changing files from a folder's page (LibraryChanges.swift): what is chosen, a change landing on the
-// page in place, a refusal said on the page with the choice kept, and files sent in order, stopped,
-// and tried again.
+// page in place (and on every page and tile showing the folders it touched), a refusal of some of a
+// batch said with what did change, files sent in order, held while their folder is changed, stopped,
+// tried again, and kept across a change of mode.
 import MobileKit
 @testable import MobileUI
 import XCTest
 
 private let trip = Folder(id: "file:r/Trip", name: "Trip", itemCount: -1, hasSubfolders: true)
 private let day = Folder(id: "file:r/Trip/Day 1", name: "Day 1", itemCount: -1, hasSubfolders: true)
+private let day2 = Folder(id: "file:r/Trip/Day 2", name: "Day 2", itemCount: -1, hasSubfolders: true)
 private let other = Folder(id: "file:r/Other", name: "Other", itemCount: -1, hasSubfolders: true)
 
-private func photo(_ name: String) -> MediaItem {
-  MediaItem(id: MediaID("file:r/Trip/\(name)"), kind: .photo, capturedAt: Date(timeIntervalSince1970: 0),
+private func photo(_ name: String, in folder: Folder = trip) -> MediaItem {
+  MediaItem(id: MediaID(folder.id + "/" + name), kind: .photo, capturedAt: Date(timeIntervalSince1970: 0),
             pixelWidth: 0, pixelHeight: 0, duration: nil, fileName: name)
+}
+
+private func file(_ name: String) -> OutgoingFile {
+  OutgoingFile(url: URL(fileURLWithPath: "/nonexistent/\(name)"), name: name, bytes: 10)
 }
 
 /// A server folder tree in memory, changed by the stub below.
 private final class Server: @unchecked Sendable {
   let lock = NSLock()
-  var folders: [String: [Folder]] = [trip.id: [day]]
+  var folders: [String: [Folder]] = [trip.id: [day, day2]]
   var items: [String: [MediaItem]] = [trip.id: [photo("a.jpg"), photo("b.jpg")]]
   var files: [String: [OtherFile]] = [trip.id: [OtherFile(id: "file:r/Trip/notes.txt", name: "notes.txt", bytes: 5, modified: Date())]]
   var refuse: ChangeFailure?
+  /// Refused for these names only.
+  var refuseNames: Set<String> = []
   var mayChange = true
   var asked = 0
-  /// A send waits here until let go, when set.
-  var held: CheckedContinuation<Void, Never>?
+  /// Sends wait here until let go, when set; `sending` is told when one starts waiting.
   var holdSends = false
+  private var held: [CheckedContinuation<Void, Never>] = []
+  private var whenSending: [CheckedContinuation<Void, Never>] = []
 
   func remove(_ id: String, from folder: String) {
     lock.withLock {
@@ -35,6 +44,40 @@ private final class Server: @unchecked Sendable {
       items[folder]?.removeAll { $0.id.raw == id }
       files[folder]?.removeAll { $0.id == id }
     }
+  }
+
+  func waitHeld() async {
+    await withCheckedContinuation { c in
+      let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+        held.append(c)
+        let tell = whenSending
+        whenSending = []
+        return tell
+      }
+      ready.forEach { $0.resume() }
+    }
+  }
+
+  /// Returns once a send is waiting.
+  func sending() async {
+    await withCheckedContinuation { c in
+      let now = lock.withLock { () -> Bool in
+        if !held.isEmpty { return true }
+        whenSending.append(c)
+        return false
+      }
+      if now { c.resume() }
+    }
+  }
+
+  func letSendsGo() {
+    let go = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      holdSends = false
+      let all = held
+      held = []
+      return all
+    }
+    go.forEach { $0.resume() }
   }
 }
 
@@ -61,16 +104,20 @@ private struct Changes: FolderChanges {
   }
   func changeableRoots() async -> [Folder] { [trip, other] }
   func folders(in folder: Folder) async throws -> [Folder] { server.lock.withLock { server.folders[folder.id] ?? [] } }
-  func makeFolder(named name: String, in folder: Folder) async throws -> Folder {
+  private func refused(_ name: String) throws {
     if let refuse = server.refuse { throw refuse }
+    if server.lock.withLock({ server.refuseNames.contains(name) }) { throw ChangeFailure.exists }
+  }
+  func makeFolder(named name: String, in folder: Folder) async throws -> Folder {
+    try refused(name)
     let made = Folder(id: folder.id + "/" + name, name: name, itemCount: -1, hasSubfolders: true)
     server.lock.withLock { server.folders[folder.id, default: []].append(made) }
     return made
   }
   func add(_ file: OutgoingFile, to folder: Folder, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> String {
-    if server.holdSends { await withCheckedContinuation { c in server.lock.withLock { server.held = c } } }
+    if server.lock.withLock({ server.holdSends }) { await server.waitHeld() }
     try Task.checkCancellation()
-    if let refuse = server.refuse { throw refuse }
+    try refused(file.name)
     progress(file.bytes, file.bytes)
     server.lock.withLock {
       server.files[folder.id, default: []].append(OtherFile(id: folder.id + "/" + file.name, name: file.name, bytes: file.bytes, modified: Date()))
@@ -78,15 +125,19 @@ private struct Changes: FolderChanges {
     return file.name
   }
   func move(_ entry: FolderEntry, from folder: Folder, to destination: Folder) async throws {
-    if let refuse = server.refuse { throw refuse }
+    try refused(entry.name)
     server.remove(entry.id, from: folder.id)
-    if case .item(let i) = entry { server.lock.withLock { server.items[destination.id, default: []].append(i) } }
+    server.lock.withLock {
+      switch entry {
+      case .item(let i): server.items[destination.id, default: []].append(photo(i.fileName, in: destination))
+      case .folder(let f): server.folders[destination.id, default: []].append(f)
+      case .file(let f): server.files[destination.id, default: []].append(f)
+      }
+    }
   }
-  func rename(_ entry: FolderEntry, in folder: Folder, to name: String) async throws {
-    if let refuse = server.refuse { throw refuse }
-  }
+  func rename(_ entry: FolderEntry, in folder: Folder, to name: String) async throws { try refused(name) }
   func delete(_ entry: FolderEntry, in folder: Folder) async throws {
-    if let refuse = server.refuse { throw refuse }
+    try refused(entry.name)
     server.remove(entry.id, from: folder.id)
   }
 }
@@ -95,17 +146,16 @@ private struct Changes: FolderChanges {
 final class FolderChangeModelTests: XCTestCase {
   private func opened(_ server: Server) async -> (LibraryModel, FolderPage) {
     let library = LibraryModel(store: Store(server: server), changes: Changes(server: server))
-    library.pushWait = .seconds(600)
     library.enter(trip)
-    await library.entering?.value
     let page = library.stack.last!
-    await settled(page) { $0.changeable }
+    await page.loading?.value
+    await settled { page.changeable }
     return (library, page)
   }
 
-  /// Waits for the main actor's work on `page` (no clock): yields until `done`, at most a few hundred times.
-  private func settled(_ page: FolderPage, _ done: (FolderPage) -> Bool) async {
-    for _ in 0..<500 where !done(page) { await Task.yield() }
+  /// The ask for writability runs in a task of its own: yields until it has (bounded, no clock).
+  private func settled(_ done: () -> Bool) async {
+    for _ in 0..<1000 where !done() { await Task.yield() }
   }
 
   func testAPageThisPhoneMayChangeSaysSo() async {
@@ -114,14 +164,20 @@ final class FolderChangeModelTests: XCTestCase {
     XCTAssertTrue(page.changeable)
     server.mayChange = false
     let library = LibraryModel(store: Store(server: server), changes: Changes(server: server))
-    library.pushWait = .seconds(600)
     let before = server.lock.withLock { server.asked }
     library.enter(trip)
-    await library.entering?.value
-    for _ in 0..<500 where server.lock.withLock({ server.asked }) == before { await Task.yield() }
-    for _ in 0..<50 { await Task.yield() }
+    await library.stack.last!.loading?.value
+    await settled { server.lock.withLock { server.asked } > before }
     XCTAssertGreaterThan(server.lock.withLock { server.asked }, before, "The page never asked")
     XCTAssertFalse(library.stack.last!.changeable, "A view device's page offers changes")
+  }
+
+  /// A folder inside one this phone may change has its commands from the first frame.
+  func testCommandsAreThereAtPush() async {
+    let (library, page) = await opened(Server())
+    XCTAssertTrue(page.changeable)
+    library.enter(day)
+    XCTAssertTrue(library.stack.last!.changeable, "Add and Select would appear after the push")
   }
 
   func testChosenFollowsThePageOrder() async {
@@ -145,107 +201,80 @@ final class FolderChangeModelTests: XCTestCase {
     library.toggle("file:r/Trip/a.jpg", on: page)
     let worked = await library.delete(page.chosen, in: page)
     XCTAssertTrue(worked)
-    XCTAssertEqual(page.subfolders, [])
+    XCTAssertEqual(page.subfolders, [day2])
     XCTAssertEqual(page.entries.count, 1)
     XCTAssertFalse(page.selecting)
     XCTAssertNil(page.changeFailure)
   }
 
-  /// A taken name: said on the page, naming what was refused; the choice stays for another try.
-  func testARefusalIsSaidAndTheChoiceKept() async {
+  /// Some of a batch refused: the rest still go, the page says how many and why, only what did not
+  /// change comes back, and only it stays chosen.
+  func testAPartlyRefusedMoveSaysWhatMoved() async {
     let server = Server()
     let (library, page) = await opened(server)
+    server.refuseNames = ["Day 2"]
     library.setSelecting(true, on: page)
-    library.toggle("file:r/Trip/a.jpg", on: page)
-    server.refuse = .exists
+    library.toggle(day.id, on: page)
+    library.toggle(day2.id, on: page)
     let worked = await library.move(page.chosen, from: page, to: other)
     XCTAssertFalse(worked)
-    XCTAssertEqual(page.changeFailure, ChangeCopy.line(for: .exists, name: "a.jpg"))
+    XCTAssertEqual(page.subfolders, [day2])
+    XCTAssertEqual(page.changeFailure,
+                   "1 of 2 moved to “Other”. " + ChangeCopy.line(for: .exists, name: "Day 2"))
+    XCTAssertEqual(page.selected, [day2.id])
     XCTAssertTrue(page.selecting)
-    XCTAssertEqual(page.selected, ["file:r/Trip/a.jpg"])
-    XCTAssertEqual(page.entries.count, 2, "A refused move changed the page")
   }
 
-  func testMoveLeavesThePageAndTheDestinationListsAfresh() async {
-    let server = Server()
-    let (library, page) = await opened(server)
-    library.enter(day)
-    await library.entering?.value
-    library.stack.removeLast()  // Day 1's listing is now remembered
-    let moved = await library.move([.item(photo("b.jpg"))], from: page, to: day)
-    XCTAssertTrue(moved)
-    XCTAssertEqual(page.entries.count, 1)
-    library.enter(day)
-    XCTAssertTrue(library.stack.count == 1, "Day 1 was shown from before the move")
-    await library.entering?.value
-    XCTAssertEqual(library.stack.last?.entries.count, 1)
-  }
-
-  func testNewFolderAppearsOnThePage() async {
-    let (library, page) = await opened(Server())
-    let made = await library.makeFolder(named: "  Lisbon ", in: page)
-    XCTAssertTrue(made)
-    XCTAssertEqual(page.subfolders.map(\.name), ["Day 1", "Lisbon"])
-    let blank = await library.makeFolder(named: "   ", in: page)
-    XCTAssertFalse(blank)
-  }
-
-  /// Sent: on the page once it arrives, and off the list. A refusal stays with Try again; a stop
-  /// takes it off at once.
-  func testUploadsArriveFailRetryAndStop() async throws {
-    let server = Server()
-    let (library, page) = await opened(server)
-    let file = OutgoingFile(url: URL(fileURLWithPath: "/nonexistent/IMG_1.jpg"), name: "IMG_1.jpg", bytes: 10)
-
-    server.refuse = .full
-    library.add([file], to: page)
-    await library.uploading?.value
-    XCTAssertEqual(library.uploads.first?.state, .failed(ChangeCopy.line(for: .full, name: "IMG_1.jpg")))
-
-    server.refuse = nil
-    library.retry(library.uploads[0])
-    await library.uploading?.value
-    await page.loading?.value
-    XCTAssertTrue(library.uploads.isEmpty)
-    XCTAssertTrue(page.others.contains { $0.name == "IMG_1.jpg" }, "The sent file is not on the page")
-
-    // Stopped while it is being sent: off the list at once, and nothing arrives.
-    server.holdSends = true
-    library.add([OutgoingFile(url: file.url, name: "IMG_2.jpg", bytes: 10)], to: page)
-    let sending = try XCTUnwrap(library.uploading)
-    for _ in 0..<200 where server.lock.withLock({ server.held == nil }) { await Task.yield() }
-    library.cancel(library.uploads[0])
-    XCTAssertTrue(library.uploads.isEmpty)
-    server.lock.withLock { server.held?.resume() }
-    await sending.value
-    XCTAssertFalse(server.lock.withLock { server.files[trip.id]!.contains { $0.name == "IMG_2.jpg" } })
-  }
-
-  /// Leaving the folder does not stop a send: it arrives, and the folder lists it when opened again.
-  func testAnUploadSurvivesLeavingTheFolder() async {
+  /// Files waiting to go into folders being moved: held while the moves are sent; those for the
+  /// folder that moved are dropped, those for the one refused go on.
+  func testFilesForAPartlyMovedBatchAreHeldThenDroppedOrSent() async {
     let server = Server()
     server.holdSends = true
     let (library, page) = await opened(server)
-    library.add([OutgoingFile(url: URL(fileURLWithPath: "/nonexistent/c.txt"), name: "c.txt", bytes: 3)], to: page)
-    let sending = library.uploading!
+    library.enter(day)
+    let dayPage = library.stack.last!
+    library.add([file("1.jpg")], to: dayPage)
     library.stack.removeLast()
-    for _ in 0..<200 where server.lock.withLock({ server.held == nil }) { await Task.yield() }
-    server.lock.withLock { server.held?.resume() }
-    await sending.value
+    library.enter(day2)
+    library.add([file("2.jpg")], to: library.stack.last!)
+    library.stack.removeLast()
+    await server.sending()  // 1.jpg is being sent into Day 1
+    server.refuseNames = ["Day 2"]
+    let sending = library.uploading!
+    let moved = await library.move([.folder(day), .folder(day2)], from: page, to: other)
+    XCTAssertFalse(moved)
+    XCTAssertTrue(sending.isCancelled, "A send into a folder being moved was not stopped first")
+    XCTAssertEqual(library.uploads.map(\.name), ["2.jpg"])
+    server.refuseNames = []
+    server.letSendsGo()
+    await library.uploading?.value
     XCTAssertTrue(library.uploads.isEmpty)
-    library.enter(trip)
-    await library.entering?.value
-    XCTAssertTrue(library.stack.last!.others.contains { $0.name == "c.txt" })
+    XCTAssertNil(server.lock.withLock { server.files[day.id] }, "1.jpg went into a folder that had moved")
+    XCTAssertEqual(server.lock.withLock { server.files[day2.id]?.map(\.name) }, ["2.jpg"])
   }
 
-  /// A slash would make folders on the server, a dot first would hide it: said, nothing sent.
+  /// Photos moved from a folder up into the one under it: the page underneath shows them on return.
+  func testThePageUnderneathListsAgainAfterAMoveIntoIt() async {
+    let server = Server()
+    server.lock.withLock { server.items[day.id] = [photo("c.jpg", in: day)] }
+    let (library, tripPage) = await opened(server)
+    library.enter(day)
+    let dayPage = library.stack.last!
+    await dayPage.loading?.value
+    let moved = await library.move([.item(photo("c.jpg", in: day))], from: dayPage, to: trip)
+    XCTAssertTrue(moved)
+    library.stack.removeLast()
+    XCTAssertEqual(tripPage.entries.count, 3, "The page underneath still shows it without the photo")
+  }
+
+  /// A name the server would not take is said before anything is sent.
   func testANameTheServerWouldNotTakeIsSaidBeforeSending() async {
     let server = Server()
     let (library, page) = await opened(server)
     let made = await library.makeFolder(named: "2024/Lisbon", in: page)
     XCTAssertFalse(made)
     XCTAssertEqual(page.changeFailure, ChangeCopy.line(for: .badName, name: "2024/Lisbon"))
-    XCTAssertEqual(server.lock.withLock { server.folders[trip.id]!.map(\.name) }, ["Day 1"])
+    XCTAssertEqual(server.lock.withLock { server.folders[trip.id]!.map(\.name) }, ["Day 1", "Day 2"])
     let renamed = await library.rename(.item(photo("a.jpg")), to: ".hidden", in: page)
     XCTAssertFalse(renamed)
     XCTAssertNil(LibraryModel.nameProblem("Trip notes (2).txt"))
@@ -258,29 +287,89 @@ final class FolderChangeModelTests: XCTestCase {
     server.refuse = .notAllowed
     let worked = await library.delete([.folder(day), .file(page.others[0])], in: page)
     XCTAssertFalse(worked)
-    XCTAssertEqual(page.subfolders, [day])
+    XCTAssertEqual(page.subfolders, [day, day2])
     XCTAssertEqual(page.others.map(\.name), ["notes.txt"])
   }
 
-  /// A folder deleted while files wait to go into it: they are not sent (that would make it again).
-  func testFilesWaitingForADeletedFolderAreNotSent() async {
+  func testNewFolderAppearsOnThePage() async {
+    let (library, page) = await opened(Server())
+    let made = await library.makeFolder(named: "  Lisbon ", in: page)
+    XCTAssertTrue(made)
+    XCTAssertEqual(page.subfolders.map(\.name), ["Day 1", "Day 2", "Lisbon"])
+    let blank = await library.makeFolder(named: "   ", in: page)
+    XCTAssertFalse(blank)
+  }
+
+  /// Sent: on the page once it arrives, and off the list. A refusal stays with Try again; a stop
+  /// takes it off at once.
+  func testUploadsArriveFailRetryAndStop() async {
+    let server = Server()
+    let (library, page) = await opened(server)
+    server.refuse = .full
+    library.add([file("IMG_1.jpg")], to: page)
+    await library.uploading?.value
+    XCTAssertEqual(library.uploads.first?.state, .failed(ChangeCopy.line(for: .full, name: "IMG_1.jpg")))
+
+    server.refuse = nil
+    library.retry(library.uploads[0])
+    await library.uploading?.value
+    XCTAssertTrue(library.uploads.isEmpty)
+    XCTAssertTrue(page.others.contains { $0.name == "IMG_1.jpg" }, "The sent file is not on the page")
+
+    server.holdSends = true
+    library.add([file("IMG_2.jpg")], to: page)
+    let sending = library.uploading!
+    await server.sending()
+    library.cancel(library.uploads[0])
+    XCTAssertTrue(library.uploads.isEmpty)
+    server.letSendsGo()
+    await sending.value
+    XCTAssertFalse(server.lock.withLock { server.files[trip.id]!.contains { $0.name == "IMG_2.jpg" } })
+  }
+
+  /// Leaving the folder does not stop a send: it arrives, and the folder lists it when opened again.
+  func testAnUploadSurvivesLeavingTheFolder() async {
     let server = Server()
     server.holdSends = true
     let (library, page) = await opened(server)
-    library.enter(day)
-    await library.entering?.value
-    let dayPage = library.stack.last!
-    let file = { (n: String) in OutgoingFile(url: URL(fileURLWithPath: "/nonexistent/\(n)"), name: n, bytes: 1) }
-    library.add([file("1.jpg"), file("2.jpg")], to: dayPage)
-    library.stack.removeLast()
+    library.add([file("c.txt")], to: page)
     let sending = library.uploading!
-    let worked = await library.delete([.folder(day)], in: page)
-    XCTAssertTrue(worked)
-    XCTAssertTrue(library.uploads.isEmpty)
-    XCTAssertEqual(page.changeFailure, ChangeCopy.uploadsDropped(2, folder: "Day 1"))
-    server.lock.withLock { server.held?.resume() }
+    library.stack.removeLast()
+    await server.sending()
+    server.letSendsGo()
     await sending.value
-    XCTAssertNil(server.lock.withLock { server.files[day.id] })
+    XCTAssertTrue(library.uploads.isEmpty)
+    library.enter(trip)
+    await library.stack.last!.loading?.value
+    XCTAssertTrue(library.stack.last!.others.contains { $0.name == "c.txt" })
+  }
+
+  /// A picked file shows at once while it is copied; one that could not be read says so.
+  func testPickedFilesShowWhileTheyAreReady() async {
+    let server = Server()
+    let (library, page) = await opened(server)
+    let rows = library.preparing(["big.mov", "gone.pdf"], for: page)
+    XCTAssertEqual(library.uploads.map(\.state), [.preparing, .preparing])
+    XCTAssertNil(library.uploading, "Sent before it was copied")
+    library.prepared(rows[1], nil)
+    XCTAssertEqual(library.uploads[1].state, .failed(ChangeCopy.line(for: .unreadable, name: "gone.pdf")))
+    library.prepared(rows[0], file("big.mov"))
+    await library.uploading?.value
+    XCTAssertEqual(library.uploads.map(\.name), ["gone.pdf"])
+  }
+
+  /// The library seen another way (its folders, then its catalogue): files being sent go on. Another
+  /// library: they go.
+  func testAChangeOfModeKeepsUploads() async {
+    let server = Server()
+    server.holdSends = true
+    let (library, page) = await opened(server)
+    library.add([file("d.jpg")], to: page)
+    library.reset(keepingUploads: true)
+    XCTAssertEqual(library.uploads.map(\.name), ["d.jpg"])
+    library.reset()
+    XCTAssertTrue(library.uploads.isEmpty)
+    server.letSendsGo()
   }
 
   /// What was chosen and is no longer listed is no longer chosen.

@@ -33,9 +33,8 @@ final class FolderChangeTests: XCTestCase {
     entry.tap()
   }
 
-  /// Types `text` into the alert's field, over whatever it held; `submit` then presses Return, which
-  /// confirms (the alert's own button, after a long press's menu, does not take XCUITest's taps).
-  private func fill(_ app: XCUIApplication, _ text: String, submit: Bool = false) {
+  /// Types `text` into the alert's field, over whatever it held.
+  private func fill(_ app: XCUIApplication, _ text: String) {
     let field = app.alerts.textFields.firstMatch
     XCTAssertTrue(field.waitForExistence(timeout: 5))
     // The alert's field has the keyboard already; what it holds is selected over (Rename) or empty.
@@ -43,21 +42,18 @@ final class FolderChangeTests: XCTestCase {
     let old = (field.value as? String).flatMap { $0 == field.placeholderValue ? "" : $0 } ?? ""
     field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + text)
     XCTAssertEqual(field.value as? String, text, "The name was not typed")
-    if submit {
-      field.typeText("\n")
-      let closed = NSPredicate(format: "count == 0")
-      expectation(for: closed, evaluatedWith: app.alerts)
-      waitForExpectations(timeout: 5)
-    }
   }
 
   func testNewFolderRenameMoveAndDelete() throws {
     let app = launched()
     open(app, "iphone", title: "iphone")
+    // Its commands are there with the page, not after it.
+    XCTAssertTrue(app.navigationBars.buttons["select"].exists, "Select appeared after the page")
 
     // New folder: on the page at once.
     addMenu(app, "New Folder")
-    fill(app, "Lisbon", submit: true)
+    fill(app, "Lisbon")
+    app.alerts.buttons["new-folder-confirm"].firstMatch.tap()
     // The page lists it in place; the shelf of folders runs sideways, so it may be past the edge.
     let made = app.buttons["folder:iphone/Lisbon"]
     let shelf = app.scrollViews["scrolls-sideways"].firstMatch
@@ -65,13 +61,25 @@ final class FolderChangeTests: XCTestCase {
     for _ in 0..<5 where !made.exists || made.frame.maxX > width { shelf.swipeLeft() }
     XCTAssertTrue(made.waitForExistence(timeout: 10), "The new folder is not on the page")
 
-    // Rename, from its long press.
+    // Rename, from its long press: the dialog opens once the menu has gone. Return confirms it:
+    // XCUITest's tap on the Rename dialog's own button does not register (a tap by hand does, and
+    // Create's and Delete's do here), so the test confirms with the keyboard, as a person can.
     made.press(forDuration: 1.0)
     XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 5), "No Rename on a long press")
     app.buttons["Rename"].tap()
-    fill(app, "Porto", submit: true)
+    fill(app, "Porto")
+    app.alerts.textFields.firstMatch.typeText("\n")
     let renamed = NSPredicate(format: "label BEGINSWITH 'Porto'")
     expectation(for: renamed, evaluatedWith: made)
+    waitForExpectations(timeout: 10)
+
+    // Rename again from Select's bar.
+    app.navigationBars.buttons["select"].tap()
+    made.tap()
+    app.toolbars.buttons["Rename"].tap()
+    fill(app, "Porto 2026")
+    app.alerts.textFields.firstMatch.typeText("\n")
+    expectation(for: NSPredicate(format: "label BEGINSWITH 'Porto 2026'"), evaluatedWith: made)
     waitForExpectations(timeout: 10)
 
     // Select a photo, Move it into Porto: it leaves this page.
@@ -88,9 +96,9 @@ final class FolderChangeTests: XCTestCase {
     iphoneRow.tap()
     let porto = app.buttons["move-to:iphone/Lisbon"].firstMatch
     XCTAssertTrue(porto.waitForExistence(timeout: 10), "Move does not list the new folder")
-    XCTAssertEqual(porto.label, "Porto")
+    XCTAssertEqual(porto.label, "Porto 2026")
     porto.tap()
-    XCTAssertTrue(app.navigationBars["Porto"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.navigationBars["Porto 2026"].waitForExistence(timeout: 10))
     app.buttons["move-here"].firstMatch.tap()
     XCTAssertTrue(app.navigationBars["Move to"].waitForNonExistence(timeout: 10), "Move Here did not close the picker")
     XCTAssertTrue(app.navigationBars["iphone"].waitForExistence(timeout: 10))
@@ -99,7 +107,7 @@ final class FolderChangeTests: XCTestCase {
     waitForExpectations(timeout: 10)
 
     // In Porto it is there; Delete it, after saying where it goes.
-    open(app, "iphone/Lisbon", title: "Porto")
+    open(app, "iphone/Lisbon", title: "Porto 2026")
     XCTAssertTrue(app.buttons[photoID].waitForExistence(timeout: 10), "The photo did not arrive in Porto")
     app.navigationBars.buttons["select"].tap()
     app.buttons[photoID].tap()

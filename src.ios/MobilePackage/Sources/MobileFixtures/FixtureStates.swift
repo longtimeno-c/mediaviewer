@@ -195,7 +195,7 @@ final class FixtureRun {
     case .viewerSlowNetwork: world.imageMode = .slowNetwork
     case .libraryChange:
       world.mayChange = true
-      FixtureChangeBook.seedDocuments()
+      FixtureDocuments.seed()
     case .librarySlowLink:
       world.imageMode = .slowNetwork
       world.folderListDelay = .seconds(1)
@@ -401,6 +401,7 @@ public struct FixtureHost: View {
       .task(id: run.id) {
         try? await Task.sleep(for: .milliseconds(150))
         await run.arrive()
+        await FixtureWalk.runIfAsked(run.model)
       }
       .background(WindowAnchor(showsButton: showsButton) { state in
         run = FixtureRun(state: state)

@@ -244,12 +244,8 @@ private struct TransitionSource: ViewModifier {
   }
 }
 
-/// The content's own empty geometry while a listing is awaited; `after` a wait, so a listing that
-/// comes quickly never flashes it.
+/// The content's own empty geometry while a listing is awaited.
 struct GridSkeleton: View {
-  var after: Duration = .zero
-  @State private var shown = false
-
   var body: some View {
     GeometryReader { geo in
       let columns = max(3, Int((geo.size.width + 2) / 122))
@@ -262,12 +258,6 @@ struct GridSkeleton: View {
           }
         }
       }
-    }
-    .opacity(shown || after == .zero ? 1 : 0)
-    .task {
-      guard after > .zero else { return }
-      try? await Task.sleep(for: after)
-      if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { shown = true } }
     }
     .accessibilityHidden(true)
   }

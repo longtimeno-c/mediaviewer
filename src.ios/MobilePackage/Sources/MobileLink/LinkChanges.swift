@@ -68,7 +68,9 @@ public struct FileModeChanges: FolderChanges {
     withExtendedLifetime(box) {}
     if status == 11 { throw CancellationError() }  // MV_LINK_CANCELLED
     guard status == 0 else { throw Self.failure(status, out.why) }
-    return FilePath(root: path.root, rel: Self.rel(out)).name
+    // A place too long to hand back is still a file that arrived, under the name it was sent as.
+    let rel = Self.rel(out)
+    return rel.isEmpty ? file.name : FilePath(root: path.root, rel: rel).name
   }
 
   public func move(_ entry: FolderEntry, from folder: Folder, to destination: Folder) async throws {
@@ -80,7 +82,21 @@ public struct FileModeChanges: FolderChanges {
   public func rename(_ entry: FolderEntry, in folder: Folder, to name: String) async throws {
     let source = try place(entry)
     guard let parent = source.parent else { throw ChangeFailure.badName }
-    try await move(source, to: parent.appending(name))
+    let target = parent.appending(name)
+    // Only the case changes: on a server volume that ignores case the new name is "taken" by the
+    // file itself, so it goes by way of a name of its own, and back if the second step is refused.
+    if name.lowercased() == source.name.lowercased() {
+      let between = parent.appending(name + " (renaming)")
+      try await move(source, to: between)
+      do {
+        try await move(between, to: target)
+      } catch {
+        try? await move(between, to: source)
+        throw error
+      }
+      return
+    }
+    try await move(source, to: target)
   }
 
   public func delete(_ entry: FolderEntry, in folder: Folder) async throws {
@@ -151,6 +167,7 @@ public struct FileModeChanges: FolderChanges {
     case 9: return .offline
     case 10: return .notFound
     case 11: return .damaged
+    case 14: return .unreadable
     default:
       switch status {
       case 1: return .badName        // MV_LINK_INVALID: a path the link refuses before sending

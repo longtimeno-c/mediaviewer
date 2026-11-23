@@ -51,9 +51,13 @@ struct FolderTile: View {
   @Environment(AppModel.self) private var model
   @Environment(\.folderNamespace) private var namespace
   @Environment(\.editingPage) private var editingPage
+  /// The page the tile is on: a tap on it then finds its folder listed (LibraryModel.prefetch).
+  @Environment(\.shownPage) private var shownPage
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Asked for once the tile is on screen; a folder already seen paints its preview at once.
   @State private var asked: FolderPreview?
+  /// Which change of its folder `asked` was had after.
+  @State private var askedVersion = 0
 
   var body: some View {
     let preview = asked ?? model.library.knownPreview(of: folder)
@@ -87,11 +91,17 @@ struct FolderTile: View {
     .choosable(.folder(folder))
     // Never spoken: lets a test name which folder a tile is.
     .accessibilityIdentifier("folder:\(folder.id)")
-    .task(id: folder.id) {
-      guard asked == nil, model.library.knownPreview(of: folder) == nil, !folder.offline else { return }
+    // Asked again when its folder changes (something added, moved, deleted).
+    .task(id: "\(folder.id)#\(model.library.previewVersion[folder.id] ?? 0)") {
+      if let shownPage { model.library.prefetch(folder, in: shownPage) }
+      let version = model.library.previewVersion[folder.id] ?? 0
+      guard !folder.offline, model.library.knownPreview(of: folder) == nil,
+            asked == nil || askedVersion != version else { return }
       let got = await model.library.preview(of: folder)
+      guard !Task.isCancelled else { return }
+      askedVersion = version
       // Its pictures fade in, in the space already held for them.
-      if !Task.isCancelled { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { asked = got } }
+      withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { asked = got }
     }
   }
 

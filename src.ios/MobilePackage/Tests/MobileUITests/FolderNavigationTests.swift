@@ -1,9 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The library as a navigation stack (docs/plans/mobile.md §11.1): a folder's page slides in laid
-// out, never filling in under the transition; one opened before slides in at once; the system's
-// back (a swipe, the button, its menu) shortens the stack and the pages under it are as they were.
+// The library as a navigation stack (docs/plans/mobile.md §11.1): a tap slides the folder's page in
+// at once, laid out when its tile had it listed ahead; one opened before slides in from what it
+// held and is not listed again under the transition; the system's back (a swipe, the button, its
+// menu) shortens the stack and the pages under it are as they were.
 import MobileKit
+import Observation
 @testable import MobileUI
 import XCTest
 
@@ -65,99 +67,102 @@ private struct TreeStore: LibraryStore {
 
 @MainActor
 final class FolderNavigationTests: XCTestCase {
-  private func model(_ store: TreeStore, wait: Duration = .seconds(600)) -> LibraryModel {
-    let model = LibraryModel(store: store)
-    model.pushWait = wait
-    return model
-  }
-
-  /// The tap waits for the listing (here as long as it takes: the wait is ten minutes), so the page
-  /// is pushed already holding its folders and photos.
-  func testAFolderSlidesInLaidOut() async {
-    let library = model(TreeStore())
-    library.enter(trip)
-    XCTAssertTrue(library.stack.isEmpty, "Pushed before its listing came")
-    await library.entering?.value
-    let page = try! XCTUnwrap(library.stack.last)
-    XCTAssertEqual(page.path, [trip])
-    XCTAssertFalse(page.isLoading)
-    XCTAssertEqual(page.subfolders, [day])
-    XCTAssertEqual(page.entries.count, 3)
-    XCTAssertEqual(library.trail, [trip])
-  }
-
-  /// A slow listing does not hold the tap: past the wait the page slides in with its skeleton, and
-  /// the listing fills it in place.
-  func testASlowFolderSlidesInAfterTheWait() async {
+  /// The tap answers at once: the page is on the stack in the same moment, its listing to come.
+  func testATapPushesAtOnce() async {
     let store = TreeStore()
     await store.lister.hold()
-    let library = model(store, wait: .milliseconds(1))
+    let library = LibraryModel(store: store)
     library.enter(trip)
-    await library.entering?.value
-    let page = try! XCTUnwrap(library.stack.last)
+    let page = try! XCTUnwrap(library.stack.last, "Not pushed at once")
+    XCTAssertEqual(page.path, [trip])
     XCTAssertTrue(page.isLoading)
+    XCTAssertEqual(library.trail, [trip])
     await store.lister.letGo()
     await page.loading?.value
     XCTAssertFalse(page.isLoading)
+    XCTAssertEqual(page.subfolders, [day])
     XCTAssertEqual(page.entries.count, 3)
   }
 
-  /// Gone back to and opened again: pushed in the same moment, laid out, and not listed again (a
-  /// catalogue's folders change only with a new catalogue).
-  func testAFolderOpenedBeforeSlidesInAtOnce() async {
+  /// Its tile on screen had it listed: the tap pushes it laid out, and nothing is asked again.
+  func testAFolderListedAheadSlidesInLaidOut() async {
     let store = TreeStore()
-    let library = model(store)
-    library.enter(trip)
-    await library.entering?.value
-    library.stack.removeLast()  // the system's back
+    let library = LibraryModel(store: store)
+    await library.load()
+    await library.prefetch(trip, in: library.root)?.value
     let asked = await store.lister.lists
     library.enter(trip)
-    let page = try! XCTUnwrap(library.stack.last, "Not pushed at once")
-    XCTAssertFalse(page.isLoading)
+    let page = try! XCTUnwrap(library.stack.last)
+    XCTAssertFalse(page.isLoading, "Pushed with its skeleton")
     XCTAssertEqual(page.entries.count, 3)
     XCTAssertEqual(page.subfolders, [day])
     let askedAgain = await store.lister.lists
     XCTAssertEqual(askedAgain, asked)
   }
 
-  /// A folder on the server, listed live: shown at once from last time, and listed again behind it.
-  func testAServerFolderOpenedBeforeIsListedAgainBehindIt() async {
+  /// Gone back to and opened again: laid out at once, and not listed again (a catalogue's folders
+  /// change only with a new catalogue).
+  func testAFolderOpenedBeforeSlidesInAtOnce() async {
     let store = TreeStore()
-    let library = model(store)
+    let library = LibraryModel(store: store)
+    library.enter(trip)
+    await library.stack.last?.loading?.value
+    library.stack.removeLast()  // the system's back
+    let asked = await store.lister.lists
+    library.enter(trip)
+    let page = try! XCTUnwrap(library.stack.last)
+    XCTAssertFalse(page.isLoading)
+    XCTAssertEqual(page.entries.count, 3)
+    let askedAgain = await store.lister.lists
+    XCTAssertEqual(askedAgain, asked)
+  }
+
+  /// A folder on the server listed moments ago is not listed again under the transition.
+  func testAServerFolderListedJustNowIsNotAskedAgain() async {
+    let store = TreeStore()
+    let library = LibraryModel(store: store)
     library.enter(nasFolder)
-    await library.entering?.value
+    await library.stack.last?.loading?.value
     library.stack.removeLast()
     let asked = await store.lister.lists
     library.enter(nasFolder)
-    let page = try! XCTUnwrap(library.stack.last)
-    XCTAssertFalse(page.isLoading)
-    await page.loading?.value
+    await library.stack.last?.loading?.value  // (the first one's, long done: no second listing started)
     let askedAgain = await store.lister.lists
-    XCTAssertEqual(askedAgain, asked + 1)
+    XCTAssertEqual(askedAgain, asked)
   }
 
-  /// A new catalogue forgets what folders held: the next open waits for its listing again.
-  func testANewCatalogueForgetsListings() async {
-    let library = model(TreeStore())
+  /// Listed again and holding the same items: the grid is not handed a new list (no tile redrawn).
+  func testAnUnchangedListingRedrawsNoTile() async {
+    let library = LibraryModel(store: TreeStore())
     library.enter(trip)
-    await library.entering?.value
+    let page = try! XCTUnwrap(library.stack.last)
+    await page.loading?.value
+    let redrawn = Redrawn()
+    withObservationTracking { _ = page.entries } onChange: { redrawn.yes = true }
+    await library.load(page).value
+    XCTAssertFalse(redrawn.yes, "An identical listing redrew the grid")
+  }
+
+  /// A new catalogue forgets what folders held: the next open lists again.
+  func testANewCatalogueForgetsListings() async {
+    let library = LibraryModel(store: TreeStore())
+    library.enter(trip)
+    await library.stack.last?.loading?.value
     library.stack.removeLast()
     library.forgetPreviews()
     library.enter(trip)
-    XCTAssertTrue(library.stack.isEmpty)
-    await library.entering?.value
-    XCTAssertEqual(library.stack.count, 1)
+    XCTAssertTrue(library.stack.last!.isLoading)
   }
 
   /// Several folders deep and back: each page under the top keeps what it held, and the trail (what
   /// Search searches) follows the stack the system shortens.
   func testBackKeepsThePagesUnderIt() async {
-    let library = model(TreeStore())
+    let library = LibraryModel(store: TreeStore())
     await library.load()
     library.enter(trip)
-    await library.entering?.value
+    await library.stack.last?.loading?.value
     library.enter(day)
-    await library.entering?.value
+    await library.stack.last?.loading?.value
     XCTAssertEqual(library.trail, [trip, day])
     XCTAssertEqual(library.current.entries.count, 2)
     let tripPage = library.stack[0]
@@ -175,57 +180,13 @@ final class FolderNavigationTests: XCTestCase {
   func testAPageGoneBackFromStopsLoading() async {
     let store = TreeStore()
     await store.lister.hold()
-    let library = model(store, wait: .milliseconds(1))
+    let library = LibraryModel(store: store)
     library.enter(trip)
-    await library.entering?.value
     let loading = try! XCTUnwrap(library.stack.last?.loading)
     library.stack.removeLast()
     XCTAssertTrue(loading.isCancelled)
     await store.lister.letGo()
   }
-
-  /// A second tap while the first waits for its listing: only the second folder is pushed.
-  func testOnlyTheLastTapIsPushed() async {
-    let store = TreeStore()
-    await store.lister.hold()
-    let library = model(store)
-    library.enter(trip)
-    library.enter(nasFolder)
-    await store.lister.letGo()
-    await library.entering?.value
-    XCTAssertEqual(library.stack.map(\.path), [[nasFolder]])
-  }
-
-  /// Gone back while a tap waits for its listing: the wait ends at once, nothing is pushed, and that
-  /// folder stops listing.
-  func testGoingBackWhileATapWaitsDropsIt() async {
-    let store = TreeStore()
-    let library = model(store)
-    library.enter(trip)
-    await library.entering?.value
-    await store.lister.hold()
-    library.enter(day)
-    let waiting = try! XCTUnwrap(library.entering)
-    library.stack.removeLast()
-    await waiting.value  // ten minutes if the wait were not ended
-    XCTAssertTrue(library.stack.isEmpty)
-    await store.lister.letGo()
-  }
-
-  /// A new catalogue while a tap waits: that folder is listed again from it, never kept from the old one.
-  func testANewCatalogueRelistsTheFolderATapWaitsFor() async {
-    let store = TreeStore()
-    await store.lister.hold()
-    let library = model(store)
-    library.enter(trip)
-    library.forgetPreviews()
-    await store.lister.letGo()
-    await library.entering?.value
-    let page = try! XCTUnwrap(library.stack.last)
-    await page.loading?.value
-    let lists = await store.lister.lists
-    XCTAssertEqual(lists, 2, "Not listed again")
-    XCTAssertFalse(page.isLoading)
-    XCTAssertEqual(page.entries.count, 3)
-  }
 }
+
+private final class Redrawn: @unchecked Sendable { var yes = false }
