@@ -942,6 +942,7 @@ Reach the web through one's own relay server on a filtering network. Plan
   `driftwire_resume.json`: sender identity, destination, landed folder name, whole files (path,
   size, time, where landed), the partial (temporary, durable bytes). Rewritten ≤ 1/s; partial
   flushed ≤ every 5 s per 32 MiB. One per sender, ≤ 8, expired after 7 days; **Discard** removes.
+  The record of the receive under way is not listed under **Unfinished transfers** until it stops.
 - **Hidden temporaries** (`io::set_hidden`; Linux leading dot `.IMG_1.JPG.mvtmp`,
   `io::kHasHiddenFlag`, `temp_name`), unhidden before rename.
 - **Matching**: the offer carries file times and `"resume": true`; same path, size and time →

@@ -70,6 +70,7 @@
     <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
     <Compile Include="..\Shared\GlowMath.cs" Link="Shared\GlowMath.cs" />
     <Compile Include="..\Shared\ProgressWords.cs" Link="Shared\ProgressWords.cs" />
+    <Compile Include="..\Shared\ScreenTreePatch.cs" Link="Shared\ScreenTreePatch.cs" />
   </ItemGroup>
 
   <ItemGroup>
