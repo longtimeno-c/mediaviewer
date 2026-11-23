@@ -192,6 +192,22 @@ TEST_CASE("phone self host: labels never clash, as the program would refuse them
   CHECK_FALSE(sh::answers(0));
 }
 
+TEST_CASE("phone self host: a folder shared already and ticked as backup is made one", "[phone-self-host]") {
+  using fc = sh::folder_choice;
+  const fc chosen[] = {{"/a/Photos", "", false}, {"/b/Phone backup/", "", true}, {"/c/New", "", true}, {"/d/Old", "", false}};
+  const sh::shared_folder shared[] = {{"/a/Photos", "Photos"}, {"/b/Phone backup", "Backups"}, {"/d/Old", "Old"}};
+  const auto plan = sh::share_plan(chosen, shared);
+  // The new one under a label of its own; the shared one ticked as backup again, under its label
+  // (`host share --backup` makes it a backup folder); the others left as they are.
+  REQUIRE(plan.size() == 2);
+  CHECK(plan[0].path == "/c/New");
+  CHECK(plan[0].label == "New");
+  CHECK(plan[0].backup);
+  CHECK(plan[1].path == "/b/Phone backup/");
+  CHECK(plan[1].label == "Backups");
+  CHECK(plan[1].backup);
+}
+
 TEST_CASE("phone self host: a folder is matched as the OS matches it", "[phone-self-host]") {
   CHECK(sh::same_path_key("/tmp/") == sh::same_path_key("/tmp"));
   CHECK(sh::same_path_key("/tmp/./x/..") == sh::same_path_key("/tmp"));

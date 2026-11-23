@@ -115,7 +115,8 @@ struct host_layout {
 
 // The label a folder gets without --label: its last name ("Photos", "E" for E:\).
 [[nodiscard]] std::string default_label(const std::string& abs_path);
-// Adds the folder; "" when done, else why not (in words for the person).
+// Adds the folder; "" when done, else why not (in words for the person). With `backup`, a folder
+// shared already becomes a backup folder instead (nothing else about it changes).
 // `id`: 16 lowercase hex digits. `host_folder`: never shared, nor anything holding it.
 [[nodiscard]] std::string share_folder(serve::config& c, const std::string& abs_path, const std::string& label,
                                        bool backup, const volume_facts& facts, const std::string& id,

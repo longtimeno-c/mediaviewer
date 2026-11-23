@@ -374,12 +374,26 @@ std::string default_label(const std::string& abs_path) {
 
 std::string share_folder(serve::config& c, const std::string& abs_path, const std::string& label, bool backup,
                          const volume_facts& facts, const std::string& id, const std::string& host_folder) {
+  const fs::path mine = canonical_or_normal(abs_path);
+  if (backup) {
+    // A folder shared already, asked again with --backup: it becomes a backup folder, as it is
+    // (its label, id and files stay). One that is one already keeps its limit.
+    for (auto& r : c.roots) {
+      if (canonical_or_normal(r.path) != mine) continue;
+      if (r.label == serve::kCatalogueLabel) return "the Catalogue is never a backup folder.";
+      if (!r.backup) {
+        r.backup = true;
+        r.limit = static_cast<std::uint64_t>(INT64_MAX);
+        r.reserve = serve::kDefaultReserve;
+      }
+      return {};
+    }
+  }
   if (label.empty() || label.size() > serve::kMaxLabelBytes) return "a label is 1 to 64 bytes (--label).";
   for (const unsigned char ch : label) {
     if (ch < 0x20 || ch == 0x7f) return "a label has no control characters.";
   }
   if (c.roots.size() >= serve::kMaxRoots) return "32 folders are shared already; unshare one first.";
-  const fs::path mine = canonical_or_normal(abs_path);
   if (holds_host_folder(abs_path, host_folder)) {
     return "that folder holds the host's own keys; share a folder that does not hold " +
            to_utf8(canonical_or_normal(host_folder)) + ".";
@@ -1076,7 +1090,12 @@ std::string share_path(const host_layout& l, const std::string& typed, const std
   label = label_arg.empty() ? default_label(path) : label_arg;
   std::string why = share_folder(*cfg, path, label, backup, volume_of(path), random_id(), l.folder);
   if (!why.empty()) return why;
-  if (backup && limit != 0) cfg->roots.back().limit = limit;
+  // The folder as shared now: new, or one shared already that --backup made a backup folder.
+  for (auto& r : cfg->roots) {
+    if (canonical_or_normal(r.path) != canonical_or_normal(path)) continue;
+    if (backup && limit != 0) r.limit = limit;
+    label = r.label;
+  }
   if (!write_whole(l.serve_config, serve::config_json(*cfg))) return "could not write serve.json.";
   return {};
 }

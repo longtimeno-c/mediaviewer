@@ -604,6 +604,25 @@ std::vector<std::string> unique_labels(std::span<const folder_choice> f, std::sp
   return out;
 }
 
+std::vector<folder_choice> share_plan(std::span<const folder_choice> chosen, std::span<const shared_folder> shared) {
+  std::vector<folder_choice> fresh, again;
+  for (const auto& f : chosen) {
+    const std::string key = same_path_key(f.path);
+    const auto s = std::find_if(shared.begin(), shared.end(), [&](const shared_folder& x) { return same_path_key(x.path) == key; });
+    if (s == shared.end()) {
+      fresh.push_back(f);
+    } else if (f.backup) {
+      again.push_back({f.path, s->label, true});
+    }
+  }
+  std::vector<std::string> taken;
+  for (const auto& s : shared) taken.push_back(s.label);
+  const auto labels = unique_labels(fresh, taken);  // the program refuses a label in use
+  for (std::size_t i = 0; i < fresh.size(); ++i) fresh[i].label = labels[i];
+  fresh.insert(fresh.end(), again.begin(), again.end());
+  return fresh;
+}
+
 bool answers(std::uint16_t port, int timeout_ms) {
   if (port == 0) return false;
   for (const char* loopback : {"127.0.0.1", "::1"}) {

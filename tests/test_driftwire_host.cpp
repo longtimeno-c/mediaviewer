@@ -222,6 +222,22 @@ TEST_CASE("driftwire host: sharing and unsharing folders", "[host]") {
   CHECK(c.roots[1].reserve == serve::kDefaultReserve);
   CHECK(c.roots[1].mount);
 
+  // A folder shared already, shared again with --backup (the desktop's setup, the command line):
+  // it becomes a backup folder, nothing else about it changes; asked again, it stays as it is.
+  CHECK(cli::share_folder(c, utf8(s / "Photos"), "Photos 2", true, {}, "4123456789abcdef", host_folder).empty());
+  REQUIRE(c.roots.size() == 2);
+  CHECK(c.roots[0].backup);
+  CHECK(c.roots[0].id == "0123456789abcdef");
+  CHECK(c.roots[0].label == "Photos");
+  CHECK(c.roots[0].reserve == serve::kDefaultReserve);
+  c.roots[0].limit = 200ull << 30;
+  CHECK(cli::share_folder(c, utf8(s / "Photos"), "Photos", true, {}, "4123456789abcdef", host_folder).empty());
+  CHECK(c.roots[0].limit == 200ull << 30);
+  REQUIRE(c.roots.size() == 2);
+  // Without --backup it is still "shared already".
+  CHECK_FALSE(cli::share_folder(c, utf8(s / "Photos"), "Photos", false, {}, "4123456789abcdef", host_folder).empty());
+  c.roots[0].backup = false;
+
   CHECK_FALSE(cli::unshare_folder(c, "Nope").empty());
   CHECK(cli::unshare_folder(c, "photos").empty());
   REQUIRE(c.roots.size() == 1);
