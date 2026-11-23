@@ -6,11 +6,13 @@
 // signed, half-float and sub-byte-plane TIFF.
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <span>
+#include <string>
 #include <vector>
 
 #include <jpeglib.h>
@@ -401,6 +403,108 @@ TEST_CASE("JPEG variants fail cleanly when truncated", "[codec][jpeg][variants]"
       auto r = decode(std::span<const std::uint8_t>(full.data(), len));
       if (r) CHECK(r->rgba.size() == static_cast<std::size_t>(r->width) * r->height * 4);
     }
+  }
+}
+
+namespace {
+
+// libjpeg straight, every row read: what decode_jpeg must match for a lossy
+// RGB file, including the flat fill below a cut-off scan.
+std::vector<std::uint8_t> libjpeg_rgba(std::span<const std::uint8_t> bytes, int scale) {
+  jpeg_decompress_struct cinfo{};
+  jpeg_error_mgr err{};
+  cinfo.err = jpeg_std_error(&err);
+  err.output_message = [](j_common_ptr) {};
+  jpeg_create_decompress(&cinfo);
+  jpeg_mem_src(&cinfo, bytes.data(), static_cast<unsigned long>(bytes.size()));
+  jpeg_read_header(&cinfo, TRUE);
+  cinfo.out_color_space = JCS_RGB;
+  cinfo.scale_num = 1;
+  cinfo.scale_denom = static_cast<unsigned>(scale);
+  jpeg_start_decompress(&cinfo);
+  const unsigned max = (1u << cinfo.data_precision) - 1u;
+  const std::size_t n = static_cast<std::size_t>(cinfo.output_width) * 3;
+  std::vector<std::uint8_t> out;
+  std::vector<std::uint8_t> row8(n);
+  std::vector<J12SAMPLE> row12(n);
+  while (cinfo.output_scanline < cinfo.output_height) {
+    if (cinfo.data_precision == 8) {
+      JSAMPROW r[1] = {row8.data()};
+      jpeg_read_scanlines(&cinfo, r, 1);
+    } else {
+      J12SAMPROW r[1] = {row12.data()};
+      jpeg12_read_scanlines(&cinfo, r, 1);
+      for (std::size_t i = 0; i < n; ++i) {
+        const unsigned v = row12[i] < 0 ? 0u : std::min<unsigned>(static_cast<unsigned>(row12[i]), max);
+        row8[i] = static_cast<std::uint8_t>((v * 255u + max / 2u) / max);
+      }
+    }
+    for (std::size_t x = 0; x < n; x += 3) out.insert(out.end(), {row8[x], row8[x + 1], row8[x + 2], 255});
+  }
+  jpeg_finish_decompress(&cinfo);
+  jpeg_destroy_decompress(&cinfo);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("JPEG cut off mid-scan decodes like libjpeg, flat fill and all", "[codec][jpeg][variants]") {
+  // Past the cut libjpeg decodes zero blocks, one flat row; decode_jpeg copies
+  // that row down instead of decoding the rest (fuzz_jpeg found a 418-byte
+  // file declaring 65487x61663 that took over 10 s to decode as grey).
+  for (int precision : {8, 12}) {
+    jpeg_spec s;
+    s.width = 40;
+    s.height = 1200;  // 4:2:0, so the cut and the fill meet across upsampling
+    s.precision = precision;
+    std::vector<std::uint16_t> px;
+    std::uint32_t seed = 12345;
+    const unsigned max = (1u << precision) - 1u;
+    for (std::uint32_t i = 0; i < s.width * s.height * 3; ++i) {
+      seed = seed * 1103515245u + 12345u;
+      px.push_back(static_cast<std::uint16_t>((seed >> 16) % (max + 1)));
+    }
+    const auto full = jpeg_write(s, px);
+    for (const std::size_t cut : {full.size() / 10, full.size() / 3, full.size() * 9 / 10}) {
+      const std::span<const std::uint8_t> bytes(full.data(), cut);
+      for (int scale : {1, 2, 4}) {
+        CAPTURE(precision, cut, scale);
+        auto img = decode_jpeg(bytes, nullptr, scale);
+        REQUIRE(img);
+        CHECK(img->rgba == libjpeg_rgba(bytes, scale));
+      }
+    }
+  }
+}
+
+TEST_CASE("JPEG declaring 4 GP in 418 bytes is refused without decoding it all",
+          "[codec][jpeg][variants]") {
+  // fuzz_jpeg (CI run 44896707654) timed out on this: a 12-bit SOF0 of
+  // 65487x61663 whose scan runs into a second SOS after a few blocks. At 1/4
+  // and 1/8 it is under the pixel cap, and libjpeg decodes it all as grey (4 s
+  // at 1/4) before jpeg_finish_decompress refuses the second scan.
+  const char* hex =
+      "ffd8ffe00000000d590000ffdb004300d8000000040305040404050505faf8f2fffffffffcff"
+      "ffee08070707070f0b0b0937000000000000001113161c1713141a1511111821181a1d1d1f1f"
+      "0700172224221e30241c1e1f1effdb004301051e1e1e1e1e1e1e1e1e1e1e9e1e1e1e1e020202"
+      "0202020202020202020202020202020202020202020202020202020202020202020202020202"
+      "0202020202021e1e1e1e1e1e7e1e1ee41effc000110cf0dfffcf030122000211010311010405"
+      "213106124151076171f7f8f9faffda000c03010002110311003f00f982d70000006804042704"
+      "0509050509474946383961000000000000000000000000000000000000000000000000000000"
+      "0000000000000000000000000000000000000000000000000000000000000000000000000000"
+      "0000000000000000000000000000000000000014141414141414144f4f4f4f4f4f01000000ff"
+      "ffff000000000014541414141414141414141414141414141414141414141414ffffffff0000"
+      "0000001103011100021101031a2526f4f5f6f7f8f9faffda000c03010002110311003f00f9f6";
+  std::vector<std::uint8_t> bytes;
+  for (const char* p = hex; p[0] && p[1]; p += 2) {
+    bytes.push_back(static_cast<std::uint8_t>(std::strtoul(std::string(p, 2).c_str(), nullptr, 16)));
+  }
+  REQUIRE(bytes.size() == 418);
+  for (int scale : {4, 8}) {
+    CAPTURE(scale);
+    auto img = decode_jpeg(bytes, nullptr, scale);
+    REQUIRE_FALSE(img);
+    CHECK(img.error() == status::corrupt);
   }
 }
 

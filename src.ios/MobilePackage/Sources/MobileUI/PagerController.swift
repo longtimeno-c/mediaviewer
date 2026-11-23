@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The viewer's swipe and pinch: UIKit, because this is the one place SwiftUI cannot hold smooth
-// paging and zoom (docs/plans/mobile.md M7). A page keeps the shape of the item, not of whichever
-// picture has arrived, so a sharper one replaces the last with no layout shift.
+// paging and zoom (docs/plans/mobile.md M7). A page takes the shape of the picture showing (the
+// item's, before one has come) and keeps it while a sharper one of that shape replaces the last.
 import MobileKit
 import QuartzCore
 import SwiftUI
@@ -359,6 +359,8 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   private var onPlay: (() -> Void)?
   private var onZoomed: ((Bool) -> Void)?
   private var lastSize = CGSize.zero
+  /// The width over height the picture was last fitted at.
+  private var lastShape: CGFloat = 0
   private var holdsRefinement: (() -> Bool)?
   private var heldRefinement: UIImage?
 
@@ -421,6 +423,7 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
     self.onTap = onTap
     self.onPlay = onPlay
     self.onZoomed = onZoomed
+    lastShape = 0
     let item = entry.item
     imageView.accessibilityLabel = entry.accessibilityName
     playButton.isHidden = item.kind != .clip
@@ -435,6 +438,7 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
       loading = Task { [weak self] in
         guard let poster = await images.thumbnail(for: item), !Task.isCancelled else { return }
         self?.imageView.image = poster
+        self?.setNeedsLayout()
       }
       return
     }
@@ -485,12 +489,36 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   private func sharpen(to image: UIImage) {
     guard imageView.image != nil, !UIAccessibility.isReduceMotionEnabled else {
       imageView.image = image
+      setNeedsLayout()
       return
     }
     UIView.transition(with: imageView, duration: 0.2, options: [.transitionCrossDissolve, .allowUserInteraction]) {
       self.imageView.image = image
     }
+    // A picture of another shape than the item said (a folder's file says none) takes its own.
+    setNeedsLayout()
+    UIView.animate(withDuration: 0.2, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+      self.layoutIfNeeded()
+    }
   }
+
+  /// The page's shape: the picture's own once one shows, else what the item says. A folder's file
+  /// and a catalogue row not yet measured say nothing (square), so the item alone would fit a
+  /// portrait photo inside a square, small with black all round.
+  static func shape(of item: MediaItem, picture: UIImage?) -> CGFloat {
+    if let size = picture?.size, size.width > 0, size.height > 0 { return size.width / size.height }
+    return CGFloat(item.aspect)
+  }
+
+  /// The largest size of that shape inside the page.
+  static func fit(shape: CGFloat, in page: CGSize) -> CGSize {
+    page.width / page.height > shape
+      ? CGSize(width: page.height * shape, height: page.height)
+      : CGSize(width: page.width, height: page.width / shape)
+  }
+
+  /// Where the picture sits in the page, unzoomed.
+  var pictureFrame: CGRect { imageView.frame }
 
   override func layoutSubviews() {
     super.layoutSubviews()
@@ -498,13 +526,16 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
     scroll.frame = page
     let side: CGFloat = 72
     playButton.frame = CGRect(x: page.midX - side / 2, y: page.midY - side / 2, width: side, height: side)
-    guard page.size != lastSize, let entry, page.width > 0 else { return }
+    guard let entry, page.width > 0, page.height > 0 else { return }
+    let shape = Self.shape(of: entry.item, picture: imageView.image)
+    // A sharper picture of the same shape replaces the last with no shift; a new shape waits for
+    // the photo to be zoomed back out.
+    let reshaped = lastShape == 0 || abs(shape - lastShape) > lastShape * 0.01
+    guard page.size != lastSize || (reshaped && !isZoomed) else { return }
     lastSize = page.size
+    lastShape = shape
     scroll.zoomScale = 1
-    let aspect = CGFloat(entry.item.aspect)
-    let fit: CGSize = page.width / page.height > aspect
-      ? CGSize(width: page.height * aspect, height: page.height)
-      : CGSize(width: page.width, height: page.width / aspect)
+    let fit = Self.fit(shape: shape, in: page.size)
     imageView.frame = CGRect(origin: .zero, size: fit)
     scroll.contentSize = fit
     centerImage()
@@ -521,6 +552,10 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   func scrollViewDidZoom(_ scrollView: UIScrollView) {
     centerImage()
     onZoomed?(scrollView.zoomScale > 1.01)
+  }
+
+  func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+    if !isZoomed { setNeedsLayout() }
   }
 
   @objc private func singleTapped() { onTap?() }
