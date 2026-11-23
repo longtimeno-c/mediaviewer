@@ -41,7 +41,14 @@ final class VPNTests: XCTestCase {
     let vpn = demo()
     await vpn.acceptConsent()
     await vpn.setOn(true)
-    for text in ["hello", "", "   ", "mediaviewer://pair#abc", "mediaviewer://relay", "mediaviewer://relay#"] {
+    for text in ["hello", "", "   ", "mediaviewer://pair#abc", "mediaviewer://relay", "mediaviewer://relay#",
+                 "mediaviewer://relay#home.example.net#0123456789abcdef0123", "home.example.net:port#key",
+                 "home.example.net:51820#", ":51820#0123456789abcdef0123", "home.example.net:51820 #0123456789abcdef0123",
+                 // As the core refuses them: a short key, two #, port 0 or past 65535, a colon outside brackets.
+                 "home.example.net:51820#short", "home.example.net:51820#0123456789abcdef#0123",
+                 "home.example.net:0#0123456789abcdef0123", "home.example.net:65536#0123456789abcdef0123",
+                 "https://example.com:443#0123456789abcdef0123", "mediaviewer://pair:1#0123456789abcdef0123",
+                 "::1:51820#0123456789abcdef0123"] {
       do {
         try await vpn.connect(code: text)
         XCTFail("The demo took \"\(text)\" as a VPN code")
@@ -52,7 +59,26 @@ final class VPNTests: XCTestCase {
     XCTAssertTrue(vpn.current.isOn, "A refused code must leave the demo as it was")
     try await vpn.connect(code: "  MediaViewer://relay#home.example.net:51820#0123456789abcdef0123\n")
     try await vpn.connect(code: "mediaviewer://relay-tls#home.example.net:443#0123456789abcdef0123")
+    // The bare form the server's parser also takes.
+    try await vpn.connect(code: "home.example.net:51820#0123456789abcdef0123")
+    try await vpn.connect(code: "[::1]:51820#0123456789abcdef0123")
+    XCTAssertFalse(vpn.current.isOn, "A code in place leaves the VPN off")
+    XCTAssertTrue(vpn.current.consented, "A new code keeps the consent")
     XCTAssertEqual(vpn.current.host, DemoVPN.host, "The demo never takes a host from a code")
+  }
+
+  /// A follower that stops while the demo changes must not deadlock it: the stop takes the demo's
+  /// lock from inside the Swift runtime's task lock, which telling a follower also needs.
+  func testAFollowerStoppingWhileTheDemoChangesDoesNotDeadlock() async {
+    let vpn = demo()
+    for _ in 0..<2_000 {
+      let follower = Task.detached { for await _ in vpn.updates() {} }
+      await Task.yield()
+      let change = Task.detached { await vpn.remove() }
+      follower.cancel()
+      await change.value
+      await follower.value
+    }
   }
 
   func testTheDemoIsAlwaysTheDemo() async throws {
@@ -180,7 +206,8 @@ final class VPNTests: XCTestCase {
     // The demo's consent never asks to send traffic anywhere.
     XCTAssertEqual(VPNFlow.consentTitle(demo), VPNCopy.consentTitleDemo)
     XCTAssertFalse(VPNFlow.consentTitle(demo).contains("through your server"))
-    XCTAssertTrue(VPNCopy.codeDemo.hasPrefix("Demo:"))
+    // Under the code field, the demo says a code is only checked; the real VPN adds nothing.
+    XCTAssertEqual(VPNFlow.codeNote(demo), VPNCopy.codeDemo)
     XCTAssertTrue(VPNCopy.consentDemo.contains("Nothing is routed"))
     XCTAssertTrue(VPNCopy.demoBanner.contains("nothing is routed"))
     // The line under the demo's switch must not say traffic leaves through a server.
@@ -191,6 +218,7 @@ final class VPNTests: XCTestCase {
     XCTAssertEqual(VPNFlow.toggleTitle(real), VPNCopy.toggle)
     XCTAssertEqual(VPNFlow.consentMessage(real), VPNCopy.consent(host: "home.example.net:51820"))
     XCTAssertEqual(VPNFlow.consentTitle(real), VPNCopy.consentTitle)
+    XCTAssertNil(VPNFlow.codeNote(real))
     XCTAssertTrue(VPNFlow.consentMessage(real).contains("home.example.net:51820"))
   }
 
@@ -357,19 +385,22 @@ private final class SwitchingConnection: ConnectionService, @unchecked Sendable 
   var current: ConnectionSnapshot { lock.withLock { snapshot } }
 
   func publish(_ s: ConnectionSnapshot) {
-    lock.withLock {
+    // Told outside the lock: a follower's cancel takes it in onTermination (see DemoVPN).
+    let list = lock.withLock {
       snapshot = s
-      for c in listeners.values { c.yield(s) }
+      return Array(listeners.values)
     }
+    list.forEach { $0.yield(s) }
   }
 
   func updates() -> AsyncStream<ConnectionSnapshot> {
     AsyncStream { c in
       let id = UUID()
-      lock.withLock {
+      let first = lock.withLock {
         listeners[id] = c
-        c.yield(snapshot)
+        return snapshot
       }
+      c.yield(first)
       c.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
     }
   }

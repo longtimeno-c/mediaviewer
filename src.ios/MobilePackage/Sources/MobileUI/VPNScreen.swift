@@ -56,6 +56,9 @@ enum VPNFlow {
   static func consentMessage(_ s: VPNSnapshot) -> String {
     s.isDemo ? VPNCopy.consentDemo : VPNCopy.consent(host: s.host ?? "")
   }
+
+  /// The line under the code field: the demo says a code is only checked.
+  static func codeNote(_ s: VPNSnapshot) -> String? { s.isDemo ? VPNCopy.codeDemo : nil }
 }
 
 struct VPNScreen: View {
@@ -91,7 +94,7 @@ struct VPNScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .sheet(isPresented: $enteringCode) {
       // Large only: a sheet that grows for the keyboard moves Connect under the finger.
-      VPNCodeSheet(service: service, isDemo: vpn.isDemo)
+      VPNCodeSheet(service: service, note: VPNFlow.codeNote(vpn))
         .presentationDetents([.large])
     }
     .sheet(isPresented: $askingConsent) {
@@ -216,7 +219,7 @@ struct VPNScreen: View {
 /// Paste the VPN code from the server. A wrong one says so under the field and stays open.
 private struct VPNCodeSheet: View {
   let service: VPNService
-  var isDemo = false
+  let note: String?
   @Environment(\.dismiss) private var dismiss
   @State private var code = ""
   @State private var notACode = false
@@ -230,8 +233,8 @@ private struct VPNCodeSheet: View {
             .font(.footnote)
             .foregroundStyle(Theme.body)
             .fixedSize(horizontal: false, vertical: true)
-          if isDemo {
-            Text(VPNCopy.codeDemo)
+          if let note {
+            Text(note)
               .font(.footnote.weight(.semibold))
               .foregroundStyle(Theme.title)
               .fixedSize(horizontal: false, vertical: true)

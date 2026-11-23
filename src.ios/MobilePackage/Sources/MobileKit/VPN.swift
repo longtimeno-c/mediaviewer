@@ -111,7 +111,11 @@ public final class DemoVPN: VPNService, @unchecked Sendable {
   /// What the demo calls its server.
   public static let host = "Sample server (demo)"
 
+  /// Guards the state. Never held while a follower is told: a follower's cancel runs onTermination
+  /// (which takes `lock`) while holding its task's status lock, and a yield needs that lock too.
   private let lock = NSLock()
+  /// Held while followers are told, so they see the changes in the order they were made.
+  private let delivery = NSLock()
   private var snapshot = VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true)
   private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]
   /// Counts switch moves and removes, so a connect that slept through a later one gives up.
@@ -130,59 +134,88 @@ public final class DemoVPN: VPNService, @unchecked Sendable {
   public func updates() -> AsyncStream<VPNSnapshot> {
     AsyncStream { continuation in
       let id = UUID()
-      lock.withLock {
-        listeners[id] = continuation
-        continuation.yield(snapshot)
+      delivery.withLock {
+        let first = lock.withLock {
+          listeners[id] = continuation
+          return snapshot
+        }
+        continuation.yield(first)
       }
       continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
     }
   }
 
-  /// The demo uses no host or key, but text that isn't a VPN code is refused as the real one
-  /// refuses it, so the demo never suggests that anything works. Only the code's scheme is checked:
-  /// the one parser is the core's (serve::parse_relay_connect_code). The demo host stays.
+  /// The demo uses no host or key, but text that isn't a VPN code is refused, so the demo never
+  /// suggests that anything works. The code's shape is checked by the rules of the core's
+  /// serve::parse_relay_connect_code (`[mediaviewer://relay#|relay-tls#]host:port#KEY`), which stays
+  /// the one that reads codes. The demo host stays.
   public func connect(code: String) async throws {
     guard Self.looksLikeACode(code) else { throw VPNCodeError.notACode }
-    publish { $0.status = .off }
+    publish { s, _ in s.status = .off; return true }
   }
 
   static func looksLikeACode(_ text: String) -> Bool {
-    let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard t.hasPrefix("mediaviewer://relay"), let hash = t.firstIndex(of: "#") else { return false }
-    return t.index(after: hash) < t.endIndex
+    var t = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    for prefix in ["mediaviewer://relay#", "mediaviewer://relay-tls#"] where t.lowercased().hasPrefix(prefix) {
+      t = t.dropFirst(prefix.count)
+      break
+    }
+    let parts = t.split(separator: "#", omittingEmptySubsequences: false)
+    guard parts.count == 2 else { return false }
+    let address = parts[0], key = parts[1]
+    let visible = { (c: Character) in c.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value != 0x7f } }
+    guard (16...4096).contains(key.utf8.count), key.allSatisfy(visible),
+          !address.isEmpty, address.utf8.count <= 255, address.allSatisfy(visible),
+          let colon = address.lastIndex(of: ":"), colon > address.startIndex else { return false }
+    let host = address[..<colon], port = address[address.index(after: colon)...]
+    guard (1...5).contains(port.count), port.allSatisfy({ ("0"..."9").contains($0) }),
+          let number = Int(port), (1...65535).contains(number) else { return false }
+    // An IPv6 address needs its brackets.
+    if host.first == "[" { return host.count >= 3 && host.last == "]" }
+    return !host.contains(":")
   }
 
-  public func acceptConsent() async { publish { $0.consented = true } }
+  public func acceptConsent() async { publish { s, _ in s.consented = true; return true } }
 
   public func setOn(_ on: Bool) async {
-    let mine: Int? = lock.withLock {
-      if on, !snapshot.consented || snapshot.isOn { return nil }
-      if !on, !snapshot.isOn { return nil }
+    var mine: Int?
+    publish { s, generation in
+      if on, !s.consented || s.isOn { return false }
+      if !on, !s.isOn { return false }
       generation += 1
-      snapshot.status = on ? .connecting : .off
-      for continuation in listeners.values { continuation.yield(snapshot) }
-      return on ? generation : nil
+      s.status = on ? .connecting : .off
+      if on { mine = generation }
+      return true
     }
     guard let mine else { return }
     if connectingFor > .zero { try? await Task.sleep(for: connectingFor) }
     let since = now()
-    lock.withLock {
-      guard generation == mine, snapshot.status == .connecting else { return }
-      snapshot.status = .connected(since: since)
-      for continuation in listeners.values { continuation.yield(snapshot) }
+    publish { s, generation in
+      guard generation == mine, s.status == .connecting else { return false }
+      s.status = .connected(since: since)
+      return true
     }
   }
 
   /// Back to how the sample opened.
   public func remove() async {
-    lock.withLock { generation += 1 }
-    publish { $0 = VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true) }
+    publish { s, generation in
+      generation += 1
+      s = VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true)
+      return true
+    }
   }
 
-  private func publish(_ change: (inout VPNSnapshot) -> Void) {
-    lock.withLock {
-      change(&snapshot)
-      for continuation in listeners.values { continuation.yield(snapshot) }
+  /// `change` edits the snapshot and the generation under `lock` and says whether it changed
+  /// anything; the followers are told after `lock` is let go.
+  private func publish(_ change: (inout VPNSnapshot, inout Int) -> Bool) {
+    delivery.withLock {
+      let told: (VPNSnapshot, [AsyncStream<VPNSnapshot>.Continuation])? = lock.withLock {
+        guard change(&snapshot, &generation) else { return nil }
+        return (snapshot, Array(listeners.values))
+      }
+      guard let (value, list) = told else { return }
+      list.forEach { $0.yield(value) }
     }
   }
 }

@@ -825,6 +825,7 @@ final class FixtureVPN: VPNService, @unchecked Sendable {
   static let host = "home.example.net:51820"
   static let code = "mediaviewer://relay#home.example.net:51820#Zml4dHVyZS12cG4ta2V5LTEyMzQ1Njc4"
 
+  private let delivery = NSLock()
   private let lock = NSLock()
   private var snapshot: VPNSnapshot
   private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]
@@ -847,9 +848,13 @@ final class FixtureVPN: VPNService, @unchecked Sendable {
   func updates() -> AsyncStream<VPNSnapshot> {
     AsyncStream { continuation in
       let id = UUID()
-      lock.withLock {
-        listeners[id] = continuation
-        continuation.yield(snapshot)
+      // Told outside the lock and in order, as DemoVPN does: onTermination takes the lock.
+      delivery.withLock {
+        let first = lock.withLock {
+          listeners[id] = continuation
+          return snapshot
+        }
+        continuation.yield(first)
       }
       continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
     }
@@ -874,9 +879,12 @@ final class FixtureVPN: VPNService, @unchecked Sendable {
   func remove() async { publish { $0 = VPNSnapshot(status: .notSetUp) } }
 
   private func publish(_ change: (inout VPNSnapshot) -> Void) {
-    lock.withLock {
-      change(&snapshot)
-      for continuation in listeners.values { continuation.yield(snapshot) }
+    delivery.withLock {
+      let (value, list) = lock.withLock {
+        change(&snapshot)
+        return (snapshot, Array(listeners.values))
+      }
+      list.forEach { $0.yield(value) }
     }
   }
 }
