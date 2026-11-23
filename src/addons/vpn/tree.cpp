@@ -118,11 +118,12 @@ void tunnel_controls(writer& w, const view& v) {
   }
   if (!v.tunnel_note.empty()) text(w, "tunnel_problem", v.tunnel_note, "secondary");
   // Every app, not only those that follow the proxy (vpn.h).
-  if (v.all_traffic_available) {
-    toggle(w, "all_traffic", "All traffic (VPN)", v.all_traffic);
-    if (v.all_traffic && v.block_available) toggle(w, "block", "Block when the tunnel is down", v.block);
-  } else if (!v.all_traffic_note.empty()) {
-    text(w, "all_traffic_note", v.all_traffic_note, "caption");
+  if (v.all_traffic_available) toggle(w, "all_traffic", "All traffic (VPN)", v.all_traffic);
+  // Why it isn't offered here; or, with the switch, starting (the system may
+  // be asking the person) or why it didn't.
+  if (!v.all_traffic_note.empty()) text(w, "all_traffic_note", v.all_traffic_note, "caption");
+  if (v.all_traffic_available && v.all_traffic && v.block_available) {
+    toggle(w, "block", "Block when the tunnel is down", v.block);
   }
   if (v.mode == "vpn") {
     // The VPN carries everything: no proxy address, no system proxy.

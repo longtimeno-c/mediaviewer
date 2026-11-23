@@ -27,8 +27,10 @@
 #include <sodium.h>
 
 #include <chrono>
+#include <atomic>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 #include "wire/net.h"
 #include "addons/vpn/vpn.h"
@@ -36,8 +38,10 @@
 // The system extension's activation, answered on a queue of its own.
 @interface MVTunnelActivation : NSObject <OSSystemExtensionRequestDelegate>
 @property(nonatomic) dispatch_semaphore_t done;
-@property(nonatomic) BOOL ok;
-@property(nonatomic) BOOL needsApproval;
+@property(atomic) BOOL finished;
+@property(atomic) BOOL ok;
+@property(atomic) BOOL needsApproval;
+@property(atomic) BOOL needsReboot;
 @end
 
 @implementation MVTunnelActivation
@@ -50,11 +54,15 @@
   self.needsApproval = YES;  // System Settings asks; the result comes later
 }
 - (void)request:(OSSystemExtensionRequest*)request didFinishWithResult:(OSSystemExtensionRequestResult)result {
-  self.ok = YES;
+  // Replacing a running extension may only finish at the next restart.
+  self.needsReboot = result == OSSystemExtensionRequestWillCompleteAfterReboot;
+  self.ok = !self.needsReboot;
+  self.finished = YES;
   dispatch_semaphore_signal(self.done);
 }
 - (void)request:(OSSystemExtensionRequest*)request didFailWithError:(NSError*)error {
   self.ok = NO;
+  self.finished = YES;
   dispatch_semaphore_signal(self.done);
 }
 @end
@@ -66,6 +74,7 @@ namespace {
 constexpr int kActivateMs = 120000;  // the person approves in System Settings
 constexpr int kSystemMs = 15000;     // the preferences, the tunnel's start
 constexpr int kProviderMs = 20000;   // the provider connects back
+constexpr int kStopMs = 5000;        // the tunnel's session goes down
 
 NSString* extension_id() {
   NSString* app = NSBundle.mainBundle.bundleIdentifier ?: @"io.github.longtimeno-c.mediaviewer";
@@ -92,8 +101,18 @@ bool signed_for_packet_tunnel(NSString* path) {
   return [ne containsObject:@"packet-tunnel-provider-systemextension"];
 }
 
-bool wait(dispatch_semaphore_t s, int ms) {
-  return dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(ms) * NSEC_PER_MSEC)) == 0;
+// Waits up to `ms` for `s`, in short steps, giving up at once when
+// `cancelled` (quitting: the control thread must not hold the app open for
+// minutes while System Settings waits for the person).
+bool wait(dispatch_semaphore_t s, int ms, const std::atomic<bool>& cancelled) {
+  constexpr int kStepMs = 100;
+  for (int left = ms; left > 0 && !cancelled.load(); left -= kStepMs) {
+    const int step = left < kStepMs ? left : kStepMs;
+    if (dispatch_semaphore_wait(s, dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(step) * NSEC_PER_MSEC)) == 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::string hex(const std::uint8_t* b, std::size_t n) {
@@ -124,8 +143,19 @@ class mac_port final : public os_port {
     return {};
   }
 
+  // Block when the tunnel is down would be includeAllNetworks, which holds
+  // back every connection but the provider's own: the add-on's link to the
+  // relay leaves from the app, not the provider, so with it the Mac would be
+  // cut off while "connected". Not offered until that is tried on a Mac.
+  std::string block_unavailable() override {
+    return "Block when the tunnel is down isn't offered on the Mac yet.";
+  }
+
+  void cancel() override { cancelled_.store(true); }
+
   result<std::unique_ptr<device>> start(const settings& s) override {
     std::lock_guard lock(m_);
+    if (cancelled_.load()) return err(status::cancelled);
     if (!activated_) {
       if (const status a = activate(); a != status::ok) return err(a);
       activated_ = true;
@@ -184,13 +214,14 @@ class mac_port final : public os_port {
       failed = e;
       dispatch_semaphore_signal(loaded);
     }];
-    if (!wait(loaded, kSystemMs) || failed) return err(status::io);
+    if (!wait(loaded, kSystemMs, cancelled_) || failed) return err(status::io);
     if (!manager) manager = [[NETunnelProviderManager alloc] init];
     NETunnelProviderProtocol* proto = [[NETunnelProviderProtocol alloc] init];
     proto.providerBundleIdentifier = extension_id();
     proto.serverAddress = s.relay_name.empty() ? @"MediaViewer VPN" : @(s.relay_name.c_str());
     proto.providerConfiguration = config;
-    proto.includeAllNetworks = s.kill_switch;  // Block when the tunnel is down
+    proto.includeAllNetworks = NO;  // block_unavailable(): never the kill switch here yet
+    (void)s.kill_switch;
     proto.excludeLocalNetworks = YES;
     manager.protocolConfiguration = proto;
     manager.localizedDescription = @"MediaViewer VPN";
@@ -200,23 +231,35 @@ class mac_port final : public os_port {
       failed = e;
       dispatch_semaphore_signal(saved);
     }];
-    if (!wait(saved, kActivateMs)) return err(status::timeout);
+    if (!wait(saved, kActivateMs, cancelled_)) return err(cancelled_.load() ? status::cancelled : status::timeout);
     if (failed) return err(failed.code == NEVPNErrorConfigurationReadWriteFailed ? status::permission_denied : status::io);
+    // Saved and enabled: from here every way out takes it down and disables it,
+    // so a dead configuration is never left for System Settings to connect.
+    manager_ = manager;
     dispatch_semaphore_t reloaded = dispatch_semaphore_create(0);
     [manager loadFromPreferencesWithCompletionHandler:^(NSError* e) {
       failed = e;
       dispatch_semaphore_signal(reloaded);
     }];
-    if (!wait(reloaded, kSystemMs) || failed) return err(status::io);
+    if (!wait(reloaded, kSystemMs, cancelled_) || failed) {
+      stop_locked();
+      return err(status::io);
+    }
     NSError* started = nil;
-    if (![manager.connection startVPNTunnelAndReturnError:&started]) return err(status::io);
-    manager_ = manager;
+    if (![manager.connection startVPNTunnelAndReturnError:&started]) {
+      stop_locked();
+      return err(status::io);
+    }
 
     // The provider connects back with the token, then the packets flow.
-    auto c = (*listener)->accept(kProviderMs);
+    decltype((*listener)->accept(0)) c = err(status::timeout);
+    for (int left = kProviderMs; left > 0 && !cancelled_.load(); left -= 250) {
+      c = (*listener)->accept(250);
+      if (c || c.error() != status::timeout) break;
+    }
     if (!c) {
       stop_locked();
-      return err(c.error());
+      return err(cancelled_.load() ? status::cancelled : c.error());
     }
     std::string said(token.size() + 1, '\0');
     if (!read_exact(**c, std::span(reinterpret_cast<std::uint8_t*>(said.data()), said.size()), kSystemMs) ||
@@ -233,26 +276,57 @@ class mac_port final : public os_port {
   }
 
  private:
+  // The system extension, approved (or not) by the person. A request whose
+  // answer did not come in time stays: approving it a moment later is still
+  // seen by the next start, which waits on it instead of asking again.
   status activate() {
-    MVTunnelActivation* d = [[MVTunnelActivation alloc] init];
-    d.done = dispatch_semaphore_create(0);
-    OSSystemExtensionRequest* r =
-        [OSSystemExtensionRequest activationRequestForExtension:extension_id()
-                                                          queue:dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)];
-    r.delegate = d;
-    [OSSystemExtensionManager.sharedManager submitRequest:r];
-    if (!wait(d.done, kActivateMs)) return d.needsApproval ? status::permission_denied : status::timeout;
+    MVTunnelActivation* d = pending_;
+    if (!d) {
+      d = [[MVTunnelActivation alloc] init];
+      d.done = dispatch_semaphore_create(0);
+      OSSystemExtensionRequest* r =
+          [OSSystemExtensionRequest activationRequestForExtension:extension_id()
+                                                            queue:dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)];
+      r.delegate = d;
+      pending_ = d;
+      [OSSystemExtensionManager.sharedManager submitRequest:r];
+    }
+    if (!d.finished && !wait(d.done, kActivateMs, cancelled_)) {
+      if (cancelled_.load()) return status::cancelled;
+      return d.needsApproval ? status::permission_denied : status::timeout;
+    }
+    pending_ = nil;  // answered: a later start asks afresh if it has to
+    if (d.needsReboot) return status::busy;  // finishes at the next restart
     return d.ok ? status::ok : status::permission_denied;
   }
 
+  // Takes the tunnel down, waits (briefly) until it is, and disables the saved
+  // configuration: a restart then never races the old session, and nothing
+  // stays enabled for System Settings to connect to a closed port.
   void stop_locked() {
-    if (manager_) [manager_.connection stopVPNTunnel];
+    NETunnelProviderManager* m = manager_;
     manager_ = nil;
+    if (!m) return;
+    [m.connection stopVPNTunnel];
+    for (int left = kStopMs; left > 0; left -= 100) {
+      const NEVPNStatus st = m.connection.status;
+      if (st == NEVPNStatusDisconnected || st == NEVPNStatusInvalid) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    m.enabled = NO;
+    dispatch_semaphore_t saved = dispatch_semaphore_create(0);
+    [m saveToPreferencesWithCompletionHandler:^(NSError*) {
+      dispatch_semaphore_signal(saved);
+    }];
+    const std::atomic<bool> never{false};  // even quitting: a disabled configuration is worth the wait
+    (void)wait(saved, kSystemMs, never);
   }
 
   std::mutex m_;
-  bool activated_ = false;                // under m_
-  NETunnelProviderManager* manager_ = nil;  // under m_
+  std::atomic<bool> cancelled_{false};
+  bool activated_ = false;                   // under m_
+  MVTunnelActivation* pending_ = nil;        // under m_: an activation still waiting for its answer
+  NETunnelProviderManager* manager_ = nil;   // under m_
 };
 
 }  // namespace

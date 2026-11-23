@@ -77,15 +77,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       }
       let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
       self.link = c
+      // Answered once. Nobody listening (a configuration left from an
+      // earlier run, connected from System Settings) is .waiting, not
+      // .failed: give up then too, rather than say Connecting for ever.
+      var answered = false
+      let answer: (Error?) -> Void = { e in
+        guard !answered else { return }
+        answered = true
+        completionHandler(e)
+      }
       c.stateUpdateHandler = { state in
         switch state {
         case .ready:
           c.send(content: Data((token + "\n").utf8), completion: .contentProcessed { _ in })
           self.readFromApp(c)
           self.readFromInterface(c)
-          completionHandler(nil)
-        case .failed(let e):
-          completionHandler(e)
+          answer(nil)
+        case .failed(let e), .waiting(let e):
+          c.cancel()
+          answer(e)
         default:
           break
         }
