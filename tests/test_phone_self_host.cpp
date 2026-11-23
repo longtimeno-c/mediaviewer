@@ -207,7 +207,7 @@ TEST_CASE("phone self host: a folder shared already and ticked as backup is made
   CHECK(plan[0].path == "/c/New");
   CHECK(plan[0].label == "New");
   CHECK(plan[0].backup);
-  CHECK(plan[1].path == "/b/Phone backup/");
+  CHECK(plan[1].path == "/b/Phone backup");  // serve.json's spelling, which the program matches with its drive away
   CHECK(plan[1].label == "Backups");
   CHECK(plan[1].backup);
 }

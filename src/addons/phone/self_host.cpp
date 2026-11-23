@@ -612,7 +612,7 @@ std::vector<folder_choice> share_plan(std::span<const folder_choice> chosen, std
     if (s == shared.end()) {
       fresh.push_back(f);
     } else if (f.backup && !s->backup) {
-      again.push_back({f.path, s->label, true});
+      again.push_back({s->path, s->label, true});  // as serve.json has it: matched even with its drive away
     }
   }
   std::vector<std::string> taken;

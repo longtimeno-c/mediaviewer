@@ -77,8 +77,9 @@ class target {
   [[nodiscard]] virtual result<std::string> read_ledger(const std::string& root, const std::string& id) = 0;
   // This phone's folder id (serve::device_folder_id).
   [[nodiscard]] virtual std::string device_id() const = 0;
-  // Whether this phone is limited to some folders (a scoped grant): the service names only
-  // those, so with none of them a backup folder, folders() is empty though the server may have one.
+  // Whether this phone is limited to some folders (a scoped grant), as of the last folders()
+  // answer: the service names only those, so with none of them a backup folder, folders() is
+  // empty though the server may have one.
   [[nodiscard]] virtual bool limited_to_some_folders() const { return false; }
 };
 

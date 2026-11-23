@@ -450,14 +450,15 @@ TEST_CASE("backup: the folders offered follow the server while the phone is conn
     REQUIRE(folders);
     CHECK(folders->empty());
     CHECK(target->limited_to_some_folders());
-    // A run into the backup folder it chose before it was limited: "not allowed", never "can't reach".
+    // A run into the backup folder it chose before it was limited: "choose another" (whose list
+    // then says none may be used), never "can't reach".
     temp_root phone;
     const fs::path scratch = phone.root / "scratch";
     fs::create_directories(scratch);
     camera_roll roll(phone.root / "roll", scratch, 2, 7);
     auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
     REQUIRE(ledger);
-    CHECK(run_once(*target, roll, **ledger, scratch, 0).now == bk::state::not_allowed);
+    CHECK(run_once(*target, roll, **ledger, scratch, 0).now == bk::state::no_folder);
     CHECK(files_under(n.backup).empty());
   }
   SECTION("a phone whose pairing ended is never told \"not allowed\"") {

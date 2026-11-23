@@ -249,7 +249,12 @@ TEST_CASE("driftwire host: sharing and unsharing folders", "[host]") {
     REQUIRE(cli::host_files::share(l, utf8(s / "Card"), "Card", false, 0, true, as).empty());
     fs::remove_all(s / "Card");  // the drive unplugged
     CHECK_FALSE(cli::host_files::share(l, utf8(s / "Gone"), "", true, 0, true, as).empty());
+#if defined(_WIN32) || defined(__APPLE__)
+    // Matched in one case, as these file systems do, with the drive away.
+    CHECK(cli::host_files::share(l, utf8(s / "CARD"), "Other name", true, 0, true, as).empty());
+#else
     CHECK(cli::host_files::share(l, utf8(s / "Card"), "Other name", true, 0, true, as).empty());
+#endif
     CHECK(as == "Card");  // its label stays
     const auto back = cli::host_files::config(l, true);
     REQUIRE(back);

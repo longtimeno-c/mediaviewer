@@ -158,6 +158,22 @@ fs::path canonical_or_normal(const std::string& p) {
   return c;
 }
 
+// Whether two paths name one folder as the file system would match them: in one case on Windows
+// and the Mac, and whether or not the drive is there now (then by their spelling alone).
+bool same_folder(const std::string& a, const std::string& b) {
+  const auto key = [](const std::string& p) {
+    std::string k = to_utf8(canonical_or_normal(p));
+    while (k.size() > 1 && (k.back() == '/' || k.back() == '\\') && !(k.size() == 3 && k[1] == ':')) k.pop_back();
+#if defined(_WIN32) || defined(__APPLE__)
+    for (char& ch : k) {
+      if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+#endif
+    return k;
+  };
+  return key(a) == key(b);
+}
+
 // `inner` is `outer` or below it.
 bool within(const fs::path& inner, const fs::path& outer) {
   auto i = inner.begin();
@@ -374,12 +390,11 @@ std::string default_label(const std::string& abs_path) {
 
 std::string share_folder(serve::config& c, const std::string& abs_path, const std::string& label, bool backup,
                          const volume_facts& facts, const std::string& id, const std::string& host_folder) {
-  const fs::path mine = canonical_or_normal(abs_path);
   if (backup) {
     // A folder shared already, asked again with --backup: it becomes a backup folder, as it is
     // (its label, id and files stay). One that is one already keeps its limit.
     for (auto& r : c.roots) {
-      if (canonical_or_normal(r.path) != mine) continue;
+      if (!same_folder(r.path, abs_path)) continue;
       if (r.label == serve::kCatalogueLabel) return "the Catalogue is never a backup folder.";
       if (!r.backup) {
         r.backup = true;
@@ -400,7 +415,7 @@ std::string share_folder(serve::config& c, const std::string& abs_path, const st
   }
   for (const auto& r : c.roots) {
     if (same_label(r.label, label)) return "a folder is shared as \"" + r.label + "\" already (give another --label).";
-    if (canonical_or_normal(r.path) == mine) return "that folder is shared already, as \"" + r.label + "\".";
+    if (same_folder(r.path, abs_path)) return "that folder is shared already, as \"" + r.label + "\".";
   }
   serve::root_config rc;
   rc.id = id;
@@ -1087,7 +1102,7 @@ std::string share_path(const host_layout& l, const std::string& typed, const std
   if (!cfg) return "serve.json is not valid; not changing it.";
   // A folder shared already, made a backup folder, may be on a drive that is not there now.
   const bool shared = std::any_of(cfg->roots.begin(), cfg->roots.end(), [&](const serve::root_config& r) {
-    return canonical_or_normal(r.path) == canonical_or_normal(path);
+    return same_folder(r.path, path);
   });
   std::error_code ec;
   if (!(backup && shared) && !fs::is_directory(to_path(path), ec)) return "not a folder: " + typed;
@@ -1096,7 +1111,7 @@ std::string share_path(const host_layout& l, const std::string& typed, const std
   if (!why.empty()) return why;
   // The folder as shared now: new, or one shared already that --backup made a backup folder.
   for (auto& r : cfg->roots) {
-    if (canonical_or_normal(r.path) != canonical_or_normal(path)) continue;
+    if (!same_folder(r.path, path)) continue;
     if (backup && limit != 0) r.limit = limit;
     label = r.label;
   }
