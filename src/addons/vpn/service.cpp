@@ -72,6 +72,7 @@ service::service(service_host& host, options o) : host_(host), opts_(std::move(o
   if (!opts_.data_dir.empty()) {
     proxy_record_ = sysproxy::load_record(io::join_path(opts_.data_dir, kProxyRecordFile));
   }
+  if (sysproxy_) proxy_thread_ = std::thread([this] { proxy_loop(); });
   control_thread_ = std::thread([this] { control_loop(); });
   if (v_.tunnel || proxy_record_) request(true);
 }
@@ -83,6 +84,14 @@ service::~service() {
     control_cv_.notify_all();
   }
   if (control_thread_.joinable()) control_thread_.join();
+  {
+    // A change in progress finishes (a dialog showing waits for its answer).
+    std::lock_guard lock(proxy_m_);
+    proxy_stop_ = true;
+    proxy_want_.reset();
+    proxy_cv_.notify_all();
+  }
+  if (proxy_thread_.joinable()) proxy_thread_.join();
   // The proxy or the VPN (the control thread has stopped: nothing starts
   // them again). Destroyed outside tunnel_m_: their threads take it to report.
   std::unique_ptr<tunnel::proxy> p;
@@ -98,7 +107,7 @@ service::~service() {
     if (vpn_port_) vpn_port_->stop();
   }
   // Quitting: the computer's proxy setting goes back to what it was.
-  sync_system_proxy(0, false);
+  apply_system_proxy(0, false);
   if (keep_shown_) (void)host_.keep_alive(false, {});
   bool save = false;
   {
@@ -108,6 +117,7 @@ service::~service() {
   if (save) save_now();  // a change the control thread had not written yet
   std::lock_guard lock(m_);
   wipe(typed_code_);
+  wipe(typed_server_);
   wipe(v_.server);
   wipe(v_.host_code);
 }
@@ -367,7 +377,7 @@ void service::settings_opened() {
     phone_wanted_ = true;
     control_cv_.notify_all();
   }
-  post_throttled();
+  post();  // the page now, never waiting on the control thread
 }
 
 void service::settings_closed() {
@@ -377,6 +387,8 @@ void service::settings_closed() {
     v_.connect_open = false;
     v_.connect_note.clear();
     wipe(typed_code_);
+    wipe(typed_server_);
+    v_.server_editing = false;
     code = !v_.host_code.empty();
     wipe(v_.host_code);
   }
@@ -422,9 +434,10 @@ void service::sync_tunnel() {
   }
   if (drop) {
     if (const auto p = drop->port()) port = p;  // the next one takes the same port, once this has let go
-    // The system setting first: apps stop asking for the script before
-    // the port that serves it closes (the script's DIRECT covers the gap).
-    if (!want) sync_system_proxy(0, false);
+    // The system setting first, on the proxy thread: apps stop asking for the
+    // script about when the port that serves it closes (the script's DIRECT
+    // covers the gap).
+    if (!want) want_system_proxy(0, false);
     drop.reset();  // its streams close and its threads end, on this thread
   }
   bool running = false;
@@ -436,7 +449,7 @@ void service::sync_tunnel() {
   if (want && !running) {
     std::string why;
     if (relay.empty()) {
-      note = "Type your VPN server first, or paste a VPN code with Connect to a VPN host\xE2\x80\xA6.";
+      note = "Set your VPN server first: type it, or paste a VPN code with Connect to a VPN host\xE2\x80\xA6";
     } else if (!relay_server_of(relay, why)) {
       note = why;
     } else {
@@ -491,7 +504,7 @@ void service::sync_tunnel() {
     std::lock_guard lock(m_);
     all_apps = v_.all_apps;
   }
-  sync_system_proxy(live, want && all_apps && live != 0);
+  want_system_proxy(live, want && all_apps && live != 0);
   tunnel_changed();
 }
 
@@ -505,7 +518,28 @@ void service::write_proxy_record() {
   }
 }
 
-void service::sync_system_proxy(std::uint16_t port, bool want) {
+void service::want_system_proxy(std::uint16_t port, bool want) {
+  if (!sysproxy_) return;  // no port (the tests without a stand-in, an offline load): nothing to touch
+  std::lock_guard lock(proxy_m_);
+  proxy_want_ = std::make_pair(port, want);
+  proxy_cv_.notify_all();
+}
+
+void service::proxy_loop() {
+  std::unique_lock lock(proxy_m_);
+  for (;;) {
+    proxy_cv_.wait(lock, [&] { return proxy_stop_ || proxy_want_.has_value(); });
+    if (proxy_stop_) return;
+    const auto [port, want] = *proxy_want_;
+    proxy_want_.reset();
+    lock.unlock();
+    apply_system_proxy(port, want);
+    post();  // what came of it, at once: not through the control thread
+    lock.lock();
+  }
+}
+
+void service::apply_system_proxy(std::uint16_t port, bool want) {
   const std::string url = want && port != 0 ? tunnel::pac_url(port) : std::string();
   std::string note;
   bool ours = false;
@@ -516,12 +550,26 @@ void service::sync_system_proxy(std::uint16_t port, bool want) {
   } else {
     // What is set and no longer wanted (off, another port, a crash's leftover) goes back first.
     if (proxy_record_ && proxy_record_->pac_url != url) {
-      if (sysproxy_->restore(proxy_record_->saved, proxy_record_->pac_url)) {
+      {
+        std::lock_guard lock(m_);
+        v_.system_asking = "restore";
+      }
+      if (!stopping_.load()) post();
+      const bool back = sysproxy_->restore(proxy_record_->saved, proxy_record_->pac_url);
+      {
+        std::lock_guard lock(m_);
+        v_.system_asking.clear();
+      }
+      if (back) {
         proxy_record_.reset();
         write_proxy_record();
         host_.log(2, "vpn: system proxy restored");
       } else {
-        note = "This computer's proxy setting could not be put back yet: it is tried again next time.";
+        // Declined (or it failed): said plainly, with how to undo it by hand.
+        note = "This computer's proxy setting still points at the Tunnel: putting it back was not allowed. Apps "
+               "that follow it go direct while the Tunnel is off. It is put back the next time you allow it (turn "
+               "Use for all apps off, or start MediaViewer again); or turn off the automatic proxy in this "
+               "computer's network settings.";
         host_.log(1, "vpn: system proxy not restored");
       }
     }
@@ -529,7 +577,17 @@ void service::sync_system_proxy(std::uint16_t port, bool want) {
     if (!url.empty() && !proxy_record_ && url == proxy_gave_up_for_) {
       note = proxy_gave_up_note_;
     } else if (!url.empty() && !proxy_record_) {
+      // The OS may ask the person now (a Mac's administrator dialog): say so while it does.
+      {
+        std::lock_guard lock(m_);
+        v_.system_asking = "set";
+      }
+      post();
       auto saved = sysproxy_->set(url);
+      {
+        std::lock_guard lock(m_);
+        v_.system_asking.clear();
+      }
       if (saved) {
         proxy_record_ = sysproxy::record{url, *saved};
         write_proxy_record();
@@ -674,7 +732,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     }
     if (retry_proxy) proxy_retry_.store(true);
     request(reconcile, true);
-    post_throttled();
+    post();  // at once: the page shows what the click did
   };
   // The switches: the page's and the menu's rows (the same ids) come here.
   if (node == "tunnel" && kind == kChange && is_bool) return set_flag(&view::tunnel, true, true);
@@ -682,17 +740,51 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
   if (node == "block" && kind == kChange && is_bool) return set_flag(&view::block, true);
   if (node == "tls" && kind == kChange && is_bool) return set_flag(&view::tls, true);
   if (node == "all_apps" && kind == kChange && is_bool) return set_flag(&view::all_apps, true, true);
-  if (node == "server" && (kind == kChange || kind == kSubmit) && text) {
+  // Your VPN server: a secure field (it holds the key), kept here as typed
+  // until Return or Done; then the Tunnel follows it. Change server… opens it
+  // again, Remove clears it (and its key).
+  const auto set_server = [&](std::string field) {
     {
       std::lock_guard lock(m_);
       wipe(v_.server);
-      v_.server = *text;
-      v_.server_shown = tunnel::relay_shown(*text);
+      v_.server = std::move(field);
+      v_.server_shown = tunnel::relay_shown(v_.server);
+      v_.server_editing = false;
+      wipe(typed_server_);
     }
-    request(true, true);  // the Tunnel follows the field
-    post_throttled();
+    request(true, true);
+    post();  // at once: the page shows what the click did
+  };
+  if (node == "server" && kind == kChange && text) {
+    std::lock_guard lock(m_);
+    wipe(typed_server_);
+    typed_server_ = *text;
     return;
   }
+  if (node == "server" && kind == kSubmit && text) return set_server(*text);
+  if (node == "server_done" && kind == kClick) {
+    std::string typed;
+    {
+      std::lock_guard lock(m_);
+      typed = std::move(typed_server_);
+      typed_server_.clear();
+      if (typed.empty()) {  // nothing typed: the server stays as it was
+        v_.server_editing = false;
+      }
+    }
+    if (!typed.empty()) return set_server(std::move(typed));
+    post();
+    return;
+  }
+  if (node == "server_change" && kind == kClick) {
+    {
+      std::lock_guard lock(m_);
+      v_.server_editing = true;
+    }
+    post();
+    return;
+  }
+  if (node == "server_clear" && kind == kClick) return set_server({});
   // Connect to a VPN host: the code from the server's VPN page, in one step.
   if (node == "connect_open" && kind == kClick) {
     {
@@ -700,7 +792,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
       v_.connect_open = true;
       v_.connect_note.clear();
     }
-    post_throttled();
+    post();  // at once: the page shows what the click did
     return;
   }
   if (node == "connect_cancel" && kind == kClick) {
@@ -709,7 +801,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
       v_.connect_open = false;
       wipe(typed_code_);
     }
-    post_throttled();
+    post();  // at once: the page shows what the click did
     return;
   }
   if (node == "connect_code" && kind == kChange && text) {
@@ -756,7 +848,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
       proxy_retry_.store(true);
       request(true, true);
     }
-    post_throttled();
+    post();  // at once: the page shows what the click did
     return;
   }
   // Host: Phone access does it (its link owns this computer's server and the NAS).
@@ -771,7 +863,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
       phone_actions_.push_back({"vpn_set", value->b, {}});
       control_cv_.notify_all();
     }
-    post_throttled();
+    post();  // at once: the page shows what the click did
     return;
   }
   if ((node == "host_code" || node == "host_code_hide") && kind == kClick) {
