@@ -14,7 +14,11 @@ import NetworkExtension
 import Security
 
 public final class LinkVPN: VPNService, @unchecked Sendable {
+  /// Never held while a follower is told: a follower's cancel runs onTermination (which takes it)
+  /// while holding its task's status lock, and a yield needs that lock too.
   private let lock = NSLock()
+  /// Held while followers are told, so they see the changes in the order they were made.
+  private let delivery = NSLock()
   private var snapshot: VPNSnapshot                                    // under lock
   private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]  // under lock
   private var manager: NETunnelProviderManager?                        // under lock
@@ -68,9 +72,12 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   public func updates() -> AsyncStream<VPNSnapshot> {
     AsyncStream { continuation in
       let id = UUID()
-      lock.withLock {
-        listeners[id] = continuation
-        continuation.yield(snapshot)
+      delivery.withLock {
+        let first = lock.withLock {
+          listeners[id] = continuation
+          return snapshot
+        }
+        continuation.yield(first)
       }
       continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
     }
@@ -245,9 +252,12 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   }
 
   private func publish(_ change: (inout VPNSnapshot) -> Void) {
-    lock.withLock {
-      change(&snapshot)
-      for continuation in listeners.values { continuation.yield(snapshot) }
+    delivery.withLock {
+      let (value, list) = lock.withLock {
+        change(&snapshot)
+        return (snapshot, Array(listeners.values))
+      }
+      list.forEach { $0.yield(value) }
     }
   }
 }
