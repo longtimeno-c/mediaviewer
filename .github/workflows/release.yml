@@ -87,6 +87,8 @@ jobs:
           # is given the key, and only driftwire-homebrew the token.
           DRIFTWIRE_REPO_KEY_SET: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY != '' && '1' || '' }}
           HOMEBREW_TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && '1' || '' }}
+          # Lists the published releases: a version already used fails here, not after the builds.
+          GH_TOKEN: ${{ github.token }}
         run: python3 tools/package/github-release.py prepare
 
   windows:
