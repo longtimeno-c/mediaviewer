@@ -103,6 +103,11 @@ class over_link final : public target {
     for (const auto& r : *roots) {
       if (r.backup) out.push_back({r.id, r.label, r.writable});
     }
+    // A phone limited to some folders is told only those: none of them a backup folder is
+    // "not allowed", never "the server has none".
+    std::int64_t expires = 0;
+    bool scoped = false;
+    if (out.empty() && l_.grant(expires, scoped) == 1 && scoped) return err(status::permission_denied);
     return out;
   }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }

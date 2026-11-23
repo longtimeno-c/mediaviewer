@@ -396,6 +396,77 @@ TEST_CASE("backup: the storage limit, a folder this phone may not write, and a d
   }
 }
 
+TEST_CASE("backup: the folders offered follow the server while the phone is connected", "[mobile-link]") {
+  const key32 device = random_key();
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), device.data());
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const auto ids = [](const std::vector<bk::folder>& fs) {
+    std::vector<std::string> out;
+    for (const auto& f : fs) out.push_back(f.id + (f.writable ? "+w" : ""));
+    return out;
+  };
+  const auto cfg_with = [&](bool backup) {
+    serve::config c;
+    c.name = "NAS";
+    for (const auto& r : n.srv->roots()) c.roots.push_back(r);
+    for (auto& r : c.roots) {
+      if (r.id == kBackupRoot) r.backup = backup;
+    }
+    return c;
+  };
+
+  SECTION("a folder made a backup folder after the phone connected") {
+    n.pair(device);
+    REQUIRE(n.srv->replace_config(cfg_with(false)));
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    auto before = target->folders();
+    REQUIRE(before);
+    CHECK(before->empty());
+    REQUIRE(n.srv->replace_config(cfg_with(true)));
+    auto after = target->folders();
+    REQUIRE(after);
+    CHECK(ids(*after) == std::vector<std::string>{kBackupRoot + "+w"});
+  }
+  SECTION("a phone limited to other folders, with backup on") {
+    serve::grants::grant g;
+    g.name = "Phone";
+    g.key = pub;
+    g.roots = std::vector<std::string>{kSharedRoot};
+    g.backup = true;
+    REQUIRE(serve::grants::save(*n.store, {g}));
+    n.srv->recheck_devices();
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    // The service tells it only its own folders: "not allowed", never "the server has none".
+    auto folders = target->folders();
+    REQUIRE_FALSE(folders);
+    CHECK(folders.error() == mv::status::permission_denied);
+  }
+  SECTION("a phone the owner has not let back up sees the folder, not writable") {
+    serve::grants::grant g;
+    g.name = "Phone";
+    g.key = pub;
+    g.backup = false;
+    REQUIRE(serve::grants::save(*n.store, {g}));
+    n.srv->recheck_devices();
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    auto folders = target->folders();
+    REQUIRE(folders);
+    CHECK(ids(*folders) == std::vector<std::string>{kBackupRoot});
+  }
+}
+
 TEST_CASE("backup: the sample library's folder on the phone runs the same backup and sends nothing", "[mobile-link]") {
   temp_root phone;
   const fs::path scratch = phone.root / "scratch";

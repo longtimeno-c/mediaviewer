@@ -116,6 +116,19 @@ public enum FailureCopy {
   public static let backupFolderGone = "That backup folder isn't on your server any more. Choose another."
   public static let backupNoFolders =
     "Your server has no backup folder yet. Add one in MediaViewer on your computer, under Phone access."
+  public static let backupNoFolderAllowed =
+    "Your server doesn't let this phone back up into any of its folders. The owner can allow it in MediaViewer on their computer, under Phone access."
+  public static let backupAskingForFolders = "Asking your server for its backup folders…"
+
+  /// What the folder chooser says above its list: nil while it is still asking (`folders` nil,
+  /// no failure), so an answer not yet in is never shown as "no backup folder".
+  public static func backupChoiceLine(folders: [BackupFolder]?, failure: BackupState?, sample: Bool) -> String? {
+    if let failure {
+      return failure == .folderNotAllowed ? backupNoFolderAllowed : backupLine(for: failure, sample: sample)
+    }
+    guard let folders else { return nil }
+    return folders.isEmpty ? backupNoFolders : nil
+  }
   public static let backupNoPhotos = "MediaViewer isn't allowed to read Photos. You can change that in Settings."
   public static let backupLimited = "Only the photos you chose for MediaViewer are backed up."
   /// Owner's call B8 (2026-11-12).

@@ -55,7 +55,8 @@ struct BackupScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .task { await loadFolders() }
     .sheet(isPresented: $choosing) {
-      FolderChoice(folders: folders ?? [], failure: foldersFailure, sample: backup.isSample, current: backup.folder, layout: backup.layout) { folder, layout in
+      FolderChoice(folders: folders, failure: foldersFailure, sample: backup.isSample, current: backup.folder, layout: backup.layout,
+                   reload: { await loadFolders() }) { folder, layout in
         Task { await service.choose(folder: folder, layout: layout) }
       }
       .environment(model)
@@ -68,8 +69,10 @@ struct BackupScreen: View {
       folders = try await service.folders()
       foldersFailure = nil
     } catch let state as BackupState {
+      folders = nil
       foldersFailure = state
     } catch {
+      folders = nil
       foldersFailure = .unreachable
     }
   }
@@ -143,6 +146,10 @@ struct BackupScreen: View {
   private var settingsCard: some View {
     InfoCard {
       Button {
+        // Asked again each time, and shown as asking until the answer is in: the owner may have
+        // added the folder or let this phone back up since the last answer.
+        folders = nil
+        foldersFailure = nil
         Task { await loadFolders() }
         choosing = true
       } label: {
@@ -206,11 +213,13 @@ struct BackupScreen: View {
 
 /// The folder, from the service's backup folders, and how files are filed in it.
 private struct FolderChoice: View {
-  let folders: [BackupFolder]
+  /// nil while the service is still being asked.
+  let folders: [BackupFolder]?
   let failure: BackupState?
   let sample: Bool
   let current: BackupFolder?
   let layout: BackupLayout
+  let reload: () async -> Void
   let chosen: (BackupFolder, BackupLayout) -> Void
   @Environment(\.dismiss) private var dismiss
   @State private var folder: BackupFolder?
@@ -220,12 +229,18 @@ private struct FolderChoice: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
-          if let failure, let words = FailureCopy.backupLine(for: failure, sample: sample) {
+          if let words = FailureCopy.backupChoiceLine(folders: folders, failure: failure, sample: sample) {
             Text(words).font(.subheadline).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
-          } else if folders.isEmpty {
-            Text(FailureCopy.backupNoFolders).font(.subheadline).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("backup.choose.line")
+          } else if folders == nil {
+            HStack(spacing: 8) {
+              ProgressView()
+              Text(FailureCopy.backupAskingForFolders).font(.subheadline).foregroundStyle(Theme.body)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("backup.choose.asking")
           }
-          ForEach(folders) { f in
+          ForEach(list) { f in
             Button {
               folder = f
             } label: {
@@ -247,7 +262,7 @@ private struct FolderChoice: View {
             .disabled(!f.writable)
             .accessibilityIdentifier("backup.folder.\(f.label)")
           }
-          if !folders.isEmpty {
+          if !list.isEmpty {
             Text("Folders").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.title).padding(.top, 8)
             ForEach(BackupLayout.allCases, id: \.self) { l in
               Button {
@@ -273,6 +288,7 @@ private struct FolderChoice: View {
         }
         .padding(Theme.inset)
       }
+      .refreshable { await reload() }
       .background(Theme.ground)
       .navigationTitle("Back up to")
       .navigationBarTitleDisplayMode(.inline)
@@ -288,13 +304,20 @@ private struct FolderChoice: View {
         }
       }
       .onChange(of: folders) { _, _ in
-        if folder == nil { folder = current.flatMap { c in folders.first { $0.id == c.id } } ?? (folders.count == 1 && folders[0].writable ? folders[0] : nil) }
+        if folder == nil { folder = preselected }
       }
       .onAppear {
-        folder = current.flatMap { c in folders.first { $0.id == c.id } } ?? (folders.count == 1 && folders[0].writable ? folders[0] : nil)
+        folder = preselected
         pickedLayout = layout
       }
     }
+  }
+
+  private var list: [BackupFolder] { folders ?? [] }
+
+  /// The folder in use, or the only one when there is one this phone may write.
+  private var preselected: BackupFolder? {
+    current.flatMap { c in list.first { $0.id == c.id } } ?? (list.count == 1 && list[0].writable ? list[0] : nil)
   }
 }
 

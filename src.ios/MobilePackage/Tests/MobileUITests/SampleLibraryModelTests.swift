@@ -40,6 +40,24 @@ final class SampleLibraryModelTests: XCTestCase {
                    "The drive with “Travel drive” isn't connected to your server. Connect it, then try again.")
   }
 
+  /// The backup folder chooser: "no backup folder" only once the server has answered with none;
+  /// while asking it says nothing of the kind, and a phone limited away from them is "not allowed".
+  func testTheFolderChooserSaysTheRealReason() {
+    let nas = BackupFolder(id: "b0b0b0b0b0b0b0b0", label: "Phone backup", writable: true)
+    XCTAssertNil(FailureCopy.backupChoiceLine(folders: nil, failure: nil, sample: false))
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: [], failure: nil, sample: false), FailureCopy.backupNoFolders)
+    XCTAssertNil(FailureCopy.backupChoiceLine(folders: [nas], failure: nil, sample: false))
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .folderNotAllowed, sample: false),
+                   FailureCopy.backupNoFolderAllowed)
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .unreachable, sample: false),
+                   FailureCopy.synologyUnreachable)
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .serviceTooOld, sample: false),
+                   FailureCopy.backupServiceTooOld)
+    for line in [FailureCopy.backupNoFolderAllowed, FailureCopy.backupAskingForFolders] {
+      XCTAssertFalse(line.contains("NAS"), line)
+    }
+  }
+
   /// An offline folder joins the top level after its own folders, once; one already listed stays.
   func testOfflineFoldersJoinTheTopLevel() {
     let own = [Folder(id: "a", name: "Photos", itemCount: 3, hasSubfolders: true)]
