@@ -1328,9 +1328,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       const std::string id = row_hash("ph", p.key);
       std::string lead = p.guest ? (p.backup ? "Guest \xC2\xB7 Backs up \xC2\xB7 " : "Guest \xC2\xB7 ")
                                  : (p.backup ? "" : "No backup \xC2\xB7 ");
+      // A phone kept in the grants (limited) may have no end: it is there for its folders or
+      // its backup switch. Only an end date makes it timed.
+      const bool timed = p.limited && p.expires != 0;
       std::string detail;
-      if (!p.limited || p.expires == 0) {
-        detail = lead + "Key " + short_key(p.key);
+      if (!timed) {
+        detail = lead + "No time limit \xC2\xB7 Key " + short_key(p.key);
       } else if (p.expired || p.expires <= now) {
         detail = lead + "Expired " + relative(p.expires, now);
       } else {
@@ -1338,12 +1341,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       }
       row(w, id, p.name, detail);
       // Extend offers only lengths that end later than the phone's end now.
-      std::vector<option> opts{{"", p.limited ? "Extend\xE2\x80\xA6" : "Limit\xE2\x80\xA6"}};
+      std::vector<option> opts{{"", timed ? "Extend\xE2\x80\xA6" : "Add a time limit\xE2\x80\xA6"}};
       for (const auto& [label, secs] : durations()) {
-        if (!p.limited || p.expires == 0 || now + secs > p.expires) opts.push_back({std::to_string(secs), std::string(label) + " from now"});
+        if (!timed || now + secs > p.expires) opts.push_back({std::to_string(secs), std::string(label) + " from now"});
       }
-      if (p.limited) opts.push_back({"unlimited", kUnlimited});
-      choice(w, id + "_access", p.limited ? "Extend " + p.name + "'s access" : "Limit " + p.name + "'s access", opts, "",
+      if (timed) opts.push_back({"unlimited", kUnlimited});
+      choice(w, id + "_access", timed ? "Extend " + p.name + "'s access" : "Time limit for " + p.name, opts, "",
              busy || !s.has("passphrase"));
       if (s.has("backup")) {
         toggle(w, id + "_backup", "Backs up", p.backup, busy);

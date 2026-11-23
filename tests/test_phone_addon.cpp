@@ -98,6 +98,30 @@ TEST_CASE("phone access: every state of the card is a tree the core accepts", "[
   }
 }
 
+TEST_CASE("phone access: only a phone with an end date reads as time-limited", "[phone-addon]") {
+  // As on 2026-11-23: an iPhone with no limit, a MacBook kept in the grants only because its
+  // backup is off (no end date), and a guest with an end.
+  const char* state = R"({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+    "nas_features":["passphrase","backup"],
+    "devices":[{"name":"iPhone","key":"b50089df00"},
+               {"name":"MacBook","key":"9d14160800","limited":true,"expires":0,"backup":false},
+               {"name":"Guest","key":"0011","guest":true,"limited":true,"expires":1800003600}]})";
+  screen c(mv::phone::card::computer::pc);
+  const std::string tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find("No time limit \xC2\xB7 Key b50089df") != std::string::npos);
+  CHECK(tree.find("No backup \xC2\xB7 No time limit \xC2\xB7 Key 9d141608") != std::string::npos);
+  CHECK(tree.find("Time limit for iPhone") != std::string::npos);
+  CHECK(tree.find("Time limit for MacBook") != std::string::npos);
+  CHECK(tree.find("Extend MacBook's access") == std::string::npos);
+  CHECK(tree.find("Extend Guest's access") != std::string::npos);
+  CHECK(tree.find("Guest \xC2\xB7 Until ") != std::string::npos);
+  // The MacBook gets a time limit from the same menu.
+  const auto r = c.on_event(screen::row_id("ph", "9d14160800") + "_access", kChange, quoted("604800"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"grant","key":"9d14160800","for_s":604800})");
+}
+
 TEST_CASE("phone access: the claimed card shows the code, its countdown, the phones and the folders", "[phone-addon]") {
   screen c(mv::phone::card::computer::pc);
   const std::string tree = c.build(kClaimed, kNow);
