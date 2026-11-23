@@ -916,8 +916,9 @@ int32_t change_answer(const result<driftwire::serve::client::change_done>& done,
   *out = mv_change_result{};
   out->why = why_code(why.why);
   if (done) {
-    if (done->rel.size() >= sizeof(out->rel)) return MV_LINK_INTERNAL;
-    std::memcpy(out->rel, done->rel.c_str(), done->rel.size() + 1);
+    // A place too long to hand back is still a change that worked: rel stays "" and the host
+    // keeps the name it asked for.
+    if (done->rel.size() < sizeof(out->rel)) std::memcpy(out->rel, done->rel.c_str(), done->rel.size() + 1);
     out->existing = done->existing ? 1 : 0;
     return MV_LINK_OK;
   }
@@ -926,6 +927,12 @@ int32_t change_answer(const result<driftwire::serve::client::change_done>& done,
     case change_why::not_found:
     case change_why::offline: return MV_LINK_NOT_FOUND;
     case change_why::none:
+      // The phone's own file could not be read: not the server's doing.
+      if (done.error() == status::invalid_arg) {
+        out->why = MV_CHANGE_LOCAL;
+        return MV_LINK_INVALID;
+      }
+      return status_of_read(done.error());
     case change_why::failed: return status_of_read(done.error());
     default: return MV_LINK_DENIED;
   }

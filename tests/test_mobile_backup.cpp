@@ -797,5 +797,92 @@ TEST_CASE("change: the C ABI the app calls", "[mobile-link]") {
   CHECK(mv_files_delete(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_NOT_FOUND);
   CHECK(out.why == MV_CHANGE_NOT_FOUND);
   CHECK(mv_files_mkdir(link, kSharedRoot.c_str(), "", &out) == MV_LINK_INVALID);
+  // The phone's own file missing: said as the phone's, not the server's.
+  CHECK(mv_files_add(link, kSharedRoot.c_str(), "x.txt", (phone.root / "missing.txt").string().c_str(), nullptr, nullptr,
+                     nullptr, &out) == MV_LINK_INVALID);
+  CHECK(out.why == MV_CHANGE_LOCAL);
   mv_link_close(link);
+}
+
+TEST_CASE("change: the phone's own file failing is told apart from the server and the link", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+
+  SECTION("not on the phone any more") {
+    auto gone = link.add_file(kSharedRoot, "a.jpg", (phone.root / "missing.jpg").string(), nullptr, nullptr, &why);
+    REQUIRE_FALSE(gone);
+    CHECK(gone.error() == mv::status::invalid_arg);
+    CHECK(link.connected());
+  }
+  SECTION("cut short while it is sent: the link stays, and nothing is left whole on the server") {
+    const fs::path local = phone.root / "clip.mov";
+    write_file(local, random_bytes(12u << 20));
+    bool cut = false;
+    auto short_read = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                                    [&](std::uint64_t sent, std::uint64_t) {
+                                      if (sent >= (2u << 20) && !cut) {
+                                        cut = true;
+                                        fs::resize_file(local, 1u << 20);
+                                      }
+                                    },
+                                    nullptr, &why);
+    REQUIRE_FALSE(short_read);
+    CHECK(short_read.error() == mv::status::invalid_arg);
+    CHECK(link.connected());
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+  }
+}
+
+TEST_CASE("change: what arrives is never kept unless it is what was hashed", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+  const fs::path local = phone.root / "clip.mov";
+
+  SECTION("changed on the phone while it is sent: sent again once, then refused as damaged") {
+    write_file(local, random_bytes(8u << 20));
+    bool changed = false;
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (1u << 20) && !changed) {
+                                  changed = true;
+                                  write_file(local, random_bytes(8u << 20));  // same size, other bytes
+                                }
+                              },
+                              nullptr, &why);
+    REQUIRE_FALSE(done);
+    CHECK(why.why == serve::client::change_why::hash);
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+    CHECK(leftovers(n.shared) == 0);
+  }
+  SECTION("an unfinished copy of another file under the same name: the new one arrives whole") {
+    write_file(local, random_bytes(16u << 20));
+    mob::cancel_flag cancel;
+    CHECK_FALSE(link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (4u << 20)) cancel.stop = true;
+                              },
+                              &cancel, &why));
+    const std::string other = random_bytes(16u << 20);
+    write_file(local, other);
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(), nullptr, nullptr, &why);
+    REQUIRE(done);
+    CHECK(done->rel == "clip.mov");
+    CHECK((read_all(n.shared / "clip.mov") == other));
+  }
 }

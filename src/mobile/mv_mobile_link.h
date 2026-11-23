@@ -342,12 +342,14 @@ typedef enum mv_change_why {
   MV_CHANGE_HASH = 11,        /* add: what arrived was not what was sent, again */
   MV_CHANGE_OFFSET = 12,      /* (resumed inside mv_files_add; never returned) */
   MV_CHANGE_FAILED = 13,      /* the server's disk failed it */
+  MV_CHANGE_LOCAL = 14,       /* add: the file on the phone could not be read (MV_LINK_INVALID) */
 } mv_change_why;
 typedef struct mv_change_result {
   int32_t why;       /* mv_change_why */
   int32_t existing;  /* mkdir: the folder was there; add: this very file was there */
   /* Where it is now, under its folder: the new folder, the file (a taken name gets " (2)"), the
-   * destination, or its place in the folder's trash on the server ("YYYY-MM-DD/<rel>"). */
+   * destination, or its place in the folder's trash on the server ("YYYY-MM-DD/<rel>"). "" when
+   * it is too long for this buffer (the change still worked). */
   char rel[4096];
 } mv_change_result;
 /* BLOCKS. 1 in *out when the service offers the changes (0 from an older one, and the sample library). */

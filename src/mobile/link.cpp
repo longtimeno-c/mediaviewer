@@ -895,8 +895,10 @@ result<serve::client::change_done> link_session::add_file(const std::string& roo
                                                           const std::string& local_path,
                                                           const std::function<void(std::uint64_t, std::uint64_t)>& progress,
                                                           const cancel_flag* cancel, serve::client::change_refused* why) {
+  // The phone's own file not there or unreadable is invalid_arg: never "not on the server", and
+  // never a lost link (which would cut browsing and backup on the same link).
   io::file_reader in;
-  if (auto o = in.open(local_path, io::read_mode::sequential); !o) return err(status::not_found);
+  if (auto o = in.open(local_path, io::read_mode::sequential); !o) return err(status::invalid_arg);
   const std::uint64_t size = in.size();
   // The hash the service checks what reached its disk against (BLAKE3, as serve::backup::hash_file),
   // read here so a stop ends a big file's hashing too.
@@ -907,15 +909,23 @@ result<serve::client::change_done> link_session::add_file(const std::string& roo
     for (std::uint64_t at = 0; at < size;) {
       if (cancel && cancel->stopped()) return err(status::cancelled);
       auto got = in.read_at(at, std::span<std::uint8_t>(buf.data(), static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), size - at))));
-      if (!got) return err(got.error());
-      if (*got == 0) break;
+      if (!got || *got == 0) return err(status::invalid_arg);  // shorter than it said, or unreadable
       h.update(std::span<const std::uint8_t>(buf.data(), *got));
       at += *got;
     }
     hashed = h.finish().hex();
   }
-  const serve::client::read_fn read = [&in](std::uint64_t at, std::span<std::uint8_t> into) -> result<std::size_t> {
-    return in.read_at(at, into);
+  // A read of the phone's file that fails (or comes up short of its size) is remembered here: the
+  // client reports it as io, which is not the link's fault.
+  bool local_failed = false;
+  const serve::client::read_fn read = [&in, &local_failed, size](std::uint64_t at,
+                                                                  std::span<std::uint8_t> into) -> result<std::size_t> {
+    auto got = in.read_at(at, into);
+    if (!got || (*got == 0 && at < size)) {
+      local_failed = true;
+      return err(status::io);
+    }
+    return got;
   };
   serve::client::change_refused refused;
   std::uint64_t at = 0;
@@ -923,14 +933,21 @@ result<serve::client::change_done> link_session::add_file(const std::string& roo
   bool resent = false;
   int busy_waits = 0;
   result<serve::client::change_done> done = err(status::io);
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
   for (int attempt = 0; attempt < 12; ++attempt) {
     refused = {};
-    done = add(root, rel, size, hashed, at, read,
-               [&](std::uint64_t sent) {
-                 if (progress) progress(sent, size);
-               },
-               cancel, &refused);
+    // On the live client directly (not add()), so a local read error does not drop the link.
+    stream_slot slot(*this, cancel);
+    if (!slot.held()) return err(status::cancelled);
+    auto c = client(cancel);
+    if (!c) return err(c.error());
+    done = (*c)->add(root, rel, size, hashed, at, read,
+                     [&](std::uint64_t sent) {
+                       if (progress) progress(sent, size);
+                     },
+                     stop, &refused);
     if (done) break;
+    if (local_failed) return err(status::invalid_arg);
     if (refused.why == serve::client::change_why::offset) {
       at = refused.have;
       continue;
@@ -953,10 +970,11 @@ result<serve::client::change_done> link_session::add_file(const std::string& roo
     }
     // The link dropped mid-file (or was closed under it, which ends the stream as cancelled though
     // nobody asked): once more on a new one, from where the service's copy ends. add() has already
-    // dropped the client for an io error; a closed one is gone from live_ already.
+    // A closed client is gone from live_ already.
     const bool stopped = cancel && cancel->stopped();
     const bool lost = done.error() == status::io || done.error() == status::timeout ||
                       (done.error() == status::cancelled && !stopped);
+    if (done.error() == status::io || done.error() == status::timeout) dropped(*c);
     if (lost && !reconnected) {
       reconnected = true;
       continue;
