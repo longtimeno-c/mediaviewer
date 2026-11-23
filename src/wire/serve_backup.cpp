@@ -66,7 +66,7 @@ book::verdict book::reserve(const root_config& root, std::uint64_t bytes, bool m
   const std::uint64_t free = free_of(root.path);
   std::unique_lock lock(m_);
   auto& c = count(root, lock);
-  if (!meta && c.used + c.held + std::max(bytes, kMinFileCost) > root.limit) return verdict::limit;
+  if (!meta && !no_limit(root.limit) && c.used + c.held + std::max(bytes, kMinFileCost) > root.limit) return verdict::limit;
   // Held bytes are not on the disk yet: every folder's, since folders may share a volume.
   std::uint64_t held_all = 0;
   for (const auto& [id, other] : roots_) held_all += other.held;

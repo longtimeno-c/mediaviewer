@@ -26,6 +26,7 @@
 #include "catalogue/catalog_chain.h"
 #include "catalogue/publisher.h"
 #include "core/json.h"
+#include "wire/serve_wire.h"
 
 namespace mv::phone {
 
@@ -1317,7 +1318,8 @@ void link::run(const std::string& request) {
       w.key("id").string(text("id"));
     }
     if (what == "set_backup" || text("backup") == "1") {
-      const auto limit = bytes("limit");
+      // "none": no limit of its own, only the reserve (serve_wire.h kNoLimit).
+      const auto limit = text("limit") == "none" ? static_cast<std::int64_t>(driftwire::serve::kNoLimit) : bytes("limit");
       const auto reserve = bytes("reserve");
       if (limit <= 0 || reserve < 0) return fail("invalid_arg");
       if (what == "add_folder") w.key("backup").boolean(true);

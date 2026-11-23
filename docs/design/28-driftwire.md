@@ -614,7 +614,10 @@ over SMB with owner operations over the channel; library rejoin; the phone's `re
 
 `src/wire/serve_backup.*`, `src/wire/grants.*`; plan `docs/plans/mobile.md` §10b, M11. A backup
 folder is `"backup":{"limit","reserve"}` in `serve.json` (owner's `add_root` / `set_backup`;
-Settings → Add-ons → Phone access). A phone listing `write` gets the op (bit `1u << 6`).
+Settings → Add-ons → Phone access). A limit of `serve::kNoLimit` (INT64_MAX) is **no limit**: only the
+reserve stops writes. Not 0, which every server reads as "nothing may be written"; a server from before
+reads INT64_MAX as a limit no folder reaches. The card's No storage limit toggle sends `"limit":"none"`
+to the link, which sends kNoLimit on. A phone listing `write` gets the op (bit `1u << 6`).
 
 **Who may write is a phone's grant** (`backup`): the paired list holds only unlimited devices with
 backup; others live in `library_grants`. Guest codes give backup off. Turning backup on needs the
@@ -677,7 +680,9 @@ or a Mac, from one command that runs while its user is logged in.
 
 ```
 driftwire host [--data DIR]                 the supervisor, no terminal: what starts at login
-driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it)
+driftwire host share PATH [--label L] [--backup [--limit GB|none]]
+                                            a folder for phones (--backup: they may back up into it, with no
+                                            limit unless --limit; --limit on a folder shared already changes it)
 driftwire host unshare LABEL                takes one back (its files stay)
 driftwire host status                       name, ports, folders by label (offline or not), phones,
                                             VPN, staying awake, start at login

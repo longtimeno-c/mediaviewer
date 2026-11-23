@@ -1429,7 +1429,7 @@ TEST_CASE("driftwire cli session: /host shares, shows and turns the VPN on; what
   REQUIRE(ann.shows("Shared \"My Photos\", phones may back up into it"));
   type_line(ann, "/host status");
   REQUIRE(ann.shows("not running (driftwire host starts it)"));
-  REQUIRE(ann.shows("My Photos (backup)"));
+  REQUIRE(ann.shows("My Photos (backup, no limit)"));
   type_line(ann, "/host vpn on");
   REQUIRE(ann.shows("The VPN is on"));
   const auto key = cli::host_files::relay_secret(cli::host_layout_of(utf8(s / "hostdata")));

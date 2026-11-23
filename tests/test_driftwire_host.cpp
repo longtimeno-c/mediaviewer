@@ -10,6 +10,7 @@
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -226,6 +227,51 @@ TEST_CASE("driftwire host: sharing and unsharing folders", "[host]") {
   CHECK(cli::unshare_folder(c, "photos").empty());
   REQUIRE(c.roots.size() == 1);
   CHECK(c.roots[0].label == "Backup");
+}
+
+TEST_CASE("driftwire host: a backup folder's limit, or none, and changing it", "[host]") {
+  scratch_dir s("host_share_limit");
+  fs::create_directories(s / "data");
+  fs::create_directories(s / "Camera");
+  fs::create_directories(s / "Photos");
+  const cli::host_layout l = cli::host_layout_of(utf8(s / "data"));
+
+  auto p = parse({"host", "share", "/srv/Camera", "--backup", "--limit", "500"});
+  REQUIRE(p.error.empty());
+  CHECK(p.a.limit == "500");
+  CHECK(parse({"host", "share", "/srv/Camera", "--backup", "--limit=none"}).a.limit == "none");
+  CHECK_FALSE(parse({"host", "share", "/srv/Camera", "--limit", "none"}).error.empty());  // a backup folder's only
+  CHECK_FALSE(parse({"host", "share", "/srv/Camera", "--backup", "--limit", "0"}).error.empty());
+  CHECK_FALSE(parse({"host", "share", "/srv/Camera", "--backup", "--limit", "lots"}).error.empty());
+  CHECK_FALSE(parse({"host", "status", "--limit", "none"}).error.empty());
+  CHECK_FALSE(parse({"serve", "--limit", "none"}).error.empty());
+
+  const auto camera = [&] {
+    const auto c = cli::host_files::config(l, true);
+    REQUIRE(c);
+    const auto it = std::find_if(c->roots.begin(), c->roots.end(), [](const auto& r) { return r.label == "Camera"; });
+    REQUIRE(it != c->roots.end());
+    return *it;
+  };
+  std::string label;
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, 500'000'000'000ull, true, label).empty());
+  CHECK(camera().limit == 500'000'000'000ull);
+  // Shared already: --limit none changes it, the reserve kept.
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, serve::kNoLimit, true, label).empty());
+  CHECK(label == "Camera");
+  CHECK(serve::no_limit(camera().limit));
+  CHECK(camera().reserve == serve::kDefaultReserve);
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, 200'000'000'000ull, true, label).empty());
+  CHECK(camera().limit == 200'000'000'000ull);
+  // Without a limit it is still shared already; a plain folder given one becomes a backup folder.
+  CHECK_FALSE(cli::host_files::share(l, utf8(s / "Camera"), "", true, 0, true, label).empty());
+  REQUIRE(cli::host_files::share(l, utf8(s / "Photos"), "", false, 0, true, label).empty());
+  REQUIRE(cli::host_files::share(l, utf8(s / "Photos"), "", true, serve::kNoLimit, true, label).empty());
+  const auto c = cli::host_files::config(l, true);
+  REQUIRE(c);
+  CHECK(c->roots.size() == 2);
+  CHECK(c->roots[1].backup);
+  CHECK(serve::no_limit(c->roots[1].limit));
 }
 
 TEST_CASE("driftwire host: what starts it at login", "[host]") {

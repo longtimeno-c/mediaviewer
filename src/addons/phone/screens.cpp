@@ -474,6 +474,9 @@ const std::vector<std::pair<const char*, std::int64_t>>& durations() {
   return d;
 }
 constexpr const char* kUnlimited = "Until I remove it";
+// A backup folder with no storage limit of its own (serve_wire.h kNoLimit, INT64_MAX):
+// what the server says; the card sends the link "none" for it.
+constexpr std::int64_t kNoLimit = INT64_MAX;
 constexpr std::size_t kRelayKeyMinimum = 16;  // as driftwire-relay takes it
 
 std::string typed_for(const drives_state& d, const std::string& id) {
@@ -1301,8 +1304,9 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       const std::string id = row_hash("fo", f.id);
       std::string detail = f.path;
       if (f.backup) {
-        detail += " \xC2\xB7 " + gigabytes(f.used) + " of " + gigabytes(f.limit) + " GB used, keeps " + gigabytes(f.reserve) +
-                  " GB free. ";
+        detail += " \xC2\xB7 " + gigabytes(f.used) +
+                  (f.limit >= kNoLimit ? " GB used, no limit, keeps " : " of " + gigabytes(f.limit) + " GB used, keeps ") +
+                  gigabytes(f.reserve) + " GB free. ";
         detail += f.indexed ? "Indexed by " + me + ": what phones send reaches search after the next scan."
                             : "Not in Local search on " + me + " yet: add this folder there so what phones send reaches search.";
       }
@@ -1312,7 +1316,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       end_row(w);
       if (editing_ == f.id) {
         stack(w, id + "_edit", 8, "horizontal");
-        field(w, "edit_limit", "Storage limit in gigabytes", edit_limit_, "GB");
+        toggle(w, "edit_no_limit", "No storage limit", edit_no_limit_);
+        if (!edit_no_limit_) field(w, "edit_limit", "Storage limit in gigabytes", edit_limit_, "GB");
         field(w, "edit_reserve", "Free space to keep on the server, in gigabytes", edit_reserve_, "GB");
         button(w, "edit_save", "Save", busy, "primary");
         button(w, "edit_cancel", "Cancel");
@@ -1337,7 +1342,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     text(w, "new_title", new_backup_ ? "Add a backup folder" : "Add a folder", "title");
     if (new_backup_) {
       text(w, "new_backup_note",
-           "Phones that back up save their new photos and videos here, up to the limit, and leave the free space you set.",
+           new_no_limit_ ? "Phones that back up save their new photos and videos here until only the free space you set is left."
+                         : "Phones that back up save their new photos and videos here, up to the limit, and leave the free space you set.",
            "secondary");
     }
     field(w, "new_label", "Name of the new shared folder", new_label_,
@@ -1352,7 +1358,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     toggle(w, "new_backup", "Phones back up to this folder", new_backup_, !can_back_up);
     if (new_backup_) {
       stack(w, "new_sizes", 8, "horizontal");
-      field(w, "new_limit", "Storage limit in gigabytes", new_limit_, "GB");
+      toggle(w, "new_no_limit", "No storage limit", new_no_limit_);
+      if (!new_no_limit_) field(w, "new_limit", "Storage limit in gigabytes", new_limit_, "GB");
       field(w, "new_reserve", "Free space to keep on the server, in gigabytes", new_reserve_, "GB");
       end(w);
     }
@@ -1728,6 +1735,10 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       edit_reserve_ = v;
     } else if (node == "host_convert") {
       out.push_back(req("host_convert").b("on", value_bool(value_json)).done());
+    } else if (node == "new_no_limit") {
+      new_no_limit_ = value_bool(value_json);
+    } else if (node == "edit_no_limit") {
+      edit_no_limit_ = value_bool(value_json);
     } else if (node == "new_backup") {
       new_backup_ = value_bool(value_json);
       // A suggestion the owner changes; the service refuses past what is really free.
@@ -1951,19 +1962,24 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   } else if (node == "new_add") {
     const std::string path = trim(new_path_);
     const std::string label = new_label_.empty() ? share_label(path) : new_label_;
-    const std::int64_t limit = bytes(new_limit_), reserve = bytes(new_reserve_);
+    const std::int64_t limit = new_no_limit_ ? kNoLimit : bytes(new_limit_), reserve = bytes(new_reserve_);
     if (!server_path(path) || share_label(path).empty()) {
       note_ = server_here_ ? "Choose the folder to share." : "Type the folder's path on the server, starting with /.";
     } else if (new_backup_ && (limit <= 0 || reserve < 0)) {
-      note_ = "Type the backup folder's limit and the space to keep free, in GB.";
+      note_ = new_no_limit_ ? "Type the space to keep free, in GB."
+                            : "Type the backup folder's limit and the space to keep free, in GB, or choose No storage limit.";
     } else {
       req r("add_folder");
       r.s("label", label).s("path", path);
-      if (new_backup_) r.s("backup", "1").s("limit", std::to_string(limit)).s("reserve", std::to_string(reserve));
+      if (new_backup_) {
+        r.s("backup", "1").s("limit", new_no_limit_ ? std::string("none") : std::to_string(limit));
+        r.s("reserve", std::to_string(reserve));
+      }
       out.push_back(r.done());
       new_label_.clear();
       new_path_.clear();
       new_backup_ = false;
+      new_no_limit_ = false;
       adding_folder_ = false;
     }
   } else if (node == "folder_add_open" || node == "backup_add_open") {
@@ -1974,12 +1990,18 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   } else if (node == "new_cancel") {
     adding_folder_ = false;
     new_backup_ = false;
+    new_no_limit_ = false;
   } else if (node == "edit_save") {
-    const std::int64_t limit = bytes(edit_limit_), reserve = bytes(edit_reserve_);
+    const std::int64_t limit = edit_no_limit_ ? kNoLimit : bytes(edit_limit_), reserve = bytes(edit_reserve_);
     if (limit <= 0 || reserve < 0) {
-      note_ = "Type the limit and the space to keep free, in GB.";
+      note_ = edit_no_limit_ ? "Type the space to keep free, in GB."
+                             : "Type the limit and the space to keep free, in GB, or choose No storage limit.";
     } else {
-      out.push_back(req("set_backup").s("id", editing_).s("limit", std::to_string(limit)).s("reserve", std::to_string(reserve)).done());
+      out.push_back(req("set_backup")
+                        .s("id", editing_)
+                        .s("limit", edit_no_limit_ ? std::string("none") : std::to_string(limit))
+                        .s("reserve", std::to_string(reserve))
+                        .done());
       editing_.clear();
     }
   } else if (node == "edit_cancel") {
@@ -2116,7 +2138,9 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
         out.push_back(req("remove_folder").s("id", folder_ids_[i]).done());
       } else if (rest == "_limit") {
         editing_ = folder_ids_[i];
-        edit_limit_ = gigabytes(folder_limit_[i]);
+        edit_no_limit_ = folder_limit_[i] >= kNoLimit;
+        // Turning No storage limit off starts from a suggestion, as Add backup folder... does.
+        edit_limit_ = edit_no_limit_ ? std::string("1000") : gigabytes(folder_limit_[i]);
         edit_reserve_ = gigabytes(folder_reserve_[i]);
       }
     } else if (split_row(node, "hf", i, rest) && i < host_folders_.size()) {

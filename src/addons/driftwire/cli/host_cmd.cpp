@@ -396,7 +396,7 @@ std::string share_folder(serve::config& c, const std::string& abs_path, const st
   rc.volume = facts.volume;
   if (backup) {
     rc.backup = true;
-    rc.limit = static_cast<std::uint64_t>(INT64_MAX);  // no limit of its own: the reserve keeps the drive from filling
+    rc.limit = serve::kNoLimit;  // no limit of its own: the reserve keeps the drive from filling
     rc.reserve = serve::kDefaultReserve;
   }
   c.roots.push_back(std::move(rc));
@@ -1074,19 +1074,38 @@ std::string share_path(const host_layout& l, const std::string& typed, const std
   auto cfg = load_or_new(l, test_hooks);
   if (!cfg) return "serve.json is not valid; not changing it.";
   label = label_arg.empty() ? default_label(path) : label_arg;
-  std::string why = share_folder(*cfg, path, label, backup, volume_of(path), random_id(), l.folder);
-  if (!why.empty()) return why;
-  if (backup && limit != 0) cfg->roots.back().limit = limit;
+  // A folder shared already, given a limit: that folder's limit changes (a lower one only stops new writes).
+  const fs::path mine = canonical_or_normal(path);
+  const auto shared = std::find_if(cfg->roots.begin(), cfg->roots.end(),
+                                   [&](const serve::root_config& r) { return canonical_or_normal(r.path) == mine; });
+  if (backup && limit != 0 && shared != cfg->roots.end()) {
+    if (shared->label == serve::kCatalogueLabel) return "the catalogue is never a backup folder.";
+    if (!shared->backup) shared->reserve = serve::kDefaultReserve;
+    shared->backup = true;
+    shared->limit = limit;
+    label = shared->label;
+  } else {
+    std::string why = share_folder(*cfg, path, label, backup, volume_of(path), random_id(), l.folder);
+    if (!why.empty()) return why;
+    if (backup && limit != 0) cfg->roots.back().limit = limit;
+  }
   if (!write_whole(l.serve_config, serve::config_json(*cfg))) return "could not write serve.json.";
   return {};
 }
 
 int run_share(const args& a, const host_layout& l, bool test_hooks) {
   std::string label;
-  const std::string why = share_path(l, a.host_path, a.label, a.backup, 0, test_hooks, label);
+  // --limit none or GB (args.cpp checked it); none given: 0, a new backup folder's default (no limit).
+  const std::uint64_t limit = a.limit.empty()  ? 0
+                              : a.limit == "none" ? serve::kNoLimit
+                                                  : static_cast<std::uint64_t>(std::strtod(a.limit.c_str(), nullptr) * 1e9);
+  const std::string why = share_path(l, a.host_path, a.label, a.backup, limit, test_hooks, label);
   if (!why.empty()) return fail(why, 1);
-  print("Shared \"" + label + "\"" + (a.backup ? ", phones may back up into it" : std::string()) +
-        ". A running host serves it within seconds.\n");
+  const std::string sizes = !a.backup ? std::string()
+                            : limit == 0 || serve::no_limit(limit)
+                                ? ", phones may back up into it with no storage limit"
+                                : ", phones may back up into it up to " + a.limit + " GB";
+  print("Shared \"" + label + "\"" + sizes + ". A running host serves it within seconds.\n");
   return 0;
 }
 
@@ -1280,7 +1299,12 @@ std::string status_text(const host_layout& l, bool test_hooks) {
       std::error_code ec;
       const auto at = volume_locate(r);
       const bool there = at && fs::is_directory(to_path(*at), ec);
-      out += "folder      " + r.label + (r.backup ? " (backup)" : "") + (there ? "" : "  offline") + "\n";
+      std::string kind;
+      if (r.backup) {
+        kind = serve::no_limit(r.limit) ? " (backup, no limit)"
+                                        : " (backup, up to " + std::to_string((r.limit + 500'000'000) / 1'000'000'000) + " GB)";
+      }
+      out += "folder      " + r.label + kind + (there ? "" : "  offline") + "\n";
     }
   }
   if (auto store = owner_store(l.serve + "/secrets")) {

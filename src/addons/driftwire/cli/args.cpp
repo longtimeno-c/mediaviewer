@@ -61,7 +61,9 @@ std::string help_text() {
          "  driftwire host               host the service and a relay on this computer, from\n"
          "         [--data DIR]          its own folder (DIR/host), until stopped: what starts at\n"
          "                               login; host share PATH [--label L] [--backup] gives phones\n"
-         "                               a folder (--backup: they may back up into it), host unshare\n"
+         "                               a folder (--backup: they may back up into it; --limit GB\n"
+         "                               caps it, none (the default) leaves only 1 GB free; given\n"
+         "                               for a folder shared already, it changes that), host unshare\n"
          "                               LABEL takes one back, host status shows it, host\n"
          "                               start-at-login on|off and host stay-awake on|off change\n"
          "                               how it runs (no administrator needed); host setup walks\n"
@@ -107,7 +109,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   std::vector<std::string> words;  // after the command
   std::string first_word;          // a word that is not a command, for the error
   bool want_to = false, want_once = false;
-  bool want_label = false, want_backup = false;
+  bool want_label = false, want_backup = false, want_limit = false;
   bool want_users_opts = false;  // --folders, --input-stdin (host users only)
   bool want_role = false;        // --role: host users, or a device's role (serve grant)
   bool want_drives_flag = false;  // --json, --confirm-stdin: host drives only
@@ -179,6 +181,17 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--backup" && flag) {
         a.backup = true;
         want_backup = true;
+      } else if (t.name == "--limit") {
+        if (!value(a.limit, "GB or none")) return out;
+        if (a.limit != "none") {
+          char* end = nullptr;
+          const double gb = std::strtod(a.limit.c_str(), &end);
+          if (!end || *end != '\0' || !(gb > 0) || gb >= 1e6) {
+            out.error = "--limit takes GB (like 500) or none";
+            return out;
+          }
+        }
+        want_limit = true;
       } else if (t.name == "--role") {  // ---- host users (self-host-users-smb.md) ----
         if (!value(a.role, "a role (view, change or admin)")) return out;
         want_role = true;
@@ -389,7 +402,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (parse_host_control(words, a)) {
         // pause, resume, quit: the tray's control (host_control.h)
       } else {
-        out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
+        out.error = "host takes setup, share PATH [--label L] [--backup [--limit GB|none]], unshare LABEL, status, pair, "
                     "name duckdns|none, vpn on [--tls-port N]|off, convert on [--helper PATH]|off, "
                     "start-at-login on|off, stay-awake on|off, "
                     "users …, drives …, pause, resume or quit";
@@ -416,6 +429,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         out.error = "--label and --backup go with host share";
         return out;
       }
+      if (want_limit && !(a.host == host_action::share && a.backup)) {
+        out.error = "--limit goes with host share --backup";
+        return out;
+      }
       if ((want_users_opts || want_role) && a.host != host_action::users) {
         out.error = "--role, --folders and --input-stdin go with host users";
         return out;
@@ -437,6 +454,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   }
   if ((want_label || want_backup) && a.cmd != command::host) {
     out.error = "--label and --backup go with host share";
+    return out;
+  }
+  if (want_limit && a.cmd != command::host) {
+    out.error = "--limit goes with host share --backup";
     return out;
   }
   if ((want_users_opts || (want_role && a.cmd != command::serve)) && a.cmd != command::host) {

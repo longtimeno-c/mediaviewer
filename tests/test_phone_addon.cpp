@@ -12,6 +12,7 @@
 #include <sodium.h>
 
 #include <chrono>
+#include <mutex>
 #include <span>
 #include <cstdlib>
 #include <string>
@@ -24,6 +25,7 @@
 #include "addon/screen.h"
 #include "addon/slots.h"
 #include "addon/store.h"
+#include "addons/phone/link.h"
 #include "addons/phone/screens.h"
 #include "core/json.h"
 #include "import_fixture.h"
@@ -410,6 +412,103 @@ TEST_CASE("phone access: a folder is shared after setup on a Windows server, pic
   r = c.on_event("new_add", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"({"do":"add_folder","label":"Video","path":"/volume1/Video"})");
+}
+
+TEST_CASE("phone access: a backup folder may have no storage limit, only the free space to keep", "[phone-addon]") {
+  // The server's word for none is INT64_MAX (serve_wire.h kNoLimit), what `driftwire host share --backup` writes.
+  const char* unlimited = R"({"folder":"/Volumes/nas/lib","claimed":true,"nas_features":["backup"],
+    "folders":[{"id":"r2","label":"Phone backup","path":"/volume1/backup","backup":true,
+                "limit":9223372036854775807,"reserve":1000000000,"used":5000000000}]})";
+  screen c(mv::phone::card::computer::mac);
+  std::string tree = c.build(unlimited, kNow);
+  require_valid(tree);
+  CHECK(tree.find("5 GB used, no limit, keeps 1 GB free") != std::string::npos);
+  CHECK(tree.find("9223372036") == std::string::npos);
+
+  // Change limit…: No storage limit is on, and there is no limit to type.
+  const std::string row = screen::row_id("fo", "r2");
+  CHECK(c.on_event(row + "_limit", kClick, "", kNow).empty());
+  tree = c.build(unlimited, kNow);
+  require_valid(tree);
+  CHECK(tree.find(R"("id":"edit_no_limit","label":"No storage limit","value":true)") != std::string::npos);
+  CHECK(tree.find(R"("id":"edit_limit")") == std::string::npos);
+  auto r = c.on_event("edit_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"set_backup","id":"r2","limit":"none","reserve":"1000000000"})");
+  // Turned off, a limit is typed again (from a suggestion).
+  CHECK(c.on_event(row + "_limit", kClick, "", kNow).empty());
+  (void)c.on_event("edit_no_limit", kChange, "false", kNow);
+  tree = c.build(unlimited, kNow);
+  CHECK(tree.find(R"("id":"edit_limit","label":"Storage limit in gigabytes","value":"1000")") != std::string::npos);
+  (void)c.on_event("edit_limit", kChange, quoted("200"), kNow);
+  r = c.on_event("edit_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"set_backup","id":"r2","limit":"200000000000","reserve":"1000000000"})");
+
+  // A folder with a limit is changed to none.
+  screen d(mv::phone::card::computer::mac);
+  (void)d.build(kClaimed, kNow);
+  CHECK(d.on_event(row + "_limit", kClick, "", kNow).empty());
+  tree = d.build(kClaimed, kNow);
+  CHECK(tree.find(R"("id":"edit_no_limit","label":"No storage limit","value":false)") != std::string::npos);
+  CHECK(tree.find(R"("id":"edit_limit","label":"Storage limit in gigabytes","value":"1000")") != std::string::npos);
+  (void)d.on_event("edit_no_limit", kChange, "true", kNow);
+  (void)d.on_event("edit_reserve", kChange, quoted(""), kNow);
+  CHECK(d.on_event("edit_save", kClick, "", kNow).empty());  // still the free space to keep
+  CHECK(d.build(kClaimed, kNow).find("Type the space to keep free, in GB.") != std::string::npos);
+  (void)d.on_event("edit_reserve", kChange, quoted("20"), kNow);
+  r = d.on_event("edit_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"set_backup","id":"r2","limit":"none","reserve":"20000000000"})");
+
+  // Add backup folder…: No storage limit hides the limit, and the folder goes with none.
+  CHECK(c.on_event("backup_add_open", kClick, "", kNow).empty());
+  (void)c.on_event("new_no_limit", kChange, "true", kNow);
+  tree = c.build(unlimited, kNow);
+  require_valid(tree);
+  CHECK(tree.find(R"("id":"new_no_limit","label":"No storage limit","value":true)") != std::string::npos);
+  CHECK(tree.find(R"("id":"new_limit")") == std::string::npos);
+  CHECK(tree.find("until only the free space you set is left") != std::string::npos);
+  (void)c.on_event("new_path", kChange, quoted("/volume1/Camera"), kNow);
+  r = c.on_event("new_add", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"add_folder","label":"Camera","path":"/volume1/Camera","backup":"1","limit":"none","reserve":"1000000000"})");
+}
+
+TEST_CASE("phone access: the link sends a backup folder's No storage limit as the server's none", "[phone-addon]") {
+  scratch_dir dir("phone_link_no_limit");
+  std::mutex m;
+  std::vector<std::pair<std::string, std::string>> sent;
+  mv::phone::link::options o;
+  o.data_dir = (dir.root() / "phone").string();
+  o.route = [&](const char* method, const std::string& json) -> mv::result<std::string> {
+    const std::string what(method);
+    if (what != "add_root" && what != "set_backup") return mv::err(mv::status::not_found);
+    std::lock_guard lock(m);
+    sent.emplace_back(what, json);
+    return std::string(what == "add_root" ? R"({"id":"r9"})" : "{}");
+  };
+  mv::phone::link l(std::move(o));
+  REQUIRE(l.request(R"({"do":"add_folder","label":"Camera","path":"/volume1/Camera","backup":"1","limit":"none","reserve":"1000000000"})"));
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"none","reserve":"0"})"));
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"500000000000","reserve":"0"})"));
+  // Anything else is still refused here, never sent as a limit of 0.
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"unlimited","reserve":"0"})"));
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"0","reserve":"0"})"));
+  // One more that goes: the requests run in order, so the two before it are done once it is sent.
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"7","reserve":"0"})"));
+  REQUIRE(eventually([&] {
+    std::lock_guard lock(m);
+    return sent.size() >= 4;
+  }));
+  l.stop();
+  REQUIRE(sent.size() == 4);
+  CHECK(sent[3].second == R"({"id":"r2","limit":7,"reserve":0})");
+  CHECK(sent[0].first == "add_root");
+  CHECK(sent[0].second ==
+        R"({"label":"Camera","path":"/volume1/Camera","backup":true,"limit":9223372036854775807,"reserve":1000000000})");
+  CHECK(sent[1].second == R"({"id":"r2","limit":9223372036854775807,"reserve":0})");
+  CHECK(sent[2].second == R"({"id":"r2","limit":500000000000,"reserve":0})");
 }
 
 TEST_CASE("phone access: Local search's catalogue through the host, and none without it", "[phone-addon]") {

@@ -290,8 +290,8 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   service takes new folders with `server::replace_config`; unsharing the last stops it.
 - **`host share PATH [--label L] [--backup]`, `unshare LABEL`, `status`, `start-at-login on|off`,
   `stay-awake on|off`.** A share is refused for the host's own folder or one holding it (its keys);
-  `--backup` has no limit of its own (the 1 GiB reserve keeps the drive from filling; a `--limit` is
-  owed if asked). `status` prints labels, ports, counts and switches, never a path or an address.
+  `--backup` has no limit of its own (the 1 GiB reserve keeps the drive from filling); `--limit GB|none`
+  sets one or takes it off, also on a folder shared already. `status` prints labels, ports, counts and switches, never a path or an address.
 - **Start at login**, one file per OS (`cli/autostart_win.cpp`, `_mac.cpp`, `_linux.cpp`; texts pure
   in `autostart.cpp`): a per-user Scheduled Task at log on (least privilege, retried every 5 min while
   not running, since Task Scheduler's restart-on-failure does not cover an exit), a LaunchAgent with
