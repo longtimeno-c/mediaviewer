@@ -24,6 +24,8 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   private var manager: NETunnelProviderManager?                        // under lock
   /// This switch-on, as the status machine follows it.
   private var attempt = VPNStatusMachine.Attempt()                     // under lock
+  /// A new code, the switch and remove, one at a time; what an overtaken one learns isn't shown.
+  private let moves = VPNMoves()
   /// A pasted code not yet switched on: kept here, written nowhere (opt-in).
   private var pending: VPNTunnelItem?                                  // under lock
   /// Consent given in this run, before the first switch-on writes it down.
@@ -50,9 +52,10 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     Task.detached(priority: .utility) { [weak self, item, defaults] in
       guard item.exists() else { return }
       let state = VPNSharedState.load(defaults)
-      guard let self, self.lock.withLock({ self.generation == generation && self.pending == nil }) else { return }
+      guard let self else { return }
+      // Checked in the same hold of the lock as the change, so a remove meanwhile stays removed.
       self.publish {
-        if !$0.isSetUp {
+        if self.generation == generation, self.pending == nil, !$0.isSetUp {
           $0.status = .off
           $0.host = state.host
           $0.consented = state.consented
@@ -83,18 +86,48 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     }
   }
 
+  // MARK: - Moves: a new code, the switch, remove
+  //
+  // One at a time, in the order they were called, so the last call wins: each begins only once the
+  // one before has ended (a remove can't be undone by a switch-on still saving, nor a new code lost).
+  // Each move also begins a run when it is called, so a switch-on still running (iOS's alert open,
+  // a save under way) sees a later move waiting and writes, starts and shows nothing more. Status
+  // news and the extension's reason for a stop belong to the run they arrived in.
+
   public func connect(code: String) async throws {
     var relayOut: UnsafeMutablePointer<CChar>?
     var keyOut: UnsafeMutablePointer<CChar>?
     guard mv_vpn_parse_code(code, &relayOut, &keyOut) == MV_VPN_OK, let relayOut, let keyOut else {
       mv_vpn_free(relayOut)
       mv_vpn_free(keyOut)
-      throw VPNCodeError.notACode
+      throw VPNCodeError.notACode  // a wrong paste overtakes nothing
     }
     let relay = String(cString: relayOut)
     let key = String(cString: keyOut)
     mv_vpn_free(relayOut)
     mv_vpn_free(keyOut)
+    await inTurn { [self] in await connectMove(relay: relay, key: key) }
+  }
+
+  public func acceptConsent() async {
+    lock.withLock { consentedNow = true }
+    publish { $0.consented = true }
+  }
+
+  public func setOn(_ on: Bool) async {
+    await inTurn { [self] run in await (on ? switchOn(run: run) : switchOff()) }
+  }
+
+  public func remove() async {
+    await inTurn { [self] in await removeMove() }
+  }
+
+  private func inTurn(_ move: @escaping @Sendable () async -> Void) async { await moves.inTurn { _ in await move() } }
+  private func inTurn(_ move: @escaping @Sendable (Int) async -> Void) async { await moves.inTurn(move) }
+
+  private func isLatest(_ run: Int) -> Bool { moves.isLatest(run) }
+
+  private func connectMove(relay: String, key: String) async {
     // The knock key for the HTTPS look: Argon2id at 64 MiB, here and never in the extension (§2.1).
     let knock = await Task.detached(priority: .userInitiated) { () -> Data? in
       var out = [UInt8](repeating: 0, count: 32)
@@ -118,58 +151,62 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     }
   }
 
-  public func acceptConsent() async {
-    lock.withLock { consentedNow = true }
-    publish { $0.consented = true }
+  private func switchOff() async {
+    let m = lock.withLock { () -> NETunnelProviderManager? in
+      attempt = VPNStatusMachine.Attempt()
+      return manager
+    }
+    m?.connection.stopVPNTunnel()
+    publish { if $0.isSetUp { $0.status = .off } }
   }
 
-  public func setOn(_ on: Bool) async {
-    guard on else {
-      let m = lock.withLock { () -> NETunnelProviderManager? in
-        attempt = VPNStatusMachine.Attempt()
-        return manager
-      }
-      m?.connection.stopVPNTunnel()
-      publish { $0.status = .off }
-      return
-    }
+  private func switchOn(run: Int) async {
     let now = current
     guard now.isSetUp, now.consented, let host = now.host else { return }
-    let (toWrite, consent) = lock.withLock { () -> (VPNTunnelItem?, Bool) in
+    guard let (toWrite, consent) = lock.withLock({ () -> (VPNTunnelItem?, Bool)? in
+      guard moves.isLatest(run) else { return nil }
       attempt = VPNStatusMachine.Attempt(wantsOn: true)
       return (pending, consentedNow)
-    }
-    publish { $0.status = .connecting }
+    }) else { return }
+    publish(run: run) { $0.status = .connecting }
     // Switched on: only now is anything written (the item, the host and consent).
     if let toWrite {
       guard item.save(toWrite) else {
-        lock.withLock { attempt = VPNStatusMachine.Attempt() }
-        publish { $0.status = .failed(.other("This phone couldn't keep the VPN code. Try again.")) }
+        failed(run: run, .other("This phone couldn't keep the VPN code. Try again."))
         return
       }
       lock.withLock { pending = nil }
     }
+    // The item and the host and consent are one write: once the item is saved, so are they (a later
+    // move corrects the screen, and a remove deletes both).
     var state = VPNSharedState.load(defaults)
     state.host = host
     state.consented = state.consented || consent
     state.save(defaults)
     let m: NETunnelProviderManager
     do {
-      m = try await savedManager(host: host)
+      m = try await savedManager(host: host, run: run)
     } catch {
-      lock.withLock { attempt = VPNStatusMachine.Attempt() }
-      publish { $0.status = .failed(.notAllowed) }  // the person declined iOS's alert
+      // Overtaken while iOS asked: the move waiting says what is true.
+      if error is CancellationError { return }
+      failed(run: run, .notAllowed)  // the person declined iOS's alert
       return
     }
+    guard isLatest(run) else { return }
     do {
       try m.connection.startVPNTunnel()
     } catch {
-      lock.withLock { attempt = VPNStatusMachine.Attempt() }
-      publish { $0.status = .failed(.other("iOS couldn't start the VPN.")) }
+      failed(run: run, .other("iOS couldn't start the VPN."))
     }
   }
 
-  public func remove() async {
+  private func failed(run: Int, _ problem: VPNProblem) {
+    lock.withLock { if moves.isLatest(run) { attempt = VPNStatusMachine.Attempt() } }
+    publish(run: run) { $0.status = .failed(problem) }
+  }
+
+  private func removeMove() async {
+    // Not set up from here on: a switch move waiting after this one has nothing to turn on.
     let m = lock.withLock { () -> NETunnelProviderManager? in
       generation += 1
       attempt = VPNStatusMachine.Attempt()
@@ -178,6 +215,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
       defer { manager = nil }
       return manager
     }
+    publish { $0 = VPNSnapshot(status: .notSetUp) }
     m?.connection.stopVPNTunnel()
     // Ours, whether or not this run loaded it.
     let all = (try? await NETunnelProviderManager.loadAllFromPreferences()) ?? []
@@ -185,7 +223,6 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     item.remove()
     defaults.removePersistentDomain(forName: VPNNames.appGroup)
     defaults.removeObject(forKey: VPNSharedState.defaultsKey)  // a standard-defaults fallback, too
-    publish { $0 = VPNSnapshot(status: .notSetUp) }
   }
 
   // MARK: - iOS's VPN configuration
@@ -207,7 +244,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   }
 
   /// Ours, saved with this host and enabled: the first save shows iOS's "Add VPN Configurations".
-  private func savedManager(host: String) async throws -> NETunnelProviderManager {
+  private func savedManager(host: String, run: Int) async throws -> NETunnelProviderManager {
     let all = try await NETunnelProviderManager.loadAllFromPreferences()
     let m = all.first(where: Self.isOurs) ?? NETunnelProviderManager()
     let proto = (m.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
@@ -219,25 +256,31 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     m.isEnabled = true
     try await m.saveToPreferences()
     try await m.loadFromPreferences()  // as iOS requires before the first start
-    lock.withLock { manager = m }
+    // Only the latest run's: an overtaken one's would hide the live tunnel's status news.
+    guard lock.withLock({ () -> Bool in
+      guard moves.isLatest(run) else { return false }
+      manager = m
+      return true
+    }) else { throw CancellationError() }
     return m
   }
 
   private func statusChanged(_ connection: NEVPNConnection) {
     guard let status = VPNStatusMachine.Status(rawValue: connection.status.rawValue) else { return }
-    let phase = lock.withLock { VPNStatusMachine.phase(status, &attempt) }
+    let (phase, run) = lock.withLock { (VPNStatusMachine.phase(status, &attempt), moves.latest) }
     switch phase {
-    case .connecting: publish { $0.status = .connecting }
+    case .connecting: publish(run: run) { if $0.isSetUp { $0.status = .connecting } }
     case .connected:
       let since = connection.connectedDate ?? Date()
-      publish { $0.status = .connected(since: since) }
-    case .reconnecting: publish { $0.status = .reconnecting }
-    case .off: publish { if $0.isSetUp { $0.status = .off } }
+      publish(run: run) { if $0.isSetUp { $0.status = .connected(since: since) } }
+    case .reconnecting: publish(run: run) { if $0.isSetUp { $0.status = .reconnecting } }
+    case .off: publish(run: run) { if $0.isSetUp { $0.status = .off } }
     case .unchanged: break
     case .failed:
-      // It stopped while wanted on: why, in the extension's words (VPNServerProblem).
+      // It stopped while wanted on: why, in the extension's words (VPNServerProblem). The answer
+      // comes later; by then a newer switch move may have said something else.
       connection.fetchLastDisconnectError { [weak self] error in
-        self?.publish { $0.status = Self.status(after: error) }
+        self?.publish(run: run) { if $0.isSetUp { $0.status = Self.status(after: error) } }
       }
     }
   }
@@ -251,12 +294,15 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     }
   }
 
-  private func publish(_ change: (inout VPNSnapshot) -> Void) {
+  /// `run`: the switch move this news belongs to; dropped when a later one has begun.
+  private func publish(run: Int? = nil, _ change: (inout VPNSnapshot) -> Void) {
     delivery.withLock {
-      let (value, list) = lock.withLock {
+      let told: (VPNSnapshot, [AsyncStream<VPNSnapshot>.Continuation])? = lock.withLock {
+        if let run, !moves.isLatest(run) { return nil }
         change(&snapshot)
         return (snapshot, Array(listeners.values))
       }
+      guard let (value, list) = told else { return }
       list.forEach { $0.yield(value) }
     }
   }

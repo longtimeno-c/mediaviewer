@@ -6,6 +6,35 @@ import MobileLinkSupport
 import XCTest
 
 final class VPNTunnelTests: XCTestCase {
+  /// The last call wins (LinkVPN): moves run in the order they were called, never two at once, and
+  /// a switch-on still waiting on iOS learns that a later move was called.
+  func testVPNMovesRunInTurnAndKnowWhenOvertaken() async {
+    let moves = VPNMoves()
+    let log = Log()
+    let gate = Gate()
+    // A switch-on that waits on iOS's alert; meanwhile a switch-off, then a remove, are called.
+    let on = Task {
+      await moves.inTurn { run in
+        log.add("on starts")
+        await gate.wait()
+        log.add(moves.isLatest(run) ? "on starts the tunnel" : "on overtaken")
+      }
+    }
+    while !log.entries.contains("on starts") { await Task.yield() }
+    let off = Task { await moves.inTurn { run in log.add("off \(moves.isLatest(run) ? "latest" : "overtaken")") } }
+    while moves.latest < 2 { await Task.yield() }  // the off is called first, then the remove
+    let remove = Task { await moves.inTurn { run in log.add("remove \(moves.isLatest(run) ? "latest" : "overtaken")") } }
+    while moves.latest < 3 { await Task.yield() }
+    for _ in 0..<100 { await Task.yield() }
+    XCTAssertEqual(log.entries, ["on starts"], "A later move began before the switch-on ended")
+    gate.open()
+    await on.value
+    await off.value
+    await remove.value
+    // Every move ran, in order; only the last was still the latest when it ran.
+    XCTAssertEqual(log.entries, ["on starts", "on overtaken", "off overtaken", "remove latest"])
+  }
+
   func testTheSharedKeychainGroupCarriesTheTeamPrefix() {
     XCTAssertEqual(VPNNames.keychainGroup(prefix: "23FQ4A4Q35."), "23FQ4A4Q35.io.github.longtimeno-c.mediaviewer.mobile.vpn")
     XCTAssertEqual(VPNNames.keychainGroup(prefix: "23FQ4A4Q35"), "23FQ4A4Q35.io.github.longtimeno-c.mediaviewer.mobile.vpn")
@@ -107,5 +136,37 @@ final class VPNStatusMachineTests: XCTestCase {
     XCTAssertFalse(a.sawConnecting)  // not an attempt of the person's
     XCTAssertEqual(M.phase(.disconnected, &a), .off)
     XCTAssertEqual(M.Status(rawValue: 3), .connected)  // NEVPNStatus.connected
+  }
+}
+
+private final class Log: @unchecked Sendable {
+  private let lock = NSLock()
+  private var list: [String] = []
+  var entries: [String] { lock.withLock { list } }
+  func add(_ entry: String) { lock.withLock { list.append(entry) } }
+}
+
+/// Holds a move until the test opens it.
+private final class Gate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var isOpen = false
+  private var waiter: CheckedContinuation<Void, Never>?
+  func wait() async {
+    await withCheckedContinuation { c in
+      let now = lock.withLock { () -> Bool in
+        if isOpen { return true }
+        waiter = c
+        return false
+      }
+      if now { c.resume() }
+    }
+  }
+  func open() {
+    let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+      isOpen = true
+      defer { waiter = nil }
+      return waiter
+    }
+    c?.resume()
   }
 }

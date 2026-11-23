@@ -187,6 +187,35 @@ public struct VPNItemStore: Sendable {
   public func remove() { SecItemDelete(query as CFDictionary) }
 }
 
+/// The VPN's moves (a new code, the switch, remove), one at a time in the order they were called, so
+/// the last call wins (LinkVPN). Each move begins a run when it is called: a move still running can
+/// ask whether a later one is waiting (`isLatest`) and then write, start and show nothing more.
+/// What it learns afterwards (iOS's alert answered, the extension's reason for a stop) belongs to
+/// its run too. Takes only its own lock, so it may be asked from under the caller's.
+public final class VPNMoves: @unchecked Sendable {
+  private let lock = NSLock()
+  private var latestRun = 0
+  private var last: Task<Void, Never>?
+
+  public init() {}
+
+  public var latest: Int { lock.withLock { latestRun } }
+  public func isLatest(_ run: Int) -> Bool { lock.withLock { run == latestRun } }
+
+  /// Begins a run now; `move` runs once every earlier move has ended.
+  public func inTurn(_ move: @escaping @Sendable (Int) async -> Void) async {
+    let turn = lock.withLock { () -> Task<Void, Never> in
+      latestRun += 1
+      let run = latestRun
+      let before = last
+      let turn = Task { await before?.value; await move(run) }
+      last = turn
+      return turn
+    }
+    await turn.value
+  }
+}
+
 /// What iOS's VPN status means for the screen (LinkVPN), pure so it is tested without iOS.
 public enum VPNStatusMachine {
   /// NEVPNStatus's raw values (NetworkExtension is not imported here).
