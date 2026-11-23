@@ -588,8 +588,16 @@ bool mv_chrome_photos_backup_start(const char* destination_utf8);
 void mv_chrome_photos_backup_cancel(void);
 // The current (or last finished) run of this session; state 0 when none.
 void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out);
-// The destination last used (persisted); length needed, "" when none.
+// The destination last used (persisted); length needed, "" when none. A folder's path, or
+// a paired server's folder key ("remote:…/", docs/design/26 "Backup to a server"): start
+// takes either. A server's folder must be inside one of its named folders, and this
+// computer must be allowed to change files there (mv_chrome_write_problem says why not).
 int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size);
+// What a server's folder is shown as ("Home › Photos"); "" for a path. No I/O.
+int32_t mv_chrome_photos_backup_destination_name(const char* destination_utf8, char* buf, int32_t size);
+// Where the destination's manifest and last-run.txt are: the folder itself, or for a
+// server's folder a folder on this Mac.
+int32_t mv_chrome_photos_backup_home(const char* destination_utf8, char* buf, int32_t size);
 // The folders new files go into (persisted beside the destination; issue #414):
 // 0 YYYY/YYYY-MM-DD (default), 1 YYYY, 2 YYYY/MM/DD, 3 YYYY-MM-DD, 4 flat.
 // Used by the next start; files already backed up are never moved.

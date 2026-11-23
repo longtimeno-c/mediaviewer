@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "clip_fixture.h"
+#include "shell/photos_backup_server.h"
 #include "fixtures.h"
 #include "import_fixture.h"
 #include "image/pipeline.h"
@@ -1047,3 +1048,135 @@ TEST_CASE("remote folder timings over loopback", "[.perf-bench][.desktop-client-
   }
 }
 
+// docs/design/26 "Backup to a server": the Photos backup's server destination over a real
+// service. Only a desktop the host lets change files is a destination at all.
+TEST_CASE("a Photos backup's server folder: refused for a view desktop, made, filled and asked for a change one",
+          "[desktop-client][remote-change][photos_backup]") {
+  namespace bk = mv::shell::backup;
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  CHECK_FALSE(bk::make_server_folder(*d.lib, rm::server_key(*id)));  // a server's top holds no files
+  CHECK_FALSE(bk::make_server_folder(*d.lib, "/Volumes/photos"));
+  auto view = bk::make_server_folder(*d.lib, photos);
+  REQUIRE(view);
+  CHECK_FALSE(view->reachable());
+
+  allow_changes(h, true);
+  d.relaunch();
+  auto far = bk::make_server_folder(*d.lib, photos);
+  REQUIRE(far);
+  CHECK(far->reachable());
+
+  scratch_dir local{"desktop_backup_local"};
+  put_file(local / "one.jpg", photo(32, 24, 7));
+  put_file(local / "two.jpg", photo(32, 24, 8));
+  std::uint64_t sent = 0;
+  const auto count = [&](std::uint64_t delta) { sent += delta; };
+  auto name = far->put(utf8(local / "one.jpg"), "2024/2024-05-17", "IMG_1.jpg", nullptr, count);
+  REQUIRE(name);
+  CHECK(*name == "IMG_1.jpg");
+  CHECK(sent == fs::file_size(local / "one.jpg"));
+  CHECK(fs::file_size(h.photos / "2024" / "2024-05-17" / "IMG_1.jpg") == fs::file_size(local / "one.jpg"));
+  // The same day again (its folders are there already), the same name: both kept.
+  name = far->put(utf8(local / "two.jpg"), "2024/2024-05-17", "IMG_1.jpg", nullptr, {});
+  REQUIRE(name);
+  CHECK(*name == "IMG_1 (2).jpg");
+  // A new run of the app meets the folders already there.
+  d.relaunch();
+  far = bk::make_server_folder(*d.lib, photos);
+  name = far->put(utf8(local / "two.jpg"), "2024/2024-05-17", "IMG_2.jpg", nullptr, {});
+  REQUIRE(name);
+  // The folder itself (the flat layout).
+  name = far->put(utf8(local / "one.jpg"), "", "flat.jpg", nullptr, {});
+  REQUIRE(name);
+  CHECK(fs::exists(h.photos / "flat.jpg"));
+
+  auto there = far->has("2024/2024-05-17/IMG_1.jpg");
+  REQUIRE(there);
+  CHECK(*there);
+  there = far->has("2024/2024-05-17/gone.jpg");
+  REQUIRE(there);
+  CHECK_FALSE(*there);
+
+  // A stop asked before the send: nothing goes.
+  std::atomic<bool> stop{true};
+  CHECK_FALSE(far->put(utf8(local / "one.jpg"), "", "stopped.jpg", &stop, {}));
+  CHECK_FALSE(fs::exists(h.photos / "stopped.jpg"));
+
+  // The host stops answering: it cannot say, which is not "gone".
+  h.stop();
+  CHECK_FALSE(far->reachable());
+  CHECK_FALSE(far->has("2024/2024-05-17/IMG_1.jpg"));
+
+  // One manifest folder per server folder, the key not readable in it.
+  const std::string a = bk::server_state_dir(utf8(local.root()), photos);
+  CHECK(a == bk::server_state_dir(utf8(local.root()), photos));
+  CHECK(a != bk::server_state_dir(utf8(local.root()), photos + "2024/"));
+  CHECK(a.find("remote") == std::string::npos);
+}
+
+// The whole way: the backup engine, the server folder, a real service.
+TEST_CASE("a Photos backup run reaches a paired server's folder, and a second run sends nothing",
+          "[desktop-client][remote-change][photos_backup]") {
+  namespace bk = mv::shell::backup;
+  struct two_photos final : bk::source {
+    fs::path dir;
+    mv::result<std::vector<bk::asset_file>> enumerate(const std::atomic<bool>*) override {
+      // 2024-05-17 and three days on, at noon UTC: the same day in every time zone a test runs in.
+      return std::vector<bk::asset_file>{{"A", bk::file_kind::original, "IMG_1.jpg", 1715947200, 0},
+                                         {"B", bk::file_kind::original, "IMG_2.jpg", 1716206400, 0}};
+    }
+    mv::result<std::string> local_file(const bk::asset_file& f) override { return utf8(dir / f.filename); }
+    mv::expected fetch(const bk::asset_file&, const std::string&, const std::atomic<bool>*) override {
+      return mv::err(mv::status::unsupported_format);
+    }
+  };
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  scratch_dir local{"desktop_backup_run"};
+  put_file(local / "IMG_1.jpg", photo(32, 24, 1));
+  put_file(local / "IMG_2.jpg", photo(48, 32, 2));
+  const auto run = [&] {
+    auto src = std::make_unique<two_photos>();
+    src->dir = local.root();
+    bk::options o{bk::server_state_dir(utf8(local / "state"), photos), utf8(local / "tmp")};
+    o.folders = bk::layout::year;
+    o.server = bk::make_server_folder(*d.lib, photos);
+    REQUIRE(o.server);
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), std::move(o)));
+    e.join();
+    return e.snapshot();
+  };
+  bk::progress p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.done == 2);
+  CHECK(p.failed == 0);
+  CHECK(fs::file_size(h.photos / "2024" / "IMG_1.jpg") == fs::file_size(local / "IMG_1.jpg"));
+  CHECK(fs::file_size(h.photos / "2024" / "IMG_2.jpg") == fs::file_size(local / "IMG_2.jpg"));
+  CHECK_FALSE(fs::exists(h.photos / ".mediaviewer-photos-backup"));  // the manifest stays here
+
+  p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.done == 0);
+  CHECK(p.skipped == 2);
+
+  // Access taken back: the run fails at the start, nothing is held or lost.
+  allow_changes(h, false);
+  d.relaunch();
+  p = run();
+  CHECK(p.state == bk::run_state::failed);
+  CHECK(p.held == 0);
+}

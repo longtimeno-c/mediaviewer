@@ -1324,6 +1324,7 @@ if(MV_BUILD_TESTS)
     # docs/design/26: the Photos backup engine, portable; PhotoKit is the Mac host's.
     tests/test_photos_backup.cpp
     src/shell/photos_backup.cpp
+    src/shell/photos_backup_server.cpp
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp

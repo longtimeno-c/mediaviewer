@@ -618,6 +618,8 @@ add_library(mv_shell STATIC
   # Check library: the backup's index is the Import add-on's, through mv.import.1.
   src/shell/photos_backup_library.cpp
   src/shell/photos_backup_library.h
+  src/shell/photos_backup_server.cpp
+  src/shell/photos_backup_server.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h

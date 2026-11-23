@@ -152,6 +152,7 @@
 #include "shell/photos_backup.h"
 #include "shell/photos_backup_mac.h"
 #include "shell/photos_backup_library.h"
+#include "shell/photos_backup_server.h"
 
 // Whether two file URLs are on one volume, where a move is a rename. Unknown
 // counts as different, so an unanswerable case takes the verified path.
@@ -2016,6 +2017,33 @@ extern "C" void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out) {
 }
 extern "C" int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app photosBackupDestination] : std::string{}, buf, size);
+}
+// Where a destination's manifest and report live: the folder itself, or for a server's
+// folder ("remote:…/") a folder of this Mac's, since only the photos go to the server.
+static std::string MvPhotosBackupHome(const std::string& destination) {
+  if (!mv::remote::is_key(destination)) return destination;
+  NSString* support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+  if (!support) return {};
+  return mv::shell::backup::server_state_dir(std::string(support.UTF8String) + "/MediaViewer/Photos Backup Servers",
+                                             destination);
+}
+extern "C" int32_t mv_chrome_photos_backup_home(const char* destination_utf8, char* buf, int32_t size) {
+  return MvCopyOut(destination_utf8 ? MvPhotosBackupHome(destination_utf8) : std::string{}, buf, size);
+}
+// "Home › Photos › 2024" for a server's folder (its key names nothing); "" for a path. No I/O.
+extern "C" int32_t mv_chrome_photos_backup_destination_name(const char* destination_utf8, char* buf, int32_t size) {
+  std::string out;
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (lib && destination_utf8 && mv::remote::is_key(destination_utf8)) {
+    for (const std::string& key : mv::remote::key_chain(destination_utf8)) {
+      std::string name = lib->display_name(key);
+      if (name.empty()) name = mv::remote::leaf_name(key);
+      if (name.empty()) continue;
+      if (!out.empty()) out += " \xE2\x80\xBA ";
+      out += name;
+    }
+  }
+  return MvCopyOut(out, buf, size);
 }
 extern "C" int32_t mv_chrome_photos_backup_layout(void) {
   return g_chrome_app ? [g_chrome_app photosBackupLayout] : 0;
@@ -16500,9 +16528,18 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   mv::shell::backup::options opts;
   opts.destination = destination;
   opts.folders = static_cast<mv::shell::backup::layout>([self photosBackupLayout]);
+  if (mv::remote::is_key(destination)) {
+    // A server's folder (docs/design/26 "Backup to a server"): the originals are sent there,
+    // the manifest stays on this Mac. No Check library: Import's index knows local folders.
+    mv::remote::library* lib = mv::remote::library::shared();
+    if (!lib || checkOnly) return NO;
+    opts.server = mv::shell::backup::make_server_folder(*lib, destination);
+    opts.destination = MvPhotosBackupHome(destination);
+    if (!opts.server || opts.destination.empty()) return NO;
+  }
   // Check library: Import's index, when Import is loaded. A check needs it; a
   // backup without it is as before.
-  opts.index = mv::shell::backup::make_import_library(MvAddonsImportTable());
+  if (!opts.server) opts.index = mv::shell::backup::make_import_library(MvAddonsImportTable());
   opts.scope = static_cast<mv::shell::backup::library_scope>([self photosBackupScope]);
   opts.check_only = checkOnly == YES;
   if (opts.check_only && !opts.index) return NO;
@@ -16611,7 +16648,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (choices.empty()) return NO;
   g_photos_decide_pending.fetch_add(1);
   dispatch_async(MvPhotosDecideQueue(), ^{
-    const bool ok = static_cast<bool>(mv::shell::backup::decide_deleted(destination, choices));
+    const bool ok = static_cast<bool>(mv::shell::backup::decide_deleted(MvPhotosBackupHome(destination), choices));
     if (!ok) MV_LOG_WARN("photos backup: a choice could not be written");
     g_photos_decide_failed.store(!ok);
     g_photos_decide_pending.fetch_sub(1);

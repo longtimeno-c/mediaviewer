@@ -35,6 +35,20 @@ final class PhotosBackupStore: ObservableObject {
   /// The run on screen is a check, not a backup.
   @Published private(set) var checking = false
   @Published private(set) var report: CheckReport?
+  /// A paired server's shared folder the backup can go to (docs/design/26 "Backup to a
+  /// server"); `problem` says why this Mac may not add files there ("" when it may).
+  struct ServerTarget: Equatable, Identifiable {
+    let key: String
+    let name: String
+    let problem: String
+    var id: String { key }
+  }
+  @Published private(set) var serverTargets: [ServerTarget] = []
+  /// "Home › Photos" for a server's folder; "" for a folder on this Mac.
+  @Published private(set) var destinationName = ""
+  var destinationIsServer: Bool { destination.hasPrefix("remote:") }
+  private var targetsLoading = false
+  private var targetsServers: String?
   private init() {
     // Issue #178: polled when the main run loop has run (ChromePulse), and
     // only while Settings, where the backup shows, is open; its timer runs
@@ -71,6 +85,16 @@ final class PhotosBackupStore: ObservableObject {
     let n = buf.withUnsafeMutableBufferPointer { mv_chrome_photos_backup_destination($0.baseAddress, Int32($0.count)) }
     let dest = n > 0 ? String(cString: buf) : ""
     if dest != destination { destination = dest }
+    // Listed again when a server is paired, forgotten, or its state or role changes. Its own
+    // lines, not the generation: listing bumps that, and would list again for ever.
+    let servers = Self.text { mv_chrome_remote_servers($0, $1) }
+    if servers != targetsServers && !targetsLoading {
+      targetsServers = servers
+      loadServerTargets()
+    }
+    let shown = destinationIsServer
+      ? Self.text { b, n in destination.withCString { mv_chrome_photos_backup_destination_name($0, b, n) } } : ""
+    if shown != destinationName { destinationName = shown }
     let folders = mv_chrome_photos_backup_layout()
     if folders != layout { layout = folders }
     let s = mv_chrome_photos_backup_scope()
@@ -92,6 +116,59 @@ final class PhotosBackupStore: ObservableObject {
     }
   }
 
+  private static func text(_ call: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> String {
+    var buf = [CChar](repeating: 0, count: 4096)
+    let n = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, Int32($0.count)) }
+    return n > 0 && Int(n) < buf.count ? String(cString: buf) : ""
+  }
+
+  /// The paired servers' shared folders, listed off the main actor (each is a request to
+  /// its server); what this Mac may do there is known once they are listed.
+  func loadServerTargets() {
+    guard !targetsLoading else { return }
+    let servers = Self.text { mv_chrome_remote_servers($0, $1) }.split(separator: "\n").compactMap { line -> (String, String)? in
+      let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+      return f.count >= 2 ? (String(f[0]), String(f[1])) : nil
+    }
+    guard !servers.isEmpty else {
+      if !serverTargets.isEmpty { serverTargets = [] }
+      return
+    }
+    targetsLoading = true
+    Task.detached(priority: .userInitiated) {
+      var found: [(server: String, name: String, key: String)] = []
+      for (server, key) in servers {
+        var buf = [CChar](repeating: 0, count: 64 * 1024)
+        let n = key.withCString { k in
+          buf.withUnsafeMutableBufferPointer { mv_chrome_list_subdirectories(k, $0.baseAddress, Int32($0.count)) }
+        }
+        guard n > 0, Int(n) < buf.count else { continue }
+        for line in String(cString: buf).split(separator: "\n") {
+          let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+          if f.count >= 2 { found.append((server, String(f[0]), String(f[1]))) }
+        }
+      }
+      let listed = found
+      await MainActor.run {
+        let store = PhotosBackupStore.shared
+        store.targetsLoading = false
+        let targets = listed.map { t in
+          ServerTarget(key: t.key, name: "\(t.server) › \(t.name)",
+                       problem: PhotosBackupStore.text { b, n in t.key.withCString { mv_chrome_write_problem($0, b, n) } })
+        }
+        if targets != store.serverTargets { store.serverTargets = targets }
+      }
+    }
+  }
+
+  /// A server's shared folder as the destination; as with a folder, choosing it starts.
+  func chooseServer(_ target: ServerTarget) {
+    guard target.problem.isEmpty, !running else { return }
+    destination = target.key
+    destinationName = target.name
+    start()
+  }
+
   func chooseDestination() {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
@@ -100,7 +177,7 @@ final class PhotosBackupStore: ObservableObject {
     panel.allowsMultipleSelection = false
     panel.prompt = "Choose"
     panel.message = "Choose the folder your Photos library is backed up into (a NAS or a drive works)."
-    if !destination.isEmpty { panel.directoryURL = URL(fileURLWithPath: destination) }
+    if !destination.isEmpty && !destinationIsServer { panel.directoryURL = URL(fileURLWithPath: destination) }
     guard panel.runModal() == .OK, let url = panel.url else { return }
     destination = url.path
     start()
@@ -202,14 +279,17 @@ final class PhotosBackupStore: ObservableObject {
 
   func showReport() {
     guard !destination.isEmpty else { return }
-    let report = URL(fileURLWithPath: destination)
+    // A server's folder keeps its manifest and report on this Mac.
+    let home = Self.text { b, n in destination.withCString { mv_chrome_photos_backup_home($0, b, n) } }
+    guard !home.isEmpty else { return }
+    let report = URL(fileURLWithPath: home)
       .appendingPathComponent(".mediaviewer-photos-backup", isDirectory: true)
       .appendingPathComponent("last-run.txt")
     NSWorkspace.shared.open(report)
   }
 
   func revealDestination() {
-    guard !destination.isEmpty else { return }
+    guard !destination.isEmpty, !destinationIsServer else { return }
     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: destination)])
   }
 }
@@ -357,7 +437,9 @@ struct PhotosBackupSection: View {
   }
 
   private var destinationLabel: String {
-    store.destination.isEmpty ? "No folder chosen yet" : (store.destination as NSString).abbreviatingWithTildeInPath
+    if store.destination.isEmpty { return "No folder chosen yet" }
+    if store.destinationIsServer { return store.destinationName.isEmpty ? "A server's folder" : store.destinationName }
+    return (store.destination as NSString).abbreviatingWithTildeInPath
   }
 
   private var progressFraction: Double {
@@ -438,15 +520,33 @@ struct PhotosBackupSection: View {
             .animation(quick, value: store.running)
           }
           HStack(spacing: MVTheme.space(8)) {
-            Image(systemName: "externaldrive").foregroundStyle(MVTheme.body)
+            Image(systemName: store.destinationIsServer ? "server.rack" : "externaldrive").foregroundStyle(MVTheme.body)
             Text(destinationLabel).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
               .lineLimit(1).truncationMode(.middle)
-              .help(store.destination)
-            if !store.destination.isEmpty {
+              .help(store.destinationIsServer
+                    ? "A shared folder on a server this Mac is paired with. The originals are sent there; the record of what was sent stays on this Mac."
+                    : store.destination)
+            if !store.destination.isEmpty && !store.destinationIsServer {
               Button("Reveal") { store.revealDestination() }.controlSize(.small)
             }
-            Button(store.destination.isEmpty ? "Choose…" : "Change…") { store.chooseDestination() }
-              .controlSize(.small).disabled(store.running)
+            if store.serverTargets.isEmpty {
+              Button(store.destination.isEmpty ? "Choose…" : "Change…") { store.chooseDestination() }
+                .controlSize(.small).disabled(store.running)
+            } else {
+              // A folder on this Mac (or a mounted share), or a paired server's shared folder.
+              Menu(store.destination.isEmpty ? "Choose…" : "Change…") {
+                Button("Choose Folder…") { store.chooseDestination() }
+                Section("On a server") {
+                  ForEach(store.serverTargets) { target in
+                    Button(target.problem.isEmpty ? target.name : "\(target.name) (view only)") {
+                      store.chooseServer(target)
+                    }
+                    .disabled(!target.problem.isEmpty)
+                  }
+                }
+              }
+              .controlSize(.small).fixedSize().disabled(store.running)
+            }
             Spacer(minLength: 0)
           }
           HStack(spacing: MVTheme.space(8)) {
@@ -464,11 +564,14 @@ struct PhotosBackupSection: View {
             Picker("Skip photos already in", selection: scopeBinding) {
               ForEach(backupScopes, id: \.value) { Text($0.label).tag($0.value) }
             }
-            .labelsHidden().controlSize(.small).fixedSize().disabled(store.running || !store.index)
+            .labelsHidden().controlSize(.small).fixedSize()
+            .disabled(store.running || !store.index || store.destinationIsServer)
             Button("Check library") { store.check() }
               .controlSize(.small)
-              .disabled(store.running || !store.index || store.destination.isEmpty)
-              .help("Compares your Photos library with the folder, by content: what is already there, what would be copied, what was deleted since, and duplicates. Changes nothing.")
+              .disabled(store.running || !store.index || store.destination.isEmpty || store.destinationIsServer)
+              .help(store.destinationIsServer
+                    ? "Check library compares with a folder on this Mac or a mounted share; a server's folder is not read back."
+                    : "Compares your Photos library with the folder, by content: what is already there, what would be copied, what was deleted since, and duplicates. Changes nothing.")
             Spacer(minLength: 0)
           }
           if !store.index {
