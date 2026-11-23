@@ -125,6 +125,9 @@ public enum FailureCopy {
   public static let backupSampleAbout =
     "With the sample library, backup copies your photos to a folder inside MediaViewer on this iPhone, so you can see how it works. Nothing leaves this phone, and Forget removes the folder."
   public static let sampleBackupFolder = "Sample server on this iPhone"
+  /// The sample library's Add, Move, Rename and Delete: a demo kept on the phone.
+  public static let sampleChangesDemo =
+    "Try changing files here. In the sample library changes stay on this iPhone. They go when the sample is opened again."
 
   public static func backupLine(for state: BackupState, sample: Bool = false) -> String? {
     switch state {
@@ -157,4 +160,67 @@ public enum FailureCopy {
     case .photosNotAllowed: return photosNotAllowed
     }
   }
+}
+
+/// Changing files in the server's folders (Add, New folder, Move, Rename, Delete).
+public enum ChangeCopy {
+  public static func line(for failure: ChangeFailure, name: String? = nil) -> String {
+    let it = name.map { "“\($0)”" }
+    switch failure {
+    case .exists:
+      return "\(it ?? "That name") is already taken there. Nothing was replaced; choose another name."
+    case .notAllowed: return "Your server doesn't let this phone change files in this folder."
+    case .badName:
+      return "Your server won't take \(it ?? "that name"). Leave out / \\ : * ? \" < > |, and don't start or end it with a dot."
+    case .nameTooLong: return "That name is too long for your server. Choose a shorter one."
+    case .busy: return "\(it ?? "That") is in use on your server right now. Try again in a moment."
+    case .full: return "Your server is full, so nothing more can be added there."
+    case .offline: return "The drive with this folder isn't connected to your server. Connect it, then try again."
+    case .notFound: return "\(it ?? "That") isn't on your server any more. It may have been moved or deleted."
+    case .unsupported: return "The MediaViewer service on your server needs updating to change files."
+    case .unreachable: return "Can't reach your server. Check the connection and try again."
+    case .damaged: return "\(it ?? "The file") didn't arrive whole. Try again."
+    case .failed: return "Your server couldn't do that. Try again."
+    case .unreadable: return "Couldn't read \(it ?? "that file") on this iPhone. Only files can be added, not folders."
+    }
+  }
+
+  public static func deleteTitle(_ count: Int, name: String?) -> String {
+    if count == 1, let name { return "Delete “\(name)”?" }
+    return "Delete \(count.formatted()) items?"
+  }
+  public static func deleteMessage(_ count: Int, sample: Bool = false) -> String {
+    if sample { return (count == 1 ? "It comes" : "They come") + " back when the sample is opened again." }
+    return (count == 1 ? "It goes" : "They go") + " to the trash on your server, where "
+      + (count == 1 ? "it" : "they") + " can be restored."
+  }
+  public static func selected(_ count: Int) -> String {
+    count == 0 ? "Select items" : count == 1 ? "1 selected" : "\(count.formatted()) selected"
+  }
+  public static func moved(_ count: Int, to folder: String) -> String {
+    (count == 1 ? "1 item" : "\(count.formatted()) items") + " moved to “\(folder)”."
+  }
+  public static func uploading(_ name: String) -> String { "Adding “\(name)”" }
+  public static let uploadWaiting = "Waiting"
+  public static let uploadPreparing = "Getting it ready"
+
+  /// "2 of 3 moved." before the reason the others did not.
+  static func partly(verb: LibraryModel.Verb, done: Int, of total: Int) -> String {
+    let did: String
+    switch verb {
+    case .move(let folder): did = "moved to “\(folder)”"
+    case .delete: did = "deleted"
+    case .rename: did = "renamed"
+    case .newFolder: did = "made"
+    }
+    return "\(done.formatted()) of \(total.formatted()) \(did)."
+  }
+  public static let newFolder = "New Folder"
+  public static let moveHere = "Move Here"
+  public static func uploadsDropped(_ count: Int, folder: String) -> String {
+    (count == 1 ? "1 file waiting" : "\(count.formatted()) files waiting") + " to go into “\(folder)” "
+      + (count == 1 ? "wasn't" : "weren't") + " sent, because the folder was moved or deleted. Add "
+      + (count == 1 ? "it" : "them") + " again where it is now."
+  }
+  public static let noChangeableFolders = "This phone can't change files in any folder on your server."
 }

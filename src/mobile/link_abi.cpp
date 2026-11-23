@@ -878,6 +878,140 @@ int32_t mv_files_read(mv_mobile_link* l, const char* root, const char* rel, uint
   });
 }
 
+// ---- changing the shared folders ---------------------------------------------------------------
+
+namespace {
+
+using change_why = driftwire::serve::client::change_why;
+
+int32_t why_code(change_why w) {
+  switch (w) {
+    case change_why::none: return MV_CHANGE_NONE;
+    case change_why::unsupported: return MV_CHANGE_UNSUPPORTED;
+    case change_why::not_allowed: return MV_CHANGE_NOT_ALLOWED;
+    case change_why::path: return MV_CHANGE_PATH;
+    case change_why::exists: return MV_CHANGE_EXISTS;
+    case change_why::busy: return MV_CHANGE_BUSY;
+    case change_why::name: return MV_CHANGE_NAME;
+    case change_why::limit: return MV_CHANGE_LIMIT;
+    case change_why::full: return MV_CHANGE_FULL;
+    case change_why::offline: return MV_CHANGE_OFFLINE;
+    case change_why::not_found: return MV_CHANGE_NOT_FOUND;
+    case change_why::hash: return MV_CHANGE_HASH;
+    case change_why::offset: return MV_CHANGE_OFFSET;
+    case change_why::failed: return MV_CHANGE_FAILED;
+  }
+  return MV_CHANGE_FAILED;
+}
+
+bool rel_ok(const char* rel) {
+  if (!rel || !*rel) return false;
+  return driftwire::safe_relative(rel);
+}
+
+// The answer in `out`, and the status: a refusal is MV_LINK_DENIED (not_found and offline
+// MV_LINK_NOT_FOUND), an older service MV_LINK_UNSUPPORTED.
+int32_t change_answer(const result<driftwire::serve::client::change_done>& done,
+                      const driftwire::serve::client::change_refused& why, mv_change_result* out) {
+  *out = mv_change_result{};
+  out->why = why_code(why.why);
+  if (done) {
+    // A place too long to hand back is still a change that worked: rel stays "" and the host
+    // keeps the name it asked for.
+    if (done->rel.size() < sizeof(out->rel)) std::memcpy(out->rel, done->rel.c_str(), done->rel.size() + 1);
+    out->existing = done->existing ? 1 : 0;
+    return MV_LINK_OK;
+  }
+  switch (why.why) {
+    case change_why::unsupported: return MV_LINK_UNSUPPORTED;
+    case change_why::not_found:
+    case change_why::offline: return MV_LINK_NOT_FOUND;
+    case change_why::none:
+      // The phone's own file could not be read: not the server's doing.
+      if (done.error() == status::invalid_arg) {
+        out->why = MV_CHANGE_LOCAL;
+        return MV_LINK_INVALID;
+      }
+      return status_of_read(done.error());
+    case change_why::failed: return status_of_read(done.error());
+    default: return MV_LINK_DENIED;
+  }
+}
+
+}  // namespace
+
+int32_t mv_files_can_change(mv_mobile_link* l, int32_t* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    *out = 0;
+    if (!l->session) return MV_LINK_OK;  // the sample library changes nothing on a server
+    auto can = l->session->changes_files();
+    if (!can) return status_of_read(can.error());
+    *out = *can ? 1 : 0;
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_writable_roots(mv_mobile_link* l, mv_writable_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    auto listed = l->remote->roots();
+    if (!listed) return status_of_read(listed.error());
+    for (const auto& r : *listed) fn(ctx, r.id.c_str(), l->session && r.writable && !r.offline ? 1 : 0);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_add(mv_mobile_link* l, const char* root, const char* rel, const char* local_path, mv_cancel* cancel,
+                     mv_change_progress_fn progress, void* ctx, mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !local_path || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->add_file(root, rel, local_path,
+                                     [&](std::uint64_t d, std::uint64_t t) {
+                                       if (progress) progress(ctx, d, t);
+                                     },
+                                     cancel ? cancel->flag.get() : nullptr, &why);
+    return change_answer(done, why, out);
+  });
+}
+
+int32_t mv_files_mkdir(mv_mobile_link* l, const char* root, const char* rel, mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->make_folder(root, rel, &why);
+    return change_answer(done, why, out);
+  });
+}
+
+int32_t mv_files_move(mv_mobile_link* l, const char* root, const char* rel, const char* to_root, const char* to_rel,
+                      mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !to_root || !rel_ok(to_rel) || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->move(root, rel, to_root, to_rel, &why);
+    return change_answer(done, why, out);
+  });
+}
+
+int32_t mv_files_delete(mv_mobile_link* l, const char* root, const char* rel, mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->remove(root, rel, &why);
+    return change_answer(done, why, out);
+  });
+}
+
 // ---- convert (docs/plans/phone-clip-convert.md) ---------------------------------------------------
 
 namespace {

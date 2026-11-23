@@ -319,6 +319,57 @@ int32_t mv_files_folder_place(mv_mobile_link* link, const char* folder_key, char
 int32_t mv_files_read(mv_mobile_link* link, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
                       mv_cancel* cancel, mv_sink_fn sink, void* ctx);
 
+/* ---- changing the shared folders (file mode; serve_client.h "changing the shared folders") ----
+ * Add, New folder, Move, Rename and Delete, for a device the service lets change files: shown only
+ * when mv_files_can_change says the service offers them, and in a folder only when its root is
+ * writable for this device (mv_files_writable_roots, asked again after a role change). Paths as
+ * mv_files_list; `rel` is never "" (not the folder itself). Each BLOCKS until the service answers
+ * (a move across drives copies, which can take minutes). Never logged.
+ *
+ * A refusal returns MV_LINK_DENIED (or MV_LINK_NOT_FOUND for not_found and offline) with `why`: */
+typedef enum mv_change_why {
+  MV_CHANGE_NONE = 0,
+  MV_CHANGE_UNSUPPORTED = 1,  /* the service is older than these (also MV_LINK_UNSUPPORTED) */
+  MV_CHANGE_NOT_ALLOWED = 2,  /* this device may not change files there now */
+  MV_CHANGE_PATH = 3,         /* the folder itself, a hidden or unsafe name, a folder into itself */
+  MV_CHANGE_EXISTS = 4,       /* the destination is taken; nothing was replaced */
+  MV_CHANGE_BUSY = 5,         /* another request is on that name now */
+  MV_CHANGE_NAME = 6,         /* the name is too long */
+  MV_CHANGE_LIMIT = 7,        /* past a backup folder's storage limit */
+  MV_CHANGE_FULL = 8,         /* the server's disk is full */
+  MV_CHANGE_OFFLINE = 9,      /* the folder's drive is not connected */
+  MV_CHANGE_NOT_FOUND = 10,   /* not there any more (moved or deleted elsewhere) */
+  MV_CHANGE_HASH = 11,        /* add: what arrived was not what was sent, again */
+  MV_CHANGE_OFFSET = 12,      /* (resumed inside mv_files_add; never returned) */
+  MV_CHANGE_FAILED = 13,      /* the server's disk failed it */
+  MV_CHANGE_LOCAL = 14,       /* add: the file on the phone could not be read (MV_LINK_INVALID) */
+} mv_change_why;
+typedef struct mv_change_result {
+  int32_t why;       /* mv_change_why */
+  int32_t existing;  /* mkdir: the folder was there; add: this very file was there */
+  /* Where it is now, under its folder: the new folder, the file (a taken name gets " (2)"), the
+   * destination, or its place in the folder's trash on the server ("YYYY-MM-DD/<rel>"). "" when
+   * it is too long for this buffer (the change still worked). */
+  char rel[4096];
+} mv_change_result;
+/* BLOCKS. 1 in *out when the service offers the changes (0 from an older one, and the sample library). */
+int32_t mv_files_can_change(mv_mobile_link* link, int32_t* out);
+typedef void (*mv_writable_fn)(void* ctx, const char* id, int32_t writable);
+/* BLOCKS. Every named folder (the catalogue's own too), and whether this device may change files in it now. */
+int32_t mv_files_writable_roots(mv_mobile_link* link, mv_writable_fn fn, void* ctx);
+typedef void (*mv_change_progress_fn)(void* ctx, uint64_t done_bytes, uint64_t total_bytes);
+/* BLOCKS. Sends the phone's file at `local_path` to `rel` in `root` (its folders made). Never replaces.
+ * Carries on from this device's unfinished copy after a cancel or a dropped link: call it again. */
+int32_t mv_files_add(mv_mobile_link* link, const char* root, const char* rel, const char* local_path, mv_cancel* cancel,
+                     mv_change_progress_fn progress, void* ctx, mv_change_result* out);
+/* BLOCKS. Makes the folder `rel` (and any missing above it). */
+int32_t mv_files_mkdir(mv_mobile_link* link, const char* root, const char* rel, mv_change_result* out);
+/* BLOCKS. Moves or renames a file or a folder to `to_rel` in `to_root` (this root or another writable one). */
+int32_t mv_files_move(mv_mobile_link* link, const char* root, const char* rel, const char* to_root, const char* to_rel,
+                      mv_change_result* out);
+/* BLOCKS. Deletes a file or a folder: it goes to the folder's trash on the server, where its owner can restore it. */
+int32_t mv_files_delete(mv_mobile_link* link, const char* root, const char* rel, mv_change_result* out);
+
 /* ---- clips this phone can't play (docs/plans/phone-clip-convert.md) ------------------------
  * The service converts them on its graphics hardware: H.264 and AAC in MPEG-TS segments of
  * `segment_ms` of the clip each (the last runs to the end), for an HLS playlist. */

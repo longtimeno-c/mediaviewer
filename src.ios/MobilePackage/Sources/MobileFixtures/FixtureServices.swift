@@ -33,6 +33,15 @@ final class FixtureWorld: @unchecked Sendable {
   var identifyFailures = 0
   var personFailures = 0
   var foldersFail = false
+  /// How long a folder takes to list, as over a slow connection.
+  var folderListDelay: Duration?
+  /// This device's role lets it change files in the folders (library.change).
+  var mayChange = false
+  /// What was added, made, moved, renamed and deleted (FixtureChanges.swift).
+  let changeBook = LocalChanges(directory: nil)
+  /// A sent file's pretend link: this many steps, this long each.
+  var uploadSteps = 8
+  var uploadStep = Duration.milliseconds(150)
   /// Save to Photos is refused, as when the person said no to adding to Photos.
   var photosRefused = false
   var searchFails = false
@@ -73,9 +82,11 @@ final class FixtureWorld: @unchecked Sendable {
 
   func services() -> Services {
     let images = FixtureImages(world: self)
-    return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
-                    connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
-                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self), backup: FixtureBackup(world: self))
+    var services = Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
+                            connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
+                            clips: FixtureClips(world: self), saver: FixtureSaver(world: self), backup: FixtureBackup(world: self))
+    services.changes = FixtureFolderChanges(world: self)
+    return services
   }
 }
 
@@ -123,6 +134,8 @@ enum FixtureLibrary {
     guard let source = sources.firstIndex(of: path[0]) else { return [] }
     let year = path.count > 1 ? Int(path[1]) : nil
     let month = path.count > 2 ? Int(path[2]) : nil
+    // A folder the generator never made (one made on the phone) holds only what was put in it.
+    if (path.count > 1 && year == nil) || (path.count > 2 && month == nil) || path.count > 3 { return [] }
     return items.indices.filter { i in
       i % 2 == source && (year == nil || dateParts[i].year == year) && (month == nil || dateParts[i].month == month)
     }.map { items[$0] }
@@ -201,7 +214,8 @@ struct FixtureStore: LibraryStore {
       return FixtureLibrary.everything
     case .folder(let folder):
       if world.foldersFail { throw MediaFailure.synologyUnreachable }
-      return ArrayMediaList(FixtureLibrary.items(under: folder.id))
+      if let delay = world.folderListDelay { try await Task.sleep(for: delay) }
+      return ArrayMediaList(world.changeBook.items(FixtureLibrary.items(under: folder.id), in: folder.id))
     case .person(let person):
       if world.personFailures > 0 {
         world.personFailures -= 1
@@ -212,7 +226,13 @@ struct FixtureStore: LibraryStore {
   }
 
   func folders(under parent: Folder?) async throws -> [Folder] {
-    FixtureLibrary.folders[parent?.id ?? ""] ?? []
+    let id = parent?.id ?? ""
+    let base = FixtureLibrary.folders[id] ?? []
+    // The top level keeps the generated order (sources, then the rest); a changed folder sorts by name.
+    guard world.mayChange else { return base }
+    return id.isEmpty ? base.map { Folder(id: $0.id, name: $0.name, itemCount: $0.itemCount, hasSubfolders: !$0.offline,
+                                          offline: $0.offline) }
+                      : world.changeBook.folders(base, in: id)
   }
 
   func preview(of folder: Folder, count: Int) async -> FolderPreview {
@@ -238,7 +258,9 @@ struct FixtureStore: LibraryStore {
     }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
 
-  func otherFiles(in folder: Folder) async throws -> [OtherFile] { Self.others(in: folder.id) }
+  func otherFiles(in folder: Folder) async throws -> [OtherFile] {
+    world.changeBook.files(Self.others(in: folder.id), in: folder.id)
+  }
 
   /// A one-page PDF (or a line of text) under the file's name, after a short wait with progress.
   func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {

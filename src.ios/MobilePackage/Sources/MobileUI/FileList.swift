@@ -50,12 +50,13 @@ struct FileList: View {
 private struct FileRow: View {
   let file: OtherFile
   @Environment(AppModel.self) private var model
+  @Environment(\.editingPage) private var editingPage
 
   var body: some View {
     let library = model.library
     let opening = library.openingID == file.id
     let failure = library.openFailure.flatMap { $0.id == file.id ? $0.message : nil }
-    Button { library.open(file) } label: {
+    Button { TileTap(page: editingPage, model: model).run(.file(file)) { library.open(file) } } label: {
       HStack(spacing: 12) {
         FileGlyph(family: file.family)
         VStack(alignment: .leading, spacing: 2) {
@@ -88,7 +89,8 @@ private struct FileRow: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel([file.name, opening ? "Downloading" : (failure ?? detail)].joined(separator: ", "))
     .accessibilityAddTraits(.isButton)
-    .accessibilityHint(opening ? "Stops the download" : "Opens the file")
+    .accessibilityHint(opening ? "Stops the download" : editingPage?.selecting == true ? "Chooses the file" : "Opens the file")
+    .choosable(.file(file), corner: .trailing)
   }
 
   /// "PDF · 2.4 MB · 3 Mar 2024"

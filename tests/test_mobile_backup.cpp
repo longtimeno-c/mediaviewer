@@ -18,7 +18,9 @@
 #include <map>
 #include <random>
 #include <set>
+#include <thread>
 
+#include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/secrets.h"
 #include "wire/serve.h"
@@ -67,6 +69,7 @@ struct temp_root {
 };
 
 const std::string kBackupRoot = "b0b0b0b0b0b0b0b0";
+const std::string kSharedRoot = "a1a1a1a1a1a1a1a1";  // an ordinary shared folder (changing files)
 const std::string kLibrary = "library-1";
 
 // A "camera roll": files on disk standing in for PhotoKit's resources.
@@ -136,6 +139,8 @@ struct nas {
   std::unique_ptr<serve::server> srv;
   std::uint64_t limit = 1ull << 34;
   std::function<bool(const key32&)> may_write;
+  fs::path shared = tmp.root / "shared";
+  bool with_shared = false;  // a second, ordinary folder: "Photos"
 
   nas() {
     REQUIRE(sodium_init() >= 0);
@@ -162,6 +167,10 @@ struct nas {
     b.limit = limit;
     b.reserve = 0;
     o.cfg.roots.push_back(b);
+    if (with_shared) {
+      fs::create_directories(shared);
+      o.cfg.roots.push_back(serve::root_config{kSharedRoot, "Photos", shared.string()});
+    }
     o.free_bytes = [](const std::string&) { return std::uint64_t{1} << 40; };
     o.may_write = may_write;
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
@@ -555,4 +564,325 @@ TEST_CASE("backup: a hostile or garbled ledger copy on the NAS never blocks or s
   CHECK(last.now == bk::state::done);
   CHECK(last.copied == roll.resource_count());
   CHECK(last.backed_up == roll.items.size());
+}
+
+// ---- changing the shared folders (serve_client.h "changing the shared folders") ----------------
+
+namespace {
+
+// A "view" device: on the grants list with backup off.
+void grant_view(nas& n, const key32& device) {
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), device.data());
+  std::vector<serve::grants::grant> list;
+  REQUIRE(serve::grants::load(*n.store, list));
+  serve::grants::grant g;
+  g.name = "Viewer";
+  g.key = pub;
+  g.backup = false;
+  g.created = 1;
+  list.push_back(g);
+  REQUIRE(serve::grants::save(*n.store, list));
+}
+
+std::string random_bytes(std::size_t n) {
+  std::string s(n, '\0');
+  randombytes_buf(s.data(), s.size());
+  return s;
+}
+
+bool root_writable(mob::link_session& link, const std::string& id) {
+  auto roots = link.roots();
+  REQUIRE(roots);
+  for (const auto& r : *roots) {
+    if (r.id == id) return r.writable;
+  }
+  return false;
+}
+
+int leftovers(const fs::path& root) {
+  int n = 0;
+  for (const auto& e : fs::recursive_directory_iterator(root)) {
+    const std::string name = e.path().filename().string();
+    if (name.ends_with(".mvpart") || name.ends_with(".mvmove")) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST_CASE("change: a change device adds, makes folders, renames, moves and deletes over the link", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  REQUIRE(link.changes_files());
+  CHECK(*link.changes_files());
+  CHECK(root_writable(link, kSharedRoot));
+
+  const fs::path local = phone.root / "IMG_0001.jpg";
+  write_file(local, "a photo from the phone");
+  serve::client::change_refused why;
+  auto added = link.add_file(kSharedRoot, "Trips/IMG_0001.jpg", local.string(), nullptr, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/IMG_0001.jpg");
+  CHECK(read_all(n.shared / "Trips" / "IMG_0001.jpg") == "a photo from the phone");
+  // The same name again, a different file: kept beside it, never over it.
+  write_file(local, "another photo");
+  added = link.add_file(kSharedRoot, "Trips/IMG_0001.jpg", local.string(), nullptr, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/IMG_0001 (2).jpg");
+  CHECK(read_all(n.shared / "Trips" / "IMG_0001.jpg") == "a photo from the phone");
+
+  REQUIRE(link.make_folder(kSharedRoot, "Trips/Lisbon", &why));
+  CHECK(fs::is_directory(n.shared / "Trips" / "Lisbon"));
+  // Rename, then move into the new folder.
+  REQUIRE(link.move(kSharedRoot, "Trips/IMG_0001 (2).jpg", kSharedRoot, "Trips/Harbour.jpg", &why));
+  REQUIRE(link.move(kSharedRoot, "Trips/Harbour.jpg", kSharedRoot, "Trips/Lisbon/Harbour.jpg", &why));
+  CHECK(read_all(n.shared / "Trips" / "Lisbon" / "Harbour.jpg") == "another photo");
+  // A taken destination is refused, and nothing is replaced.
+  auto clash = link.move(kSharedRoot, "Trips/IMG_0001.jpg", kSharedRoot, "Trips/Lisbon/Harbour.jpg", &why);
+  CHECK_FALSE(clash);
+  CHECK(why.why == serve::client::change_why::exists);
+  CHECK(read_all(n.shared / "Trips" / "Lisbon" / "Harbour.jpg") == "another photo");
+  // Delete: into the folder's trash on the server, gone from every listing.
+  auto removed = link.remove(kSharedRoot, "Trips/Lisbon", &why);
+  REQUIRE(removed);
+  CHECK_FALSE(fs::exists(n.shared / "Trips" / "Lisbon"));
+  CHECK(removed->rel.ends_with("/Trips/Lisbon"));
+  CHECK(fs::exists(n.shared / serve::kTrashFolder / removed->rel / "Harbour.jpg"));
+  auto listed = link.list(kSharedRoot, "Trips");
+  REQUIRE(listed);
+  CHECK(listed->size() == 1);
+  CHECK(leftovers(n.shared) == 0);
+}
+
+TEST_CASE("change: a view device sees no writable folder and is refused", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  const key32 device = random_key();
+  n.start();
+  grant_view(n, device);
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  CHECK_FALSE(root_writable(link, kSharedRoot));
+  serve::client::change_refused why;
+  CHECK_FALSE(link.make_folder(kSharedRoot, "New folder", &why));
+  CHECK(why.why == serve::client::change_why::not_allowed);
+  CHECK_FALSE(fs::exists(n.shared / "New folder"));
+}
+
+TEST_CASE("change: an add carries on after a cancel and after a dropped link, and arrives whole", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  const fs::path local = phone.root / "clip.mov";
+  const std::string bytes = random_bytes(24u << 20);
+  write_file(local, bytes);
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+
+  SECTION("cancelled part way, then again: picks up where the copy ended") {
+    mob::cancel_flag cancel;
+    auto first = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                               [&](std::uint64_t done, std::uint64_t) {
+                                 if (done >= (4u << 20)) cancel.stop = true;
+                               },
+                               &cancel, &why);
+    CHECK_FALSE(first);
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+    std::uint64_t lowest = UINT64_MAX;
+    auto again = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                               [&](std::uint64_t done, std::uint64_t) { lowest = std::min(lowest, done); }, nullptr, &why);
+    REQUIRE(again);
+    CHECK(again->rel == "clip.mov");
+    CHECK(lowest >= (4u << 20));  // never from the start
+  }
+  SECTION("stopped while it is still being hashed: nothing is sent") {
+    mob::cancel_flag cancel;
+    cancel.stop = true;
+    bool sent = false;
+    auto stopped = link.add_file(kSharedRoot, "clip.mov", local.string(), [&](std::uint64_t, std::uint64_t) { sent = true; },
+                                 &cancel, &why);
+    REQUIRE_FALSE(stopped);
+    CHECK(stopped.error() == mv::status::cancelled);
+    CHECK_FALSE(sent);
+    CHECK(fs::is_empty(n.shared));
+    // Then sent whole, as the other sections end.
+    REQUIRE(link.add_file(kSharedRoot, "clip.mov", local.string(), nullptr, nullptr, &why));
+  }
+  SECTION("the link cut mid-file: reconnected, and carried on") {
+    std::atomic<bool> cut{false};
+    std::thread cutter;
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (4u << 20) && !cut.exchange(true)) cutter = std::thread([&] { link.disconnect(); });
+                              },
+                              nullptr, &why);
+    if (cutter.joinable()) cutter.join();
+    CHECK(cut);
+    INFO("status " << (done ? 0 : static_cast<int>(done.error())) << " why " << static_cast<int>(why.why) << " "
+                   << why.word);
+    REQUIRE(done);
+    CHECK(done->rel == "clip.mov");
+  }
+  CHECK(read_all(n.shared / "clip.mov").size() == bytes.size());
+  CHECK((read_all(n.shared / "clip.mov") == bytes));
+  CHECK(leftovers(n.shared) == 0);
+}
+
+TEST_CASE("change: the C ABI the app calls", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  const auto cfg = n.config(device);
+  const std::string lib_dir = (phone.root / "library").string(), cache = (phone.root / "cache").string();
+  mv_link_config lc{};
+  lc.library_dir = lib_dir.c_str();
+  lc.cache_dir = cache.c_str();
+  lc.library_id = kLibrary.c_str();
+  lc.local = cfg.local.c_str();
+  lc.public_name = cfg.public_name.c_str();
+  lc.device_name = "Test iPhone";
+  lc.identity = cfg.identity.data();
+  lc.access_key = cfg.access_key.data();
+  lc.device_key = cfg.device_key.data();
+  key32 publisher{};
+  lc.publisher_key = publisher.data();
+  mv_mobile_link* link = mv_link_open(&lc);
+  REQUIRE(link);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(link, nullptr, &report) == MV_LINK_OK);
+
+  int32_t can = 0;
+  REQUIRE(mv_files_can_change(link, &can) == MV_LINK_OK);
+  CHECK(can == 1);
+  std::map<std::string, int> writable;
+  REQUIRE(mv_files_writable_roots(link, [](void* ctx, const char* id, int32_t w) {
+            (*static_cast<std::map<std::string, int>*>(ctx))[id] = w;
+          }, &writable) == MV_LINK_OK);
+  CHECK(writable[kSharedRoot] == 1);
+
+  const fs::path local = phone.root / "notes.txt";
+  write_file(local, "notes");
+  mv_change_result out{};
+  std::uint64_t last = 0;
+  REQUIRE(mv_files_add(link, kSharedRoot.c_str(), "notes.txt", local.string().c_str(), nullptr,
+                       [](void* ctx, uint64_t done, uint64_t) { *static_cast<std::uint64_t*>(ctx) = done; }, &last,
+                       &out) == MV_LINK_OK);
+  CHECK(std::string(out.rel) == "notes.txt");
+  CHECK(last == 5);
+  REQUIRE(mv_files_mkdir(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_OK);
+  REQUIRE(mv_files_move(link, kSharedRoot.c_str(), "notes.txt", kSharedRoot.c_str(), "Docs/notes.txt", &out) == MV_LINK_OK);
+  CHECK(std::string(out.rel) == "Docs/notes.txt");
+  REQUIRE(mv_files_mkdir(link, kSharedRoot.c_str(), "Docs2", &out) == MV_LINK_OK);
+  CHECK(mv_files_move(link, kSharedRoot.c_str(), "Docs2", kSharedRoot.c_str(), "Docs", &out) == MV_LINK_DENIED);
+  CHECK(out.why == MV_CHANGE_EXISTS);
+  REQUIRE(mv_files_delete(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_OK);
+  CHECK_FALSE(fs::exists(n.shared / "Docs"));
+  CHECK(mv_files_delete(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_NOT_FOUND);
+  CHECK(out.why == MV_CHANGE_NOT_FOUND);
+  CHECK(mv_files_mkdir(link, kSharedRoot.c_str(), "", &out) == MV_LINK_INVALID);
+  // The phone's own file missing: said as the phone's, not the server's.
+  CHECK(mv_files_add(link, kSharedRoot.c_str(), "x.txt", (phone.root / "missing.txt").string().c_str(), nullptr, nullptr,
+                     nullptr, &out) == MV_LINK_INVALID);
+  CHECK(out.why == MV_CHANGE_LOCAL);
+  mv_link_close(link);
+}
+
+TEST_CASE("change: the phone's own file failing is told apart from the server and the link", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+
+  SECTION("not on the phone any more") {
+    auto gone = link.add_file(kSharedRoot, "a.jpg", (phone.root / "missing.jpg").string(), nullptr, nullptr, &why);
+    REQUIRE_FALSE(gone);
+    CHECK(gone.error() == mv::status::invalid_arg);
+    CHECK(link.connected());
+  }
+  SECTION("cut short while it is sent: the link stays, and nothing is left whole on the server") {
+    const fs::path local = phone.root / "clip.mov";
+    write_file(local, random_bytes(12u << 20));
+    bool cut = false;
+    auto short_read = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                                    [&](std::uint64_t sent, std::uint64_t) {
+                                      if (sent >= (2u << 20) && !cut) {
+                                        cut = true;
+                                        fs::resize_file(local, 1u << 20);
+                                      }
+                                    },
+                                    nullptr, &why);
+    REQUIRE_FALSE(short_read);
+    CHECK(short_read.error() == mv::status::invalid_arg);
+    CHECK(link.connected());
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+  }
+}
+
+TEST_CASE("change: what arrives is never kept unless it is what was hashed", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+  const fs::path local = phone.root / "clip.mov";
+
+  SECTION("changed on the phone while it is sent: sent again once, then refused as damaged") {
+    write_file(local, random_bytes(8u << 20));
+    bool changed = false;
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (1u << 20) && !changed) {
+                                  changed = true;
+                                  write_file(local, random_bytes(8u << 20));  // same size, other bytes
+                                }
+                              },
+                              nullptr, &why);
+    REQUIRE_FALSE(done);
+    CHECK(why.why == serve::client::change_why::hash);
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+    CHECK(leftovers(n.shared) == 0);
+  }
+  SECTION("an unfinished copy of another file under the same name: the new one arrives whole") {
+    write_file(local, random_bytes(16u << 20));
+    mob::cancel_flag cancel;
+    CHECK_FALSE(link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (4u << 20)) cancel.stop = true;
+                              },
+                              &cancel, &why));
+    const std::string other = random_bytes(16u << 20);
+    write_file(local, other);
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(), nullptr, nullptr, &why);
+    REQUIRE(done);
+    CHECK(done->rel == "clip.mov");
+    CHECK((read_all(n.shared / "clip.mov") == other));
+  }
 }
