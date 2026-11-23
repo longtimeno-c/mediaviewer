@@ -809,8 +809,9 @@ TEST_CASE("vpn: All traffic says it is starting while the system asks, and why i
   CHECK(eng.snapshot().mode == "proxy");
   REQUIRE(eventually([&] { return !eng.snapshot().all_traffic; }));
   CHECK(host.settings().find(R"x("id":"all_traffic","label":"All traffic (VPN)","value":false)x") != std::string::npos);
-  port.at_once->store(true);           // from here a start answers at once: counted, never hanging
-  eng.on_event("tls", 2, "true");      // an unrelated change: no new start, no new prompt
+  port.at_once->store(true);              // from here a start answers at once: counted, never hanging
+  eng.on_event("tls", 2, "true");         // switched off: no setting starts it, nor prompts again
+  eng.settle();
   eng.on_event("tls", 2, "false");
   eng.settle();
   CHECK(*starts == 1);
@@ -836,8 +837,11 @@ TEST_CASE("vpn: All traffic says it is starting while the system asks, and why i
     *port.answer = mv::status::timeout;
   }
   port.at_once->store(true);
-  eng.on_event("tls", 2, "true");
-  eng.on_event("tls", 2, "false");
+  // A change that isn't the VPN's own settings (the web-site look and the
+  // server are: a change there is new settings, tried afresh).
+  eng.on_event("all_apps", 2, "false");
+  eng.settle();
+  eng.on_event("all_apps", 2, "true");
   eng.settle();
   CHECK(*starts == tried);
   CHECK(host.settings().find("could not start") != std::string::npos);
