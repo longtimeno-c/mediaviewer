@@ -2022,6 +2022,10 @@ extern "C" int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size) 
 // folder ("remote:…/") a folder of this Mac's, since only the photos go to the server.
 static std::string MvPhotosBackupHome(const std::string& destination) {
   if (!mv::remote::is_key(destination)) return destination;
+  // A dev run against a throwaway server keeps this beside its servers, not in the installed app's folder.
+  if (const char* dev = std::getenv("MV_DEV_REMOTE_DIR"); dev && *dev) {
+    return mv::shell::backup::server_state_dir(std::string(dev) + "/photos-backup", destination);
+  }
   NSString* support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
   if (!support) return {};
   return mv::shell::backup::server_state_dir(std::string(support.UTF8String) + "/MediaViewer/Photos Backup Servers",
