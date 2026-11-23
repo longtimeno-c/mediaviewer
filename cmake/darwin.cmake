@@ -940,6 +940,7 @@ if(MV_BUILD_TESTS)
     tests/test_browse_index.cpp
     tests/test_browse_path.cpp
     tests/test_browse_history.cpp
+    tests/test_abi_text.cpp
     tests/test_file_drop.cpp
     tests/test_file_transfer.cpp
     tests/test_dir_tree.cpp

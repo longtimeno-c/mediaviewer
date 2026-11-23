@@ -942,6 +942,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
   src/shell/browse_history.h
+  src/shell/abi_text.h
   src/shell/file_drop.h
   src/shell/file_transfer.cpp
   src/shell/file_transfer.h
@@ -1226,6 +1227,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_tree.cpp
     tests/test_browse_path.cpp
     tests/test_browse_history.cpp
+    tests/test_abi_text.cpp
     tests/test_file_drop.cpp
     tests/test_file_transfer.cpp
     tests/test_folder.cpp

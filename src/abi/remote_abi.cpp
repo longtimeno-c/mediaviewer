@@ -6,6 +6,7 @@
 // makes. Portable C++ (no Win32 here); only built into mediaviewer_core.
 #include <mediaviewer/mediaviewer.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -147,6 +148,20 @@ status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* nee
 }
 
 // The one pairing in flight and how the last one ended, for the chrome's poll.
+// 0.45's changing calls (add, make_folder, move) and fetch: the work is done, so a short
+// buffer is not a failure -- what fits, NUL-ended, and `needed` the whole size. A caller that
+// retried on a refusal here would upload or move a second time.
+status write_done(const std::string& text, char* out, uint32_t cap, uint32_t* needed) {
+  const auto need = static_cast<uint32_t>(text.size() + 1);
+  if (needed) *needed = need;
+  if (out && cap > 0) {
+    const uint32_t n = std::min(cap - 1, need - 1);
+    std::memcpy(out, text.data(), n);
+    out[n] = '\0';
+  }
+  return status::ok;
+}
+
 std::mutex g_pair_m;
 bool g_pair_busy = false;
 bool g_pair_ok = false;
@@ -314,7 +329,7 @@ MV_API mv_status MV_CALL mv_remote_make_folder(const char* parent_key_utf8, cons
     if (!lib) return status::internal;
     auto r = lib->make_folder(parent_key_utf8, name_utf8);
     if (!r) return r.error();
-    return write_out(r.value(), out_key, cap, out_bytes);
+    return write_done(r.value(), out_key, cap, out_bytes);
   }));
 }
 
@@ -328,7 +343,7 @@ MV_API mv_status MV_CALL mv_remote_add(const char* parent_key_utf8, const char* 
     progress_bridge p{progress, user, {}};
     auto r = lib->add_file(parent_key_utf8, local_path_utf8, name_utf8, &p.flag, [&](std::uint64_t n) { p(n); });
     if (!r) return r.error();
-    return write_out(r.value(), out_key, cap, out_bytes);
+    return write_done(r.value(), out_key, cap, out_bytes);
   }));
 }
 
@@ -342,7 +357,7 @@ MV_API mv_status MV_CALL mv_remote_move(const char* key_utf8, const char* to_par
     auto r = lib->move(key_utf8, to_parent_key_utf8, name_utf8, &why);
     if (out_taken) *out_taken = !r && why.why == mv::driftwire::serve::client::change_why::exists ? 1 : 0;
     if (!r) return r.error();
-    return write_out(r.value(), out_key, cap, out_bytes);
+    return write_done(r.value(), out_key, cap, out_bytes);
   }));
 }
 
@@ -365,7 +380,7 @@ MV_API mv_status MV_CALL mv_remote_fetch(const char* key_utf8, mv_remote_progres
     progress_bridge p{progress, user, {}};
     auto r = lib->fetch(key_utf8, &p.flag, [&](std::uint64_t got, std::uint64_t) { p(got); });
     if (!r) return r.error();
-    return write_out(r.value(), out_path, cap, out_bytes);
+    return write_done(r.value(), out_path, cap, out_bytes);
   }));
 }
 

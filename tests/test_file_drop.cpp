@@ -147,3 +147,12 @@ TEST_CASE("plan_transfer: Windows folders keep their separator", "[file_drop]") 
   const auto root = plan_transfer({"D:\\cam\\IMG_1.JPG"}, "C:\\", drop_verb::copy, none);
   CHECK(root[0].dest == "C:\\IMG_1.JPG");
 }
+
+TEST_CASE("file_drop: a delete is all here, all on one server, or refused as a mix", "[file_drop]") {
+  CHECK(trash_kind_of({"/p/a.jpg", "/p/b.jpg"}) == trash_kind::local);
+  CHECK(trash_kind_of({"remote:aa/r1/a.jpg", "remote:aa/r2/b.jpg"}) == trash_kind::remote);
+  CHECK(trash_kind_of({"remote:aa/r1/a.jpg", "/p/b.jpg"}) == trash_kind::mixed);
+  CHECK(trash_kind_of({"/p/b.jpg", "remote:aa/r1/a.jpg"}) == trash_kind::mixed);
+  CHECK(trash_kind_of({"remote:aa/r1/a.jpg", "remote:bb/r1/a.jpg"}) == trash_kind::mixed);
+  CHECK(trash_kind_of({}) == trash_kind::local);
+}

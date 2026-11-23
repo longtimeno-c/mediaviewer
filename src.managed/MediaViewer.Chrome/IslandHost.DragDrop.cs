@@ -243,6 +243,7 @@ public static partial class IslandHost
     {
         target.AllowDrop = true;
         DispatcherQueueTimer? spring = null;
+        SpringLatch? latch = null;
         Border? ring = target as Border;
         bool saved = false;
         Microsoft.UI.Xaml.Media.Brush? restBrush = null;
@@ -269,26 +270,32 @@ public static partial class IslandHost
         void Unhighlight()
         {
             spring?.Stop();
+            latch?.Disarm();
             if (ring is null || !saved) return;
             ring.BorderBrush = restBrush;
             ring.BorderThickness = restThickness;
             saved = false;
         }
+        // One timer and one Tick handler per target (SpringLatch): DragEnter arms and starts
+        // it, DragLeave and Drop stop and disarm it, so a rest opens the folder once.
         target.DragEnter += (_, e) =>
         {
             if (springOpen is null || string.IsNullOrEmpty(folder())) return;
-            spring ??= DispatcherQueue.GetForCurrentThread()?.CreateTimer();
-            if (spring is null) return;
-            spring.Interval = TimeSpan.FromMilliseconds(DropWords.SpringLoadMs);
-            spring.IsRepeating = false;
-            spring.Tick += OnSpring;
-            spring.Start();
-            void OnSpring(DispatcherQueueTimer t, object o)
+            if (spring is null)
             {
-                t.Tick -= OnSpring;
-                Unhighlight();
-                springOpen();
+                spring = DispatcherQueue.GetForCurrentThread()?.CreateTimer();
+                if (spring is null) return;
+                spring.Interval = TimeSpan.FromMilliseconds(DropWords.SpringLoadMs);
+                spring.IsRepeating = false;
+                latch = new SpringLatch(() =>
+                {
+                    Unhighlight();
+                    springOpen();
+                });
+                spring.Tick += (_, _) => latch.Fire();
             }
+            latch?.Arm();
+            spring.Start();
         };
         target.DragLeave += (_, _) => Unhighlight();
         target.DragOver += (_, e) =>

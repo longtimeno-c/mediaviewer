@@ -149,6 +149,28 @@ inline std::string trim_dir(std::string_view dir) {
   return out;
 }
 
+// Delete (docs/design/16 "Marks, copy, move"): a selection is all local (the Trash or Recycle
+// Bin) or all on one server (its trash there). A mix is refused as a whole, with words,
+// never sent half to one backend where the rest fails.
+enum class trash_kind : std::uint8_t { local, remote, mixed };
+[[nodiscard]] inline trash_kind trash_kind_of(const std::vector<std::string>& paths) {
+  bool remote = false, local = false;
+  std::string_view server;
+  for (const auto& p : paths) {
+    const std::string_view s = drop_detail::server_of(p);
+    if (s.empty()) {
+      local = true;
+    } else {
+      if (remote && s != server) return trash_kind::mixed;  // two servers
+      remote = true;
+      server = s;
+    }
+  }
+  return remote && local ? trash_kind::mixed : remote ? trash_kind::remote : trash_kind::local;
+}
+inline constexpr const char* kMixedTrashWords =
+    "These are on this computer and on another one: delete each group on its own";
+
 // The short reason a refused target shows (both chromes use these words).
 [[nodiscard]] constexpr const char* drop_refusal_words(drop_refusal r) noexcept {
   switch (r) {

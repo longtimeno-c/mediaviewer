@@ -834,6 +834,64 @@ TEST_CASE("changing files: a role changed while linked is followed without a res
   CHECK(d.lib->make_folder(photos, "Again"));
 }
 
+TEST_CASE("changing files: a moved folder's inner listings are not shown again when offline",
+          "[desktop-client][remote-change]") {
+  host h;
+  put_file(h.photos / "Trip" / "Day1" / "a.jpg", photo(32, 24, 1));
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  const std::string day1 = photos + "Trip/Day1/";
+  REQUIRE(d.lib->list(photos + "Trip/"));
+  REQUIRE(d.lib->list(day1));  // kept, for when the server does not answer
+  REQUIRE(d.lib->move(photos + "Trip/", photos, "2026 Trip"));
+  h.stop();
+  // Offline: the old inner folder is not offered from what was kept; it is not there.
+  auto stale = d.lib->list(day1);
+  CHECK_FALSE(stale);
+}
+
+TEST_CASE("changing files: a folder the server stops letting it change is read again after a refusal",
+          "[desktop-client][remote-change]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  REQUIRE(d.lib->can_write(photos));
+  // Still "change", but now limited to another folder (the Catalogue): Photos is not its any more.
+  std::vector<dw::serve::grants::grant> granted;
+  REQUIRE(dw::serve::grants::load(*h.store, granted));
+  auto devices = dw::known::load(*h.store);
+  const auto me = std::find_if(devices.begin(), devices.end(), [](const auto& x) { return x.name == "Test Desktop"; });
+  REQUIRE(me != devices.end());
+  dw::serve::grants::grant g;
+  g.name = me->name;
+  g.key = me->key;
+  g.backup = true;
+  g.created = 1;
+  g.roots = std::vector<std::string>{"c2c2c2c2c2c2c2c2"};
+  granted.push_back(g);
+  devices.erase(me);
+  REQUIRE(dw::serve::grants::save(*h.store, granted));
+  REQUIRE(dw::known::save(*h.store, devices));
+  h.srv->recheck_devices();
+  // The role is the same, so nothing said so; the next change is refused and the desktop asks
+  // again: Photos is no longer writable here.
+  CHECK_FALSE(d.lib->make_folder(photos, "Nope"));
+  CHECK_FALSE(fs::exists(h.photos / "Nope"));
+  CHECK_FALSE(d.lib->can_write(photos));
+}
+
 TEST_CASE("changing files: an upload cut short goes on from what reached the server", "[desktop-client][remote-change]") {
   host h;
   desktop d;

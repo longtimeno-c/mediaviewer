@@ -531,7 +531,9 @@ MV_API mv_status MV_CALL mv_remote_forget(const char* server_key_utf8);
  * its own folder; `out_taken` 1 when the name is someone else's, nothing replaced),
  * mv_remote_remove (into that folder's trash on the server), mv_remote_fetch (the original
  * here, whole: its local path). `progress` gets the bytes so far; a non-zero return stops
- * the call (MV_ERR_CANCELLED). The out key / path follows the buffer rules above. */
+ * the call (MV_ERR_CANCELLED). The out key / path: what fits, NUL-ended, with `out_bytes` the
+ * whole size -- and MV_OK even when the buffer is short, since the change was made: never call
+ * one of these again to size a buffer (it would upload or move a second time). */
 typedef int32_t(MV_CALL* mv_remote_progress_fn)(uint64_t bytes, void* user);
 MV_API mv_status MV_CALL mv_remote_can_write(const char* key_utf8, uint8_t* out_can);
 MV_API mv_status MV_CALL mv_remote_write_problem(const char* key_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);

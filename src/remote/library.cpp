@@ -624,6 +624,12 @@ result<listing> library::list(std::string_view folder_key, bool person, const mo
   auto s = find(k->server);
   if (!s) return err(status::not_found);
   auto live = list_live(*s, *k, folder_key, person, cancel);
+  // The service cut the link as this asked (its limit changed: a role or folders the admin
+  // changed): a person's listing connects again once rather than failing or going stale.
+  if (!live && person && (live.error() == status::io || live.error() == status::timeout) &&
+      !(cancel && cancel->stopped())) {
+    live = list_live(*s, *k, folder_key, person, cancel);
+  }
   if (live) {
     keep_listing(s->id, folder_key, live.value());
     return live;
@@ -1040,14 +1046,21 @@ void library::note_rights(server_rt& s, const std::vector<serve::root_info>& roo
   bool moved = s.changes.exchange(can) != can;
   {
     std::lock_guard lock(stamps_m_);
+    // A folder the server no longer lists for this device (a narrower grant) is not writable:
+    // every entry of this server is cleared first, then the listed ones set.
+    const std::string prefix = s.id + "/";
+    for (auto it = writable_.lower_bound(prefix); it != writable_.end() && it->first.rfind(prefix, 0) == 0; ++it) {
+      if (it->second) moved = true;
+      it->second = false;
+    }
     for (const auto& r : roots) {
       if (!is_hex16(r.id)) continue;
       // Its label too: a subfolder opened first (Back, a pin) still names its folder in the trail.
       labels_[make_key(key_parts{s.id, r.id, {}, true})] = r.label;
       const bool w = can && r.writable && r.label != serve::kCatalogueLabel;
-      auto [it, added] = writable_.try_emplace(s.id + "/" + r.id, w);
-      if (added || it->second != w) moved = true;
-      it->second = w;
+      bool& slot = writable_[s.id + "/" + r.id];
+      if (w) moved = true;  // set again after the clear above; a bump is cheap
+      slot = w;
     }
   }
   s.rights_known.store(true);
@@ -1094,6 +1107,22 @@ void library::forget_changed(std::string_view server, std::string_view folder_ke
   std::error_code ec;
   fs::remove(fs_path(listing_file(server, folder_key)), ec);
   if (item_key.empty()) return;
+  // A folder that moved or went: the listings kept for the folders inside it too, or a server
+  // that does not answer would show them again under keys that no longer exist. Each file
+  // names its key; a walk of this server's few listings, on the worker.
+  if (!item_key.empty() && item_key.back() == '/') {
+    const fs::path dir = fs_path(listing_file(server, item_key)).parent_path();
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+      auto bytes = io::read_all(utf8_of(it->path()));
+      if (!bytes) continue;
+      auto doc = json::parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+      const std::string* key = doc ? doc->str("key") : nullptr;
+      if (key && key->rfind(item_key, 0) == 0) {
+        std::error_code rm;
+        fs::remove(it->path(), rm);
+      }
+    }
+  }
   std::lock_guard lock(stamps_m_);
   // A file's stamp, or everything listed under a folder that moved or went.
   for (auto it = stamps_.lower_bound(item_key); it != stamps_.end() && it->first.rfind(item_key, 0) == 0;) {

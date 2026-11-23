@@ -66,6 +66,7 @@
 #include "shell/faces_tool.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
+#include "shell/abi_text.h"
 #include "shell/browse_history.h"
 #include "shell/file_drop.h"
 #include "shell/file_transfer.h"
@@ -6405,16 +6406,13 @@ std::string place_name(const std::string& path) {
 
 // The remote side of the transfer seam (file_transfer.h) over the core's mv_remote_* calls;
 // each blocks, on the pool.
+// Called once (shell/abi_text.h): a change is never repeated to size a buffer.
 std::string abi_text(const std::function<mv_status(char*, uint32_t, uint32_t*)>& call, mv_status& st) {
-  std::string out(1024, '\0');
-  uint32_t need = 0;
-  st = call(out.data(), static_cast<uint32_t>(out.size()), &need);
-  if (st == MV_ERR_INVALID_ARG && need > out.size()) {
-    out.assign(need, '\0');
-    st = call(out.data(), static_cast<uint32_t>(out.size()), &need);
-  }
-  out.resize(st == MV_OK && need > 0 ? need - 1 : 0);
-  return out;
+  const auto r = mv::shell::abi_text_once([&](char* b, uint32_t c, uint32_t* n) -> std::int32_t {
+    return static_cast<std::int32_t>(call(b, c, n));
+  });
+  st = static_cast<mv_status>(r.status);
+  return r.text;
 }
 
 struct abi_progress {
@@ -6522,6 +6520,12 @@ void start_transfer(app_state* app, mv::shell::drop_verb verb, std::vector<std::
 void on_transfer_done(app_state* app, std::unique_ptr<transfer_done> done) {
   if (!done) return;
   app->transfers.finish(done->job, done->result, static_cast<std::int64_t>(::GetTickCount64()));
+  // Back / Forward find a moved folder where it went (browse_history.h renamed).
+  if (done->result.verb == mv::shell::drop_verb::move) {
+    for (const auto& item : done->result.items) {
+      if (item.status == mv::status::ok) app->history.renamed(item.source, item.dest);
+    }
+  }
   if (done->result.failed() > 0) ::MessageBeep(MB_ICONWARNING);
   // The folder watcher relists what moved in or out; a server's folder has none, so it is
   // listed again, as a reopen does.
@@ -9486,7 +9490,14 @@ bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
   const auto stops = selection_targets(app);
   if (stops.empty()) return false;
-  if (mv::remote::is_key(stops.front())) return start_remote_trash(app, stops);
+  switch (mv::shell::trash_kind_of(stops)) {
+    case mv::shell::trash_kind::mixed:
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, mv::shell::kMixedTrashWords);
+      return true;
+    case mv::shell::trash_kind::remote: return start_remote_trash(app, stops);
+    case mv::shell::trash_kind::local: break;
+  }
   // A paired stop goes with both halves, and the question says so (PR 7).
   auto targets = expand_pair_targets(app, stops);
   const auto wide_name = [](const std::string& path) {

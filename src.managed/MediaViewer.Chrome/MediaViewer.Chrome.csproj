@@ -72,6 +72,7 @@
     <Compile Include="..\Shared\ProgressWords.cs" Link="Shared\ProgressWords.cs" />
     <!-- docs/design/16 "Drag and drop into folders": a drop's question and words. -->
     <Compile Include="..\Shared\DropWords.cs" Link="Shared\DropWords.cs" />
+    <Compile Include="..\Shared\SpringLatch.cs" Link="Shared\SpringLatch.cs" />
   </ItemGroup>
 
   <ItemGroup>

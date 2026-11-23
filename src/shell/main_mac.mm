@@ -6615,9 +6615,19 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   if (_items.empty()) return;
   const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
   if (entries.empty()) return;
-  if (mv::remote::is_key(entries[0].path_utf8)) {
-    [self deleteRemoteEntries:entries];
-    return;
+  // All here, all on one server, or refused as a mix: never half sent to one backend.
+  std::vector<std::string> paths;
+  for (const auto& e : entries) paths.push_back(e.path_utf8);
+  switch (mv::shell::trash_kind_of(paths)) {
+    case mv::shell::trash_kind::mixed:
+      NSBeep();
+      [self noticeShow:mv::shell::kMixedTrashWords];
+      return;
+    case mv::shell::trash_kind::remote:
+      [self deleteRemoteEntries:entries];
+      return;
+    case mv::shell::trash_kind::local:
+      break;
   }
   if ([self refuseWriteToEntries:entries]) return;
 
