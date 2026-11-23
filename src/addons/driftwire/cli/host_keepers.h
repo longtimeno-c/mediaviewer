@@ -78,10 +78,12 @@ struct keeper_factories {
   std::function<std::unique_ptr<host_keeper>()> ddns;    // slice 3
   std::function<std::unique_ptr<host_keeper>()> router;  // slice 4
   std::function<std::unique_ptr<host_keeper>()> drives;  // combined drives' health (host_drives.h)
+  std::function<std::unique_ptr<host_keeper>()> copy;    // Keep a copy (host_copy.h)
 };
 
 // The keepers this build has (host_keepers.cpp): DuckDNS over cli::https_get,
-// the router on the default gateway, and the combined drives' health.
+// the router on the default gateway, the combined drives' health, and the
+// drives kept copied.
 [[nodiscard]] keeper_factories host_keepers();
 
 // ---- the two keepers (slice 5) -------------------------------------------------------------

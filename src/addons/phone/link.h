@@ -128,6 +128,8 @@ class link {
   //                        are what the person typed, one per drive, handed to the program's
   //                        stdin (--confirm-stdin). The OS's administrator prompt shows meanwhile.
   //   host_drives_replace {set, id, name}   a new drive in a mirror
+  //   host_drives_copy {ids:[from, to]}      keeps a copy of one drive on the other, nothing erased
+  //   host_drives_copy_stop {label}          stops keeping it (the copied files stay)
   // A passphrase or token is handed on and never kept here or shown in state_json.
   [[nodiscard]] expected request(const std::string& request_json);
   // The card's state, one JSON object (docs/plans/phone-in-the-app.md §3). [no-block]

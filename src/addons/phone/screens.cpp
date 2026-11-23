@@ -55,6 +55,13 @@ struct user_row {
 };
 struct disk_row {
   std::string id, name, facts, refused;
+  std::int64_t used = 0, free = 0;
+  bool mounted = false;
+  std::string used_words, free_words;
+};
+// A drive kept copied onto another (Keep a copy, the program's host_copy.h).
+struct copy_row {
+  std::string label, to_name, from_id, to_id, state, line;
 };
 struct set_row {
   std::string id, name, kind, state, line;
@@ -67,6 +74,7 @@ struct drives_listing {
   std::string error;
   std::vector<disk_row> disks;
   std::vector<set_row> sets;
+  std::vector<copy_row> copies;
 };
 struct drive_option {
   std::string choice, title, why_not, space_words, dead_words, speed_words;
@@ -262,7 +270,17 @@ view parse(std::string_view text) {
     if (const json::value* v = d->find("disks"); v && v->k == json::kind::array) {
       for (const json::value& k : v->a) {
         if (s_of(k, "id").empty()) continue;
-        l.disks.push_back({s_of(k, "id"), s_of(k, "name"), s_of(k, "facts"), s_of(k, "refused")});
+        disk_row r;
+        r.id = s_of(k, "id");
+        r.name = s_of(k, "name");
+        r.facts = s_of(k, "facts");
+        r.refused = s_of(k, "refused");
+        r.used = k.integer("used").value_or(0);
+        r.free = k.integer("free").value_or(0);
+        r.mounted = b_of(k, "mounted");
+        r.used_words = s_of(k, "used_words");
+        r.free_words = s_of(k, "free_words");
+        l.disks.push_back(std::move(r));
       }
     }
     if (const json::value* v = d->find("sets"); v && v->k == json::kind::array) {
@@ -273,6 +291,13 @@ view parse(std::string_view text) {
           for (const json::value& x : m->a) r.members.push_back(s_of(x, "id"));
         }
         l.sets.push_back(std::move(r));
+      }
+    }
+    if (const json::value* v = d->find("copies"); v && v->k == json::kind::array) {
+      for (const json::value& e : v->a) {
+        if (s_of(e, "label").empty()) continue;
+        l.copies.push_back({s_of(e, "label"), s_of(e, "to_name"), s_of(e, "from_id"), s_of(e, "to_id"), s_of(e, "state"),
+                            s_of(e, "line")});
       }
     }
     s.drives = std::move(l);
@@ -497,9 +522,69 @@ std::string joined(const std::vector<std::string>& v, const char* sep) {
 // them, offered equally, with "RAID is not a backup" above them. A combined
 // choice erases: each drive's name is typed before Erase and combine is enabled
 // (the program checks the names again; the OS asks for an administrator).
+// Keep a copy (docs/plans/self-host-drives-keep-a-copy.md §1): with two drives
+// picked, copy the one with data onto the other and keep it up to date. Nothing
+// is erased, so no name is typed. Comes before the five choices, as recommended.
+void keep_copy_rows(writer& w, const drives_listing& l, drives_state& d, bool idle) {
+  d.copy_drawn.clear();
+  if (d.picked.size() != 2) return;
+  std::vector<const disk_row*> two;
+  for (const std::string& id : d.picked) {
+    for (const disk_row& k : l.disks) {
+      if (k.id == id) two.push_back(&k);
+    }
+  }
+  if (two.size() != 2) return;
+  for (const copy_row& c : l.copies) {
+    for (const disk_row* k : two) {
+      if (k->id == c.from_id || k->id == c.to_id) return;  // one of them is in a copy already: its row says so
+    }
+  }
+  const disk_row* from = two[0]->used >= two[1]->used ? two[0] : two[1];
+  if (two[0]->id == d.copy_from) from = two[0];
+  if (two[1]->id == d.copy_from) from = two[1];
+  const disk_row* to = from == two[0] ? two[1] : two[0];
+  d.copy_drawn = from->id;
+  const std::string q_from = "\xE2\x80\x9C" + from->name + "\xE2\x80\x9D";
+  stack(w, "dr_keep_card", 6, "vertical", "card");
+  text(w, "dr_keep_t", "Keep a copy (nothing on " + q_from + " is erased)", "heading");
+  text(w, "dr_keep_rec", "Recommended", "caption");
+  text(w, "dr_keep_what",
+       "Copies everything on " + from->name + " to " + to->name + ", then keeps the copy up to date while the server runs. "
+       "Files deleted or saved over on " + from->name + " stay in the copy's Recycle Bin for 30 days.",
+       "secondary");
+  text(w, "dr_keep_not_mirror",
+       "Not a mirror: if " + from->name + " dies, the copy has everything but the last few minutes. "
+       "Files already on " + to->name + " are left alone.",
+       "secondary");
+  std::vector<option> dirs{{from->id, "Copy " + from->name + " onto " + to->name},
+                           {to->id, "Copy " + to->name + " onto " + from->name}};
+  choice(w, "dr_keep_from", "Copy from", dirs, from->id, !idle);
+  const bool mounted = from->mounted && to->mounted;
+  const bool fits = from->used <= to->free;
+  std::string why;
+  if (!mounted) {
+    why = (from->mounted ? to->name : from->name) + " isn't mounted, so it can't be used yet.";
+  } else if (!fits) {
+    why = "Doesn't fit: " + from->name + " has " + from->used_words + " on it, " + to->name + " has " + to->free_words + " free.";
+  } else {
+    why = "Fits: " + from->used_words + " onto " + to->free_words + " free.";
+  }
+  text(w, "dr_keep_fit", why, "secondary");
+  button(w, "dr_keep_go", "Start copying", !idle || !mounted || !fits, "primary",
+         "Keep a copy of " + from->name + " on " + to->name);
+  end(w);
+}
+
 void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std::string& me) {
   const bool idle = !busy;
   if (s.drives) {
+    for (const copy_row& c : s.drives->copies) {
+      const std::string id = row_hash("cp", c.label);
+      row(w, id, "Copy of " + c.label, c.line);
+      button(w, id + "_stop", "Stop keeping a copy", !idle, "plain", "Stop keeping a copy of " + c.label);
+      end_row(w);
+    }
     for (const set_row& set : s.drives->sets) {
       const std::string id = row_hash("ds", set.id);
       row(w, id, set.name, set.line);
@@ -564,6 +649,7 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
       button(w, "dr_check", "Check again", !idle);
       end_row(w);
     }
+    keep_copy_rows(w, l, d, idle);
     if (!d.picked.empty() && s.choices) {
       text(w, "dr_not_backup", s.choices->not_a_backup, "heading");
       stack(w, "dr_options", 8, "horizontal");
@@ -882,6 +968,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   disk_ids_.clear();
   disk_names_.clear();
+  copy_labels_.clear();
   set_ids_.clear();
   set_names_.clear();
   set_members_.clear();
@@ -894,6 +981,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       disk_ids_.push_back(k.id);
       disk_names_.push_back(k.name);
     }
+    for (const copy_row& c : s.drives->copies) copy_labels_.push_back(c.label);
     for (const set_row& r : s.drives->sets) {
       set_ids_.push_back(r.id);
       set_names_.push_back(r.name);
@@ -976,6 +1064,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "host_drives_choices") busy_text = "Working out the choices";
   else if (s.busy == "host_drives_combine") busy_text = "Combining the drives. Allow it in the administrator prompt.";
   else if (s.busy == "host_drives_replace") busy_text = "Replacing the drive. Allow it in the administrator prompt.";
+  else if (s.busy == "host_drives_copy") busy_text = "Setting up the copy";
+  else if (s.busy == "host_drives_copy_stop") busy_text = "Stopping the copy";
   else if (s.busy == "host_setup") {
     if (s.host_step == "share") busy_text = "Sharing the folders";
     else if (s.host_step == "name") busy_text = "Naming it on DuckDNS";
@@ -1741,6 +1831,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       if (!v.empty()) out.push_back(req("folder").s("path", v).done());
     } else if (node == "dr_label") {
       drives_.label = v;
+    } else if (node == "dr_keep_from") {
+      drives_.copy_from = v;
     } else if (node == "dr_rep_typed") {
       drives_.replace_typed = v;
     } else if (node == "dr_rep_pick") {
@@ -2031,6 +2123,30 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       drives_.typed.clear();
       drives_.choice.clear();
       drives_.picked.clear();
+    }
+  } else if (node == "dr_keep_go") {
+    if (drives_.picked.size() == 2) {
+      // As drawn: the picked drive copied from, else the one with most on it (the tree's default).
+      std::string from = drives_.copy_from;
+      if (std::find(drives_.picked.begin(), drives_.picked.end(), from) == drives_.picked.end()) from = drives_.copy_drawn;
+      if (!from.empty()) {
+        const std::string to = drives_.picked[0] == from ? drives_.picked[1] : drives_.picked[0];
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_copy").key("ids").begin_array().string(from).string(to).end_array();
+        out.push_back(rw.end_object().take());
+        drives_.asked = "copy";
+        drives_.choice.clear();
+        drives_.picked.clear();
+        drives_.copy_from.clear();
+      }
+    }
+  } else if (node.substr(0, 2) == "cp" && node.size() > 5 && node.substr(node.size() - 5) == "_stop") {
+    for (const std::string& label : copy_labels_) {
+      if (row_hash("cp", label) + "_stop" == node) {
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_copy_stop").key("label").string(label);
+        out.push_back(rw.end_object().take());
+      }
     }
   } else if (node == "dr_rep_cancel") {
     drives_.replacing.clear();

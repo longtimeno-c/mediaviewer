@@ -3,6 +3,7 @@
 // The host's two keepers (docs/plans/self-hosted.md §4, §5; slice 5 wires
 // slices 3 and 4 into slice 2's hooks): DuckDNS and the router.
 #include "addons/driftwire/cli/host_keepers.h"
+#include "addons/driftwire/cli/host_copy.h"
 #include "addons/driftwire/cli/host_drives.h"
 
 #include <sodium.h>
@@ -396,6 +397,7 @@ keeper_factories host_keepers() {
   f.ddns = [] { return make_ddns_keeper(); };
   f.router = [] { return make_router_keeper(); };
   f.drives = [] { return make_drives_keeper(); };
+  f.copy = [] { return make_copy_keeper(); };
   return f;
 }
 

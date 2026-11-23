@@ -973,7 +973,7 @@ std::unique_ptr<host_service> host_service::start(host_service_options o, std::s
     st.next_roots = std::chrono::steady_clock::now() + std::chrono::milliseconds(st.o.roots_every_ms);
     st.set_awake_locked();
     // The keepers last: they need the ports.
-    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives}) {
+    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives, st.o.keepers.copy}) {
       if (!make) continue;
       if (auto kp = make()) st.keepers.push_back(std::move(kp));
     }

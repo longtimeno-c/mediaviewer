@@ -26,6 +26,7 @@
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/drives.h"
 #include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/host_copy.h"
 #include "addons/driftwire/cli/host_drives.h"
 #include "core/json.h"
 #include "import_fixture.h"
@@ -798,6 +799,94 @@ TEST_CASE("host drives: combining through the command, against a stand-in port",
     REQUIRE(v.find("sets"));
     CHECK(*v.find("sets")->a[0].str("state") == "degraded");
   }
+}
+
+TEST_CASE("host drives: keep a copy through the command, nothing erased and nothing typed", "[host-drives]") {
+  scratch_dir dir("host_drives_copy");
+  const fs::path data = dir / "data";
+  fs::create_directories(data);
+  const std::string root = utf8(fs::weakly_canonical(data));
+  const fs::path a = dir / "family", b = dir / "copy";
+  fs::create_directories(a);
+  fs::create_directories(b);
+  fake_state st;
+  st.l.disks = {image_disk("disk12", "Family Media", 4 * TB, root + "/a.dmg"),
+                image_disk("disk13", "Family Media Copy", 4 * TB, root + "/b.dmg")};
+  st.l.disks[0].volumes[0].mount = utf8(a);
+  st.l.disks[0].volumes[0].used = 1'200 * GB;
+  st.l.disks[1].volumes[0].mount = utf8(b);
+  st.l.disks[1].volumes[0].used = 231'000'000;
+  const cli::host_layout l = cli::host_layout_of(utf8(data));
+  const auto list_json = [&] {
+    std::string j;
+    cli::args q;
+    q.cmd = cli::command::host;
+    q.host = cli::host_action::drives;
+    q.json = true;
+    q.data = utf8(data);
+    q.test_data = utf8(data);
+    cli::drives_run run;
+    run.make_port = [&st] { return std::make_unique<fake_port>(st); };
+    {
+      cli::print_capture cap(j);
+      CHECK(cli::run_host_drives(q, l, utf8(data), true, run) == 0);
+    }
+    return parsed(j);
+  };
+
+  // Too small a drive: both numbers, and nothing written.
+  st.l.disks[1].volumes[0].size = TB;
+  std::string out;
+  CHECK(run_drives(data, {"copy", "disk12", "disk13"}, st, {}, out) == 1);
+  CHECK(contains(out, "doesn't fit: Family Media has 1.2 TB on it, Family Media Copy has"));
+  CHECK(!fs::exists(b / ".mediaviewer-copy.json"));
+  st.l.disks[1].volumes[0].size = 4 * TB;
+
+  // The copy starts: no name typed, nothing erased, the marker on the copy drive.
+  out.clear();
+  CHECK(run_drives(data, {"copy", "disk12", "disk13"}, st, {}, out) == 0);
+  CHECK(contains(out, "Keeping a copy of \"Family Media\" on Family Media Copy"));
+  CHECK(contains(out, "Nothing on Family Media is changed or erased"));
+  CHECK(st.created.empty());
+  CHECK(fs::exists(b / ".mediaviewer-copy.json"));
+  const auto copies = cli::read_copies(l.folder);
+  REQUIRE(copies.size() == 1);
+  CHECK(copies[0].label == "Family Media");
+  CHECK(copies[0].to_name == "Family Media Copy");
+
+  // The card's list: the copy with both drives' ids, and the copy drive can't be erased now.
+  {
+    const json::value v = list_json();
+    REQUIRE(v.find("copies"));
+    REQUIRE(v.find("copies")->a.size() == 1);
+    const json::value& c = v.find("copies")->a[0];
+    CHECK(*c.str("from_id") == "disk12");
+    CHECK(*c.str("to_id") == "disk13");
+    CHECK(*c.str("state") == "waiting");
+    CHECK(contains(*v.find("disks")->a[1].str("refused"), "copy of another drive"));
+    CHECK(*v.find("disks")->a[0].str("used_words") == "1.2 TB");
+  }
+  out.clear();
+  CHECK(run_drives(data, {"combine", "mirror", "disk12", "disk13"}, st, {}, out, "Photos") == 1);
+  CHECK(contains(out, "copy of another drive"));
+  CHECK(st.created.empty());
+
+  // Twice, or the other way round: refused.
+  out.clear();
+  CHECK(run_drives(data, {"copy", "disk12", "disk13"}, st, {}, out) == 1);
+  CHECK(contains(out, "kept already"));
+  out.clear();
+  CHECK(run_drives(data, {"copy", "disk13", "disk12"}, st, {}, out) == 1);
+  CHECK(contains(out, "itself a copy"));
+
+  // Stopped: the copied files stay, the marker goes, the drive may be erased again.
+  out.clear();
+  CHECK(run_drives(data, {"copy-stop", "Family Media"}, st, {}, out) == 0);
+  CHECK(contains(out, "What was copied stays on Family Media Copy"));
+  CHECK(cli::read_copies(l.folder).empty());
+  CHECK(!fs::exists(b / ".mediaviewer-copy.json"));
+  out.clear();
+  CHECK(run_drives(data, {"copy-stop", "Family Media"}, st, {}, out) == 2);
 }
 
 TEST_CASE("host drives: the keeper watches the sets and tells the phone", "[host-drives]") {

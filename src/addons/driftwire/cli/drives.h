@@ -95,6 +95,7 @@ struct disk {
   bool in_set = false;    // already a member of a RAID set or a storage pool
   bool online = true;     // Windows: OperationalStatus Online
   bool image = false;     // a disk image (hdiutil, a VHD)
+  bool copy_drive = false;  // a volume of it has a .mediaviewer-copy.json at its top: Keep a copy's drive (host_copy.h)
   std::string image_path; // the image's file, for the test guard ("" for a real disk)
   std::string smart;      // "verified", "failing", "" when the OS does not say
   std::vector<volume_facts> volumes;

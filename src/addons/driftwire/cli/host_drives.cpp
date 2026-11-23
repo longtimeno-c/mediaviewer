@@ -13,8 +13,11 @@
 #include <thread>
 
 #include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/drive_copier.h"
 #include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/host_copy.h"
 #include "addons/driftwire/cli/serve_tty.h"
+#include "addons/driftwire/cli/volume.h"
 #include "core/json.h"
 
 namespace mv::driftwire::cli {
@@ -67,9 +70,15 @@ drives_words parse_drives_words(std::span<const std::string> w) {
     d.act = drives_action::replace;
     d.set = rest[0];
     d.ids = {rest[1]};
+  } else if (what == "copy" && rest.size() == 2) {
+    d.act = drives_action::copy;
+    d.ids.assign(rest.begin(), rest.end());
+  } else if (what == "copy-stop" && rest.size() == 1) {
+    d.act = drives_action::copy_stop;
+    d.set = rest[0];
   } else {
     d.error = "host drives takes list, choices DRIVE..., combine separate|mirror|span|stripe|parity DRIVE... "
-              "--label NAME, or replace SET DRIVE";
+              "--label NAME, replace SET DRIVE, copy FROM TO, or copy-stop FROM";
   }
   return d;
 }
@@ -95,7 +104,52 @@ drives::guard host_guard(const host_layout& l, const std::string& data_dir, bool
   return g;
 }
 
-std::string listing_json(const drives::listing& l, const drives::guard& g) {
+namespace {
+
+std::uint64_t free_of(const drives::disk& d) {
+  std::uint64_t free = 0;
+  for (const auto& v : d.volumes) {
+    if (!v.mount.empty() && v.size > v.used) free += v.size - v.used;
+  }
+  return free;
+}
+
+const drives::volume_facts* mounted_volume(const drives::disk& d) {
+  for (const auto& v : d.volumes) {
+    if (!v.mount.empty()) return &v;
+  }
+  return nullptr;
+}
+
+bool same_path(const std::string& a, const std::string& b) {
+  return drives::path_within(a, b, drives::this_os()) && drives::path_within(b, a, drives::this_os());
+}
+
+// The disk whose mounted volume is at `mount` ("": none listed).
+std::string disk_at(const drives::listing& l, const std::string& mount) {
+  if (mount.empty()) return {};
+  for (const auto& d : l.disks) {
+    for (const auto& v : d.volumes) {
+      if (!v.mount.empty() && same_path(v.mount, mount)) return d.id;
+    }
+  }
+  return {};
+}
+
+// Where a copy's volume is now ("": not attached). POSIX: a volume's root is a mount point.
+std::string where_now(const std::string& path, const std::string& volume) {
+  serve::root_config r;
+  r.path = path;
+  r.volume = volume;
+#if !defined(_WIN32)
+  r.mount = path != "/";
+#endif
+  return volume_locate(r).value_or(std::string());
+}
+
+}  // namespace
+
+std::string listing_json(const drives::listing& l, const drives::guard& g, const std::string& host_folder) {
   json::writer w;
   w.begin_object();
   w.key("os").string(drives::this_os() == drives::os_kind::mac ? "mac" : drives::this_os() == drives::os_kind::windows ? "windows" : "linux");
@@ -107,6 +161,9 @@ std::string listing_json(const drives::listing& l, const drives::guard& g) {
     w.begin_object().key("id").string(d.id).key("name").string(d.name).key("model").string(d.model);
     w.key("size").integer(static_cast<std::int64_t>(d.size)).key("used").integer(static_cast<std::int64_t>(drives::used_of(d)));
     w.key("folders").integer(static_cast<std::int64_t>(drives::folders_of(d)));
+    w.key("free").integer(static_cast<std::int64_t>(free_of(d))).key("mounted").boolean(mounted_volume(d) != nullptr);
+    w.key("used_words").string(drives::size_words(drives::used_of(d)));
+    w.key("free_words").string(drives::size_words(free_of(d)));
     w.key("facts").string(drives::facts_line(d));
     w.key("system").boolean(d.system).key("internal").boolean(d.internal).key("image").boolean(d.image);
     if (!d.smart.empty()) w.key("smart").string(d.smart);
@@ -131,6 +188,25 @@ std::string listing_json(const drives::listing& l, const drives::guard& g) {
       w.begin_object().key("id").string(m.id).key("status").string(m.status).key("missing").boolean(m.missing).end_object();
     }
     w.end_array().end_object();
+  }
+  w.end_array();
+  // The copies kept (host_copy.h): each with its drives' ids while they are attached, and how it stands.
+  w.key("copies").begin_array();
+  if (!host_folder.empty()) {
+    const auto statuses = read_copy_statuses(host_folder);
+    for (const auto& c : read_copies(host_folder)) {
+      copy_status st;
+      st.label = c.label;
+      for (const auto& x : statuses) {
+        if (x.label == c.label) st = x;
+      }
+      st.to_name = c.to_name;
+      w.begin_object().key("label").string(c.label).key("to_name").string(c.to_name);
+      w.key("from_id").string(disk_at(l, where_now(c.from, c.from_volume)));
+      w.key("to_id").string(disk_at(l, where_now(c.to, c.to_volume)));
+      w.key("state").string(copy_state_word(st.state));
+      w.key("line").string(copy_line(st, drives::this_os() == drives::os_kind::mac)).end_object();
+    }
   }
   w.end_array();
   w.end_object();
@@ -195,6 +271,7 @@ drives::listing listed(drives::port& p) {
   for (auto& d : l.disks) {
     for (auto& v : d.volumes) {
       if (!v.mount.empty()) v.mount = canonical_or(v.mount);
+      if (!v.mount.empty() && drive_copy::has_marker(v.mount)) d.copy_drive = true;
     }
   }
   return l;
@@ -225,7 +302,7 @@ std::string still_ok(ctx& c, std::span<const drives::disk> confirmed) {
 int list_cmd(ctx& c) {
   const drives::listing l = listed(*c.port);
   if (c.a.json) {
-    print(listing_json(l, c.g) + "\n");
+    print(listing_json(l, c.g, c.l.folder) + "\n");
     return l.error.empty() ? 0 : 1;
   }
   if (!l.error.empty()) return fail(l.error + ".", 1);
@@ -380,6 +457,100 @@ int replace_cmd(ctx& c, const drives_words& w) {
   return 0;
 }
 
+// A copy's folder is named after the source: nothing a folder name can't hold.
+std::string folder_safe(std::string label) {
+  for (char& ch : label) {
+    if (ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' ||
+        ch == '|' || static_cast<unsigned char>(ch) < 0x20) {
+      ch = '-';
+    }
+  }
+  while (!label.empty() && (label.back() == '.' || label.back() == ' ')) label.pop_back();
+  return label.empty() ? std::string("Drive") : label;
+}
+
+int copy_cmd(ctx& c, const drives_words& w) {
+  const drives::listing l = listed(*c.port);
+  if (!l.error.empty()) return fail(l.error + ".", 1);
+  std::string error;
+  const auto ds = picked(l, w.ids, error);
+  if (!error.empty()) return fail(error + ".", 2);
+  const drives::disk& from = ds[0];
+  const drives::disk& to = ds[1];
+  if (from.id == to.id) return fail("the copy goes on another drive than the one copied.", 2);
+  const drives::volume_facts* fv = mounted_volume(from);
+  const drives::volume_facts* tv = mounted_volume(to);
+  if (!fv) return fail(from.name + " isn't mounted, so nothing on it can be read: mount it first.", 1);
+  if (!tv) return fail(to.name + " isn't mounted: mount it first. Nothing on it is erased.", 1);
+  if (!c.g.images_under.empty()) {
+    for (const auto* d : {&from, &to}) {
+      if (!d->image || !drives::path_within(d->image_path, c.g.images_under, c.g.os)) {
+        return fail("the test build touches only disk images made for its tests.", 1);
+      }
+    }
+  }
+  if (to.system) return fail(to.name + " holds this computer's system: choose another drive for the copy.", 1);
+  if (to.read_only) return fail(to.name + " is read-only.", 1);
+  if (from.copy_drive) return fail(from.name + " is itself a copy of another drive.", 1);
+  for (const auto& p : c.g.protected_paths) {
+    if (drives::path_within(p, tv->mount, c.g.os)) return fail(to.name + " holds MediaViewer's library or data: choose another drive.", 1);
+  }
+  for (const auto& p : c.g.shared_paths) {
+    if (drives::path_within(p, tv->mount, c.g.os)) {
+      return fail(to.name + " holds a folder this server shares, so the copy would be shared twice: take it back "
+                  "with `driftwire host unshare LABEL` first, or choose another drive.", 1);
+    }
+  }
+  const std::string label = folder_safe(fv->label.empty() ? from.name : fv->label);
+  std::vector<copy_entry> copies = read_copies(c.l.folder);
+  for (const auto& e : copies) {
+    if (e.label == label || same_path(where_now(e.from, e.from_volume), fv->mount)) {
+      return fail("a copy of " + from.name + " is kept already (on " + e.to_name + ").", 1);
+    }
+    if (same_path(where_now(e.to, e.to_volume), tv->mount)) {
+      return fail(to.name + " keeps a copy of " + e.label + " already.", 1);
+    }
+  }
+  if (to.copy_drive) {
+    const auto m = drive_copy::read_marker(tv->mount);
+    if (!m || m->label != label) return fail(to.name + " holds a copy of another drive.", 1);
+  }
+  const std::uint64_t needed = drives::used_of(from), room = free_of(to);
+  if (needed > room) {
+    return fail("the copy doesn't fit: " + from.name + " has " + drives::size_words(needed) + " on it, " + to.name +
+                " has " + drives::size_words(room) + " free. Nothing was changed.", 1);
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(std::u8string(
+      reinterpret_cast<const char8_t*>(c.l.folder.data()), c.l.folder.size())), ec);
+  if (!drive_copy::write_marker(tv->mount, {label, 0})) return fail("couldn't write to " + to.name + ".", 1);
+  copies.push_back({label, to.name, fv->mount, volume_of(fv->mount).volume, tv->mount, volume_of(tv->mount).volume});
+  if (!write_copies(c.l.folder, copies)) {
+    drive_copy::remove_marker(tv->mount);
+    return fail("couldn't save the copy's settings.", 1);
+  }
+  print("Keeping a copy of \"" + label + "\" on " + to.name + ", in the folder \"" + drive_copy::copy_folder_name(label) +
+        "\". Nothing on " + from.name + " is changed or erased.\nThe first copy (" + drives::size_words(needed) +
+        ") runs while the server runs; driftwire host status shows how far it is.\n");
+  return 0;
+}
+
+int copy_stop_cmd(ctx& c, const drives_words& w) {
+  const drives::listing l = listed(*c.port);
+  std::vector<copy_entry> copies = read_copies(c.l.folder);
+  const auto it = std::find_if(copies.begin(), copies.end(), [&](const copy_entry& e) {
+    return e.label == w.set || (l.error.empty() && disk_at(l, where_now(e.from, e.from_volume)) == w.set);
+  });
+  if (it == copies.end()) return fail("no copy of \"" + w.set + "\" is kept.", 2);
+  const copy_entry e = *it;
+  copies.erase(it);
+  if (!write_copies(c.l.folder, copies)) return fail("couldn't save the copy's settings.", 1);
+  if (const std::string to = where_now(e.to, e.to_volume); !to.empty()) drive_copy::remove_marker(to);
+  print("Stopped keeping a copy of \"" + e.label + "\". What was copied stays on " + e.to_name + ", in \"" +
+        drive_copy::copy_folder_name(e.label) + "\".\n");
+  return 0;
+}
+
 }  // namespace
 
 int run_host_drives(const args& a, const host_layout& l, const std::string& data_dir, bool test_hooks, drives_run run) {
@@ -397,6 +568,8 @@ int run_host_drives(const args& a, const host_layout& l, const std::string& data
     case drives_action::choices: return choices_cmd(c, w);
     case drives_action::combine: return combine_cmd(c, w);
     case drives_action::replace: return replace_cmd(c, w);
+    case drives_action::copy: return copy_cmd(c, w);
+    case drives_action::copy_stop: return copy_stop_cmd(c, w);
   }
   return 2;
 }
