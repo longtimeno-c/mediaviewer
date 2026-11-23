@@ -51,6 +51,8 @@ enum VPNFlow {
     s.isDemo ? VPNCopy.detailDemo : VPNCopy.detail(host: s.host ?? "")
   }
 
+  static func consentTitle(_ s: VPNSnapshot) -> String { s.isDemo ? VPNCopy.consentTitleDemo : VPNCopy.consentTitle }
+
   static func consentMessage(_ s: VPNSnapshot) -> String {
     s.isDemo ? VPNCopy.consentDemo : VPNCopy.consent(host: s.host ?? "")
   }
@@ -89,11 +91,11 @@ struct VPNScreen: View {
     .navigationBarTitleDisplayMode(.inline)
     .sheet(isPresented: $enteringCode) {
       // Large only: a sheet that grows for the keyboard moves Connect under the finger.
-      VPNCodeSheet(service: service)
+      VPNCodeSheet(service: service, isDemo: vpn.isDemo)
         .presentationDetents([.large])
     }
     .sheet(isPresented: $askingConsent) {
-      VPNConsentSheet(message: VPNFlow.consentMessage(vpn)) {
+      VPNConsentSheet(title: VPNFlow.consentTitle(vpn), message: VPNFlow.consentMessage(vpn)) {
         askingConsent = false
         switchOn {
           await $0.acceptConsent()
@@ -214,6 +216,7 @@ struct VPNScreen: View {
 /// Paste the VPN code from the server. A wrong one says so under the field and stays open.
 private struct VPNCodeSheet: View {
   let service: VPNService
+  var isDemo = false
   @Environment(\.dismiss) private var dismiss
   @State private var code = ""
   @State private var notACode = false
@@ -227,6 +230,12 @@ private struct VPNCodeSheet: View {
             .font(.footnote)
             .foregroundStyle(Theme.body)
             .fixedSize(horizontal: false, vertical: true)
+          if isDemo {
+            Text(VPNCopy.codeDemo)
+              .font(.footnote.weight(.semibold))
+              .foregroundStyle(Theme.title)
+              .fixedSize(horizontal: false, vertical: true)
+          }
           SecureField(VPNCopy.codeField, text: $code)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -283,6 +292,7 @@ private struct VPNCodeSheet: View {
 /// App Review 5.4: what the VPN does with the person's traffic, before the first switch-on and so
 /// before iOS's own alert. Not Now, or a swipe down, leaves it off.
 private struct VPNConsentSheet: View {
+  let title: String
   let message: String
   let turnOn: () -> Void
   let notNow: () -> Void
@@ -290,7 +300,7 @@ private struct VPNConsentSheet: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
-        Text(VPNCopy.consentTitle)
+        Text(title)
           .font(.title3.weight(.semibold))
           .foregroundStyle(Theme.title)
           .fixedSize(horizontal: false, vertical: true)

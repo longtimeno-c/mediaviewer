@@ -138,8 +138,19 @@ public final class DemoVPN: VPNService, @unchecked Sendable {
     }
   }
 
-  /// The demo needs no code; any text keeps the demo host.
-  public func connect(code: String) async throws { publish { $0.status = .off } }
+  /// The demo uses no host or key, but text that isn't a VPN code is refused as the real one
+  /// refuses it, so the demo never suggests that anything works. Only the code's scheme is checked:
+  /// the one parser is the core's (serve::parse_relay_connect_code). The demo host stays.
+  public func connect(code: String) async throws {
+    guard Self.looksLikeACode(code) else { throw VPNCodeError.notACode }
+    publish { $0.status = .off }
+  }
+
+  static func looksLikeACode(_ text: String) -> Bool {
+    let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard t.hasPrefix("mediaviewer://relay"), let hash = t.firstIndex(of: "#") else { return false }
+    return t.index(after: hash) < t.endIndex
+  }
 
   public func acceptConsent() async { publish { $0.consented = true } }
 

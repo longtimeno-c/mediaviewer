@@ -36,10 +36,29 @@ final class VPNTests: XCTestCase {
     XCTAssertEqual(vpn.current, VPNSnapshot(status: .off, host: DemoVPN.host, isDemo: true, consented: false))
   }
 
+  /// Seen by hand in the simulator: "hello" was taken and turned the demo off, as if any text worked.
+  func testTheDemoRefusesTextThatIsNotAVPNCode() async throws {
+    let vpn = demo()
+    await vpn.acceptConsent()
+    await vpn.setOn(true)
+    for text in ["hello", "", "   ", "mediaviewer://pair#abc", "mediaviewer://relay", "mediaviewer://relay#"] {
+      do {
+        try await vpn.connect(code: text)
+        XCTFail("The demo took \"\(text)\" as a VPN code")
+      } catch let error as VPNCodeError {
+        XCTAssertEqual(error, .notACode)
+      }
+    }
+    XCTAssertTrue(vpn.current.isOn, "A refused code must leave the demo as it was")
+    try await vpn.connect(code: "  MediaViewer://relay#home.example.net:51820#0123456789abcdef0123\n")
+    try await vpn.connect(code: "mediaviewer://relay-tls#home.example.net:443#0123456789abcdef0123")
+    XCTAssertEqual(vpn.current.host, DemoVPN.host, "The demo never takes a host from a code")
+  }
+
   func testTheDemoIsAlwaysTheDemo() async throws {
     let vpn = demo()
     XCTAssertTrue(vpn.current.isDemo)
-    try await vpn.connect(code: "anything")
+    try await vpn.connect(code: "mediaviewer://relay#home.example.net:51820#0123456789abcdef0123")
     XCTAssertTrue(vpn.current.isDemo)
     XCTAssertEqual(vpn.current.host, DemoVPN.host)
     await vpn.acceptConsent()
@@ -158,6 +177,10 @@ final class VPNTests: XCTestCase {
     let demo = DemoVPN().current
     XCTAssertEqual(VPNFlow.toggleTitle(demo), VPNCopy.toggleDemo)
     XCTAssertEqual(VPNFlow.consentMessage(demo), VPNCopy.consentDemo)
+    // The demo's consent never asks to send traffic anywhere.
+    XCTAssertEqual(VPNFlow.consentTitle(demo), VPNCopy.consentTitleDemo)
+    XCTAssertFalse(VPNFlow.consentTitle(demo).contains("through your server"))
+    XCTAssertTrue(VPNCopy.codeDemo.hasPrefix("Demo:"))
     XCTAssertTrue(VPNCopy.consentDemo.contains("Nothing is routed"))
     XCTAssertTrue(VPNCopy.demoBanner.contains("nothing is routed"))
     // The line under the demo's switch must not say traffic leaves through a server.
@@ -167,6 +190,7 @@ final class VPNTests: XCTestCase {
     let real = VPNSnapshot(status: .off, host: "home.example.net:51820")
     XCTAssertEqual(VPNFlow.toggleTitle(real), VPNCopy.toggle)
     XCTAssertEqual(VPNFlow.consentMessage(real), VPNCopy.consent(host: "home.example.net:51820"))
+    XCTAssertEqual(VPNFlow.consentTitle(real), VPNCopy.consentTitle)
     XCTAssertTrue(VPNFlow.consentMessage(real).contains("home.example.net:51820"))
   }
 
