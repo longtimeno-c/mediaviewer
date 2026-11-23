@@ -977,8 +977,13 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   down** (`block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,
   `mac_tunnel/`, still `<app id>.DriftwireTunnel` (its App ID and profiles; owner 2026-11-19),
   `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`, `cmake/darwin-tunnel.cmake`, embedded by
-  `macpack.py` in `Contents/Library/SystemExtensions`, offered only when entitled;
-  `includeAllNetworks` kill switch); Windows Wintun (`vpn_win.cpp`, routes `0.0.0.0/1`,
+  `macpack.py` in `Contents/Library/SystemExtensions`, offered only when entitled; the add-on makes
+  the port on the Mac (`addon_entry.cpp`, 2026-11-23: never made before, so the switch never showed).
+  No kill switch on the Mac yet (`block_unavailable`): `includeAllNetworks` would hold back the
+  add-on's own relay link, which leaves from the app, not the provider. While the system asks the
+  person (extension approval, the VPN configuration) the page says so; a refusal or "after restart"
+  turns All traffic off, a passing failure keeps it on but is not retried that run; every failure and
+  stop disables the saved configuration, and quitting cancels the waits); Windows Wintun (`vpn_win.cpp`, routes `0.0.0.0/1`,
   `128.0.0.0/1`, `::/1`, `8000::/1`, WFP kill-switch sublayer that outlives a crash until stop, next
   start or reboot); Linux none.
 - **Exposure**: the network sees the relay; sites see the relay; the relay sees hostnames, not

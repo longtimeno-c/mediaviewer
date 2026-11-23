@@ -629,12 +629,13 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     v_.mode = "proxy";
     return false;
   };
-  if (!on || !vpn_port_) {
-    if (vpn_port_) {
-      std::lock_guard lock(m_);
-      if (v_.all_traffic_available) v_.all_traffic_note.clear();  // a failed start's words go with the switch
+  if (!on || !vpn_port_) return proxy_mode();  // a failed start's words stay until the person flips the switch
+  {
+    std::lock_guard lock(m_);
+    if (vpn_gave_up_for_ == made_for) {  // failed this run for these settings: its note says so
+      v_.mode = "proxy";
+      return false;
     }
-    return proxy_mode();
   }
   std::string why;
   const auto field = relay_server_of(relay, why);
@@ -665,9 +666,11 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
   post();
   std::string note;
   auto dev = vpn_port_->start(s);
-  bool failed = false;
+  bool failed = false;   // turns the switch off: the person has to act (allow it, restart)
+  bool gave_up = false;  // a passing failure: kept on, not tried again this run
   if (!dev) {
-    failed = dev.error() != status::cancelled;  // quitting: nothing to say, the switch kept for next time
+    failed = dev.error() == status::permission_denied || dev.error() == status::busy;
+    gave_up = !failed && dev.error() != status::cancelled;  // quitting: nothing to say
     if (dev.error() == status::permission_denied) {
       note = "All traffic (VPN) wasn't allowed. Allow MediaViewer's network extension and its VPN configuration "
              "(on a Mac: System Settings \xE2\x86\x92 General \xE2\x86\x92 Login Items & Extensions), then turn "
@@ -675,9 +678,9 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     } else if (dev.error() == status::busy) {
       note = "Restart this computer to finish installing MediaViewer's network extension, then turn All traffic on "
              "again. Meanwhile the proxy carries the apps that follow it.";
-    } else if (failed) {
-      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn it on again to "
-             "try once more.";
+    } else if (gave_up) {
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn All traffic off "
+             "and on again to try once more.";
     }
     log_status("all traffic", dev.error());
   } else {
@@ -693,9 +696,9 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
       vpn_for_ = made_for;
     } else {
       vpn_port_->stop();
-      failed = true;
-      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn it on again to "
-             "try once more.";
+      gave_up = true;
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn All traffic off "
+             "and on again to try once more.";
       log_status("all traffic", r.error());
     }
   }
@@ -713,6 +716,7 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     // A start that failed turns the switch off: nothing else (the server, the
     // web-site look, the next launch) asks the person again until they do.
     if (failed) v_.all_traffic = false;
+    vpn_gave_up_for_ = gave_up ? made_for : std::string();
   }
   if (failed) request(false, true);  // kept off
   return runs;
@@ -754,9 +758,15 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     {
       std::lock_guard lock(m_);
       v_.*field = value->b;
-      if (field == &view::all_traffic && vpn_port_ && value->b) {
-        v_.all_traffic_note = vpn_port_->unavailable();
-        v_.all_traffic_available = v_.all_traffic_note.empty();
+      if (field == &view::all_traffic && vpn_port_) {
+        // The person flipped it: an earlier failure's words go, and on tries afresh.
+        vpn_gave_up_for_.clear();
+        if (value->b) {
+          v_.all_traffic_note = vpn_port_->unavailable();
+          v_.all_traffic_available = v_.all_traffic_note.empty();
+        } else if (v_.all_traffic_available) {
+          v_.all_traffic_note.clear();
+        }
       }
     }
     if (retry_proxy) proxy_retry_.store(true);

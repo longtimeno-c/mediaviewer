@@ -167,15 +167,7 @@ class mac_port final : public os_port {
     randombytes_buf(raw, sizeof raw);
     const std::string token = hex(raw, sizeof raw);
 
-    NSMutableArray* exclude = [NSMutableArray array];
-    for (const auto& a : s.exclude) [exclude addObject:@(net::address_text(a).c_str())];
-    NSMutableArray* nets = [NSMutableArray array];
-    for (const auto& n : s.exclude_nets) {
-      [nets addObject:@{@"base" : @(net::address_text(n.base).c_str()), @"prefix" : @(n.prefix)}];
-    }
-    // The routes, both families (plan_routes): the provider sets these as
-    // they are. "exclude" and "excludeNets" stay for a provider from before
-    // IPv6, which reads only those.
+    // The routes, both families (plan_routes): the provider sets these as they are.
     const route_plan plan = plan_routes(s, route_style::default_route);
     const auto routes = [](const std::vector<net::subnet>& all) {
       NSMutableArray* out = [NSMutableArray array];
@@ -195,8 +187,6 @@ class mac_port final : public os_port {
       @"include6" : routes(plan.include6),
       @"exclude4" : routes(plan.exclude4),
       @"exclude6" : routes(plan.exclude6),
-      @"exclude" : exclude,
-      @"excludeNets" : nets,
     };
 
     // The tunnel's configuration in the system's VPN list (the first time,
@@ -231,7 +221,13 @@ class mac_port final : public os_port {
       failed = e;
       dispatch_semaphore_signal(saved);
     }];
-    if (!wait(saved, kActivateMs, cancelled_)) return err(cancelled_.load() ? status::cancelled : status::timeout);
+    if (!wait(saved, kActivateMs, cancelled_)) {
+      // Its answer may still come (the person allows it late, or after quit):
+      // disabled now, so it never lands enabled with nobody listening.
+      manager_ = manager;
+      stop_locked();
+      return err(cancelled_.load() ? status::cancelled : status::timeout);
+    }
     if (failed) return err(failed.code == NEVPNErrorConfigurationReadWriteFailed ? status::permission_denied : status::io);
     // Saved and enabled: from here every way out takes it down and disables it,
     // so a dead configuration is never left for System Settings to connect.
@@ -308,7 +304,11 @@ class mac_port final : public os_port {
     manager_ = nil;
     if (!m) return;
     [m.connection stopVPNTunnel];
-    for (int left = kStopMs; left > 0; left -= 100) {
+    // Network Extension answers on the main thread: waiting there (the
+    // add-on's shutdown is the UI thread's) would only run to the timeout,
+    // and quitting waits for nothing. The requests go either way.
+    const bool can_wait = !NSThread.isMainThread && !cancelled_.load();
+    for (int left = can_wait ? kStopMs : 0; left > 0; left -= 100) {
       const NEVPNStatus st = m.connection.status;
       if (st == NEVPNStatusDisconnected || st == NEVPNStatusInvalid) break;
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -318,8 +318,7 @@ class mac_port final : public os_port {
     [m saveToPreferencesWithCompletionHandler:^(NSError*) {
       dispatch_semaphore_signal(saved);
     }];
-    const std::atomic<bool> never{false};  // even quitting: a disabled configuration is worth the wait
-    (void)wait(saved, kSystemMs, never);
+    if (can_wait) (void)wait(saved, kSystemMs, cancelled_);
   }
 
   std::mutex m_;

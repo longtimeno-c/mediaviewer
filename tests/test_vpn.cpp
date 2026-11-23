@@ -745,10 +745,14 @@ struct asking_vpn final : vpn::os_port {
   std::shared_ptr<std::atomic<bool>> asking = std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<int>> starts = std::make_shared<std::atomic<int>>(0);
   std::shared_ptr<bool> cancelled = std::make_shared<bool>(false);
+  // Answer at once with `answer` (a start the test expects never to happen
+  // fails its count instead of hanging the test).
+  std::shared_ptr<std::atomic<bool>> at_once = std::make_shared<std::atomic<bool>>(false);
   std::string unavailable() override { return {}; }
   mv::result<std::unique_ptr<vpn::device>> start(const vpn::settings&) override {
     ++*starts;
     std::unique_lock lock(*m);
+    if (at_once->load()) return mv::err(*answer);
     asking->store(true);
     cv->wait(lock, [&] { return *answered || *cancelled; });
     asking->store(false);
@@ -805,27 +809,48 @@ TEST_CASE("vpn: All traffic says it is starting while the system asks, and why i
   CHECK(eng.snapshot().mode == "proxy");
   REQUIRE(eventually([&] { return !eng.snapshot().all_traffic; }));
   CHECK(host.settings().find(R"x("id":"all_traffic","label":"All traffic (VPN)","value":false)x") != std::string::npos);
-  eng.on_event("tls", 2, "true");  // an unrelated change: no new start, no new prompt
+  port.at_once->store(true);           // from here a start answers at once: counted, never hanging
+  eng.on_event("tls", 2, "true");      // an unrelated change: no new start, no new prompt
   eng.on_event("tls", 2, "false");
   eng.settle();
   CHECK(*starts == 1);
-  // On again, and the system says it finishes at the next restart.
+  CHECK(host.settings().find("wasn't allowed") != std::string::npos);  // the words stay until the switch moves
+  port.at_once->store(false);
+  // On again, and the system says it finishes at the next restart: off too.
   eng.on_event("all_traffic", 2, "true");
   REQUIRE(eventually([&] { return asking->load(); }));
   answer_with(port, mv::status::busy);
   REQUIRE(eventually([&] { return host.settings().find("Restart this computer") != std::string::npos; }));
   CHECK(host.settings().find("wasn't allowed") == std::string::npos);
-  // On again, and it simply fails.
+  REQUIRE(eventually([&] { return !eng.snapshot().all_traffic; }));
+  // On again, and it fails for a passing reason (a timeout at launch): the
+  // switch and the setting stay on, and it isn't tried again this run...
   eng.on_event("all_traffic", 2, "true");
   REQUIRE(eventually([&] { return asking->load(); }));
-  answer_with(port, mv::status::io);
+  answer_with(port, mv::status::timeout);
   REQUIRE(eventually([&] { return host.settings().find("could not start") != std::string::npos; }));
-  CHECK_FALSE(eng.snapshot().all_traffic);
+  CHECK(eng.snapshot().all_traffic);
+  const int tried = *starts;
+  {
+    std::lock_guard lock(*port.m);
+    *port.answer = mv::status::timeout;
+  }
+  port.at_once->store(true);
+  eng.on_event("tls", 2, "true");
+  eng.on_event("tls", 2, "false");
+  eng.settle();
+  CHECK(*starts == tried);
+  CHECK(host.settings().find("could not start") != std::string::npos);
+  // ...until the person flips it: off clears the words, on tries again.
+  eng.on_event("all_traffic", 2, "false");
+  REQUIRE(eventually([&] { return host.settings().find("could not start") == std::string::npos; }));
+  eng.on_event("all_traffic", 2, "true");
+  REQUIRE(eventually([&] { return *starts == tried + 1; }));
   eng.on_event("tunnel", 2, "false");
   REQUIRE(eventually([&] { return eng.snapshot().tunnel_address.empty(); }));
 }
 
-TEST_CASE("vpn: quitting while the system asks gives up at once and keeps the switch", "[vpn]") {
+TEST_CASE("vpn: quitting while the system asks gives up at once", "[vpn]") {
   auto av = std::make_unique<asking_vpn>();
   auto asking = av->asking;
   auto holder = std::make_shared<std::unique_ptr<asking_vpn>>(std::move(av));
