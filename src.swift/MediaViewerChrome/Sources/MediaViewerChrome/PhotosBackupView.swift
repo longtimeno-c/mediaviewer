@@ -574,7 +574,7 @@ struct PhotosBackupSection: View {
                     : "Compares your Photos library with the folder, by content: what is already there, what would be copied, what was deleted since, and duplicates. Changes nothing.")
             Spacer(minLength: 0)
           }
-          if !store.index {
+          if !store.index && !store.destinationIsServer {
             Text("Install Import (Settings → Add-ons) to find photos that are already in the folder, however they got there, and skip them.")
               .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
               .fixedSize(horizontal: false, vertical: true)
