@@ -59,6 +59,8 @@ final class ClipModel {
   private var seekGeneration = 0
   /// The page was left: a load still on its way must not start the player.
   private var ended = false
+  /// The clip's copy on the phone, once downloaded: played from here, never asked of the server again.
+  private var localFile: URL?
 
   init(item: MediaItem, clips: ClipService) {
     self.item = item
@@ -78,7 +80,11 @@ final class ClipModel {
   }
 
   private func route(startAt: Moment?) async {
-    let route = await clips.route(for: item)
+    if let localFile { return await open(.stream(AVURLAsset(url: localFile)), startAt: startAt) }
+    await open(await clips.route(for: item), startAt: startAt)
+  }
+
+  private func open(_ route: ClipRoute, startAt: Moment?) async {
     guard !ended else { return }
     if case .converted = route { isConverted = true }
     switch route {
@@ -266,8 +272,15 @@ final class ClipModel {
           download = file.map(Download.finished) ?? .failed
           return
         }
-        // Playable once it is on the phone, from exactly where the picture was.
+        // Playable once it is on the phone, from exactly where the picture was. Played from the
+        // copy itself: asking the server again weighs the same clip against the same slow
+        // connection and lands back on "too big".
+        guard let file else {
+          download = .failed
+          return
+        }
         let at = seconds
+        localFile = file
         download = nil
         phase = .reading
         await route(startAt: Moment(seconds: at, kind: .scene, text: ""))

@@ -52,7 +52,6 @@ final class FixtureWorld: @unchecked Sendable {
   var backupSample = false
   var backupNoFolder = false
   var recents = ["boats at sunset", "mountains by a lake", "birthday cake", "receipt from the hardware shop"]
-  var downloadedClips: Set<MediaID> = []
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
 
   init(snapshot: ConnectionSnapshot) { self.snapshot = snapshot }
@@ -602,7 +601,6 @@ struct FixtureClips: ClipService {
   let world: FixtureWorld
 
   func route(for item: MediaItem) async -> ClipRoute {
-    if world.downloadedClips.contains(item.id) { return await .stream(AVURLAsset(url: FixtureClip.url())) }
     switch world.clipMode {
     case .stream: return await .stream(AVURLAsset(url: FixtureClip.url()))
     case .tooBig: return .tooBigToStream(neededMbps: 100, availableMbps: 30, fileBytes: 1_260_000_000)
@@ -631,7 +629,6 @@ struct FixtureClips: ClipService {
             continuation.yield(.progress(TransferProgress(doneBytes: total * Int64(step) / 48, totalBytes: total)))
             try await Task.sleep(for: .milliseconds(250))
           }
-          world.downloadedClips.insert(item.id)
           continuation.yield(.finished(await FixtureClip.url()))
           continuation.finish()
         } catch {
