@@ -449,6 +449,15 @@ TEST_CASE("backup: the folders offered follow the server while the phone is conn
     auto folders = target->folders();
     REQUIRE_FALSE(folders);
     CHECK(folders.error() == mv::status::permission_denied);
+    // A run into the backup folder it chose before it was limited: "not allowed", never "can't reach".
+    temp_root phone;
+    const fs::path scratch = phone.root / "scratch";
+    fs::create_directories(scratch);
+    camera_roll roll(phone.root / "roll", scratch, 2, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    CHECK(run_once(*target, roll, **ledger, scratch, 0).now == bk::state::not_allowed);
+    CHECK(files_under(n.backup).empty());
   }
   SECTION("a phone the owner has not let back up sees the folder, not writable") {
     serve::grants::grant g;

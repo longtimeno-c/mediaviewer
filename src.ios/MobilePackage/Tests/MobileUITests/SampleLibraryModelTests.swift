@@ -58,6 +58,21 @@ final class SampleLibraryModelTests: XCTestCase {
     }
   }
 
+  /// The chooser's selection follows each answer: a folder no longer offered, or no longer one this
+  /// phone may write, is let go, so Done never saves it; while asking nothing is selected.
+  func testTheFolderChooserLetsGoOfAFolderNoLongerOffered() {
+    let a = BackupFolder(id: "a", label: "Phone backup", writable: true)
+    let b = BackupFolder(id: "b", label: "Family backup", writable: true)
+    let bLocked = BackupFolder(id: "b", label: "Family backup", writable: false)
+    XCTAssertEqual(BackupFolderPick.kept(b, in: [a, b], current: nil), b)
+    XCTAssertNil(BackupFolderPick.kept(b, in: nil, current: nil))
+    XCTAssertNil(BackupFolderPick.kept(b, in: [a, bLocked], current: nil))
+    XCTAssertEqual(BackupFolderPick.kept(b, in: [a], current: nil), a)  // the only one left
+    XCTAssertEqual(BackupFolderPick.kept(nil, in: [a, b], current: b), b)
+    XCTAssertNil(BackupFolderPick.kept(nil, in: [a, bLocked], current: bLocked))
+    XCTAssertNil(BackupFolderPick.kept(nil, in: [], current: a))
+  }
+
   /// An offline folder joins the top level after its own folders, once; one already listed stays.
   func testOfflineFoldersJoinTheTopLevel() {
     let own = [Folder(id: "a", name: "Photos", itemCount: 3, hasSubfolders: true)]

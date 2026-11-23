@@ -663,6 +663,8 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
   auto folders = t_.folders();
   if (!folders) {
     if (folders.error() == status::unsupported_format) return stop_with(state::too_old);
+    // Limited to folders none of which is a backup folder (over_link::folders).
+    if (folders.error() == status::permission_denied) return stop_with(state::not_allowed);
     return stop_with(state::unreachable);
   }
   const auto chosen = std::find_if(folders->begin(), folders->end(), [&](const folder& f) { return f.id == o_.root; });

@@ -117,7 +117,7 @@ public enum FailureCopy {
   public static let backupNoFolders =
     "Your server has no backup folder yet. Add one in MediaViewer on your computer, under Phone access."
   public static let backupNoFolderAllowed =
-    "Your server doesn't let this phone back up into any of its folders. The owner can allow it in MediaViewer on their computer, under Phone access."
+    "Your server has no backup folder this phone may use. The owner can add one, or let this phone use one, in MediaViewer on their computer, under Phone access."
   public static let backupAskingForFolders = "Asking your server for its backup folders…"
 
   /// What the folder chooser says above its list: nil while it is still asking (`folders` nil,
