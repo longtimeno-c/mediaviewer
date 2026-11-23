@@ -36,7 +36,7 @@ parts = [
     # The VPN extension's HTTPS look (docs/plans/phone-vpn.md), inside the app's bundle.
     ("BoringSSL", os.path.join(share, "boringssl", "copyright")),
 ]
-ort = sorted(glob.glob(os.path.join(build, "_ort", "pod-archive-onnxruntime-*", "LICENSE")))
+ort = sorted(glob.glob(os.path.join(build, "_ort", "microsoft.ml.onnxruntime-ios-*", "LICENSE")))
 if not ort:
     sys.exit("no ONNX Runtime LICENSE under " + build)
 parts.append(("ONNX Runtime", ort[-1]))
