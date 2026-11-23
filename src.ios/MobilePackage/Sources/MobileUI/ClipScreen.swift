@@ -547,12 +547,18 @@ private struct ClipBody: View {
           .padding(.vertical, 5)
           .background(Capsule().fill(.black.opacity(0.55)))
           // Full screen: the picture runs under the status area, the badge stays below it.
-          .padding(.top, (live.chromeShown || compactHeight ? 0 : live.insets.top) + 12)
+          .padding(.top, (live.chromeShown || compactHeight || typeSize.isAccessibilitySize ? 0 : live.insets.top) + 12)
           .transition(.opacity)
           .accessibilityHidden(true)
       }
     }
     .animation(.easeOut(duration: 0.15), value: clip.isFast)
+    // Full screen has no line under the picture to say the clip is waiting: the picture says it.
+    .overlay {
+      if !live.chromeShown && clip.isWaiting {
+        ProgressView().controlSize(.large).tint(.white).accessibilityLabel("Waiting for the clip")
+      }
+    }
     .accessibilityAction(named: clip.isFast ? "Normal speed" : "Double speed") { clip.setFast(!clip.isFast) }
     // Full screen has no button on screen to leave it: the picture itself says how.
     .accessibilityAction(named: live.chromeShown ? "Full screen" : "Exit full screen", onTapPicture)
@@ -566,6 +572,11 @@ private struct ClipBody: View {
         Image(uiImage: image).resizable().scaledToFit()
       }
     }
+    // An element of its own, so VoiceOver reaches the picture (and its way out of full screen)
+    // before the player is there.
+    .accessibilityElement()
+    .accessibilityLabel(entry.accessibilityName)
+    .accessibilityAddTraits(.isImage)
   }
 
   @ViewBuilder
