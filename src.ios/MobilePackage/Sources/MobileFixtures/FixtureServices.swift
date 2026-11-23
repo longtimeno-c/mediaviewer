@@ -45,7 +45,6 @@ final class FixtureWorld: @unchecked Sendable {
   /// The VPN through your server: nil is a build without the tunnel (NoVPN).
   var vpn: FixtureVPN?
   var recents = ["boats at sunset", "mountains by a lake", "birthday cake", "receipt from the hardware shop"]
-  var downloadedClips: Set<MediaID> = []
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
 
   init(snapshot: ConnectionSnapshot) { self.snapshot = snapshot }
@@ -303,7 +302,8 @@ final class FixtureImages: ImageLadder, @unchecked Sendable {
   }
 
   private func draw(_ item: MediaItem, longest: CGFloat) -> UIImage {
-    let aspect = CGFloat(item.aspect)
+    // A picture has its own shape even when it was listed without one (viewer.folderFile).
+    let aspect = CGFloat((item.pixelWidth == 0 ? self.item(item.id) : nil)?.aspect ?? item.aspect)
     let size = aspect >= 1 ? CGSize(width: longest, height: (longest / aspect).rounded())
                            : CGSize(width: (longest * aspect).rounded(), height: longest)
     let seed = FixtureLibrary.seed(item.id)
@@ -582,7 +582,6 @@ struct FixtureClips: ClipService {
   let world: FixtureWorld
 
   func route(for item: MediaItem) async -> ClipRoute {
-    if world.downloadedClips.contains(item.id) { return await .stream(AVURLAsset(url: FixtureClip.url())) }
     switch world.clipMode {
     case .stream: return await .stream(AVURLAsset(url: FixtureClip.url()))
     case .tooBig: return .tooBigToStream(neededMbps: 100, availableMbps: 30, fileBytes: 1_260_000_000)
@@ -611,7 +610,6 @@ struct FixtureClips: ClipService {
             continuation.yield(.progress(TransferProgress(doneBytes: total * Int64(step) / 48, totalBytes: total)))
             try await Task.sleep(for: .milliseconds(250))
           }
-          world.downloadedClips.insert(item.id)
           continuation.yield(.finished(await FixtureClip.url()))
           continuation.finish()
         } catch {

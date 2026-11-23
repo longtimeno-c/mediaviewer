@@ -841,20 +841,22 @@ TEST_CASE("link: Forget cuts reads on a swapped-out client and wakes readers wai
   mob::route_report rep;
   REQUIRE(s.connect(rep));
   const std::string file = "gen/000001/extra.bin";
-  std::atomic<int> finished{0}, started{0};
+  std::atomic<int> finished{0}, started{0}, whole{0};
   std::vector<std::thread> readers;
   // 40 slow reads: 31 hold every stream the client allows, the rest wait for one.
   for (int i = 0; i < 40; ++i) {
     readers.emplace_back([&] {
       bool counted = false;
-      (void)s.read_range("c2c2c2c2c2c2c2c2", file, 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+      const auto read = s.read_range("c2c2c2c2c2c2c2c2", file, 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
         if (!counted) {
           counted = true;
           ++started;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));  // a whole file takes many seconds
+        // 24 chunks of 256 KB: a whole file takes 3.6 s, far past the Forget below.
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
         return true;
       }, nullptr, false);
+      if (read) ++whole;
       ++finished;
     });
   }
@@ -862,11 +864,12 @@ TEST_CASE("link: Forget cuts reads on a swapped-out client and wakes readers wai
   CHECK(started.load() == 31);  // never more than 31 at once
   mob::route_report again;
   REQUIRE(s.reconnect(again));  // the 31 now run on a client that is no longer the live one
-  const auto t0 = std::chrono::steady_clock::now();
   s.shut_down();
   for (auto& t : readers) t.join();
   CHECK(finished.load() == 40);
-  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+  // Cut, not run to the end: no reader got its whole file. (This was a 3 s wall-clock
+  // bound, which a loaded macOS runner missed at 3.26 s.)
+  CHECK(whole.load() == 0);
   CHECK_FALSE(s.connect(again));  // and nothing connects again
 }
 

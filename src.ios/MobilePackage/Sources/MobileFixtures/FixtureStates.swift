@@ -80,6 +80,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case searchWarming = "search.warmingUp"
   case viewer
   case viewerNoFilmstrip = "viewer.noFilmstrip"
+  /// A portrait photo listed, as a folder's file is, with no shape: the page takes the picture's.
+  case viewerFolderFile = "viewer.folderFile"
   case viewerRefining = "viewer.refining"
   case viewerRefiningUnknown = "viewer.refiningUnknownSize"
   case viewerSlowNetwork = "viewer.slowNetwork"
@@ -343,6 +345,8 @@ final class FixtureRun {
       openViewer(kind: .photo)
     case .viewer, .viewerRefining, .viewerUnreachable, .viewerGone, .viewerNotThereYet, .viewerCannotDecode, .viewerPhotosDenied:
       openViewer(kind: .photo)
+    case .viewerFolderFile:
+      openViewer(kind: .photo, shapeless: true)
     case .details:
       openViewer(kind: .photo, details: true)
     case .clip, .clipTooBig, .clipNotPlayable, .clipGone, .clipStops, .clipStalls:
@@ -354,13 +358,22 @@ final class FixtureRun {
     }
   }
 
-  private func openViewer(kind: MediaKind, details: Bool = false, play: Bool = false, atMoment: Bool = false) {
+  private func openViewer(kind: MediaKind, details: Bool = false, play: Bool = false, atMoment: Bool = false,
+                          shapeless: Bool = false) {
     model.tab = .library
     Task {
       await waitForLibrary()
       let items = model.library.entries
-      guard let index = items.indices.first(where: { items[$0].item.kind == kind }) else { return }
+      guard let index = items.indices.first(where: {
+        items[$0].item.kind == kind && (!shapeless || items[$0].item.aspect < 1)
+      }) else { return }
       var entries = items
+      if shapeless {
+        let item = items[index].item
+        let listed = MediaItem(id: item.id, kind: item.kind, capturedAt: item.capturedAt, pixelWidth: 0, pixelHeight: 0,
+                               duration: item.duration, fileName: item.fileName)
+        entries = items.replacing(index, with: GridEntry(item: listed, position: index))
+      }
       if atMoment {
         let item = items[index].item
         entries = items.replacing(index, with: GridEntry(item: item, moment: FixtureLibrary.moments(for: item)[1], position: index))

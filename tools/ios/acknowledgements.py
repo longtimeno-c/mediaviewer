@@ -34,7 +34,7 @@ parts = [
     ("BLAKE3", os.path.join(share, "blake3", "copyright")),
     ("SQLite", os.path.join(share, "sqlite3", "copyright")),
 ]
-ort = sorted(glob.glob(os.path.join(build, "_ort", "pod-archive-onnxruntime-*", "LICENSE")))
+ort = sorted(glob.glob(os.path.join(build, "_ort", "microsoft.ml.onnxruntime-ios-*", "LICENSE")))
 if not ort:
     sys.exit("no ONNX Runtime LICENSE under " + build)
 parts.append(("ONNX Runtime", ort[-1]))
