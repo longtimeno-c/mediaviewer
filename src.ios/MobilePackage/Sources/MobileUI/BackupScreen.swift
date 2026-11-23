@@ -342,10 +342,11 @@ private struct FolderChoice: View {
 }
 
 /// The chooser's selection after each answer: kept only while the server still offers it to this
-/// phone; otherwise the folder in use, or the only one this phone may write; none while asking.
+/// phone; otherwise the folder in use, or the only one this phone may write. While asking (no list)
+/// a pick is held as it is, to be checked against the answer; Done stays off until then.
 enum BackupFolderPick {
   static func kept(_ selected: BackupFolder?, in folders: [BackupFolder]?, current: BackupFolder?) -> BackupFolder? {
-    guard let folders else { return nil }
+    guard let folders else { return selected }
     let usable = folders.filter(\.writable)
     if let selected, let still = usable.first(where: { $0.id == selected.id }) { return still }
     if let current, let still = usable.first(where: { $0.id == current.id }) { return still }

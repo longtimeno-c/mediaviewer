@@ -238,6 +238,26 @@ TEST_CASE("driftwire host: sharing and unsharing folders", "[host]") {
   CHECK_FALSE(cli::share_folder(c, utf8(s / "Photos"), "Photos", false, {}, "4123456789abcdef", host_folder).empty());
   c.roots[0].backup = false;
 
+  // Through serve.json, as `host share` runs: a shared folder whose drive is not there now is
+  // still made a backup folder (an unshared one that is not there is "not a folder").
+  {
+    const fs::path data = s / "share-data";
+    fs::create_directories(data);
+    fs::create_directories(s / "Card");
+    const cli::host_layout l = cli::host_layout_of(utf8(data));
+    std::string as;
+    REQUIRE(cli::host_files::share(l, utf8(s / "Card"), "Card", false, 0, true, as).empty());
+    fs::remove_all(s / "Card");  // the drive unplugged
+    CHECK_FALSE(cli::host_files::share(l, utf8(s / "Gone"), "", true, 0, true, as).empty());
+    CHECK(cli::host_files::share(l, utf8(s / "Card"), "Other name", true, 0, true, as).empty());
+    CHECK(as == "Card");  // its label stays
+    const auto back = cli::host_files::config(l, true);
+    REQUIRE(back);
+    REQUIRE(back->roots.size() == 1);
+    CHECK(back->roots[0].backup);
+    CHECK(back->roots[0].label == "Card");
+  }
+
   CHECK_FALSE(cli::unshare_folder(c, "Nope").empty());
   CHECK(cli::unshare_folder(c, "photos").empty());
   REQUIRE(c.roots.size() == 1);

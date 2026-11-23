@@ -1080,13 +1080,17 @@ std::optional<serve::config> load_or_new(const host_layout& l, bool any_port) {
 std::string share_path(const host_layout& l, const std::string& typed, const std::string& label_arg, bool backup,
                        std::uint64_t limit, bool test_hooks, std::string& label) {
   const std::string path = absolute_of(typed);
-  std::error_code ec;
-  if (!fs::is_directory(to_path(path), ec)) return "not a folder: " + typed;
   if (!make_host_folders(l)) return "its folder must be this user's alone (mode 700).";
   const auto lock = config_lock(l);
   if (!lock) return "serve.json is being changed by something else; try again.";
   auto cfg = load_or_new(l, test_hooks);
   if (!cfg) return "serve.json is not valid; not changing it.";
+  // A folder shared already, made a backup folder, may be on a drive that is not there now.
+  const bool shared = std::any_of(cfg->roots.begin(), cfg->roots.end(), [&](const serve::root_config& r) {
+    return canonical_or_normal(r.path) == canonical_or_normal(path);
+  });
+  std::error_code ec;
+  if (!(backup && shared) && !fs::is_directory(to_path(path), ec)) return "not a folder: " + typed;
   label = label_arg.empty() ? default_label(path) : label_arg;
   std::string why = share_folder(*cfg, path, label, backup, volume_of(path), random_id(), l.folder);
   if (!why.empty()) return why;
@@ -1104,6 +1108,8 @@ int run_share(const args& a, const host_layout& l, bool test_hooks) {
   std::string label;
   const std::string why = share_path(l, a.host_path, a.label, a.backup, 0, test_hooks, label);
   if (!why.empty()) return fail(why, 1);
+  // --backup on a folder shared already: it keeps the label it has.
+  if (!a.label.empty() && !same_label(a.label, label)) print("It is shared as \"" + label + "\" already; that label stays.\n");
   print("Shared \"" + label + "\"" + (a.backup ? ", phones may back up into it" : std::string()) +
         ". A running host serves it within seconds.\n");
   return 0;

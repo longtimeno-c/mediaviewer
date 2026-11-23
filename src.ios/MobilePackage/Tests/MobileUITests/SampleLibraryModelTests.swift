@@ -59,13 +59,17 @@ final class SampleLibraryModelTests: XCTestCase {
   }
 
   /// The chooser's selection follows each answer: a folder no longer offered, or no longer one this
-  /// phone may write, is let go, so Done never saves it; while asking nothing is selected.
+  /// phone may write, is let go, so Done never saves it; while asking a pick is held for the answer.
   func testTheFolderChooserLetsGoOfAFolderNoLongerOffered() {
     let a = BackupFolder(id: "a", label: "Phone backup", writable: true)
     let b = BackupFolder(id: "b", label: "Family backup", writable: true)
     let bLocked = BackupFolder(id: "b", label: "Family backup", writable: false)
     XCTAssertEqual(BackupFolderPick.kept(b, in: [a, b], current: nil), b)
-    XCTAssertNil(BackupFolderPick.kept(b, in: nil, current: nil))
+    // Picked, then Ask again: held while asking, kept when the answer still offers it.
+    let held = BackupFolderPick.kept(b, in: nil, current: a)
+    XCTAssertEqual(held, b)
+    XCTAssertEqual(BackupFolderPick.kept(held, in: [a, b], current: a), b)
+    XCTAssertNil(BackupFolderPick.kept(nil, in: nil, current: a))
     XCTAssertNil(BackupFolderPick.kept(b, in: [a, bLocked], current: nil))
     XCTAssertEqual(BackupFolderPick.kept(b, in: [a], current: nil), a)  // the only one left
     XCTAssertEqual(BackupFolderPick.kept(nil, in: [a, b], current: b), b)

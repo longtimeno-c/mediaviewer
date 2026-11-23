@@ -103,12 +103,12 @@ class over_link final : public target {
     for (const auto& r : *roots) {
       if (r.backup) out.push_back({r.id, r.label, r.writable});
     }
-    // A phone limited to some folders is told only those: none of them a backup folder is
-    // "not allowed", never "the server has none".
+    return out;
+  }
+  bool limited_to_some_folders() const override {
     std::int64_t expires = 0;
     bool scoped = false;
-    if (out.empty() && l_.grant(expires, scoped) == 1 && scoped) return err(status::permission_denied);
-    return out;
+    return l_.grant(expires, scoped) == 1 && scoped;
   }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
@@ -663,12 +663,13 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
   auto folders = t_.folders();
   if (!folders) {
     if (folders.error() == status::unsupported_format) return stop_with(state::too_old);
-    // Limited to folders none of which is a backup folder (over_link::folders).
-    if (folders.error() == status::permission_denied) return stop_with(state::not_allowed);
     return stop_with(state::unreachable);
   }
   const auto chosen = std::find_if(folders->begin(), folders->end(), [&](const folder& f) { return f.id == o_.root; });
-  if (chosen == folders->end()) return stop_with(state::no_folder);
+  if (chosen == folders->end()) {
+    // Not named to a phone since limited to other folders: not allowed there, not gone.
+    return stop_with(t_.limited_to_some_folders() ? state::not_allowed : state::no_folder);
+  }
   if (!chosen->writable) return stop_with(state::not_allowed);
   if (!restore_if_empty()) return stop_with(state::unreachable);
   if (auto checked = check_folder(); !checked) {

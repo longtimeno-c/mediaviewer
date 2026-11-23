@@ -526,7 +526,7 @@ std::vector<shared_folder> shared_folders(const where& w) {
   if (w.data_dir.empty()) return out;
   if (const auto text = read_small(w.data_dir + "/host/serve/serve.json")) {
     if (auto c = serve::parse_config(*text, true, true)) {
-      for (const auto& r : c->roots) out.push_back({r.path, r.label});
+      for (const auto& r : c->roots) out.push_back({r.path, r.label, r.backup});
     }
   }
   return out;
@@ -611,7 +611,7 @@ std::vector<folder_choice> share_plan(std::span<const folder_choice> chosen, std
     const auto s = std::find_if(shared.begin(), shared.end(), [&](const shared_folder& x) { return same_path_key(x.path) == key; });
     if (s == shared.end()) {
       fresh.push_back(f);
-    } else if (f.backup) {
+    } else if (f.backup && !s->backup) {
       again.push_back({f.path, s->label, true});
     }
   }

@@ -126,8 +126,8 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       switch status {
       case Int32(MV_LINK_OK.rawValue): return box.list
       case Int32(MV_LINK_TOO_OLD.rawValue): throw BackupState.serviceTooOld
-      // Limited to folders none of which is a backup folder (backup.cpp over_link::folders).
-      case Int32(MV_LINK_DENIED.rawValue): throw BackupState.folderNotAllowed
+      // None because this phone is limited to other folders (mv_backup_folders).
+      case Int32(MV_LINK_NO_FOLDER.rawValue): throw BackupState.folderNotAllowed
       default: throw BackupState.unreachable
       }
     }

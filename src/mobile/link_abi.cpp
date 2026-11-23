@@ -1246,6 +1246,8 @@ int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx) {
     if (!b || !fn) return MV_LINK_INVALID;
     auto folders = b->target->folders();
     if (!folders) return backup_status_of(folders.error());
+    // None, because this phone is limited to other folders: not "the server has none".
+    if (folders->empty() && b->target->limited_to_some_folders()) return MV_LINK_NO_FOLDER;
     for (const auto& f : *folders) fn(ctx, f.id.c_str(), f.label.c_str(), f.writable ? 1 : 0);
     return MV_LINK_OK;
   });

@@ -438,7 +438,8 @@ void mv_backup_close(mv_backup* b);
 
 /* A backup folder the service offers. writable 0: not one this phone may write to. */
 typedef void (*mv_backup_folder_fn)(void* ctx, const char* id, const char* label, int32_t writable);
-/* BLOCKS. MV_LINK_TOO_OLD: the service is from before 1.1. */
+/* BLOCKS. MV_LINK_TOO_OLD: the service is from before 1.1. MV_LINK_NO_FOLDER: none, because this
+   phone is limited to folders none of which is a backup folder (the server may still have one). */
 int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx);
 
 typedef struct mv_backup_space {

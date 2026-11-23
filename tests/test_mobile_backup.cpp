@@ -445,10 +445,11 @@ TEST_CASE("backup: the folders offered follow the server while the phone is conn
     mob::route_report report;
     REQUIRE(link.connect(report));
     auto target = bk::link_target(link);
-    // The service tells it only its own folders: "not allowed", never "the server has none".
+    // The service tells it only its own folders: none, and the phone knows why.
     auto folders = target->folders();
-    REQUIRE_FALSE(folders);
-    CHECK(folders.error() == mv::status::permission_denied);
+    REQUIRE(folders);
+    CHECK(folders->empty());
+    CHECK(target->limited_to_some_folders());
     // A run into the backup folder it chose before it was limited: "not allowed", never "can't reach".
     temp_root phone;
     const fs::path scratch = phone.root / "scratch";
@@ -457,6 +458,27 @@ TEST_CASE("backup: the folders offered follow the server while the phone is conn
     auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
     REQUIRE(ledger);
     CHECK(run_once(*target, roll, **ledger, scratch, 0).now == bk::state::not_allowed);
+    CHECK(files_under(n.backup).empty());
+  }
+  SECTION("a phone whose pairing ended is never told \"not allowed\"") {
+    n.pair(device);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    REQUIRE(target->folders());
+    REQUIRE(dw::known::save(*n.store, {}));  // removed on the desktop
+    n.srv->recheck_devices();
+    CHECK_FALSE(target->limited_to_some_folders());
+    temp_root phone;
+    const fs::path scratch = phone.root / "scratch";
+    fs::create_directories(scratch);
+    camera_roll roll(phone.root / "roll", scratch, 2, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    const auto now = run_once(*target, roll, **ledger, scratch, 0).now;
+    CHECK(now != bk::state::not_allowed);
+    CHECK(now != bk::state::no_folder);
     CHECK(files_under(n.backup).empty());
   }
   SECTION("a phone the owner has not let back up sees the folder, not writable") {
@@ -510,6 +532,51 @@ TEST_CASE("backup: the sample library's folder on the phone runs the same backup
 }
 
 #include "mobile/mv_mobile_link.h"
+
+TEST_CASE("backup: the C ABI says a phone limited to other folders has none it may use", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), device.data());
+  serve::grants::grant g;
+  g.name = "Phone";
+  g.key = pub;
+  g.roots = std::vector<std::string>{kSharedRoot};
+  REQUIRE(serve::grants::save(*n.store, {g}));
+  n.srv->recheck_devices();
+  temp_root phone;
+  const auto cfg = n.config(device);
+  const std::string lib_dir = (phone.root / "library").string(), cache = (phone.root / "cache").string();
+  mv_link_config lc{};
+  lc.library_dir = lib_dir.c_str();
+  lc.cache_dir = cache.c_str();
+  lc.library_id = kLibrary.c_str();
+  lc.local = cfg.local.c_str();
+  lc.public_name = cfg.public_name.c_str();
+  lc.device_name = "Test iPhone";
+  lc.identity = cfg.identity.data();
+  lc.access_key = cfg.access_key.data();
+  lc.device_key = cfg.device_key.data();
+  key32 publisher{};
+  lc.publisher_key = publisher.data();
+  mv_mobile_link* link = mv_link_open(&lc);
+  REQUIRE(link);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(link, nullptr, &report) == MV_LINK_OK);
+  const std::string ledger_path = (phone.root / "ledger.db").string(), scratch = (phone.root / "scratch").string();
+  fs::create_directories(scratch);
+  mv_backup_config bc{ledger_path.c_str(), scratch.c_str(), kLibrary.c_str(), nullptr};
+  mv_backup* b = mv_backup_open(link, &bc);
+  REQUIRE(b);
+  int count = 0;
+  CHECK(mv_backup_folders(b, [](void* ctx, const char*, const char*, int32_t) { ++*static_cast<int*>(ctx); }, &count) ==
+        MV_LINK_NO_FOLDER);
+  CHECK(count == 0);
+  mv_backup_close(b);
+  mv_link_close(link);
+}
 
 TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]") {
   nas n;
