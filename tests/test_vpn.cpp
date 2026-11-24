@@ -10,12 +10,17 @@
 #include "driftwire_fixture.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <condition_variable>
+#include <chrono>
 #include <deque>
+#include <thread>
 
-#include "addons/driftwire/netstack.h"
+#include "addons/vpn/netstack.h"
 #include "wire/splice.h"
-#include "addons/driftwire/vpn.h"
+#include "addons/vpn/vpn.h"
+#include "vpn_fixture.h"
 
 namespace vpn = mv::driftwire::vpn;
 namespace relay = mv::driftwire::relay;
@@ -192,7 +197,7 @@ relay::server::options relay_options(std::uint16_t tcp_port, std::uint16_t udp_p
 
 }  // namespace
 
-TEST_CASE("driftwire vpn: packets made and read with care, checksums both ways", "[driftwire]") {
+TEST_CASE("vpn: packets made and read with care, checksums both ways", "[vpn]") {
   // RFC 1071's example words.
   const std::vector<std::uint8_t> words{0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7};
   CHECK(vpn::checksum(words) == 0x220d);
@@ -232,8 +237,8 @@ TEST_CASE("driftwire vpn: packets made and read with care, checksums both ways",
   CHECK(std::string(ur->payload.begin(), ur->payload.end()) == "query");
 }
 
-TEST_CASE("driftwire vpn: the stack takes an app's TCP connection as a link, both ways, and closes it",
-          "[driftwire]") {
+TEST_CASE("vpn: the stack takes an app's TCP connection as a link, both ways, and closes it",
+          "[vpn]") {
   wire w;
   vpn::flow accepted_flow;
   std::unique_ptr<sp::link> accepted;  // destroyed before the stack, below it
@@ -327,8 +332,8 @@ TEST_CASE("driftwire vpn: the stack takes an app's TCP connection as a link, bot
   CHECK(s.connections() == 0);
 }
 
-TEST_CASE("driftwire vpn: the stack says when its timer is next due, and when that moves sooner",
-          "[driftwire]") {
+TEST_CASE("vpn: the stack says when its timer is next due, and when that moves sooner",
+          "[vpn]") {
   // The runner's ticker sleeps until next_deadline(), not every 100 ms: a
   // phone's battery (docs/plans/phone-vpn.md §2.2).
   using clock = std::chrono::steady_clock;
@@ -409,7 +414,7 @@ TEST_CASE("driftwire vpn: the stack says when its timer is next due, and when th
   accepted.reset();
 }
 
-TEST_CASE("driftwire vpn: an idle runner's ticker sleeps, and still resends on time", "[driftwire]") {
+TEST_CASE("vpn: an idle runner's ticker sleeps, and still resends on time", "[vpn]") {
   // Before this, the ticker woke every 100 ms with nothing to do. Count the
   // stack's ticks through its timer: none while idle, prompt when a TCP
   // segment is outstanding.
@@ -463,8 +468,8 @@ TEST_CASE("driftwire vpn: an idle runner's ticker sleeps, and still resends on t
   r->reset();  // and stopping does not wait for a deadline 10 minutes away
 }
 
-TEST_CASE("driftwire vpn: a reset ends the link, a stray segment is reset, and UDP goes up and down",
-          "[driftwire]") {
+TEST_CASE("vpn: a reset ends the link, a stray segment is reset, and UDP goes up and down",
+          "[vpn]") {
   wire w;
   std::unique_ptr<sp::link> accepted;
   std::vector<std::pair<vpn::flow, std::string>> datagrams;
@@ -507,8 +512,8 @@ TEST_CASE("driftwire vpn: a reset ends the link, a stray segment is reset, and U
   CHECK(std::string(r->payload.begin(), r->payload.end()) == "answer");
 }
 
-TEST_CASE("driftwire vpn: the relay carries a key holder's datagram flows, DNS to its own resolver",
-          "[driftwire]") {
+TEST_CASE("vpn: the relay carries a key holder's datagram flows, DNS to its own resolver",
+          "[vpn]") {
   tcp_echo te;
   udp_echo ue;
   auto s = relay::server::start(relay_options(te.port(), ue.port()));
@@ -543,7 +548,68 @@ TEST_CASE("driftwire vpn: the relay carries a key holder's datagram flows, DNS t
   CHECK(said == relay::forward_answer::kind);
 }
 
-TEST_CASE("driftwire vpn: an app's TCP and DNS go through the VPN and the relay, end to end", "[driftwire]") {
+TEST_CASE("vpn: a VPN host's limits: UDP flows apart from TCP, its outside address, UDP's rate", "[vpn]") {
+  relay::server::options d;
+  relay::vpn_host_defaults(d);
+  CHECK(d.forward_ports == std::vector<std::uint16_t>{relay::kAnyPort});
+  CHECK(d.forward_udp_ports == std::vector<std::uint16_t>{relay::kAnyPort});
+  CHECK(d.max_forwards == 128);
+  CHECK(d.max_udp_flows == 128);
+  CHECK(d.udp_out_rate == relay::kVpnHostUdpOutRate);
+
+  tcp_echo te;
+  udp_echo ue;
+  relay::forward_answer said{};
+  SECTION("UDP flows have their own cap: a full one never stops a TCP forward") {
+    auto o = relay_options(te.port(), ue.port());
+    o.max_forwards = 1;
+    o.max_udp_flows = 1;
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    const auto dial = [&] { return std::move(*sp::net::connect({"127.0.0.1", (*s)->port()}, 3000)); };
+    auto u = relay::forward(dial(), kKey, "127.0.0.1", ue.port(), relay::kForwardWaitMs, said, relay::kForwardUdp);
+    REQUIRE(u);
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", ue.port(), 5000, said, relay::kForwardUdp));
+    CHECK(said == relay::forward_answer::busy);
+    auto t = relay::forward(dial(), kKey, "127.0.0.1", te.port(), relay::kForwardWaitMs, said);
+    REQUIRE(t);
+    CHECK(said == relay::forward_answer::ok);
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", te.port(), 5000, said));
+    CHECK(said == relay::forward_answer::busy);
+  }
+  SECTION("the home's outside name: its addresses refused, TCP and UDP") {
+    auto o = relay_options(te.port(), ue.port());
+    o.forward_refused = relay::refuse_name_addresses("127.0.0.1");  // a literal looks up as itself
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    const auto dial = [&] { return std::move(*sp::net::connect({"127.0.0.1", (*s)->port()}, 3000)); };
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", te.port(), 5000, said));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", ue.port(), 5000, said, relay::kForwardUdp));
+    CHECK(said == relay::forward_answer::not_public);
+    CHECK(!relay::refuse_name_addresses(""));  // no name: nothing refused
+  }
+  SECTION("UDP out is held to the rate, all flows together") {
+    auto o = relay_options(te.port(), ue.port());
+    o.udp_out_rate = 64 * 1024;  // a 16 KiB burst, then 64 KiB a second
+    auto s = relay::server::start(o);
+    REQUIRE(s);
+    auto u = relay::forward(std::move(*sp::net::connect({"127.0.0.1", (*s)->port()}, 3000)), kKey, "127.0.0.1",
+                            ue.port(), relay::kForwardWaitMs, said, relay::kForwardUdp);
+    REQUIRE(u);
+    const std::vector<std::uint8_t> one(1400, 'a');
+    std::vector<std::uint8_t> part, back;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 48; ++i) {  // 67 200 bytes: about 51 KiB past the burst
+      REQUIRE(relay::write_datagram(**u, one));
+      REQUIRE(relay::read_datagram(**u, part, back, 5000));
+    }
+    // A floor, never a ceiling: at least the debt's time (0.78 s), with room.
+    CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(600));
+  }
+}
+
+TEST_CASE("vpn: an app's TCP and DNS go through the VPN and the relay, end to end", "[vpn]") {
   tcp_echo te;
   udp_echo ue;
   auto server = relay::server::start(relay_options(te.port(), ue.port()));
@@ -618,9 +684,7 @@ struct fake_vpn final : vpn::os_port {
 
 }  // namespace
 
-TEST_CASE("driftwire vpn: All traffic (VPN) runs instead of the proxy, from the window and the menu",
-          "[driftwire]") {
-  scratch_dir dir("driftwire_vpn_engine");
+TEST_CASE("vpn: All traffic (VPN) runs instead of the proxy, from the page and the menu", "[vpn]") {
   tcp_echo te;
   udp_echo ue;
   auto server = relay::server::start(relay_options(te.port(), ue.port()));
@@ -629,26 +693,22 @@ TEST_CASE("driftwire vpn: All traffic (VPN) runs instead of the proxy, from the 
   auto starts = fv->starts, stops = fv->stops;
   auto last = fv->last;
   auto holder = std::make_shared<std::unique_ptr<fake_vpn>>(std::move(fv));
-  fake_host host(dir / "received");
-  sp::engine::options o;
-  o.my_name = "Ann";
-  o.use_bluetooth = false;
-  o.loopback_only = true;
-  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  vpn_test::fake_host host;
+  vpn::service::options o;
   o.make_vpn = [holder]() -> std::unique_ptr<vpn::os_port> { return std::move(*holder); };
-  sp::engine eng(host, o);
-  CHECK(eng.snapshot().tunnel_vpn_available);
-  CHECK_FALSE(eng.snapshot().tunnel_vpn);  // off by default
-  CHECK_FALSE(eng.snapshot().tunnel_block);
-  eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
+  vpn::service eng(host, o);
+  CHECK(eng.snapshot().all_traffic_available);
+  CHECK_FALSE(eng.snapshot().all_traffic);  // off by default
+  CHECK_FALSE(eng.snapshot().block);
+  eng.on_event("server", 3, "\"127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey + "\"");
   eng.on_event("tunnel", 2, "true");
   REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));  // the proxy first
   auto v = eng.snapshot();
-  CHECK(sp::build_tree(v).find("\"id\":\"tunnel_vpn\"") != std::string::npos);
-  CHECK(sp::build_menu(v).find("\"id\":\"tunnel_vpn\"") != std::string::npos);
-  // The menu row's event is the window's: the VPN takes over.
-  eng.on_event("tunnel_vpn", 2, "true");
-  REQUIRE(eventually([&] { return eng.snapshot().tunnel_mode == "vpn" && eng.snapshot().tunnel_address.empty(); }));
+  CHECK(vpn::build_settings_tree(v).find("\"id\":\"all_traffic\"") != std::string::npos);
+  CHECK(vpn::build_menu(v).find("\"id\":\"all_traffic\"") != std::string::npos);
+  // The menu row's event is the page's: the VPN takes over.
+  eng.on_event("all_traffic", 2, "true");
+  REQUIRE(eventually([&] { return eng.snapshot().mode == "vpn" && eng.snapshot().tunnel_address.empty(); }));
   CHECK(*starts == 1);  // and no proxy now
   // What the OS side was told: the relay left out, and the local networks.
   REQUIRE_FALSE(last->exclude.empty());
@@ -656,19 +716,165 @@ TEST_CASE("driftwire vpn: All traffic (VPN) runs instead of the proxy, from the 
   CHECK(sp::net::parse_address(last->address6).has_value());  // IPv6 claimed too
   CHECK_FALSE(last->kill_switch);
   v = eng.snapshot();
-  const auto tree = sp::build_tree(v);
-  CHECK(tree.find("All traffic through your relay server") != std::string::npos);
-  CHECK(tree.find("\"id\":\"tunnel_block\"") != std::string::npos);
+  const auto tree = vpn::build_settings_tree(v);
+  CHECK(tree.find("All traffic through your VPN server") != std::string::npos);
+  CHECK(tree.find("\"id\":\"block\"") != std::string::npos);
+  REQUIRE(eventually([&] { return host.label().rfind("VPN: all traffic through 127.0.0.1:", 0) == 0; }));
   // The kill switch restarts it with the switch on.
-  eng.on_event("tunnel_block", 2, "true");
+  eng.on_event("block", 2, "true");
   REQUIRE(eventually([&] { return *starts == 2; }));
   CHECK(last->kill_switch);
   // Off: the interface goes, the proxy comes back.
-  eng.on_event("tunnel_vpn", 2, "false");
-  REQUIRE(eventually([&] { return eng.snapshot().tunnel_mode == "proxy" && !eng.snapshot().tunnel_address.empty(); }));
+  eng.on_event("all_traffic", 2, "false");
+  REQUIRE(eventually([&] { return eng.snapshot().mode == "proxy" && !eng.snapshot().tunnel_address.empty(); }));
   CHECK(*stops >= 2);
   eng.on_event("tunnel", 2, "false");
   REQUIRE(eventually([&] { return eng.snapshot().tunnel_address.empty(); }));
+}
+
+namespace {
+
+// The OS's interface while the system asks the person (the Mac's extension
+// approval): start() waits until the test answers with `answer`, or until
+// cancel() (quitting).
+struct asking_vpn final : vpn::os_port {
+  std::shared_ptr<std::mutex> m = std::make_shared<std::mutex>();
+  std::shared_ptr<std::condition_variable> cv = std::make_shared<std::condition_variable>();
+  std::shared_ptr<bool> answered = std::make_shared<bool>(false);
+  std::shared_ptr<mv::status> answer = std::make_shared<mv::status>(mv::status::permission_denied);
+  std::shared_ptr<std::atomic<bool>> asking = std::make_shared<std::atomic<bool>>(false);
+  std::shared_ptr<std::atomic<int>> starts = std::make_shared<std::atomic<int>>(0);
+  std::shared_ptr<bool> cancelled = std::make_shared<bool>(false);
+  // Answer at once with `answer` (a start the test expects never to happen
+  // fails its count instead of hanging the test).
+  std::shared_ptr<std::atomic<bool>> at_once = std::make_shared<std::atomic<bool>>(false);
+  std::string unavailable() override { return {}; }
+  mv::result<std::unique_ptr<vpn::device>> start(const vpn::settings&) override {
+    ++*starts;
+    std::unique_lock lock(*m);
+    if (at_once->load()) return mv::err(*answer);
+    asking->store(true);
+    cv->wait(lock, [&] { return *answered || *cancelled; });
+    asking->store(false);
+    if (*cancelled) return mv::err(mv::status::cancelled);
+    *answered = false;  // the next start waits again
+    return mv::err(*answer);
+  }
+  void stop() override {}
+  void cancel() override {
+    {
+      std::lock_guard lock(*m);
+      *cancelled = true;
+    }
+    cv->notify_all();
+  }
+};
+
+void answer_with(asking_vpn& v, mv::status s) {
+  {
+    std::lock_guard lock(*v.m);
+    *v.answer = s;
+    *v.answered = true;
+  }
+  v.cv->notify_all();
+}
+
+}  // namespace
+
+TEST_CASE("vpn: All traffic says it is starting while the system asks, and why it wasn't allowed", "[vpn]") {
+  auto av = std::make_unique<asking_vpn>();
+  asking_vpn& port = *av;
+  auto asking = av->asking;
+  auto starts = av->starts;
+  auto holder = std::make_shared<std::unique_ptr<asking_vpn>>(std::move(av));
+  vpn_test::fake_host host;
+  vpn::service::options o;
+  o.make_vpn = [holder]() -> std::unique_ptr<vpn::os_port> { return std::move(*holder); };
+  vpn::service eng(host, o);
+  eng.settings_opened();
+  eng.on_event("server", 3, std::string("\"127.0.0.1:9#") + kKey + "\"");
+  eng.on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
+  eng.on_event("all_traffic", 2, "true");
+  // While the system asks: the page, posted from the waiting thread, says what to expect.
+  REQUIRE(eventually([&] { return asking->load(); }));
+  REQUIRE(eventually([&] { return host.settings().find("Starting All traffic") != std::string::npos; }));
+  CHECK(host.settings().find("\"id\":\"all_traffic\"") != std::string::npos);  // the switch stays
+  answer_with(port, mv::status::permission_denied);
+  // Refused: the proxy carries on, the page says where to allow it, and the
+  // switch goes off, so nothing asks the person again until they turn it on.
+  REQUIRE(eventually([&] { return host.settings().find("wasn't allowed") != std::string::npos; }));
+  CHECK(host.settings().find("Starting All traffic") == std::string::npos);
+  CHECK(host.settings().find("Login Items & Extensions") != std::string::npos);
+  CHECK(eng.snapshot().mode == "proxy");
+  REQUIRE(eventually([&] { return !eng.snapshot().all_traffic; }));
+  CHECK(host.settings().find(R"x("id":"all_traffic","label":"All traffic (VPN)","value":false)x") != std::string::npos);
+  port.at_once->store(true);              // from here a start answers at once: counted, never hanging
+  eng.on_event("tls", 2, "true");         // switched off: no setting starts it, nor prompts again
+  eng.settle();
+  eng.on_event("tls", 2, "false");
+  eng.settle();
+  CHECK(*starts == 1);
+  CHECK(host.settings().find("wasn't allowed") != std::string::npos);  // the words stay until the switch moves
+  port.at_once->store(false);
+  // On again, and the system says it finishes at the next restart: off too.
+  eng.on_event("all_traffic", 2, "true");
+  REQUIRE(eventually([&] { return asking->load(); }));
+  answer_with(port, mv::status::busy);
+  REQUIRE(eventually([&] { return host.settings().find("Restart this computer") != std::string::npos; }));
+  CHECK(host.settings().find("wasn't allowed") == std::string::npos);
+  REQUIRE(eventually([&] { return !eng.snapshot().all_traffic; }));
+  // On again, and it fails for a passing reason (a timeout at launch): the
+  // switch and the setting stay on, and it isn't tried again this run...
+  eng.on_event("all_traffic", 2, "true");
+  REQUIRE(eventually([&] { return asking->load(); }));
+  answer_with(port, mv::status::timeout);
+  REQUIRE(eventually([&] { return host.settings().find("could not start") != std::string::npos; }));
+  CHECK(eng.snapshot().all_traffic);
+  const int tried = *starts;
+  {
+    std::lock_guard lock(*port.m);
+    *port.answer = mv::status::timeout;
+  }
+  port.at_once->store(true);
+  // A change that isn't the VPN's own settings (the web-site look and the
+  // server are: a change there is new settings, tried afresh).
+  eng.on_event("all_apps", 2, "false");
+  eng.settle();
+  eng.on_event("all_apps", 2, "true");
+  eng.settle();
+  CHECK(*starts == tried);
+  CHECK(host.settings().find("could not start") != std::string::npos);
+  // ...until the person flips it: off clears the words, on tries again.
+  eng.on_event("all_traffic", 2, "false");
+  REQUIRE(eventually([&] { return host.settings().find("could not start") == std::string::npos; }));
+  eng.on_event("all_traffic", 2, "true");
+  REQUIRE(eventually([&] { return *starts == tried + 1; }));
+  eng.on_event("tunnel", 2, "false");
+  REQUIRE(eventually([&] { return eng.snapshot().tunnel_address.empty(); }));
+}
+
+TEST_CASE("vpn: quitting while the system asks gives up at once", "[vpn]") {
+  auto av = std::make_unique<asking_vpn>();
+  auto asking = av->asking;
+  auto holder = std::make_shared<std::unique_ptr<asking_vpn>>(std::move(av));
+  vpn_test::fake_host host;
+  vpn::service::options o;
+  o.make_vpn = [holder]() -> std::unique_ptr<vpn::os_port> { return std::move(*holder); };
+  auto eng = std::make_unique<vpn::service>(host, o);
+  eng->on_event("server", 3, std::string("\"127.0.0.1:9#") + kKey + "\"");
+  eng->on_event("tunnel", 2, "true");
+  REQUIRE(eventually([&] { return !eng->snapshot().tunnel_address.empty(); }));
+  eng->on_event("all_traffic", 2, "true");
+  REQUIRE(eventually([&] { return asking->load(); }));
+  // The prompt never answered: without cancel() this would never return.
+  std::atomic<bool> gone{false};
+  std::thread quit([&] {
+    eng.reset();
+    gone.store(true);
+  });
+  CHECK(eventually([&] { return gone.load(); }));
+  quit.join();
 }
 
 // ---- IPv6 (the leak with the kill switch off) -----------------------------------------------
@@ -707,8 +913,8 @@ vpn::settings leaky_machine() {
 
 }  // namespace
 
-TEST_CASE("driftwire vpn: routes on a Mac claim IPv6 too, the relay and the local networks left out",
-          "[driftwire][driftwire-vpn]") {
+TEST_CASE("vpn: routes on a Mac claim IPv6 too, the relay and the local networks left out",
+          "[vpn][vpn-routes]") {
   const auto s = leaky_machine();
   CHECK_FALSE(s.kill_switch);
   CHECK(sp::net::parse_address(s.address6)->v6);
@@ -722,8 +928,8 @@ TEST_CASE("driftwire vpn: routes on a Mac claim IPv6 too, the relay and the loca
         std::vector<std::string>{"2001:db8:7::7/128", "2001:db8:aa:1::/64", "fe80::/64", "2001:db8:bb:f0::/60"});
 }
 
-TEST_CASE("driftwire vpn: routes on Windows claim IPv6 in two halves, the relay and the local networks left out",
-          "[driftwire][driftwire-vpn]") {
+TEST_CASE("vpn: routes on Windows claim IPv6 in two halves, the relay and the local networks left out",
+          "[vpn][vpn-routes]") {
   const auto s = leaky_machine();
   const auto p = vpn::plan_routes(s, vpn::route_style::halves);
   CHECK(texts(p.include4) == std::vector<std::string>{"0.0.0.0/1", "128.0.0.0/1"});
@@ -750,8 +956,8 @@ TEST_CASE("driftwire vpn: routes on Windows claim IPv6 in two halves, the relay 
   CHECK(texts(vpn::plan_routes(blocked, vpn::route_style::halves).exclude6) == texts(p.exclude6));
 }
 
-TEST_CASE("driftwire vpn: an app's IPv6 goes through the relay, and is never passed on untouched",
-          "[driftwire][driftwire-vpn]") {
+TEST_CASE("vpn: an app's IPv6 goes through the relay, and is never passed on untouched",
+          "[vpn][vpn-routes]") {
   tcp_echo te(true);
   udp_echo ue6(true);
   // A machine without IPv6 loopback (some CI containers) cannot run this.

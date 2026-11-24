@@ -315,6 +315,20 @@ std::optional<host_settings> parse_host_settings(std::string_view text) {
     if (!p || *p < 0 || *p > 65535) return std::nullopt;
     s.tls_port = static_cast<std::uint16_t>(*p);
   }
+  if (doc->find("domain")) {
+    const std::string* v = doc->str("domain");
+    if (!v) return std::nullopt;
+    if (!v->empty()) {
+      const auto d = parse_domain(*v);
+      if (!d || *d != *v) return std::nullopt;
+    }
+    s.domain = *v;
+  }
+  if (doc->find("look")) {
+    const auto v = doc->boolean("look");
+    if (!v) return std::nullopt;
+    s.look = *v;
+  }
   if (doc->find("library_id")) {
     const std::string* v = doc->str("library_id");
     if (!v || v->size() > 64 ||
@@ -346,12 +360,55 @@ std::optional<host_settings> parse_host_settings(std::string_view text) {
   return s;
 }
 
+std::uint16_t look_port(const host_settings& s) noexcept {
+  if (!s.vpn || !s.look) return 0;
+  if (s.tls_port != 0) return s.tls_port;
+  return static_cast<std::uint16_t>(s.relay_port < 65535 ? s.relay_port + 1 : s.relay_port - 1);
+}
+
+std::string vpn_name(const host_settings& s) {
+  if (!s.domain.empty()) return s.domain;
+  return s.ddns.empty() ? std::string() : ddns::duckdns_name(s.ddns);
+}
+
+std::optional<std::string> parse_domain(std::string_view t) {
+  while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.remove_prefix(1);
+  while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r' || t.back() == '\n')) t.remove_suffix(1);
+  for (std::string_view scheme : {"https://", "http://"}) {
+    if (t.substr(0, scheme.size()) == scheme) t.remove_prefix(scheme.size());
+  }
+  if (!t.empty() && t.back() == '/') t.remove_suffix(1);
+  if (!t.empty() && t.back() == '.') t.remove_suffix(1);
+  if (t.empty() || t.size() > 253) return std::nullopt;
+  std::string out;
+  int labels = 0;
+  std::size_t start = 0;
+  for (;;) {
+    const std::size_t dot = t.find('.', start);
+    const std::string_view label = t.substr(start, dot == std::string_view::npos ? std::string_view::npos : dot - start);
+    if (label.empty() || label.size() > 63 || label.front() == '-' || label.back() == '-') return std::nullopt;
+    for (const char ch : label) {
+      const char c = ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
+      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return std::nullopt;
+      out += c;
+    }
+    ++labels;
+    if (dot == std::string_view::npos) break;
+    out += '.';
+    start = dot + 1;
+  }
+  if (labels < 2) return std::nullopt;
+  return out;
+}
+
 std::string host_settings_json(const host_settings& s) {
   json::writer w;
   w.begin_object().key("relay_port").integer(s.relay_port).key("vpn").boolean(s.vpn).key("stay_awake").boolean(s.stay_awake);
   if (!s.ddns.empty()) w.key("ddns").string(s.ddns);
   if (s.ddns_stamp != 0) w.key("ddns_stamp").integer(s.ddns_stamp);
   if (s.tls_port != 0) w.key("tls_port").integer(s.tls_port);
+  if (!s.look) w.key("look").boolean(false);
+  if (!s.domain.empty()) w.key("domain").string(s.domain);
   if (!s.library_id.empty()) w.key("library_id").string(s.library_id);
   if (s.paused) w.key("paused").boolean(true);
   if (s.quit_stamp != 0) w.key("quit_stamp").integer(s.quit_stamp);
@@ -479,6 +536,7 @@ struct host_service::state {
   std::string service_text;  // under text_m
 
   std::atomic<bool> address_moved{false};
+  std::atomic<bool> cert_changed{false};  // the certificate keeper's news
 
   mutable std::mutex m;  // everything below; the loop's, and snapshot()'s
   host_settings settings;
@@ -527,7 +585,15 @@ struct host_service::state {
     k.relay_tls_port = rel ? rel->tls_port() : 0;
     k.vpn = settings.vpn;
     k.ddns_subdomain = settings.ddns;
+    k.cert_name = vpn_name(settings);
     k.loopback_only = o.loopback_only;
+    k.cert_changed = [this] {
+      cert_changed.store(true);
+      {
+        std::lock_guard lock(wake_m);
+      }
+      wake.notify_all();
+    };
     k.address_moved = [this] {
       // Any thread, even inside a keeper's own call: the loop passes it on.
       address_moved.store(true);
@@ -623,16 +689,45 @@ struct host_service::state {
     if (!settings.vpn) {
       ro.forward_ports.clear();  // forwarding (the Tunnel/VPN exit) only with `host vpn on`
       ro.forward_udp_ports.clear();
-    } else if (settings.tls_port != 0) {
-      // The web-site look, self-signed for the name (Let's Encrypt is later: call 4).
-      ro.tls_port = settings.tls_port;
-      ro.tls_name = settings.ddns.empty() ? std::string("localhost") : ddns::duckdns_name(settings.ddns);
+    } else {
+      relay::vpn_host_defaults(ro);  // all traffic, never into the home's networks
+      // Nor to the home's outside address (the router's, which hairpins to its forwarded ports).
+      // Both names the home goes by: the DuckDNS one and the own domain (vpn-stealth), either may be set.
+      std::vector<std::function<bool(const net::address&)>> names;
+      if (!settings.ddns.empty()) names.push_back(relay::refuse_name_addresses(ddns::duckdns_name(settings.ddns)));
+      if (!settings.domain.empty()) names.push_back(relay::refuse_name_addresses(settings.domain));
+      if (names.size() == 1) {
+        ro.forward_refused = std::move(names.front());
+      } else if (!names.empty()) {
+        ro.forward_refused = [names = std::move(names)](const net::address& a) {
+          for (const auto& f : names) {
+            if (f(a)) return true;
+          }
+          return false;
+        };
+      }
     }
-    // TCP 80 and 443 and UDP 53 (the relay's defaults) with the VPN on; never
-    // a private, loopback or link-local address (call 5: no VPN into the LAN).
+    if (look_port(settings) != 0) {
+      // The web-site look (on by default with the VPN; docs/plans/vpn-stealth.md): Let's
+      // Encrypt's certificate for the name when the certificate keeper has one, else self-signed.
+      ro.tls_port = look_port(settings);
+      const std::string name = vpn_name(settings);
+      ro.tls_name = name.empty() ? std::string("localhost") : name;
+      if (const auto c = usable_certificate(o.where.folder, name, static_cast<std::int64_t>(std::time(nullptr)))) {
+        ro.tls_cert = c->cert;
+        ro.tls_key = c->key;
+      }
+    }
+    // Never a private, loopback or link-local address (call 5: no VPN into the LAN).
     if (o.relay_tweak) o.relay_tweak(ro);
     const bool with_tls = ro.tls_port != 0;
     auto r = relay::server::start(ro);
+    if (!r && !ro.tls_cert.empty()) {
+      // Let's Encrypt's files would not load: the look self-signed rather than no look.
+      ro.tls_cert.clear();
+      ro.tls_key.clear();
+      r = relay::server::start(ro);
+    }
     tls_failed = false;
     if (!r && with_tls) {
       // The look's port taken or not allowed (443 on Linux without privilege): the relay and the
@@ -641,7 +736,7 @@ struct host_service::state {
       r = relay::server::start(std::move(ro));
       if (r) {
         tls_failed = true;
-        print("driftwire host: the web-site look could not listen on port " + std::to_string(settings.tls_port) +
+        print("driftwire host: the web-site look could not listen on port " + std::to_string(look_port(settings)) +
                   "; the relay runs without it\n",
               true);
       }
@@ -724,8 +819,10 @@ struct host_service::state {
     settings_text = t;
     const host_settings next = text ? parse_host_settings(*text).value_or(settings) : host_settings{};
     const bool relay_changed = next.vpn != settings.vpn || next.relay_port != settings.relay_port ||
-                               next.tls_port != settings.tls_port || (next.tls_port != 0 && next.ddns != settings.ddns);
-    const bool name_changed = next.ddns != settings.ddns || next.ddns_stamp != settings.ddns_stamp;
+                               look_port(next) != look_port(settings) ||
+                               (next.vpn && (next.ddns != settings.ddns || next.domain != settings.domain));
+    const bool name_changed = next.ddns != settings.ddns || next.ddns_stamp != settings.ddns_stamp ||
+                              next.domain != settings.domain;
     const bool pause_changed = next.paused != settings.paused;
     if (next.quit_stamp != 0 && next.quit_stamp >= started_ms && !quit.exchange(true)) {
       print("driftwire host: asked to quit\n");
@@ -927,6 +1024,13 @@ struct host_service::state {
     if (address_moved.exchange(false)) {
       for (auto& kp : keepers) kp->address_may_have_moved();
     }
+    if (cert_changed.exchange(false) && rel && rel->tls_port() != 0) {
+      // A renewal: new connections take it, a laptop's open forwards keep theirs.
+      if (const auto c = usable_certificate(o.where.folder, vpn_name(settings),
+                                            static_cast<std::int64_t>(std::time(nullptr)))) {
+        if (rel->set_tls_certificate(c->cert, c->key)) print("driftwire host: the web-site look took the new certificate\n");
+      }
+    }
     reload_settings_locked();
     reload_config_locked();
     retry_locked();
@@ -942,7 +1046,7 @@ struct host_service::state {
     std::unique_lock lock(wake_m);
     while (!stopping) {
       wake.wait_for(lock, std::chrono::milliseconds(o.config_every_ms),
-                    [this] { return stopping || address_moved.load(); });
+                    [this] { return stopping || address_moved.load() || cert_changed.load(); });
       if (stopping) break;
       lock.unlock();
       pass(false);
@@ -1011,7 +1115,7 @@ std::unique_ptr<host_service> host_service::start(host_service_options o, std::s
     st.next_roots = std::chrono::steady_clock::now() + std::chrono::milliseconds(st.o.roots_every_ms);
     st.set_awake_locked();
     // The keepers last: they need the ports.
-    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives}) {
+    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives, st.o.keepers.cert}) {
       if (!make) continue;
       if (auto kp = make()) st.keepers.push_back(std::move(kp));
     }
@@ -1319,9 +1423,9 @@ std::string status_text(const host_layout& l, bool test_hooks) {
   }
   const bool tls_down = state && state->boolean("tls_failed").value_or(false);
   out += std::string("VPN         ") +
-         (s.vpn ? (s.tls_port ? (tls_down ? "on; the web-site look could not listen on port "
-                                          : "on, web-site look on port ") + std::to_string(s.tls_port)
-                              : std::string("on"))
+         (s.vpn ? (look_port(s) ? (tls_down ? "on; the web-site look could not listen on port "
+                                            : "on, web-site look on port ") + std::to_string(look_port(s))
+                                : std::string("on, without the web-site look"))
                 : "off") +
          (s.vpn ? "  (driftwire host vpn on shows the relay line again)\n" : "\n");
   if (cfg) {

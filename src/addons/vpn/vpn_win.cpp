@@ -2,16 +2,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The VPN's interface on Windows (vpn.h): a Wintun adapter.
 //
-// wintun.dll is loaded at run time from beside the add-on, never linked, and
-// is not shipped yet: its signed prebuilt DLL comes under WireGuard LLC's
-// "Prebuilt Binaries License", which a GPL-3.0 program can carry only with
-// an additional permission from MediaViewer's copyright holder (the owner's
-// call, docs/design/11). Its API (wintun.h, GPL-2.0 OR MIT) is declared here
-// under MIT. Without the DLL, unavailable() says so and the proxy carries on.
+// wintun.dll is loaded at run time, never linked, and is not shipped yet. The
+// owner's calls (docs/design/12, 2026-11-19): it ships under a GPL-3.0 §7
+// permission (LICENSE-WINTUN.md), loaded only in a separate VPN service
+// process with no third-party GPL code, never in MediaViewer.exe; and the
+// administrator rights come from that Windows service, which the add-on
+// installs (one UAC prompt), its pump and wintun.dll in Program Files, packets
+// piped to the add-on. That service is a follow-up. Its API (wintun.h, GPL-2.0
+// OR MIT) is declared here under MIT. Without the DLL, unavailable() says so
+// and the proxy carries on.
 //
 // Making an adapter, its address and its routes needs an administrator; the
-// app runs as the person. Until an elevated helper exists (owed), start()
-// works only when MediaViewer runs elevated, and says so otherwise.
+// app runs as the person. Until the service exists (docs/design/12,
+// 2026-11-19), start() works only when MediaViewer runs elevated, and says so
+// otherwise.
 //
 // Routes (plan_routes, route_style::halves): 0.0.0.0/1 and 128.0.0.0/1, and
 // ::/1 and 8000::/1, through the adapter (they win over the default routes
@@ -45,7 +49,7 @@
 #include <vector>
 
 #include "wire/net.h"
-#include "addons/driftwire/vpn.h"
+#include "addons/vpn/vpn.h"
 
 namespace mv::driftwire::vpn {
 
@@ -319,8 +323,8 @@ class win_port final : public os_port {
   std::string unavailable() override {
     std::lock_guard lock(m_);
     if (!w_.load()) {
-      return "All traffic (VPN) needs Wintun beside Driftwire, which this build does not carry yet (its licence "
-             "waits for a decision). The proxy works without it.";
+      return "All traffic (VPN) needs the VPN's Windows service, which this build does not install yet. The proxy "
+             "works without it.";
     }
     return {};
   }
@@ -328,7 +332,7 @@ class win_port final : public os_port {
   result<std::unique_ptr<device>> start(const settings& s) override {
     std::lock_guard lock(m_);
     if (!w_.load()) return err(status::unsupported_format);
-    if (!elevated()) return err(status::permission_denied);  // owed: an elevated helper
+    if (!elevated()) return err(status::permission_denied);  // the VPN service (docs/design/12, 2026-11-19): a follow-up
     stop_locked();
     const route_plan plan = plan_routes(s, route_style::halves);
     // Each exclusion's route before ours exist, kept for it alone where the

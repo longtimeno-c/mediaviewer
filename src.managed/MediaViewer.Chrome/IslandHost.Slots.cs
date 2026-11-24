@@ -120,6 +120,7 @@ public static partial class IslandHost
             System.Diagnostics.Debug.WriteLine(ex.Message);
         }
         var loaded = new List<string>();
+        var damaged = new List<string>();
         for (int i = 0; i < found.Count; ++i)
         {
             SlotAddonRow row = found[i];
@@ -135,6 +136,9 @@ public static partial class IslandHost
                 System.Diagnostics.Debug.WriteLine(ex.Message);
                 // Only the load hashed it: a copy that failed is "did not pass verification".
                 if (ex.Status != MvStatus.UnsupportedFormat) found[i] = row with { State = "invalid" };
+                // Corrupt is the files (one missing or changed); a library that
+                // would not load or start is not something a download fixes.
+                if (ex.Status == MvStatus.Corrupt) damaged.Add(row.Id);
             }
         }
         DispatcherQueueControllerTryEnqueue(() =>
@@ -147,9 +151,50 @@ public static partial class IslandHost
             EnsureSlotListener();
             StartAddonUpdateCheck();  // #525: once both reads have landed
             RefreshSlotSettings();
+            if (!guest) RepairDamagedSlotAddons(damaged);
             MaybeStartScreenSelfTest();
         });
     }
+
+    // Where each add-on's automatic repair stands (UI thread; AddonRepair).
+    private static readonly Dictionary<string, RepairState> SlotRepairs = new(StringComparer.Ordinal);
+
+    private static RepairState SlotRepairOf(string id) => SlotRepairs.TryGetValue(id, out RepairState s) ? s : RepairState.None;
+
+    /// <summary>
+    /// UI. A copy whose files no longer verify (security software took one) is
+    /// installed again without being asked, once per process; its data stays.
+    /// </summary>
+    private static void RepairDamagedSlotAddons(List<string> damaged)
+    {
+        foreach (string id in damaged)
+        {
+            SlotAddonRow? row = SlotAddonRows.FirstOrDefault(r => r.Id == id);
+            if (row is null) continue;
+            AddonSlot channel = SlotChannelFor(row);
+            if (!AddonRepair.ShouldStart(true, SlotRepairOf(id), HasFlag(SettingFlag.UpdateAutoCheck),
+                                         !_addonsElsewhere && _folderSession is not null, channel.Busy)) continue;
+            SlotRepairs[id] = RepairState.Tried;
+            UpdaterLog($"addon {id}: installed copy damaged, installing it again");
+            if (id == PlacesChannel.Id) StartPlacesInstall(repair: true);
+            else StartSlotAddonInstall(row, repair: true);
+        }
+    }
+
+    /// <summary>
+    /// Worker, as a repair's install ends and before the add-ons are read again
+    /// (the queue keeps the order): a copy damaged again after this is being
+    /// taken by something, and is not downloaded a second time.
+    /// </summary>
+    private static void NoteRepairOutcome(string id, InstallOutcome outcome)
+    {
+        RepairState next = outcome.NotPublished || outcome.Refused is not null ? RepairState.Tried : AddonRepair.After(outcome.Failure);
+        DispatcherQueueControllerTryEnqueue(() => SlotRepairs[id] = next);
+    }
+
+    /// <summary>UI. A repair's line once it ended: nothing while the copy is still not usable.</summary>
+    private static string RepairedMessage(string id, string name, InstallOutcome outcome) =>
+        outcome.Ok && SlotAddonRows.Any(r => r.Id == id && r.State == "ok") ? InstallWords.Repaired(name) : "";
 
     // Removing takes every item it added away at once, with no restart. Off the
     // UI thread: unloading detaches it, which waits for a call it is in.
@@ -1029,7 +1074,8 @@ public static partial class IslandHost
     {
         "ok" => loaded ? $"Installed, version {row.Version}." : $"Installed, version {row.Version}; starting…",
         "needs_update" => $"Version {row.Version} needs a newer MediaViewer.",
-        _ => "The installed copy did not pass verification and is not loaded.",
+        _ => AddonRepair.StateText(SlotRepairOf(row.Id), SlotChannelFor(row).Busy)
+             ?? "The installed copy did not pass verification and is not loaded.",
     };
 
     private static void RefreshSlotSettings()
@@ -1263,7 +1309,9 @@ public static partial class IslandHost
     // Places does. #510: a loaded copy is reloaded on the new version at once,
     // with no restart, or once the transfer it reports has ended
     // (ReloadUpdatedSlotAddon; docs/design/18 "Updates").
-    private static void StartSlotAddonInstall(SlotAddonRow row, bool reinstall = false)
+    // `repair`: started by RepairDamagedSlotAddons, installed over the damaged
+    // copy (never removed first: offline leaves what was there).
+    private static void StartSlotAddonInstall(SlotAddonRow row, bool reinstall = false, bool repair = false)
     {
         AddonSlot channel = SlotChannelFor(row);
         if (channel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is not { } session) return;
@@ -1280,10 +1328,12 @@ public static partial class IslandHost
             bool reload = outcome.Ok && wasLoaded && update is not null;
             string message = !outcome.Ok || reload ? ""  // a failure is its own row; a reload says its own
                 : update is null ? InstallWords.Reinstalled(name) : InstallWords.Updated(name, update);
+            if (repair) NoteRepairOutcome(id, outcome);
             if (outcome.Ok && !reload) StartSlotAddons(session);
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 EndInstall(channel, outcome);
+                if (repair) message = RepairedMessage(id, name, outcome);
                 SlotUpdateMessages[id] = reload && update is not null ? ReloadUpdatedSlotAddon(id, name, update) : message;
                 if (reload && update is not null)
                 {
@@ -1297,7 +1347,7 @@ public static partial class IslandHost
         });
     }
 
-    private static void StartPlacesInstall(bool reinstall = false)
+    private static void StartPlacesInstall(bool reinstall = false, bool repair = false)
     {
         if (PlacesChannel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is null) return;
         bool wasLoaded = SlotAddonsLoaded.Contains(PlacesChannel.Id);
@@ -1322,11 +1372,13 @@ public static partial class IslandHost
             string message = !outcome.Ok || reload ? ""  // a failure is its own row; a reload says its own
                 : update is not null ? InstallWords.Updated("Places", update)
                 : installed ? InstallWords.Reinstalled("Places") : InstallWords.Installed("Places");
+            if (repair) NoteRepairOutcome(PlacesChannel.Id, outcome);
             if (outcome.Ok && !reload) StartSlotAddons(session);
             string? installedVersion = update;
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 EndInstall(PlacesChannel, outcome);
+                if (repair) message = RepairedMessage(PlacesChannel.Id, "Places", outcome);
                 _placesMessage = reload && installedVersion is not null
                     ? ReloadUpdatedSlotAddon(PlacesChannel.Id, "Places", installedVersion)
                     : message;

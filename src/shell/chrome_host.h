@@ -1323,8 +1323,11 @@ class chrome_host {
   [[nodiscard]] bool run_addon_command(const std::string& addon, const std::string& id,
                                        const std::string& json) noexcept;
   // #452: an add-on's screen, opened or brought forward (the notification-area
-  // icon's Open <screen>). False when the chrome has no such entry.
-  [[nodiscard]] bool open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
+  // icon's Open <screen>). none when the chrome has no such entry. A
+  // settings-place screen is no window (docs/plans/vpn-addon.md): the chrome
+  // wants its add-on's page and answers settings_page; the host opens Settings.
+  enum class addon_screen_opened { none, window, settings_page };
+  [[nodiscard]] addon_screen_opened open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
   // docs/design/25: an add-on package (*.mvaddon) handed to the app. The chrome
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.

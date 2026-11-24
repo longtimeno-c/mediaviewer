@@ -1167,8 +1167,9 @@ bool chrome_host::run_addon_command(const std::string& addon, const std::string&
   return run_addon_command_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
-bool chrome_host::open_addon_screen(const std::string& addon, const std::string& screen) noexcept {
-  if (!attached_ || !open_addon_screen_) return false;
+chrome_host::addon_screen_opened chrome_host::open_addon_screen(const std::string& addon,
+                                                                const std::string& screen) noexcept {
+  if (!attached_ || !open_addon_screen_) return addon_screen_opened::none;
   // Two UTF-8 strings, each NUL-terminated, mirrored by IslandHost.OpenAddonScreen.
   std::vector<std::uint8_t> buf;
   buf.reserve(addon.size() + screen.size() + 2);
@@ -1176,7 +1177,11 @@ bool chrome_host::open_addon_screen(const std::string& addon, const std::string&
     buf.insert(buf.end(), part->begin(), part->end());
     buf.push_back(0);
   }
-  return open_addon_screen_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+  switch (open_addon_screen_(buf.data(), static_cast<std::int32_t>(buf.size()))) {
+    case 0: return addon_screen_opened::window;
+    case 1: return addon_screen_opened::settings_page;
+    default: return addon_screen_opened::none;
+  }
 }
 
 bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {

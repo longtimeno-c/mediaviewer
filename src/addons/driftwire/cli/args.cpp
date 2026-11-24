@@ -67,8 +67,9 @@ std::string help_text() {
          "                               how it runs (no administrator needed); host setup walks\n"
          "                               through it all (a DuckDNS name, a folder, the router, a\n"
          "                               phone, the VPN), host name duckdns|none sets the name (the\n"
-         "                               token is typed), host pair shows a phone's pairing QR, host\n"
-         "                               vpn on [--tls-port 443]|off makes it the laptop's VPN exit;\n"
+         "                               token is typed), host name domain NAME|none your own domain\n"
+         "                               for the VPN (a CNAME to the DuckDNS name), host pair shows a phone's pairing QR, host\n"
+         "                               vpn on [--tls-port N|off]|off makes it the laptop's VPN exit;\n"
          "                               host users [add NAME [--role view|change|admin] [--folders\n"
          "                               L1,L2] | role NAME ROLE | password NAME | remove NAME | apply]\n"
          "                               keeps who may open its folders from other computers at home\n"
@@ -163,10 +164,14 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--tls-port") {
         std::string v;
         if (!value(v, "a port")) return out;
+        if (v == "off") {
+          a.tls_off = true;
+          continue;
+        }
         char* end = nullptr;
         const long p = std::strtol(v.c_str(), &end, 10);
         if (v.empty() || *end != '\0' || p < 1 || p > 65535) {
-          out.error = "--tls-port takes a port, 1 to 65535";
+          out.error = "--tls-port takes a port, 1 to 65535, or off";
           return out;
         }
         a.tls_port = static_cast<std::uint16_t>(p);
@@ -386,11 +391,15 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         // Only the provider: the subdomain and the token are typed or pasted, never arguments.
         a.host = host_action::name;
         a.on = words[1] == "duckdns";
+      } else if (what == "name" && words.size() == 3 && words[1] == "domain") {
+        // The person's own domain for the VPN (not a secret): NAME, or none.
+        a.host = host_action::name;
+        a.host_words.assign(words.begin() + 1, words.end());
       } else if (parse_host_control(words, a)) {
         // pause, resume, quit: the tray's control (host_control.h)
       } else {
         out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
-                    "name duckdns|none, vpn on [--tls-port N]|off, convert on [--helper PATH]|off, "
+                    "name duckdns|none, name domain NAME|none, vpn on [--tls-port N|off]|off, convert on [--helper PATH]|off, "
                     "start-at-login on|off, stay-awake on|off, "
                     "users …, drives …, pause, resume or quit";
         return out;
@@ -403,7 +412,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         out.error = "--helper goes with host convert on";
         return out;
       }
-      if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {
+      if ((a.tls_port != 0 || a.tls_off) && !(a.host == host_action::vpn && a.on)) {
         out.error = "--tls-port goes with host vpn on";
         return out;
       }
@@ -431,7 +440,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
     out.error = "--convert-helper goes with serve (running it)";
     return out;
   }
-  if (a.tls_port != 0 && a.cmd != command::host) {
+  if ((a.tls_port != 0 || a.tls_off) && a.cmd != command::host) {
     out.error = "--tls-port goes with host vpn on";
     return out;
   }
