@@ -124,6 +124,8 @@ final class FolderChangeTests: XCTestCase {
   func testAFolderWhoseFilesCanBeChangedStillShowsItsName() throws {
     let app = launched("library.changeSample")
     XCTAssertTrue(app.buttons["Sample library"].waitForExistence(timeout: 10), "Not the sample library")
+    // All media has no Add or Select: the name and the chip are in the same place there.
+    XCTAssertEqual(app.staticTexts["folder-title"].firstMatch.label, "All media")
     let tile = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder:'")).firstMatch
     XCTAssertTrue(tile.waitForExistence(timeout: 10))
     let name = tile.label.components(separatedBy: ",").first ?? tile.label
@@ -136,8 +138,12 @@ final class FolderChangeTests: XCTestCase {
     let chip = app.buttons["Sample library"].firstMatch
     XCTAssertTrue(chip.exists)
     XCTAssertGreaterThanOrEqual(chip.frame.minY, title.frame.maxY - 1, "The chip is not under the name")
-    XCTAssertLessThanOrEqual(title.frame.maxX, select.frame.minX, "The name runs under Select")
-    XCTAssertLessThanOrEqual(chip.frame.maxX, select.frame.minX, "The chip runs under Select")
+    // Add is the nearer of the two buttons.
+    let add = app.buttons["add"].firstMatch
+    XCTAssertTrue(add.exists)
+    let edge = min(add.frame.minX, select.frame.minX)
+    XCTAssertLessThanOrEqual(title.frame.maxX, edge, "The name runs under Add")
+    XCTAssertLessThanOrEqual(chip.frame.maxX, edge, "The chip runs under Add")
     // Wide enough to read, not a sliver or "…".
     XCTAssertGreaterThan(title.frame.width, 40)
     if let dir = ProcessInfo.processInfo.environment["MV_SHOT_DIR"] {
