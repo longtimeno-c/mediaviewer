@@ -44,7 +44,7 @@ set(R "${MV_SOURCE_ROOT}")
 # microsoft/onnxruntime repository has returned 404 since 2026-11-18. The same
 # 1.30.0 build (the macOS dylib differs from the GitHub archive's only in its
 # ad-hoc signature; the headers only in line endings). One package carries
-# every desktop platform, so one pin covers Windows, macOS and Linux.
+# every platform, so one pin covers Windows, macOS, Linux and the iPhone.
 set(_ort_nuget "https://api.nuget.org/v3-flatcontainer")
 set(_ort_package "Microsoft.ML.OnnxRuntime")
 set(_ort_sha "30df119bd9164eaa187666d93147448fdd4a9a1a3caf83f1505daf7af2d1c5d2")
@@ -99,32 +99,48 @@ function(mv_fetch_ort package rid sha out_dir)
 endfunction()
 
 if(IOS)
-  # An app may not load downloaded code: Microsoft's static xcframework (the
-  # onnxruntime-c CocoaPods archive, MIT), linked into the app. It has no
-  # include/ folder, so mv_fetch_ort's layout does not fit it.
-  set(_ort_name "pod-archive-onnxruntime-c-${MV_ORT_VERSION}")
-  set(_ort_sha "e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea")
-  set(MV_ORT_DIR "${CMAKE_BINARY_DIR}/_ort/${_ort_name}")
-  if(NOT EXISTS "${MV_ORT_DIR}/Headers/onnxruntime_c_api.h")
-    set(_dl "${CMAKE_BINARY_DIR}/_ort/${_ort_name}.zip")
-    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")
-      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")  # offline / CI cache
+  # An app may not load downloaded code: Microsoft's static xcframework, linked
+  # into the app. It ships inside the same NuGet package as the desktop's
+  # libraries (runtimes/ios/native, for .NET iOS), so the phone and desktop
+  # share one pinned download. The CocoaPods pod-archive it used to come from
+  # sits behind download.onnxruntime.ai, whose certificate stopped matching
+  # the host in 2026-11.
+  string(TOLOWER "${_ort_package}" _id)
+  set(_file "${_id}.${MV_ORT_VERSION}.nupkg")
+  set(MV_ORT_DIR "${CMAKE_BINARY_DIR}/_ort/${_id}-ios-${MV_ORT_VERSION}")
+  if(NOT EXISTS "${MV_ORT_DIR}/onnxruntime.xcframework/Info.plist")
+    set(_dl "${CMAKE_BINARY_DIR}/_ort/${_file}")
+    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_file}")
+      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_file}")  # offline / CI cache
     else()
-      message(STATUS "Fetching ${_ort_name}.zip (ONNX Runtime, MIT)")
-      mv_download("https://download.onnxruntime.ai/${_ort_name}.zip" "${_dl}" "${_ort_sha}")
+      message(STATUS "Fetching ${_file} (ONNX Runtime, MIT)")
+      mv_download("${_ort_nuget}/${_id}/${MV_ORT_VERSION}/${_file}" "${_dl}" "${_ort_sha}")
     endif()
     file(SHA256 "${_dl}" _got)
     if(NOT _got STREQUAL _ort_sha)
-      message(FATAL_ERROR "${_ort_name}.zip: SHA-256 ${_got}, expected ${_ort_sha}")
+      message(FATAL_ERROR "${_file}: SHA-256 ${_got}, expected ${_ort_sha}")
     endif()
-    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${MV_ORT_DIR}")
+    set(_tmp "${MV_ORT_DIR}.extract")
+    file(REMOVE_RECURSE "${_tmp}" "${MV_ORT_DIR}")
+    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${_tmp}"
+         PATTERNS "runtimes/ios/native/onnxruntime.xcframework.zip" "LICENSE" "ThirdPartyNotices.txt")
+    if(NOT EXISTS "${_tmp}/runtimes/ios/native/onnxruntime.xcframework.zip")
+      message(FATAL_ERROR "${_file}: no runtimes/ios/native/onnxruntime.xcframework.zip in the package")
+    endif()
+    file(COPY "${_tmp}/LICENSE" "${_tmp}/ThirdPartyNotices.txt" DESTINATION "${MV_ORT_DIR}")
+    file(ARCHIVE_EXTRACT INPUT "${_tmp}/runtimes/ios/native/onnxruntime.xcframework.zip"
+         DESTINATION "${MV_ORT_DIR}")  # last: onnxruntime.xcframework marks the layout done
+    file(REMOVE_RECURSE "${_tmp}")
+    if(_dl STREQUAL "${CMAKE_BINARY_DIR}/_ort/${_file}")
+      file(REMOVE "${_dl}")  # ~150 MB, mostly other platforms; the layout is kept
+    endif()
   endif()
-  set(MV_ORT_INCLUDE "${MV_ORT_DIR}/Headers")
   if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
     set(_ort_slice "ios-arm64_x86_64-simulator")
   else()
     set(_ort_slice "ios-arm64")
   endif()
+  set(MV_ORT_INCLUDE "${MV_ORT_DIR}/onnxruntime.xcframework/${_ort_slice}/onnxruntime.framework/Headers")
   add_library(mv_ort_static STATIC IMPORTED)
   set_target_properties(mv_ort_static PROPERTIES IMPORTED_LOCATION
     "${MV_ORT_DIR}/onnxruntime.xcframework/${_ort_slice}/onnxruntime.framework/onnxruntime")

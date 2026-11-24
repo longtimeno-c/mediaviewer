@@ -21,10 +21,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "addons/driftwire/acme.h"
 #include "addons/driftwire/ddns.h"
 #include "addons/driftwire/host_ports.h"
 
@@ -42,6 +44,9 @@ struct keeper_context {
   std::uint16_t relay_tls_port = 0;  // the relay's web-site look (0: none; only with the VPN on)
   bool vpn = false;                  // forwarding on: the relay's port must be reachable from outside too
   std::string ddns_subdomain;        // host.json's DuckDNS name ("": none); the token is in `secrets`
+  // The name the relay's web-site look answers as (the person's own domain, else the DuckDNS name;
+  // "": none): the certificate keeper gets Let's Encrypt's for it.
+  std::string cert_name;
   bool loopback_only = false;        // the tests: never a real router, never duckdns.org
   // A keeper's news that the public address may have moved (the router keeper
   // saw a new outside address): the host passes it to every other keeper.
@@ -51,6 +56,9 @@ struct keeper_context {
   // word for the phones ("": healthy or none), passed to serve's options::storage.
   // Any thread; never blocks.
   std::function<void(std::string)> storage_changed;
+  // The certificate keeper's news: a new certificate is in <folder>/tls (the
+  // relay takes it). Any thread; never blocks.
+  std::function<void()> cert_changed;
 };
 
 class host_keeper {
@@ -78,11 +86,13 @@ struct keeper_factories {
   std::function<std::unique_ptr<host_keeper>()> ddns;    // slice 3
   std::function<std::unique_ptr<host_keeper>()> router;  // slice 4
   std::function<std::unique_ptr<host_keeper>()> drives;  // combined drives' health (host_drives.h)
+  std::function<std::unique_ptr<host_keeper>()> cert;    // Let's Encrypt for the web-site look (vpn-stealth)
   std::function<std::unique_ptr<host_keeper>()> copy;    // Keep a copy (host_copy.h)
 };
 
 // The keepers this build has (host_keepers.cpp): DuckDNS over cli::https_get,
-// the router on the default gateway, the combined drives' health, and the
+// the router on the default gateway, the combined drives' health, the web
+// look's certificate, and the
 // drives kept copied.
 [[nodiscard]] keeper_factories host_keepers();
 
@@ -107,8 +117,43 @@ struct router_keeper_config {
 [[nodiscard]] std::unique_ptr<host_keeper> make_router_keeper(router_keeper_config c = {});
 
 // What the router is asked for, from the context (pure; the tests): the
-// service's port while it serves; the relay's, and its web-site look at
-// outside 443 (falling back to its own number), only with the VPN on.
+// service's port while it serves; with the VPN on, the relay's web-site look
+// at outside 443 (else kLookFallbackPort), or the plain relay's port when the
+// look is off.
+inline constexpr std::uint16_t kLookFallbackPort = 8443;
+
+// ---- the certificate keeper (docs/plans/vpn-stealth.md §1) ---------------------------------
+//
+// With the VPN's web-site look on and a DuckDNS name (and its token), gets a
+// Let's Encrypt certificate for keeper_context::cert_name by DNS-01 (the TXT
+// through DuckDNS; the person's own domain CNAMEs `_acme-challenge` to the
+// DuckDNS name's), into <folder>/tls (account.pem, cert.pem, key.pem; mode
+// 600), and tells the host (cert_changed). Checked at start and daily;
+// renewed 30 days before the end. After a failure: 1, 2, 4 … 24 hours (or
+// the CA's Retry-After, if longer), and never more than kOrdersPerDay orders
+// in 24 hours (Let's Encrypt allows 5 failed validations an hour, 5 of the
+// same certificate a week). The relay keeps its self-signed one until then.
+inline constexpr int kOrdersPerDay = 3;
+inline constexpr std::int64_t kRenewBeforeS = 30 * 86400;
+struct cert_keeper_config {
+  acme::http_fn http;                         // empty: cli::https_request
+  ddns::fetch_fn fetch;                       // DuckDNS's TXT; empty: cli::https_get, its error text dropped
+  std::string directory = acme::kLetsEncrypt;
+  std::string ddns_base = ddns::kDuckDnsBase;
+  std::function<std::int64_t()> now_unix;     // empty: the clock
+  int propagation_ms = 60000;                 // the TXT reaching Let's Encrypt's resolvers
+  int poll_ms = 3000;
+  bool on_loopback = false;                   // the tests' stand-in CA and DuckDNS: runs with loopback_only too
+};
+[[nodiscard]] std::unique_ptr<host_keeper> make_cert_keeper(cert_keeper_config c = {});
+// The certificate in <folder>/tls when it is for `name` and still good at
+// `now` (the relay's start takes it): its two files' paths.
+struct cert_files {
+  std::string cert, key;
+  std::int64_t not_after = 0;
+};
+[[nodiscard]] std::optional<cert_files> usable_certificate(const std::string& folder, const std::string& name,
+                                                           std::int64_t now);
 [[nodiscard]] std::vector<host_ports::port_wanted> wanted_ports(const keeper_context& ctx);
 // "3 min ago", "just now", "2 h ago" (for status lines).
 [[nodiscard]] std::string ago_words(std::int64_t then_unix, std::int64_t now_unix);

@@ -221,7 +221,9 @@ public static partial class IslandHost
 
     /// <summary>
     /// Native (#452): the notification-area icon's Open &lt;screen&gt;. In: two
-    /// NUL-terminated UTF-8 strings, the add-on's id and the screen's id. Returns 0.
+    /// NUL-terminated UTF-8 strings, the add-on's id and the screen's id. Returns 0,
+    /// or 1 for a settings-place screen (the VPN's, docs/plans/vpn-addon.md): its
+    /// add-on's page is wanted and the host opens Settings (src/shell/chrome_host.h).
     /// </summary>
     public static int OpenAddonScreen(IntPtr arg, int sizeBytes)
     {
@@ -239,6 +241,13 @@ public static partial class IslandHost
                 start = i + 1;
             }
             if (parts.Count != 2) return unchecked((int)0x80070057);
+            if (SlotSettingsScreens.TryGetValue(parts[0], out string? page) && page == parts[1])
+            {
+                if (_settingsVisible) _showGeneralSettings?.Invoke();
+                _addonPageWanted = parts[0];  // PresentSettings opens it
+                _addonListWanted = false;
+                return 1;
+            }
             OpenAddonScreenFront(parts[0], parts[1]);
             return 0;
         }

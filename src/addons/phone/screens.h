@@ -88,6 +88,16 @@ class screen {
   // Whether the last build had something that changes each second (the code's countdown).
   [[nodiscard]] bool ticking() const noexcept { return !qr_.empty(); }
 
+  // The VPN add-on's Host section (docs/plans/vpn-addon.md), from the link's
+  // `state_json`: {"where":"here"|"server"|"none", and for the first two
+  // "title", "line", "on"; "busy"; "code" while the VPN code shows; "error"}.
+  [[nodiscard]] std::string vpn_state(std::string_view state_json) const;
+  // The link's request for the VPN add-on's `method` ("vpn_set" with `on`,
+  // "vpn_code", "vpn_code_hide", "vpn_domain" with `domain`: the own domain or
+  // "none", this computer only); "" when there is nothing to host on.
+  [[nodiscard]] std::string vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                        std::string_view domain = {}) const;
+
   // A phone's ("ph", its key) or a shared folder's ("fo", its id) row id prefix.
   [[nodiscard]] static std::string row_id(const char* prefix, const std::string& of);
 
