@@ -1413,6 +1413,46 @@ TEST_CASE("serve backup: the storage limit and the free-space reserve refuse a w
   CHECK(space->room == 600 * 1024 - 512 * 1024);
 }
 
+TEST_CASE("serve backup: a folder with no limit takes more than any limit, and the reserve still refuses", "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.backup_limit = serve::kNoLimit;
+  s.backup_reserve = 512 * 1024;
+  s.free_bytes = 8 * 1024 * 1024;
+  s.start(10000);
+  auto c = s.open_client();
+
+  auto space = c->stat(kRootC, "");
+  REQUIRE(space);
+  CHECK(serve::no_limit(space->limit));
+  CHECK(space->room == 8 * 1024 * 1024 - 512 * 1024);  // only the reserve bounds it
+
+  serve::client::write_refused why;
+  for (int i = 0; i < 3; ++i) {  // 6 MB, past what a 1 MB limit would have taken
+    const std::string clip = marker(20 + i, 2 * 1024 * 1024);
+    REQUIRE(c->write(kRootC, "clip" + std::to_string(i) + ".mov", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why));
+  }
+  // The volume itself nearly full: refused for the reserve, never for a limit.
+  s.free_bytes = 1024 * 1024;
+  const std::string more = marker(30, 600 * 1024);
+  auto done = c->write(kRootC, "more.mov", more.size(), hash_of(more), 0, reader_of(more), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyFull);
+  CHECK_FALSE(fs::exists(s.backup / "more.mov"));
+
+  // Kept as none in serve.json, and none to a reader of it.
+  serve::config cfg;
+  cfg.port = 4000;
+  serve::root_config r{kRootC, "Phone backup", "/volume1/backup"};
+  r.backup = true;
+  r.limit = serve::kNoLimit;
+  r.reserve = 1ull << 30;
+  cfg.roots = {r};
+  auto back = serve::parse_config(serve::config_json(cfg));
+  REQUIRE(back);
+  CHECK(serve::no_limit(back->roots[0].limit));
+}
+
 TEST_CASE("serve backup: only a device that may write, and the meta folder only in a backup folder", "[driftwire-serve]") {
   service_fixture s;
   auto c = s.open_client();

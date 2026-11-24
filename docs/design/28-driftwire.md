@@ -615,8 +615,12 @@ over SMB with owner operations over the channel; library rejoin; the phone's `re
 
 `src/wire/serve_backup.*`, `src/wire/grants.*`; plans `docs/plans/mobile.md` §10b (M11),
 `docs/plans/self-host-users-smb.md` §9. A backup folder is `"backup":{"limit","reserve"}` in
-`serve.json` (owner's `add_root` / `set_backup`; Settings → Add-ons → Phone access). A client
-listing `write` gets the op (bit `1u << 6`); `mkdir`, `move`, `delete` are ops 8–10 (`kChangeOps`).
+`serve.json` (owner's `add_root` / `set_backup`; Settings → Add-ons → Phone access). A limit of
+`serve::kNoLimit` (INT64_MAX) is **no limit**: only the reserve stops writes. Not 0, which every
+server reads as "nothing may be written"; a server from before reads INT64_MAX as a limit no folder
+reaches. The card's No storage limit toggle sends `"limit":"none"` to the link, which sends kNoLimit
+on. A client listing `write` gets the op (bit `1u << 6`); `mkdir`, `move`, `delete` are ops 8–10
+(`kChangeOps`).
 
 **Who may write is the device's role** (`caps.role`): "change" is an unlimited paired device or a
 grant with `backup` on (`library_grants`), "view" a grant with it off (guest codes, a desktop until
@@ -739,8 +743,10 @@ or a Mac, from one command that runs while its user is logged in.
 
 ```
 driftwire host [--data DIR]                 the supervisor, no terminal: what starts at login
-driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it;
-                                                  on a folder shared already, makes it a backup folder)
+driftwire host share PATH [--label L] [--backup [--limit GB|none]]
+                                            a folder for phones (--backup: they may back up into it, with no
+                                            limit unless --limit; on a folder shared already, makes it a
+                                            backup folder, and --limit changes its limit)
 driftwire host unshare LABEL                takes one back (its files stay)
 driftwire host status                       name, ports, folders by label (offline or not), phones,
                                             VPN, staying awake, start at login
