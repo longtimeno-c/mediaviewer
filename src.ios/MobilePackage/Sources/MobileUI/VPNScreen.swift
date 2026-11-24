@@ -59,6 +59,15 @@ enum VPNFlow {
 
   /// The line under the code field: the demo says a code is only checked.
   static func codeNote(_ s: VPNSnapshot) -> String? { s.isDemo ? VPNCopy.codeDemo : nil }
+
+  /// Under Connect automatically. The demo never claims iOS will turn anything on.
+  static func autoConnectDetail(_ s: VPNSnapshot) -> String {
+    s.isDemo ? VPNCopy.autoConnectDetail + " " + VPNCopy.autoConnectDemo : VPNCopy.autoConnectDetail
+  }
+
+  /// The home networks with `name` added (cleaned: a repeat, a blank or a too-long name changes nothing).
+  static func adding(_ name: String, to home: [String]) -> [String] { VPNHomeNetworks.cleaned(home + [name]) }
+  static func removing(_ name: String, from home: [String]) -> [String] { home.filter { $0 != name } }
 }
 
 struct VPNScreen: View {
@@ -66,6 +75,8 @@ struct VPNScreen: View {
   @State private var enteringCode = false
   @State private var askingConsent = false
   @State private var confirmingRemove = false
+  @State private var addingHome = false
+  @State private var newHome = ""
   /// A switch-on is still being carried out: another is ignored (no double Turn On). Off always goes.
   @State private var switching = false
 
@@ -152,6 +163,10 @@ struct VPNScreen: View {
       InfoRow(label: VPNCopy.status, value: VPNCopy.status(vpn.status))
         .accessibilityIdentifier(VPNIDs.status)
     }
+    InfoCard {
+      autoConnectToggle
+      if vpn.autoConnect { homeNetworkList }
+    }
     Button(VPNCopy.connectAnother) { enteringCode = true }
       .buttonStyle(SecondaryButtonStyle())
       .accessibilityIdentifier(VPNIDs.connectHost)
@@ -191,6 +206,94 @@ struct VPNScreen: View {
     .accessibilityAddTraits(.isToggle)
     .accessibilityAction { switchMoved(to: !vpn.isOn) }
     .accessibilityIdentifier(VPNIDs.toggle)
+  }
+
+  /// Opt-in, off by default (owner call 4).
+  private var autoConnectToggle: some View {
+    let detail = VPNFlow.autoConnectDetail(vpn)
+    return Toggle(isOn: Binding(get: { vpn.autoConnect }, set: { setAutoConnect($0, vpn.homeNetworks) })) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(VPNCopy.autoConnect).font(.subheadline).foregroundStyle(Theme.title)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(detail)
+          .font(.footnote)
+          .foregroundStyle(Theme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .tint(Theme.accent)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(VPNCopy.autoConnect)
+    .accessibilityValue(vpn.autoConnect ? "On" : "Off")
+    .accessibilityHint(detail)
+    .accessibilityAddTraits(.isToggle)
+    .accessibilityAction { setAutoConnect(!vpn.autoConnect, vpn.homeNetworks) }
+    .accessibilityIdentifier(VPNIDs.autoConnect)
+  }
+
+  @ViewBuilder
+  private var homeNetworkList: some View {
+    Text(VPNCopy.homeNetworks)
+      .font(.footnote.weight(.semibold))
+      .foregroundStyle(Theme.body)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityAddTraits(.isHeader)
+    if vpn.homeNetworks.isEmpty {
+      Text(VPNCopy.noHomeNetworks)
+        .font(.footnote)
+        .foregroundStyle(Theme.body)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    ForEach(vpn.homeNetworks, id: \.self) { name in
+      HStack(spacing: 8) {
+        Image(systemName: "wifi").font(.footnote).foregroundStyle(Theme.body).accessibilityHidden(true)
+        Text(name).font(.subheadline).foregroundStyle(Theme.title)
+          .lineLimit(2)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier(VPNIDs.homeNetwork(name))
+        Button { setAutoConnect(true, VPNFlow.removing(name, from: vpn.homeNetworks)) } label: {
+          Image(systemName: "xmark").font(.footnote.weight(.semibold)).foregroundStyle(Theme.body)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .padding(.trailing, -12)  // the ✕ itself on the switches' edge; the target stays 44 pt
+        .accessibilityLabel(VPNCopy.removeHomeNetwork(name))
+        .accessibilityIdentifier(VPNIDs.removeHomeNetwork(name))
+      }
+    }
+    Button(VPNCopy.addHomeNetwork) {
+      newHome = ""
+      addingHome = true
+    }
+    .buttonStyle(QuietButtonStyle(color: Theme.accent))
+    .padding(.leading, -8)  // the style's own inset: the words line up with the card's
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityIdentifier(VPNIDs.addHomeNetwork)
+    .alert(VPNCopy.addHomeNetwork, isPresented: $addingHome) {
+      // Return adds it, as Add does.
+      TextField(VPNCopy.homeNetworkField, text: $newHome)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .accessibilityIdentifier(VPNIDs.homeNetworkField)
+        .onSubmit { addHome() }
+      Button(VPNCopy.add) { addHome() }
+        .disabled(VPNFlow.adding(newHome, to: []).isEmpty)  // blank or too long for an SSID
+        .accessibilityIdentifier(VPNIDs.homeNetworkAddConfirm)
+      Button(VPNCopy.cancel, role: .cancel) {}
+    } message: {
+      Text(VPNCopy.homeNetworkPrompt)
+    }
+  }
+
+  private func addHome() {
+    addingHome = false
+    setAutoConnect(true, VPNFlow.adding(newHome, to: vpn.homeNetworks))
+  }
+
+  private func setAutoConnect(_ on: Bool, _ home: [String]) {
+    let service = service
+    Task { await service.setAutoConnect(on, homeNetworks: home) }
   }
 
   private func switchMoved(to on: Bool) {

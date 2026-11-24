@@ -153,6 +153,49 @@ final class VPNSettingsTests: XCTestCase {
     XCTAssertFalse(element(app, "vpn.toggle").exists)
   }
 
+  /// Owner call 4: off by default; on, the home Wi-Fi list; a name is added, shown and removed.
+  func testConnectAutomaticallyIsOptInWithAHomeWiFiList() {
+    for appearance in ["light", "dark"] {
+      let app = launched("vpn.connected", appearance: appearance)
+      let auto = element(app, "vpn.autoConnect")
+      XCTAssertTrue(auto.waitForExistence(timeout: 30))
+      XCTAssertEqual(auto.label, "Connect automatically (except on home Wi-Fi)")
+      XCTAssertFalse(isOn(auto), "Connect automatically is on by default.")
+      XCTAssertFalse(app.buttons["vpn.homeNetwork.add"].exists, "The home list shows while it is off.")
+      flip(auto)
+      let add = app.buttons["vpn.homeNetwork.add"]
+      XCTAssertTrue(add.waitForExistence(timeout: 10))
+      XCTAssertTrue(isOn(auto))
+      add.tap()
+      // An alert's field and buttons are found through the alert.
+      let alert = app.alerts["Add home Wi-Fi…"]
+      XCTAssertTrue(alert.waitForExistence(timeout: 10))
+      let field = alert.textFields.firstMatch
+      XCTAssertTrue(field.waitForExistence(timeout: 10))
+      field.typeText("Home Wi-Fi 5G")
+      alert.buttons["Add"].firstMatch.tap()
+      XCTAssertTrue(element(app, "vpn.homeNetwork.Home Wi-Fi 5G").waitForExistence(timeout: 10))
+      save("auto-connect", appearance)
+      app.buttons["vpn.homeNetwork.remove.Home Wi-Fi 5G"].tap()
+      XCTAssertTrue(element(app, "vpn.homeNetwork.Home Wi-Fi 5G").waitForNonExistence(timeout: 10))
+      flip(auto)
+      XCTAssertTrue(add.waitForNonExistence(timeout: 10))
+      XCTAssertTrue(isOn(element(app, "vpn.toggle")), "Turning auto-connect off turned the VPN off.")
+      app.terminate()
+    }
+  }
+
+  /// The sample's demo has the switch too, and says nothing is turned on by itself.
+  func testTheSampleDemoShowsConnectAutomatically() {
+    let app = launched("vpn.sample")
+    let auto = element(app, "vpn.autoConnect")
+    XCTAssertTrue(auto.waitForExistence(timeout: 30))
+    XCTAssertFalse(isOn(auto))
+    flip(auto)
+    XCTAssertTrue(app.buttons["vpn.homeNetwork.add"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'No home Wi-Fi named yet'")).count > 0)
+  }
+
   func testAFailedVPNSaysWhy() {
     let app = launched("vpn.failed")
     XCTAssertTrue(element(app, "vpn.toggle").waitForExistence(timeout: 30))

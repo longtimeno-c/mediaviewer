@@ -20,6 +20,9 @@ public enum VPNStatus: Hashable, Sendable {
   case connected(since: Date)
   /// The network changed or the server dropped; trying again on its own.
   case reconnecting
+  /// On, with Connect automatically: iOS leaves the tunnel down here (a home Wi-Fi, or no network)
+  /// and brings it up by itself elsewhere. The switch stays on; switching off stops that too.
+  case paused
   case failed(VPNProblem)
 }
 
@@ -48,18 +51,26 @@ public struct VPNSnapshot: Hashable, Sendable {
   public var isDemo: Bool
   /// The person has seen and accepted the consent screen (App Review 5.4) on this phone.
   public var consented: Bool
+  /// Opt-in, off by default (owner call 4): while the VPN is on, iOS connects it by itself on any
+  /// network and leaves it off on the home Wi-Fi networks named here.
+  public var autoConnect: Bool
+  /// The home Wi-Fi networks (SSIDs) the VPN stays off on, in the order they were added.
+  public var homeNetworks: [String]
 
-  public init(status: VPNStatus, host: String? = nil, isDemo: Bool = false, consented: Bool = false) {
+  public init(status: VPNStatus, host: String? = nil, isDemo: Bool = false, consented: Bool = false,
+              autoConnect: Bool = false, homeNetworks: [String] = []) {
     self.status = status
     self.host = host
     self.isDemo = isDemo
     self.consented = consented
+    self.autoConnect = autoConnect
+    self.homeNetworks = homeNetworks
   }
 
   /// The switch's position: on while connecting, connected or reconnecting.
   public var isOn: Bool {
     switch status {
-    case .connecting, .connected, .reconnecting: return true
+    case .connecting, .connected, .reconnecting, .paused: return true
     default: return false
     }
   }
@@ -87,8 +98,26 @@ public protocol VPNService: Sendable {
   /// Idempotent: on while already on (or connecting) and off while off change nothing, and when
   /// calls overlap the last one wins; an earlier call never finishes over a later one.
   func setOn(_ on: Bool) async
+  /// Connect automatically (except on home Wi-Fi), and the home networks; kept until Remove.
+  /// `homeNetworks` is cleaned as `VPNHomeNetworks.cleaned` does. Only once set up.
+  func setAutoConnect(_ on: Bool, homeNetworks: [String]) async
   /// Stops the tunnel and removes the code, the key and iOS's VPN configuration.
   func remove() async
+}
+
+/// Home Wi-Fi names as iOS matches them (an SSID is 1 to 32 bytes).
+public enum VPNHomeNetworks {
+  /// Trimmed, without empty, too-long or repeated names, in the order given.
+  public static func cleaned(_ names: [String]) -> [String] {
+    var seen = Set<String>()
+    var out: [String] = []
+    for name in names {
+      let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !n.isEmpty, n.utf8.count <= 32, seen.insert(n).inserted else { continue }
+      out.append(n)
+    }
+    return out
+  }
 }
 
 /// A build with no tunnel extension: says so, does nothing.
@@ -101,6 +130,7 @@ public struct NoVPN: VPNService {
   public func connect(code: String) async throws { throw VPNCodeError.notACode }
   public func acceptConsent() async {}
   public func setOn(_ on: Bool) async {}
+  public func setAutoConnect(_ on: Bool, homeNetworks: [String]) async {}
   public func remove() async {}
 }
 
@@ -176,6 +206,16 @@ public final class DemoVPN: VPNService, @unchecked Sendable {
   }
 
   public func acceptConsent() async { publish { s, _ in s.consented = true; return true } }
+
+  /// Kept and shown; the demo asks iOS for nothing.
+  public func setAutoConnect(_ on: Bool, homeNetworks: [String]) async {
+    let home = VPNHomeNetworks.cleaned(homeNetworks)
+    publish { s, _ in
+      s.autoConnect = on
+      s.homeNetworks = home
+      return true
+    }
+  }
 
   public func setOn(_ on: Bool) async {
     var mine: Int?

@@ -35,6 +35,65 @@ final class VPNTunnelTests: XCTestCase {
     XCTAssertEqual(log.entries, ["on starts", "on overtaken", "off overtaken", "remove latest"])
   }
 
+  /// A Connect automatically change waits its turn but does not overtake a switch-on in flight.
+  func testASettingWaitsItsTurnWithoutOvertakingASwitchOn() async {
+    let moves = VPNMoves()
+    let log = Log()
+    let gate = Gate()
+    let on = Task {
+      await moves.inTurn { run in
+        log.add("on starts")
+        await gate.wait()
+        log.add(moves.isLatest(run) ? "on starts the tunnel" : "on overtaken")
+      }
+    }
+    while !log.entries.contains("on starts") { await Task.yield() }
+    let setting = Task { await moves.inTurn(overtaking: false) { _ in log.add("setting") } }
+    while moves.waiting < 2 { await Task.yield() }  // the setting is in the queue
+    XCTAssertEqual(moves.latest, 1, "The setting began a run")
+    XCTAssertEqual(log.entries, ["on starts"], "The setting ran before the switch-on ended")
+    gate.open()
+    await on.value
+    await setting.value
+    XCTAssertEqual(log.entries, ["on starts", "on starts the tunnel", "setting"])
+  }
+
+  /// A tunnel that goes down: held down by the home rule shows Paused; a broken server shows its
+  /// problem and stops Connect automatically, so iOS does not retry it behind a "Paused".
+  func testADroppedTunnelIsPausedOnlyWhenArmedAndUnbroken() {
+    XCTAssertEqual(VPNStatusMachine.afterDrop(armed: true, serverProblem: false).shown, .paused)
+    XCTAssertFalse(VPNStatusMachine.afterDrop(armed: true, serverProblem: false).disarm)
+    XCTAssertEqual(VPNStatusMachine.afterDrop(armed: false, serverProblem: false).shown, .off)
+    let broken = VPNStatusMachine.afterDrop(armed: true, serverProblem: true)
+    XCTAssertEqual(broken.shown, .failed)
+    XCTAssertTrue(broken.disarm)
+    XCTAssertFalse(VPNStatusMachine.afterDrop(armed: false, serverProblem: true).disarm)
+  }
+
+  /// Owner call 4: on-demand only when opted in and switched on; the home Wi-Fi it stays off on.
+  func testOnDemandRunsOnlyWhenOptedInAndSwitchedOn() {
+    XCTAssertFalse(VPNOnDemandPlan(autoConnect: false, homeNetworks: [], switchedOn: true).enabled, "On by default")
+    XCTAssertFalse(VPNOnDemandPlan(autoConnect: true, homeNetworks: [], switchedOn: false).enabled,
+                   "A switched-off VPN that iOS starts again by itself")
+    let plan = VPNOnDemandPlan(autoConnect: true, homeNetworks: ["Home", "Flat 2"], switchedOn: true)
+    XCTAssertTrue(plan.enabled)
+    XCTAssertEqual(plan.stayOffOn, ["Home", "Flat 2"])
+  }
+
+  func testTheSharedStateKeepsConnectAutomatically() throws {
+    let suite = "vpn-auto-tests-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    XCTAssertFalse(VPNSharedState.load(defaults).autoConnect)
+    VPNSharedState(host: "h:1", consented: true, autoConnect: true, homeNetworks: ["Home"]).save(defaults)
+    let back = VPNSharedState.load(defaults)
+    XCTAssertTrue(back.autoConnect)
+    XCTAssertEqual(back.homeNetworks, ["Home"])
+    // State saved before the switch existed keeps its host and consent.
+    defaults.set(Data("{\"host\":\"h:1\",\"consented\":true}".utf8), forKey: VPNSharedState.defaultsKey)
+    XCTAssertEqual(VPNSharedState.load(defaults), VPNSharedState(host: "h:1", consented: true))
+  }
+
   func testTheSharedKeychainGroupCarriesTheTeamPrefix() {
     XCTAssertEqual(VPNNames.keychainGroup(prefix: "23FQ4A4Q35."), "23FQ4A4Q35.io.github.longtimeno-c.mediaviewer.mobile.vpn")
     XCTAssertEqual(VPNNames.keychainGroup(prefix: "23FQ4A4Q35"), "23FQ4A4Q35.io.github.longtimeno-c.mediaviewer.mobile.vpn")

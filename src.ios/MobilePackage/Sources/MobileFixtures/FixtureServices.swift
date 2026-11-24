@@ -900,6 +900,15 @@ final class FixtureVPN: VPNService, @unchecked Sendable {
     publish { $0.status = .connected(since: Date()) }
   }
 
+  func setAutoConnect(_ on: Bool, homeNetworks: [String]) async {
+    let home = VPNHomeNetworks.cleaned(homeNetworks)
+    publish {
+      guard $0.isSetUp else { return }
+      $0.autoConnect = on
+      $0.homeNetworks = home
+    }
+  }
+
   func remove() async { publish { $0 = VPNSnapshot(status: .notSetUp) } }
 
   private func publish(_ change: (inout VPNSnapshot) -> Void) {

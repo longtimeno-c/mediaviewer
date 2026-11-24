@@ -81,6 +81,40 @@ final class VPNTests: XCTestCase {
     }
   }
 
+  /// Owner call 4: off by default; the demo keeps the choice and the cleaned home list, and
+  /// Remove forgets them.
+  func testTheDemoKeepsConnectAutomaticallyUntilRemove() async {
+    let vpn = demo()
+    XCTAssertFalse(vpn.current.autoConnect)
+    XCTAssertEqual(vpn.current.homeNetworks, [])
+    await vpn.setAutoConnect(true, homeNetworks: ["  Home ", "Home", "", String(repeating: "x", count: 33), "Flat 2"])
+    XCTAssertTrue(vpn.current.autoConnect)
+    XCTAssertEqual(vpn.current.homeNetworks, ["Home", "Flat 2"])
+    XCTAssertFalse(vpn.current.isOn, "Connect automatically turned the demo on.")
+    await vpn.remove()
+    XCTAssertFalse(vpn.current.autoConnect)
+    XCTAssertEqual(vpn.current.homeNetworks, [])
+  }
+
+  func testHomeNetworksAreCleanedAsIOSMatchesThem() {
+    XCTAssertEqual(VPNHomeNetworks.cleaned(["a", " a ", "b", "", "   "]), ["a", "b"])
+    // An SSID is at most 32 bytes: 32 fits, 33 does not; bytes, not characters.
+    XCTAssertEqual(VPNHomeNetworks.cleaned([String(repeating: "x", count: 32)]).count, 1)
+    XCTAssertEqual(VPNHomeNetworks.cleaned([String(repeating: "é", count: 17)]), [])
+    XCTAssertEqual(VPNFlow.adding("Flat 2", to: ["Home"]), ["Home", "Flat 2"])
+    XCTAssertEqual(VPNFlow.adding(" Home ", to: ["Home"]), ["Home"])
+    XCTAssertEqual(VPNFlow.adding("  ", to: ["Home"]), ["Home"])
+    XCTAssertEqual(VPNFlow.removing("Home", from: ["Home", "Flat 2"]), ["Flat 2"])
+  }
+
+  func testConnectAutomaticallyWordsNeverPromiseTheDemoRoutes() {
+    let demo = DemoVPN().current
+    XCTAssertTrue(VPNFlow.autoConnectDetail(demo).contains(VPNCopy.autoConnectDemo))
+    let real = VPNSnapshot(status: .off, host: "home.example.net:51820")
+    XCTAssertEqual(VPNFlow.autoConnectDetail(real), VPNCopy.autoConnectDetail)
+    XCTAssertEqual(VPNCopy.autoConnect, "Connect automatically (except on home Wi-Fi)")
+  }
+
   func testTheDemoIsAlwaysTheDemo() async throws {
     let vpn = demo()
     XCTAssertTrue(vpn.current.isDemo)
@@ -184,6 +218,11 @@ final class VPNTests: XCTestCase {
     agreed.status = .reconnecting
     XCTAssertEqual(VPNFlow.step(switchingTo: false, agreed), .turnOff)
     XCTAssertEqual(VPNFlow.step(switchingTo: false, fresh), .nothing)
+    // Paused by Connect automatically is on: Off stops it.
+    agreed.status = .paused
+    XCTAssertTrue(agreed.isOn)
+    XCTAssertEqual(VPNFlow.step(switchingTo: false, agreed), .turnOff)
+    XCTAssertEqual(VPNCopy.status(.paused), "Paused on home Wi-Fi or no network")
     // Nothing to switch without a code, or in a build with no tunnel.
     XCTAssertEqual(VPNFlow.step(switchingTo: true, VPNSnapshot(status: .notSetUp)), .nothing)
     XCTAssertEqual(VPNFlow.step(switchingTo: true, VPNSnapshot(status: .notInThisBuild, consented: true)), .nothing)
