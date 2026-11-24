@@ -203,6 +203,10 @@ struct view {
   // ---- the Tunnel (2026-11-12; tunnel.h): this computer's web traffic
   // through the relay server in relay_server. Off by default.
   bool tunnel = false;           // the switch (node "tunnel", also the menu-bar row)
+  // Connect to a VPN host (docs/design/28): a code from the host's Phone access
+  // (serve::relay_connect_code) fills relay_server and turns the Tunnel on.
+  bool connect_open = false;     // the code's field is showing
+  std::string connect_note;      // what the last Connect did ("" for nothing to say)
   std::string tunnel_relay;      // the relay server's address, without its key ("" when none is set)
   std::string tunnel_address;    // "127.0.0.1:<port>" while the proxy listens, else ""
   std::string tunnel_note;       // why it does not run, or the relay's last problem
@@ -775,6 +779,7 @@ class engine {
   // Tunnel or Use for all apps (proxy_retry_).
   std::string proxy_gave_up_for_;
   std::atomic<bool> proxy_retry_{false};
+  std::string connect_typed_;  // under m_: the VPN code as typed (it holds a key), wiped after use
   std::string proxy_gave_up_note_;  // the control thread's: what was said when it gave up
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
   std::uint64_t offer_seq_ = 0;                  // under m_: the receive now (or last), for its notices (#502)

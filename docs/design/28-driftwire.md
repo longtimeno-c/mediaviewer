@@ -827,6 +827,52 @@ look off, and the router's relay port closes. Tested on loopback: a laptop's Tun
 (`tunnel::proxy`) with the printed line reaches a site through the host's relay, off refuses, and the
 shipped options refuse a forward to the home's own addresses (403).
 
+**From the desktop** (Settings → Add-ons → Phone access, once this computer is the server): the
+**VPN through this Mac/PC** row has a **Use as VPN** switch that runs the installed program's own
+`host vpn on|off` on the phone link's thread (`link.cpp` `host_vpn`; no second relay, forwarder or
+`host.json` writer in the app), and its status: what `host.json` asks for (`vpn`, `tls_port`) and what
+the running relay does (`state.json` `vpn` with a relay port, `relay_outside_port`, `tls_failed`): off,
+"Turning on…", "On once the server runs", or "On · relay port N" with the look's line and "home network
+only" without a DuckDNS name. The card waits up to 5 s for the running host to take the change. **VPN
+code…** asks `vpn on` again and shows the line it printed (`self_host::relay_line_in`) as a code to copy
+(below), until Hide, the VPN going off or Settings closing; it is asked once more when the relay came
+back on another port than the one printed. Once the library is claimed, this row (or, when a NAS is the server, the NAS's row below) sits in
+the card's **Away from home** section. The card's tree is the add-on's own, so the Mac and Windows chromes draw the
+row with no code of their own. **Phones do not use it yet**: the iPhone app has no VPN
+([phone-vpn plan](../plans/phone-vpn.md), not built), and the pairing code carries no relay route for a
+host (its relay is behind the same router), so a phone reaches the library as before.
+
+### The NAS as a VPN host (2026-11-15)
+
+A Synology (or any `driftwire serve`) can be the laptop's VPN exit too, with the same relay. `serve`
+offers it (`options::vpn`, set by `serve_cmd.cpp` only; the service inside `driftwire host` does not,
+since the host runs its own relay) as feature `vpn`. The owner op **`set_vpn`** `{on, port?}` (unlocked
+once there is a passphrase) keeps a key of its own in the service's store (`kVpnKeyName`, apart from the
+person's other relay's `kRelayKeyName`) and `vpn_port` in `serve.json` (0: off, 47614 by default), and
+runs a `relay::server` inside the service with the relay's own forwarding defaults: TCP 80 and 443, UDP
+53, public addresses only. On answers the port and the key, once, for the owner's line; a service
+started with `vpn_port` set starts the relay again; on again for the same port leaves a running relay as
+it is (asking for the code never cuts a laptop's forwards). `owner_status` gains `vpn_port`,
+`vpn_running`, `vpn_listening`. The desktop card (claimed NAS, the feature there) shows **VPN through
+your server** with the same switch and **VPN code…**; the line is the NAS's own name from outside (else
+its address on the network) with that port. The SPK's `conf/mediaviewer-nas.sc` gains a
+`[mediaviewer-nas-vpn]` section for 47614/tcp, so DSM's firewall and router offer name it. **Never run
+on a real Synology** (the owner's unit died 2026-11-14): tested on loopback and by the package tests only.
+
+### Connect to a VPN host (2026-11-15)
+
+The line holds the relay's key and is long to type, so the host's card gives it as a code,
+`mediaviewer://relay#host:port#KEY` (`serve::relay_connect_code`), and the laptop's Driftwire add-on has
+a **VPN host** card on its settings page (Settings → Add-ons → Driftwire): **Connect to a VPN host…**
+opens a secure field; Connect reads the code or a bare line (`serve::parse_relay_connect_code`: spaces
+and a newline around it, the scheme in any case; one `#`, a key of at least 16 characters, a host:port
+the relay field takes), fills **Your own relay server** as typing it would (the key in the secret store,
+never the settings file), and turns the Tunnel on; All traffic (VPN) is then one switch. The card names
+the host, never the key. One parser in `src/wire`, used by both add-ons; both chromes draw both cards.
+Measured with `"[.vpn-host-bench]"` (a host's relay with the shipped forwarding on this Mac, the
+Tunnel's proxy, curl to a public download, alternated with direct): the same throughput as direct, about
+35 ms more to the first byte (numbers in PR #711).
+
 ### DuckDNS: a name for a home's changing address (self-hosting, 2026-11-14)
 
 For a computer that hosts the service itself ([plan](../plans/self-hosted.md) §4), `ddns.*` keeps

@@ -91,6 +91,17 @@ struct owner_state {
   std::int64_t unlocked_s = 0;    // left on this desktop's unlock; 0: locked
   std::int64_t locked_until = 0;  // unix: too many wrong answers until then
   std::string relay;              // the person's own relay, "host:port" ("" for none)
+  // The NAS as a VPN host (feature "vpn"): the port asked for (0: off), and
+  // whether its relay listens now.
+  std::int64_t vpn_port = 0;
+  bool vpn_running = false;
+};
+// What set_vpn answers: the port, whether it listens, and (turned on) the
+// relay's key for the owner's relay line, once.
+struct vpn_answer {
+  std::int64_t port = 0;
+  bool running = false;
+  std::string key;
 };
 
 struct root_row {
@@ -154,6 +165,9 @@ class desk {
   // The person's own relay (docs/plans/nas-relay.md): the service waits there
   // for its phones. "" clears it. The key goes to the service and nowhere else.
   [[nodiscard]] expected set_relay(const std::string& address, const std::string& key);
+  // The NAS as a VPN host (docs/design/28): its own relay forwards the owner's
+  // laptop traffic out, or stops. Needs an unlocked session once there is a passphrase.
+  [[nodiscard]] result<vpn_answer> set_vpn(bool on);
   // A device's limit from now: `for_s` seconds, or 0 for no limit at all.
   [[nodiscard]] expected grant(const key32& key, std::int64_t for_s);
   // The self-hosted computer's users (wire/share_users.h, docs/plans/self-host-users-smb.md §4):

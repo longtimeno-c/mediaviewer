@@ -13,6 +13,8 @@
 #include <sodium.h>
 
 #include <atomic>
+#include <cstdlib>
+#include <cstdio>
 #include <cctype>
 #include <chrono>
 #include <deque>
@@ -33,6 +35,8 @@
 #include "addons/driftwire/tunnel.h"
 #include "core/json.h"
 #include "import_fixture.h"
+#include "io/child_process.h"
+#include "tunnel_fixture.h"
 #include "mobile/link_payload.h"
 #include "wire/link.h"
 #include "wire/net.h"
@@ -200,73 +204,6 @@ std::string read_all(serve::client& c, const std::string& root, const std::strin
     if (!*n) return out;
     out.append(reinterpret_cast<const char*>((*n)->bytes.data()), (*n)->bytes.size());
   }
-}
-
-// An echo server on loopback (upper-cases what it hears), the far end of a forward.
-struct echo_server {
-  std::unique_ptr<net::listener> l;
-  std::thread t;
-  std::atomic<bool> stop{false};
-  std::vector<std::thread> conns;
-  echo_server() {
-    auto x = net::listen(true);
-    REQUIRE(x);
-    l = std::move(*x);
-    t = std::thread([this] {
-      while (!stop.load()) {
-        auto c = l->accept(200);
-        if (!c) {
-          if (c.error() == mv::status::cancelled) return;
-          continue;
-        }
-        std::shared_ptr<mv::driftwire::link> one(std::move(*c));
-        conns.emplace_back([this, one] {
-          std::vector<std::uint8_t> b(4096);
-          while (!stop.load()) {
-            auto n = one->read_some(b, 200);
-            if (!n && n.error() == mv::status::timeout) continue;
-            if (!n || *n == 0) break;
-            for (std::size_t i = 0; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
-            if (!one->write_all(std::span<const std::uint8_t>(b.data(), *n))) break;
-          }
-          one->shutdown();
-        });
-      }
-    });
-  }
-  ~echo_server() {
-    stop.store(true);
-    l->shutdown();
-    t.join();
-    for (auto& c : conns) c.join();
-  }
-  std::uint16_t port() const { return l->port(); }
-};
-
-// An HTTP CONNECT through the laptop's Tunnel proxy, and bytes both ways:
-// the proxy's status line ("" when nothing answered), echo checked when 200.
-std::string connect_through(std::uint16_t proxy_port, const std::string& authority, bool* echoed = nullptr) {
-  if (echoed) *echoed = false;
-  auto c = net::connect({"127.0.0.1", proxy_port}, 2000);
-  if (!c) return {};
-  auto& l = **c;
-  const std::string ask = "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\n";
-  if (!l.write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()})) return {};
-  std::string head;
-  std::uint8_t b = 0;
-  while (head.find("\r\n\r\n") == std::string::npos && head.size() < 4096) {
-    if (!mv::driftwire::read_exact(l, {&b, 1}, 15000)) return head.substr(0, head.find("\r\n"));
-    head.push_back(static_cast<char>(b));
-  }
-  const std::string status = head.substr(0, head.find("\r\n"));
-  if (status.rfind("HTTP/1.1 200", 0) == 0 && echoed) {
-    const std::string hello = "through the home computer";
-    if (l.write_all({reinterpret_cast<const std::uint8_t*>(hello.data()), hello.size()})) {
-      std::vector<std::uint8_t> back(hello.size());
-      if (mv::driftwire::read_exact(l, back, 10000)) *echoed = std::string(back.begin(), back.end()) == "THROUGH THE HOME COMPUTER";
-    }
-  }
-  return status;
 }
 
 // The matrix as '0'/'1' rows, hashed: the C# tests' pin (QrCodeTests.cs).
@@ -737,6 +674,71 @@ TEST_CASE("host setup: the DuckDNS keeper in the running host; host status shows
   }));
   CHECK(dns.count() == quiet);
   host2->stop();
+}
+
+// The VPN host end to end, measured (docs/DEVELOPMENT.md "VPN host bench"): this
+// host's relay with the VPN on and the shipped forwarding (public sites only),
+// a laptop's Tunnel proxy with the relay line, and curl fetching a public URL
+// through it and directly, alternated. One JSON line per fetch. Reaches the internet.
+//   mv_import_tests "[.vpn-host-bench]"
+//     MV_VPN_BENCH_URL     what to fetch (default 25 MB from speed.cloudflare.com)
+//     MV_VPN_BENCH_ROUNDS  fetches of each (default 5)
+TEST_CASE("host vpn: a public site through this host's relay, against direct", "[.vpn-host-bench]") {
+  REQUIRE(sodium_init() >= 0);
+  const char* u = std::getenv("MV_VPN_BENCH_URL");
+  const std::string url = u && *u ? u : "https://speed.cloudflare.com/__down?bytes=25000000";
+  const char* r = std::getenv("MV_VPN_BENCH_ROUNDS");
+  const int rounds = r && *r ? std::atoi(r) : 5;
+  scratch_dir s("host_vpn_bench");
+  const cli::host_layout l = new_host(s / "data");
+  const cli::setup_world w = loopback_world();
+  const auto lock = net::try_lock_instance(l.lock);
+  REQUIRE(lock);
+  std::string why;
+  auto host = cli::host_service::start(service_options(l), why);
+  REQUIRE(host);
+  script t;
+  cli::setup_io io = t.io();
+  REQUIRE(cli::host_vpn(l, true, 0, io, w) == 0);
+  REQUIRE(eventually([&] { return host->snapshot().vpn && host->snapshot().relay_port != 0; }));
+  REQUIRE(eventually([&] { return contains(read_text(l.state), "\"vpn\":true"); }));
+  tunnel::proxy::options po;
+  po.relay = cli::host_relay_line(l, w, why);
+  REQUIRE_FALSE(po.relay.empty());
+  auto proxy = tunnel::proxy::start(po);
+  REQUIRE(proxy);
+  const std::string through = "http://127.0.0.1:" + std::to_string((*proxy)->port());
+  const auto fetch = [&](bool via) {
+    std::vector<std::string> args = {"-s", "-o", "/dev/null", "--max-time", "120", "-w",
+                                     "%{http_code} %{time_connect} %{time_starttransfer} %{time_total} %{speed_download}"};
+    if (via) {
+      args.push_back("-x");
+      args.push_back(through);
+    }
+    args.push_back(url);
+    mv::io::child_process c;
+    REQUIRE(c.start("/usr/bin/curl", args));
+    std::string line, out;
+    while (c.read_line(line)) out += line;
+    (void)c.wait();
+    return out;
+  };
+  for (int i = 0; i < rounds * 2; ++i) {
+    const bool via = i % 2 == 1;
+    const std::string got = fetch(via);
+    int code = 0;
+    double connect = 0, first = 0, total = 0, speed = 0;
+    REQUIRE(std::sscanf(got.c_str(), "%d %lf %lf %lf %lf", &code, &connect, &first, &total, &speed) == 5);
+    CHECK(code == 200);
+    std::printf("{\"round\":%d,\"via\":\"%s\",\"code\":%d,\"connect_ms\":%.1f,\"first_byte_ms\":%.1f,\"total_ms\":%.1f,"
+                "\"mb_s\":%.2f}\n",
+                i, via ? "vpn_host" : "direct", code, connect * 1000, first * 1000, total * 1000, speed / (1 << 20));
+    std::fflush(stdout);
+  }
+  const auto st = host->snapshot();
+  CHECK(st.vpn);
+  (*proxy).reset();
+  host->stop();
 }
 
 TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loopback; never into the LAN",
