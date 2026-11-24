@@ -419,16 +419,22 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
          let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: data),
          let changes = try? library.fetchPersistentChanges(since: token) {
         var gone = Set(d.pending)
+        // The token of the last change read, not the library's current one: a deletion made
+        // while these were being read is then in the next run's history, never skipped.
+        var read: PHPersistentChangeToken? = token
         for change in changes {
+          read = change.changeToken
           guard let details = try? change.changeDetails(for: .asset) else { continue }
           for id in details.deletedLocalIdentifiers {
             if let key = d.keys[id] { gone.insert(key) }
           }
         }
         d.pending = gone.sorted()
+        d.token = read.flatMap { try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true) }
+      } else {
+        // No history yet, or too old to read: from now on (nothing is taken for deleted).
+        d.token = try? NSKeyedArchiver.archivedData(withRootObject: library.currentChangeToken, requiringSecureCoding: true)
       }
-      // No history yet, or too old to read: from now on (nothing is taken for deleted).
-      d.token = try? NSKeyedArchiver.archivedData(withRootObject: library.currentChangeToken, requiringSecureCoding: true)
     } else {
       // Limited access: a photo taken out of the selection would read as deleted. Start again
       // from full access, if it is given.

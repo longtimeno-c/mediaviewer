@@ -129,6 +129,9 @@ class source {
 
 // ---- the ledger -----------------------------------------------------------------------------
 
+// The most backed-up photos one run moves to the trash for having been deleted from Photos.
+inline constexpr std::size_t kMaxDeletedAtOnce = 100;
+
 struct row {
   std::string key, kind, name;
   std::uint64_t size = 0;
@@ -226,6 +229,9 @@ class engine {
   // and a burst's other frames are left out of those). A run moves their files in this folder
   // into its trash, never one whose key is in the items again; deleted_done() then names the keys
   // handled. One it could not finish (the folder offline, an older service, the link) stays out.
+  // More backed-up photos than kMaxDeletedAtOnce gone at once is taken for a library being
+  // removed from the phone (iCloud Photos turned off, signed out), not for deleting: nothing is
+  // moved and the keys are done with. A file another photo's row still names is never moved.
   void set_deleted(std::vector<std::string> keys);
   [[nodiscard]] std::vector<std::string> deleted_done() const;
   // One run, to the end or the first state that stops it. `report` is called

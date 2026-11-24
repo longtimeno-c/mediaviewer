@@ -614,6 +614,103 @@ TEST_CASE("backup: a photo deleted from Photos goes into the folder's trash, and
   }
 }
 
+// From the review of trash-on-delete: what must never be moved.
+TEST_CASE("backup: a file another photo relies on stays, a refused one does not hold the rest up, and many at once move nothing",
+          "[mobile-link]") {
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  const fs::path nas = phone.root / "sample-nas";
+  fs::create_directories(scratch);
+  auto target = bk::local_target(nas.string(), "0123456789abcdef", bk::kSampleLimit,
+                                 [](const std::string&) { return std::uint64_t{1} << 40; });
+  const std::string root = bk::kSampleFolderId;
+
+  SECTION("the same picture twice in Photos: deleting one leaves the file for the other") {
+    camera_roll roll(phone.root / "roll", scratch, 4, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    REQUIRE(run_deleting(*target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+    const bk::item first = roll.items[0];
+    // A second photo recorded against the first one's files, as a duplicate in Photos is.
+    for (const auto& r : first.resources) {
+      auto row = (*ledger)->find(root, first.key, r.kind, r.name);
+      REQUIRE(row);
+      row->key = "twin-of-first";
+      REQUIRE((*ledger)->add(*row));
+    }
+    std::vector<bk::item> now(roll.items.begin() + 1, roll.items.end());
+    auto [report, done] = run_deleting(*target, roll, now, {first.key}, **ledger, scratch, root);
+    CHECK(report.trashed == 0);
+    CHECK(trashed_under(nas) == 0);
+    CHECK(done == std::vector<std::string>{first.key});
+    for (const auto& r : first.resources) {
+      CHECK_FALSE((*ledger)->find(root, first.key, r.kind, r.name));  // this photo's row goes
+      CHECK((*ledger)->find(root, "twin-of-first", r.kind, r.name));   // the other's stays, with its file
+    }
+    // The twin deleted too: now nothing relies on the file, and it goes.
+    auto [after, after_done] = run_deleting(*target, roll, now, {"twin-of-first"}, **ledger, scratch, root);
+    CHECK(after.trashed == first.resources.size());
+    CHECK(trashed_under(nas) == first.resources.size());
+  }
+
+  SECTION("one file the service refuses to move does not hold the others up") {
+    camera_roll roll(phone.root / "roll", scratch, 5, 9);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    REQUIRE(run_deleting(*target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+    struct refuses_one final : bk::target {
+      bk::target& t;
+      std::string refused;
+      explicit refuses_one(bk::target& real) : t(real) {}
+      mv::result<std::vector<bk::folder>> folders() override { return t.folders(); }
+      mv::result<serve::stat_info> space(const std::string& r) override { return t.space(r); }
+      mv::result<std::vector<serve::list_entry>> list(const std::string& r, const std::string& rel) override { return t.list(r, rel); }
+      mv::result<serve::client::write_done> write(const std::string& r, const std::string& rel, std::uint64_t size,
+                                                  const std::string& hash, std::uint64_t at, const serve::client::read_fn& read,
+                                                  const std::function<void(std::uint64_t)>& progress, const mob::cancel_flag* cancel,
+                                                  serve::client::write_refused* why, bool meta) override {
+        return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta);
+      }
+      mv::result<std::vector<std::string>> ledger_ids(const std::string& r) override { return t.ledger_ids(r); }
+      mv::result<std::string> read_ledger(const std::string& r, const std::string& id) override { return t.read_ledger(r, id); }
+      std::string device_id() const override { return t.device_id(); }
+      mv::result<bool> trash(const std::string& r, const std::string& rel) override {
+        if (rel == refused) return mv::err(mv::status::permission_denied);
+        return t.trash(r, rel);
+      }
+    } picky(*target);
+    const bk::item stuck = roll.items[0], fine = roll.items[1];
+    picky.refused = (*ledger)->find(root, stuck.key, stuck.resources[0].kind, stuck.resources[0].name)->rel;
+    std::vector<bk::item> now(roll.items.begin() + 2, roll.items.end());
+    auto [report, done] = run_deleting(picky, roll, now, {stuck.key, fine.key}, **ledger, scratch, root);
+    CHECK(report.trashed == fine.resources.size());
+    CHECK(done == std::vector<std::string>{fine.key});  // the refused one waits, the other is done
+    CHECK((*ledger)->find(root, stuck.key, stuck.resources[0].kind, stuck.resources[0].name));
+  }
+
+  SECTION("more than the limit gone at once is a library removed from the phone: nothing moves") {
+    const int count = static_cast<int>(bk::kMaxDeletedAtOnce) + 1;
+    camera_roll roll(phone.root / "roll", scratch, count, 3);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    REQUIRE(run_deleting(*target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+    const std::size_t rows = (*ledger)->size(root);
+    std::vector<std::string> all;
+    for (const auto& it : roll.items) all.push_back(it.key);
+    auto [report, done] = run_deleting(*target, roll, {}, all, **ledger, scratch, root);
+    CHECK(report.trashed == 0);
+    CHECK(trashed_under(nas) == 0);
+    CHECK(done.size() == all.size());         // done with: never mirrored on a later run either
+    CHECK((*ledger)->size(root) == rows);     // and still recorded as backed up
+    // One short of that is someone deleting photos.
+    all.pop_back();
+    std::vector<bk::item> kept{roll.items.back()};
+    auto [some, some_done] = run_deleting(*target, roll, kept, all, **ledger, scratch, root);
+    CHECK(some.trashed > 0);
+    CHECK(trashed_under(nas) == some.trashed);
+  }
+}
+
 TEST_CASE("backup: the sample library's folder on the phone runs the same backup and sends nothing", "[mobile-link]") {
   temp_root phone;
   const fs::path scratch = phone.root / "scratch";

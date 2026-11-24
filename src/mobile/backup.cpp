@@ -612,24 +612,47 @@ void engine::trash_deleted(const cancel_flag* cancel) {
   for (auto& r : l_.all(o_.root)) {
     if (wanted.count(r.key)) rows[r.key].push_back(std::move(r));
   }
+  // Which of them are really to go: backed up here, and not in Photos again (restored from
+  // Recently Deleted: its copy stays).
+  std::set<std::string> going;
+  for (const auto& key : deleted_) {
+    if (!in_photos.count(key) && !rows[key].empty()) going.insert(key);
+  }
+  // Many at once is not someone deleting photos: iCloud Photos turned off with "Remove from
+  // iPhone", signing out of iCloud, a library reset. Their backups are exactly what a backup is
+  // for, so they stay where they are and the keys are done with (never mirrored later either).
+  const bool bulk = going.size() > kMaxDeletedAtOnce;
+  // A file another photo still in the ledger relies on (the same picture twice in Photos is sent
+  // once and recorded for both): it stays for that one; only this photo's row goes.
+  std::set<std::string> relied_on;
+  for (const auto& r : l_.all(o_.root)) {
+    if (!going.count(r.key)) relied_on.insert(r.rel);
+  }
   bool changed = false;
+  bool out_of_reach = false;
   for (const auto& key : deleted_) {
     if (cancel && cancel->stopped()) break;
     bool finished = true;
-    // In Photos again (restored from Recently Deleted): its copy stays.
-    if (!in_photos.count(key)) {
+    if (going.count(key) && !bulk) {
       for (const auto& r : rows[key]) {
-        auto moved = t_.trash(o_.root, r.rel);
-        if (!moved) {
-          finished = false;
-          break;
+        if (!relied_on.count(r.rel)) {
+          auto moved = t_.trash(o_.root, r.rel);
+          if (!moved) {
+            finished = false;
+            // Refused for this one file (not allowed, a name the service will not move): it
+            // waits, and the others are not held up behind it. Anything else is the folder,
+            // the service or the link: all of it next time.
+            if (moved.error() != status::permission_denied) out_of_reach = true;
+            break;
+          }
+          if (*moved) ++st_.trashed;
         }
         (void)l_.remove(r.root, r.key, r.kind, r.name);
         changed = true;
-        if (*moved) ++st_.trashed;
       }
     }
-    if (!finished) break;  // offline, an older service, the link: all of it next time
+    if (out_of_reach) break;
+    if (!finished) continue;
     std::lock_guard lock(m_);
     deleted_done_.push_back(key);
   }
