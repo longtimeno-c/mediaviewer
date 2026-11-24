@@ -118,6 +118,33 @@ final class FolderChangeTests: XCTestCase {
     XCTAssertTrue(app.staticTexts["This folder has no photos or clips."].waitForExistence(timeout: 10), "The photo is still there")
   }
 
+  /// The owner's report (2026-11-24): in the sample library, "Sample library", Add and Select
+  /// crowded the bar and the folder's name read "…". The name has the bar's middle, at a width
+  /// that shows it, with the chip under it and clear of the buttons.
+  func testAFolderWhoseFilesCanBeChangedStillShowsItsName() throws {
+    let app = launched("library.changeSample")
+    XCTAssertTrue(app.buttons["Sample library"].waitForExistence(timeout: 10), "Not the sample library")
+    let tile = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder:'")).firstMatch
+    XCTAssertTrue(tile.waitForExistence(timeout: 10))
+    let name = tile.label.components(separatedBy: ",").first ?? tile.label
+    tile.tap()
+    let select = app.buttons["select"].firstMatch
+    XCTAssertTrue(select.waitForExistence(timeout: 10), "This folder cannot be changed: nothing crowds its bar")
+    let title = app.staticTexts["folder-title"].firstMatch
+    XCTAssertTrue(title.waitForExistence(timeout: 10), "The folder's name is not in the bar")
+    XCTAssertEqual(title.label.lowercased(), name.lowercased())
+    let chip = app.buttons["Sample library"].firstMatch
+    XCTAssertTrue(chip.exists)
+    XCTAssertGreaterThanOrEqual(chip.frame.minY, title.frame.maxY - 1, "The chip is not under the name")
+    XCTAssertLessThanOrEqual(title.frame.maxX, select.frame.minX, "The name runs under Select")
+    XCTAssertLessThanOrEqual(chip.frame.maxX, select.frame.minX, "The chip runs under Select")
+    // Wide enough to read, not a sliver or "…".
+    XCTAssertGreaterThan(title.frame.width, 40)
+    if let dir = ProcessInfo.processInfo.environment["MV_SHOT_DIR"] {
+      try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("folder-title.png"))
+    }
+  }
+
   func testAddFromFiles() throws {
     let app = launched()
     open(app, "iphone", title: "iphone")

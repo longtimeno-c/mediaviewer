@@ -55,8 +55,23 @@ struct FolderScreen: View {
       .environment(\.shownPage, page)
       .toolbar {
         if let chip = model.routeChip, !page.selecting {
-          ToolbarItem(placement: .topBarTrailing) {
-            RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
+          let tone = model.connection.isSample ? Theme.accent : Theme.warm
+          if page.changeable {
+            // Add and Select have the trailing side here: with the chip beside them the
+            // folder's name had no room and read "…". The chip goes under the name instead.
+            ToolbarItem(placement: .principal) {
+              VStack(spacing: 0) {
+                Text(page.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                  .accessibilityAddTraits(.isHeader)
+                  .accessibilityIdentifier("folder-title")
+                RouteChip(text: chip, tone: tone) { model.tab = .connection }
+              }
+              .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+            }
+          } else {
+            ToolbarItem(placement: .topBarTrailing) {
+              RouteChip(text: chip, tone: tone) { model.tab = .connection }
+            }
           }
         }
       }
