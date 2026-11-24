@@ -421,7 +421,7 @@ Tests, always filtered by tag: `mv_import_tests "[phone-addon]"` (the card's tre
 vocabulary, the secure field, the catalogue rows, the manifest, the module through a signed store in a
 folder of the test's own), `mv_import_tests "[phone-qr]"` (the encoder against the matrices the C# encoder
 had, read by a phone scanner), `mv_import_tests "[phone-self-host]"` (the setup against the test build of
-`driftwire host` on loopback), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+`driftwire host` on loopback, the VPN switch included), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
 claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
 machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the link over a Local
 search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`). To try it
@@ -616,6 +616,24 @@ build/bin/mv_import_tests "[host-setup]"                     # setup, pairing re
 build/bin/driftwire host pause                               # Hosting off (the server menu's toggle); resume, quit (start at login stays)
 build/bin/driftwire host status --watch                      # usage today, phones connected, again on each change; Ctrl-C ends it
 build/bin/mv_import_tests "[host-tray]"                      # the server menu, its numbers, the registry entry, the watcher, pause/quit on loopback
+```
+
+**Phone route bench** (the phone's reads from a host on this computer, VPN off and on alternated; one JSON
+line per measurement, loopback, so run base and new alternated as the performance suite says):
+
+```sh
+MV_HOST_BENCH_MB=256 MV_HOST_BENCH_ROUNDS=4 build/bin/mv_import_tests "[.phone-host-bench]"
+```
+
+It reads a 256 MB file whole (8 MB window bulk, and 1 MB) and 200 ranges of 256 KB at random offsets,
+from a session opened after each switch, and prints ms to the first byte, MB/s and p50/p95.
+
+**VPN host bench** (a host's relay with the VPN on and the shipped forwarding, a laptop's Tunnel proxy with
+its line, curl to a public URL through it and directly, alternated; this one reaches the internet):
+
+```sh
+MV_VPN_BENCH_ROUNDS=5 build/bin/mv_import_tests "[.vpn-host-bench]"     # MV_VPN_BENCH_URL to fetch another
+build/bin/mv_import_tests "[nas-vpn]"                                     # the NAS as a VPN host, the code, Connect
 ```
 
 While a host runs, MediaViewer shows its own server menu-bar item / notification-area icon
@@ -1601,14 +1619,14 @@ build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
 # Slice 5 (the VPN): DNS to this resolver; UDP ports beyond 53 only if listed
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --dns 9.9.9.9 --forward-udp-ports 53
-xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/*.swift
+xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/vpn/mac_tunnel/*.swift
 # The VPN's provider built and embedded. It runs only from a Developer ID release with both
 # provisioning profiles (RELEASING.md, "the Driftwire VPN's provisioning profiles"):
 cmake -S . -B build -DMV_DRIFTWIRE_PACKET_TUNNEL=ON && cmake --build build --target mediaviewer_app
 python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID Application: …" \
   --team-id <TEAM> --app-profile <app>.provisionprofile --tunnel-profile <tunnel>.provisionprofile \
   --skip-notarize --allow-no-updater      # then copy to /Applications and approve the extension once
-# With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
+# With the VPN add-on's Tunnel on (Settings → Add-ons → VPN, its menu-bar row, or /vpn on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \

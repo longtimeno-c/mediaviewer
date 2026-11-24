@@ -37,8 +37,29 @@ final class PhoneAccessTests: XCTestCase {
     XCTAssertTrue(page.contains("if only == PhoneAccessStore.addonID"))
     let settings = try source("SettingsView.swift")
     XCTAssertFalse(settings.contains(#"section("Phone access")"#))
+    // The tray's Open Phone access settings opens its page.
+    let notices = try source("AddonNotices.swift")
+    XCTAssertTrue(notices.contains("if k.shell { return PhoneAccessStore.addonID }"))
     let host = try source("ChromeHost.swift")
-    XCTAssertTrue(host.contains("AddonNav.shared.show(PhoneAccessStore.addonID)"))
+    XCTAssertTrue(host.contains("AddonNav.shared.show(addon)"))
+  }
+
+  // A kept settings-place screen (the VPN's, docs/plans/vpn-addon.md): Open
+  // shows Settings at its add-on's page, never a window of its own; its
+  // menu-bar item is the VPN's shield, not Driftwire's waves.
+  func testAKeptSettingsPageOpensInSettings() throws {
+    let notices = try source("AddonNotices.swift")
+    XCTAssertTrue(notices.contains("return settingsScreens[k.addon] == k.screen ? k.addon : nil"))
+    XCTAssertTrue(notices.contains("if let page = Self.settingsPage(k, SlotStore.shared.settingsScreens) {"))
+    XCTAssertTrue(notices.contains("mv_chrome_open_addon_settings($0)"))
+    XCTAssertTrue(notices.contains(#"k.addon == "vpn" ? "lock.shield" : "dot.radiowaves.left.and.right""#))
+    XCTAssertFalse(notices.contains("mv_chrome_open_phone_settings"))
+  }
+
+  // The VPN's route ends at the web: a globe, not "TW" in a circle (desktop UI test, 2026-11-22).
+  func testTheTunnelsFarEndIsAGlobe() throws {
+    let text = try source("ScreenView.swift")
+    XCTAssertTrue(text.contains(#"device(symbol: via == "tunnel" ? "globe" : nil, name: node.string("to") ?? """#))
   }
 
   // Contribution API 15: a secure field draws dots and never takes a value from the tree.

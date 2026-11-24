@@ -664,7 +664,9 @@ public static partial class IslandHost
         }
 
         FrameworkElement left = Device("", JStr(n, "from") is { Length: > 0 } f ? f : "This computer", "");
-        FrameworkElement right = Device(null, JStr(n, "to"), state == "done" ? "done" : failed ? "failed" : "");
+        // The VPN's Tunnel ends at the web, not a computer: a globe, not initials.
+        FrameworkElement right = Device(via == "tunnel" ? "\uE774" : null, JStr(n, "to"),
+                                        state == "done" ? "done" : failed ? "failed" : "");
         Grid.SetColumn(right, 2);
         strip.Children.Add(left);
         strip.Children.Add(right);

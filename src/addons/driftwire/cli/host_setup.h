@@ -90,14 +90,22 @@ struct host_pair_code {
 [[nodiscard]] std::optional<host_pair_code> make_host_pair(const host_layout& l, const setup_world& w, std::string& why);
 
 // The relay line for the laptop: "name.duckdns.org:PORT#KEY" (the LAN
-// address without a name). `port`: the outside port the router gave, else
-// the relay's own. "" with `why` when the key cannot be had.
-[[nodiscard]] std::string host_relay_line(const host_layout& l, const setup_world& w, std::string& why);
+// address without a name). With the web-site look (`tls` set true; on by
+// default with the VPN), PORT is the look's: the router's outside port for it
+// (443, else 8443), else its own; without it, the plain relay's, the same way.
+// "" with `why` when the key cannot be had.
+[[nodiscard]] std::string host_relay_line(const host_layout& l, const setup_world& w, std::string& why,
+                                          bool* tls = nullptr);
 
 // The parts and the whole run; each returns the program's exit code.
 int host_name(const host_layout& l, bool duckdns, setup_io& io, const setup_world& w);
+// `host name domain NAME|none`: the person's own domain for the VPN (host_settings::domain), and the
+// two CNAMEs to add at its DNS (to the DuckDNS name, and its _acme-challenge for the certificate).
+int host_domain(const host_layout& l, const std::string& typed, setup_io& io);
 int host_pair(const host_layout& l, setup_io& io, const setup_world& w);
-int host_vpn(const host_layout& l, bool on, std::uint16_t tls_port, setup_io& io, const setup_world& w);
+// `tls_port`: the look's port (0: as it was); `tls_off`: the look off (`--tls-port off`).
+int host_vpn(const host_layout& l, bool on, std::uint16_t tls_port, setup_io& io, const setup_world& w,
+             bool tls_off = false);
 int host_setup(const host_layout& l, setup_io& io, const setup_world& w);
 
 // From run_host: the terminal as the setup_io (a terminal needed, but in the
