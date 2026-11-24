@@ -82,11 +82,15 @@ final class SearchKeyboardTests: XCTestCase {
   /// The on-screen keyboard came up (the app saw keyboardWillShow). With a hardware keyboard
   /// attached it does not, and there is nothing here to test.
   private func requireSoftwareKeyboard(_ app: XCUIApplication, _ stats: XCUIElement) throws {
-    let shown = NSPredicate { _, _ in Self.number("shows", in: stats.label) >= 1 }
-    guard app.keyboards.firstMatch.waitForExistence(timeout: 5),
-          XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: shown, object: nil)], timeout: 5) == .completed else {
+    guard app.keyboards.firstMatch.waitForExistence(timeout: 5) else {
       throw XCTSkip("No on-screen keyboard: turn off Connect Hardware Keyboard in the Simulator, or restart it if a test typed with typeText where the keyboard minimises for a hardware keyboard")
     }
+    // The keyboard is there, so the meter must be too and must have seen it come: a missing
+    // meter fails here, it is never a skip.
+    XCTAssertTrue(stats.waitForExistence(timeout: 5), "The keyboard meter is not on screen")
+    let shown = NSPredicate { _, _ in Self.number("shows", in: stats.label) >= 1 }
+    XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: shown, object: nil)], timeout: 5), .completed,
+                   "The app never saw the keyboard come up")
   }
 
   /// Types by tapping the on-screen keys (see the note at the top).
