@@ -186,6 +186,19 @@ class duckdns final : public provider {
 // Anything else is bad_answer. Trailing whitespace and CRLF are fine.
 [[nodiscard]] answer parse_duckdns(std::string_view body);
 
+// ---- DNS-01: the TXT record (docs/plans/vpn-stealth.md §1) ----------------------------------
+
+// DuckDNS's TXT record for SUB.duckdns.org (it answers it for every name under
+// it too, so `_acme-challenge.SUB.duckdns.org` and a CNAME to it from the
+// person's own domain both see it): `value` set, or "" cleared. One GET:
+// update?domains=SUB&token=TOKEN&txt=VALUE[&clear=true]&verbose=true. A value
+// of anything but base64url, a subdomain or token not as parsed: no request.
+[[nodiscard]] std::string duckdns_txt_url(std::string_view base, std::string_view subdomain, std::string_view token,
+                                          std::string_view value);
+// True when DuckDNS answered OK.
+[[nodiscard]] bool set_duckdns_txt(const fetch_fn& fetch, std::string_view base, std::string_view subdomain,
+                                   std::string_view token, std::string_view value, int timeout_ms = kTimeoutMs);
+
 // ---- the check -----------------------------------------------------------------------------
 
 struct name_check {

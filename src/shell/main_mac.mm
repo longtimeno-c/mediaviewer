@@ -1136,16 +1136,17 @@ extern "C" void mv_chrome_background_quit(void) {
 extern "C" void mv_chrome_background_changed(void) {
   if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app backgroundChanged];
 }
-// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row.
-// The viewer's window comes back with Settings open at that section.
-extern "C" void mv_chrome_open_phone_settings(void) {
+// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row,
+// and an add-on's kept settings page (docs/plans/vpn-addon.md). The viewer's
+// window comes back with Settings open at the add-on's page.
+extern "C" void mv_chrome_open_addon_settings(const char* addon) {
   MvLabApp* app = (MvLabApp*)NSApp.delegate;
-  if (![app isKindOfClass:[MvLabApp class]]) return;
+  if (!addon || ![app isKindOfClass:[MvLabApp class]]) return;
   [app leaveBackground];
   [app.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
   [app setSettingsVisible:YES];
-  [MVChromeHost revealPhoneSettings];
+  [MVChromeHost revealAddonSettings:@(addon)];
 }
 // An add-on window is coming forward (a notification, the menu-bar item): the
 // app is a regular one again (Dock icon, menu bar) while it is on screen.

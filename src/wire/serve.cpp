@@ -379,6 +379,15 @@ struct server::state {
     std::lock_guard lock(conv_m);
     return conv;
   }
+  // The NAS as a VPN host (options::vpn): this service's own forwarding relay,
+  // started and stopped by the owner's set_vpn and at start, under vpn_m.
+  bool vpn_offered = false;
+  std::function<void(relay::server::options&)> vpn_tweak;
+  std::mutex vpn_m;
+  std::unique_ptr<relay::server> vpn_relay;  // under vpn_m
+  std::uint16_t vpn_asked = 0;                // under vpn_m: the port it was started for
+  // (Re)starts or stops it for `port` (0: off). False when it could not listen.
+  bool apply_vpn_locked(std::uint16_t want);
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -1960,7 +1969,9 @@ std::string server::state::owner_fields() {
   const auto s = owner::load(*store, v);
   json::writer w;
   w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers);
-  w.string(kFeatureAddresses).end_array();
+  w.string(kFeatureAddresses);
+  if (vpn_offered) w.string(kFeatureVpn);
+  w.end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
   w.key("passphrase").string(stored_name(s)).end_object();
   std::string out = w.take();
@@ -2345,6 +2356,11 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         unlocked ? std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(c.unlocked_until - steady()).count()) : 0);
     w.key("locked_until").integer(locked_until(owner_counter));
     w.key("relay").string(cfg()->relay);  // the address only, as in the caps
+    if (vpn_offered) {
+      std::lock_guard vl(vpn_m);
+      w.key("vpn_port").integer(cfg()->vpn_port).key("vpn_running").boolean(vpn_relay != nullptr);
+      if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
+    }
     w.end_object();
     return {end_code::ok, w.take()};
   }
@@ -2405,7 +2421,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
   // What adds access, or changes what is served, needs an unlocked session
   // once there is a passphrase (§3.4). Revoking and reading never do.
   if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root" ||
-      *what == "set_relay" || *what == "set_backup") {
+      *what == "set_relay" || *what == "set_backup" || *what == "set_vpn") {
     // (grant and guest_code check for themselves.)
     if (auto refused = needs_unlock(c)) return *refused;
   }
@@ -2730,6 +2746,53 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     w.begin_object().key("id").string(id).end_object();
     return {end_code::ok, w.take()};
   }
+  if (*what == "set_vpn") {
+    // The NAS as a VPN host: this service's own relay forwards the owner's
+    // laptop traffic out (TCP 80, 443, UDP 53; never a private, loopback or
+    // link-local address: no VPN into the home network), as `driftwire host vpn
+    // on` makes a computer's. On answers the port and the key, once, for the
+    // owner's relay line; the key stays in the store.
+    if (!vpn_offered) return {end_code::refused, {}};
+    const bool on = doc->boolean("on").value_or(false);
+    const auto asked = doc->integer("port").value_or(0);
+    if (asked < 0 || asked > 65535) return {end_code::bad_request, {}};
+    std::string key;
+    std::uint16_t vpn_port_now = 0;
+    {
+      std::lock_guard lock(claim_m);
+      config next = *cfg();
+      if (on) {
+        if (store->exists(kVpnKeyName)) {
+          auto v = store->get(kVpnKeyName);
+          if (!v || v->size() < relay::kMinKeyChars) return {end_code::error, {}};
+          key.assign(v->begin(), v->end());
+          sodium_memzero(v->data(), v->size());
+        } else {
+          key = relay::random_key();
+          if (!store->put(kVpnKeyName, std::span(reinterpret_cast<const std::uint8_t*>(key.data()), key.size()))) {
+            return {end_code::error, {}};
+          }
+        }
+        vpn_port_now = asked != 0 ? static_cast<std::uint16_t>(asked) : next.vpn_port != 0 ? next.vpn_port : relay::kDefaultPort;
+      }
+      next.vpn_port = vpn_port_now;
+      if (!publish_config(std::move(next))) {
+        sodium_memzero(key.data(), key.size());
+        return {end_code::error, {}};
+      }
+    }
+    std::lock_guard vl(vpn_m);
+    const bool running = apply_vpn_locked(vpn_port_now);
+    json::writer w;
+    w.begin_object().key("vpn_port").integer(vpn_port_now).key("vpn_running").boolean(running);
+    if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
+    // The web-site look's port when it listens: the code is then its (relay-tls).
+    if (vpn_relay && vpn_relay->tls_port() != 0) w.key("tls_port").integer(vpn_relay->tls_port());
+    if (on) w.key("key").string(key);
+    w.end_object();
+    sodium_memzero(key.data(), key.size());
+    return {end_code::ok, w.take()};
+  }
   if (*what == "set_relay") {
     // The person's own relay: the address in serve.json, the key in the
     // secret store. Empty address: no relay (the waiters stop).
@@ -2993,9 +3056,15 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.root_present = o.root_present;
   st.storage = o.storage;
   st.conv = o.converter;
+  st.vpn_offered = o.vpn && !o.lan_only;
+  st.vpn_tweak = o.vpn_tweak;
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
+  if (st.vpn_offered && o.cfg.vpn_port != 0) {
+    std::lock_guard vl(st.vpn_m);
+    (void)st.apply_vpn_locked(o.cfg.vpn_port);  // a port taken: off until the owner turns it on again
+  }
   return srv;
 }
 
@@ -3366,6 +3435,58 @@ std::array<std::uint8_t, 32> claim_key(std::string_view token_hex) {
   return k;
 }
 
+bool server::state::apply_vpn_locked(std::uint16_t want) {
+  // Already listening for that port: left as it is, so asking for the code again
+  // never cuts a laptop's open forwards.
+  if (vpn_relay && want != 0 && want == vpn_asked) return true;
+  vpn_relay.reset();  // its destructor stops it, and its forwards with it
+  vpn_asked = 0;
+  if (want == 0 || stopping.load()) return false;
+  auto v = store->get(kVpnKeyName);
+  if (!v || v->size() < relay::kMinKeyChars) return false;
+  relay::server::options ro;
+  ro.key.assign(v->begin(), v->end());
+  sodium_memzero(v->data(), v->size());
+  ro.port = want;
+  ro.loopback_only = loopback_only;
+  // The web-site look beside it (docs/plans/vpn-stealth.md), on the next port,
+  // self-signed: the code the owner copies points at it.
+  ro.tls_port = static_cast<std::uint16_t>(want < 65535 ? want + 1 : want - 1);
+  // All traffic, never into the home's networks, nor to the home's outside
+  // address (the router's, which hairpins to its forwarded ports): the
+  // outside name as the owner's desktop last set it, looked up as it changes.
+  relay::vpn_host_defaults(ro);
+  ro.forward_refused = [this, name = std::string(), check = std::function<bool(const net::address&)>(),
+                        m = std::make_shared<std::mutex>()](const net::address& a) mutable {
+    std::string now;
+    if (const auto c = cfg(); c && !c->public_name.empty()) {
+      std::uint16_t p = 0;
+      if (!parse_relay_address(c->public_name, now, p)) now.clear();
+    }
+    std::function<bool(const net::address&)> f;
+    {
+      std::lock_guard lock(*m);
+      if (now != name) {
+        name = now;
+        check = relay::refuse_name_addresses(now);
+      }
+      f = check;
+    }
+    return f && f(a);
+  };
+  if (vpn_tweak) vpn_tweak(ro);
+  auto r = relay::server::start(ro);
+  if (!r && ro.tls_port != 0) {
+    ro.tls_port = 0;  // no TLS in this build, or its port taken: the plain relay rather than none
+    r = relay::server::start(ro);
+  }
+  sodium_memzero(ro.key.data(), ro.key.size());
+  if (!r) return false;
+  vpn_relay = std::move(*r);
+  vpn_asked = want;
+  return true;
+}
+
 bool server::replace_config(config next) {
   if (next.roots.empty()) return false;
   auto made = std::make_shared<const config>(std::move(next));
@@ -3397,6 +3518,10 @@ void server::stop() noexcept {
   }
   st_->relay_cv.notify_all();
   if (st_->relayer.joinable()) st_->relayer.join();
+  {
+    std::lock_guard vl(st_->vpn_m);
+    st_->vpn_relay.reset();
+  }
   st_->stop_punches();
   std::vector<std::shared_ptr<conn>> live;
   {

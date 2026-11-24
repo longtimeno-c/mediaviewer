@@ -34,6 +34,70 @@ std::int64_t now_ns() {
 
 }  // namespace
 
+bool never_forward(std::uint16_t port, bool tcp) noexcept {
+  switch (port) {
+    case 135: case 137: case 138: case 139:  // Windows RPC and NetBIOS, both kinds
+      return true;
+    case 23: case 25: case 445:  // Telnet, SMTP, SMB
+      return tcp;
+    default:
+      return false;
+  }
+}
+
+bool forward_allows(const std::vector<std::uint16_t>& ports, std::uint16_t port, bool tcp) {
+  if (port == kAnyPort) return false;  // no destination
+  if (std::find(ports.begin(), ports.end(), port) != ports.end()) return true;
+  if (never_forward(port, tcp)) return false;
+  return std::find(ports.begin(), ports.end(), kAnyPort) != ports.end();
+}
+
+std::function<bool(const net::address&)> refuse_name_addresses(std::string name, int refresh_s) {
+  if (name.empty()) return {};
+  struct cache {
+    std::mutex look;                  // held for a lookup: one at a time
+    std::mutex m;
+    std::vector<net::address> addrs;  // under m: the last answer that had any
+    std::int64_t due_ns = 0;          // under m: when to look again (0: never looked)
+  };
+  constexpr std::int64_t kRetryNs = 10'000'000'000;  // after a lookup that found nothing
+  auto c = std::make_shared<cache>();
+  const std::int64_t every_ns = std::int64_t{refresh_s} * 1'000'000'000;
+  return [c, name = std::move(name), every_ns](const net::address& a) {
+    const auto due = [&] {
+      std::lock_guard lock(c->m);
+      return c->due_ns == 0 || now_ns() >= c->due_ns;
+    };
+    const auto refresh = [&] {
+      auto fresh = net::resolve(name);
+      std::lock_guard lock(c->m);
+      c->due_ns = now_ns() + (fresh.empty() ? kRetryNs : every_ns);
+      if (!fresh.empty()) c->addrs = std::move(fresh);
+    };
+    bool known = false;
+    {
+      std::lock_guard lock(c->m);
+      known = !c->addrs.empty();
+    }
+    if (!known) {
+      // Never answered yet: wait for the lookup (another caller's, or this
+      // one), so no forward slips past before the address is known.
+      std::lock_guard look(c->look);
+      if (due()) refresh();
+    } else if (due()) {
+      // An old answer: one caller looks again, the rest use the old one.
+      std::unique_lock look(c->look, std::try_to_lock);
+      if (look.owns_lock() && due()) refresh();
+    }
+    std::lock_guard lock(c->m);
+    return std::find(c->addrs.begin(), c->addrs.end(), a) != c->addrs.end();
+  };
+}
+
+bool forward_destination_ok(const net::address& a, std::span<const net::subnet> home) noexcept {
+  return net::is_public(a) && !net::on_link(a, home);
+}
+
 token random_token() {
   if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   token t;
@@ -655,6 +719,16 @@ server::~server() {
 std::uint16_t server::port() const noexcept { return listener_ ? listener_->port() : 0; }
 std::uint16_t server::tls_port() const noexcept { return tls_listener_ ? tls_listener_->port() : 0; }
 
+expected server::set_tls_certificate(const std::string& cert_pem_path, const std::string& key_pem_path) {
+  if (!tls_listener_) return err(status::unsupported_format);
+  auto ctx = tls::make_server_context(cert_pem_path, key_pem_path, opts_.tls_name);
+  if (!ctx) return err(ctx.error());
+  std::shared_ptr<tls::server_context> made(std::move(*ctx));
+  std::lock_guard lock(m_);
+  tls_ctx_ = std::move(made);
+  return {};
+}
+
 void server::release_handshake(const net::address& from) {
   std::lock_guard lock(m_);
   --handshaking_;
@@ -664,7 +738,12 @@ void server::release_handshake(const net::address& from) {
 void server::handle_tls(std::shared_ptr<link> l, const net::address& from, const net::address& peer,
                         std::uint16_t peer_port) {
   tls::accepted_as as = tls::accepted_as::failed;
-  auto t = tls::accept(*tls_ctx_, std::make_unique<shared_link>(l), knock_, opts_.decoy, as);
+  std::shared_ptr<tls::server_context> ctx;
+  {
+    std::lock_guard lock(m_);
+    ctx = tls_ctx_;
+  }
+  auto t = tls::accept(*ctx, std::make_unique<shared_link>(l), knock_, opts_.decoy, as);
   if (as != tls::accepted_as::relay || !t) {
     release_handshake(from);
     std::lock_guard lock(m_);
@@ -708,7 +787,7 @@ void server::accept_loop(net::listener& from_listener, bool tls) {
     std::shared_ptr<link> l(std::move(*c));
     std::lock_guard lock(m_);
     reap_locked();
-    const bool full = static_cast<int>(workers_.size()) >= opts_.max_waiting + 2 * opts_.max_pairs + kMaxHandshakes + opts_.max_forwards;
+    const bool full = static_cast<int>(workers_.size()) >= opts_.max_waiting + 2 * opts_.max_pairs + kMaxHandshakes + opts_.max_forwards + opts_.max_udp_flows;
     if (full || handshaking_ >= kMaxHandshakes || handshaking_from_[from] >= kPerSource) {
       ++counts_.refused;
       if (handshaking_from_[from] == 0) handshaking_from_.erase(from);
@@ -970,8 +1049,8 @@ namespace {
 // net::resolve, then net::connect to each address in turn within
 // kForwardConnectMs: public addresses only unless `any`.
 result<std::unique_ptr<link>> connect_host(const std::string& host, std::uint16_t port, int timeout_ms, bool any,
+                                           const std::function<bool(const net::address&)>& refused,
                                            forward_answer& why) {
-  const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
   std::vector<net::address> addrs;
   if (const auto lit = net::parse_address(host)) {
     addrs.push_back(*lit);
@@ -979,10 +1058,18 @@ result<std::unique_ptr<link>> connect_host(const std::string& host, std::uint16_
     addrs = net::resolve(host);
   }
   why = forward_answer::unreachable;
-  bool any_allowed = false;
+  // Which addresses may be tried, decided before the connect deadline runs
+  // (a refused-name lookup may take a moment).
+  const auto home = any ? std::vector<net::subnet>{} : net::local_subnets();
+  std::vector<net::address> allowed;
   for (const auto& a : addrs) {
-    if (!any && !net::is_public(a)) continue;
-    any_allowed = true;
+    if (!any && !forward_destination_ok(a, home)) continue;
+    if (refused && refused(a)) continue;
+    allowed.push_back(a);
+  }
+  const bool any_allowed = !allowed.empty();
+  const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+  for (const auto& a : allowed) {
     const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - clock::now()).count();
     if (left <= 0) break;
     auto c = net::connect({net::address_text(a), port}, static_cast<int>(left));
@@ -1017,6 +1104,35 @@ net::endpoint default_dns() {
 
 }  // namespace
 
+void vpn_host_defaults(server::options& o) {
+  o.forward_ports = {kAnyPort};
+  o.forward_udp_ports = {kAnyPort};
+  o.max_forwards = 128;
+  o.max_udp_flows = 128;
+  o.udp_out_rate = kVpnHostUdpOutRate;
+}
+
+void server::udp_rate_wait(std::size_t bytes) {
+  const std::uint64_t rate = opts_.udp_out_rate;
+  if (rate == 0) return;
+  const double cap = std::max(static_cast<double>(rate) * kBurstSeconds, static_cast<double>(kMaxDatagram));
+  std::int64_t wait_ns = 0;
+  {
+    std::lock_guard lock(udp_rate_m_);
+    const std::int64_t now = now_ns();
+    if (udp_tokens_ns_ == 0) udp_tokens_ = cap;
+    else udp_tokens_ = std::min(cap, udp_tokens_ + static_cast<double>(now - udp_tokens_ns_) * 1e-9 * static_cast<double>(rate));
+    udp_tokens_ns_ = now;
+    udp_tokens_ -= static_cast<double>(bytes);  // taken now; a debt is waited out
+    if (udp_tokens_ < 0) wait_ns = static_cast<std::int64_t>(-udp_tokens_ / static_cast<double>(rate) * 1e9);
+  }
+  // Waited out in short steps, so a stopping server never waits on it.
+  const std::int64_t until = now_ns() + std::min<std::int64_t>(wait_ns, 1'000'000'000);
+  while (!stop_.load() && now_ns() < until) {
+    std::this_thread::sleep_for(std::chrono::nanoseconds(std::min<std::int64_t>(until - now_ns(), 50'000'000)));
+  }
+}
+
 void server::serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t port,
                        std::unique_ptr<noise::cipher_state> to_client,
                        std::unique_ptr<noise::cipher_state> from_client) {
@@ -1033,18 +1149,17 @@ void server::serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t 
     to = opts_.dns_upstream ? *opts_.dns_upstream : default_dns();
   } else {
     if (opts_.forward_udp_ports.empty()) return no(forward_answer::off);
-    if (std::find(opts_.forward_udp_ports.begin(), opts_.forward_udp_ports.end(), port) ==
-        opts_.forward_udp_ports.end()) {
-      return no(forward_answer::port);
-    }
+    if (!forward_allows(opts_.forward_udp_ports, port, false)) return no(forward_answer::port);
     std::vector<net::address> addrs;
     if (const auto lit = net::parse_address(host)) {
       addrs.push_back(*lit);
     } else {
       addrs = net::resolve(host);
     }
+    const auto home = opts_.forward_private ? std::vector<net::subnet>{} : net::local_subnets();
     for (const auto& a : addrs) {
-      if (opts_.forward_private || net::is_public(a)) {
+      if ((opts_.forward_private || forward_destination_ok(a, home)) &&
+          !(opts_.forward_refused && opts_.forward_refused(a))) {
         to = net::endpoint{net::address_text(a), port};
         break;
       }
@@ -1053,21 +1168,27 @@ void server::serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t 
   }
   {
     std::lock_guard lock(m_);
-    if (static_cast<int>(counts_.forwarding) >= opts_.max_forwards) {
+    if (static_cast<int>(counts_.udp_flowing) >= opts_.max_udp_flows) {
       ++counts_.forward_refused;
       (void)say(forward_answer::busy);
       l->shutdown();
       return;
     }
     ++counts_.forwarding;
+    ++counts_.udp_flowing;
   }
   struct give_back {
     server& s;
     ~give_back() {
       std::lock_guard lock(s.m_);
       --s.counts_.forwarding;
+      --s.counts_.udp_flowing;
     }
   } given{*this};
+  // A lookup's flow (the resolver, or any port 53) is done in seconds: it
+  // gives its slot back soon rather than holding it for kUdpIdleMs.
+  const bool lookup = host == kDnsHost || port == 53;
+  const std::int64_t idle_ns = std::int64_t{lookup ? kDnsIdleMs : kUdpIdleMs} * 1'000'000;
   const auto target = net::parse_address(to->address);
   auto sock = target ? net::open_udp(target->v6) : result<std::unique_ptr<net::udp_socket>>(err(status::invalid_arg));
   if (!sock) return no(forward_answer::unreachable);
@@ -1107,10 +1228,11 @@ void server::serve_udp(std::shared_ptr<link> l, std::string host, std::uint16_t 
     auto r = read_datagram(client, part, d, 250);
     if (!r) {
       if (r.error() != status::timeout) break;
-      if (now_ns() - last.load() > std::int64_t{kUdpIdleMs} * 1'000'000) break;
+      if (now_ns() - last.load() > idle_ns) break;
       continue;
     }
-    if (!(*sock)->send_to(d, *to)) break;
+    if (!lookup) udp_rate_wait(d.size());  // a lookup never waits behind a bulk flow
+    if (stop_.load() || !(*sock)->send_to(d, *to)) break;
     moved += d.size();
     last.store(now_ns());
   }
@@ -1133,12 +1255,10 @@ void server::serve_forward(std::shared_ptr<link> l, std::string host, std::uint1
     ++counts_.forward_refused;
   };
   if (opts_.forward_ports.empty()) return no(forward_answer::off);
-  if (std::find(opts_.forward_ports.begin(), opts_.forward_ports.end(), port) == opts_.forward_ports.end()) {
-    return no(forward_answer::port);
-  }
+  if (!forward_allows(opts_.forward_ports, port, true)) return no(forward_answer::port);
   {
     std::lock_guard lock(m_);
-    if (static_cast<int>(counts_.forwarding) >= opts_.max_forwards) {
+    if (static_cast<int>(counts_.forwarding - counts_.udp_flowing) >= opts_.max_forwards) {
       ++counts_.forward_refused;
       (void)say(forward_answer::busy);
       l->shutdown();
@@ -1156,7 +1276,7 @@ void server::serve_forward(std::shared_ptr<link> l, std::string host, std::uint1
   forward_answer why = forward_answer::unreachable;
   auto target = opts_.forward_connect
                     ? opts_.forward_connect(host, port, kForwardConnectMs, why)
-                    : connect_host(host, port, kForwardConnectMs, opts_.forward_private, why);
+                    : connect_host(host, port, kForwardConnectMs, opts_.forward_private, opts_.forward_refused, why);
   if (!target) return no(why == forward_answer::ok ? forward_answer::unreachable : why);
   if (stop_.load() || !say(forward_answer::ok)) {
     (*target)->shutdown();

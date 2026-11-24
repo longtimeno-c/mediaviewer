@@ -41,6 +41,7 @@
     <Compile Include="..\Shared\PeopleWords.cs" Link="Shared\PeopleWords.cs" />
     <Compile Include="..\Shared\ProgressWords.cs" Link="Shared\ProgressWords.cs" />
     <Compile Include="..\Shared\KeyUpLetters.cs" Link="Shared\KeyUpLetters.cs" />
+    <Compile Include="..\Shared\ScreenTreePatch.cs" Link="Shared\ScreenTreePatch.cs" />
   </ItemGroup>
 
 </Project>

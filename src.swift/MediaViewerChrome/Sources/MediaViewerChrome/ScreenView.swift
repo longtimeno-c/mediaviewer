@@ -1810,7 +1810,9 @@ private struct LinkNode: View {
         }
         .frame(height: 64)
         .padding(.top, 24 - 32)
-        device(symbol: nil, name: node.string("to") ?? "", mark: state == "done" ? "checkmark.circle.fill"
+        // The VPN's Tunnel ends at the web, not a computer: a globe, not initials.
+        device(symbol: via == "tunnel" ? "globe" : nil, name: node.string("to") ?? "",
+               mark: state == "done" ? "checkmark.circle.fill"
                : state == "failed" ? "exclamationmark.circle.fill" : nil)
       }
       HStack(spacing: MVTheme.space(6)) {

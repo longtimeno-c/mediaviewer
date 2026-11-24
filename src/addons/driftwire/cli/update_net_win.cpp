@@ -119,6 +119,94 @@ http_answer https_get(const std::string& url, std::size_t max_bytes, int timeout
   return a;
 }
 
+https_reply https_request(const std::string& method, const std::string& url, const std::string& content_type,
+                          const std::string& body, std::size_t max_bytes, int timeout_ms) {
+  https_reply a;
+  if (method != "GET" && method != "POST") {
+    a.error = "bad request";
+    return a;
+  }
+  const std::wstring wurl = wide(url);
+  URL_COMPONENTS parts{};
+  parts.dwStructSize = sizeof(parts);
+  wchar_t host[256] = {};
+  wchar_t path[2048] = {};
+  parts.lpszHostName = host;
+  parts.dwHostNameLength = 256;
+  parts.lpszUrlPath = path;
+  parts.dwUrlPathLength = 2048;
+  if (!::WinHttpCrackUrl(wurl.c_str(), 0, 0, &parts) || parts.nScheme != INTERNET_SCHEME_HTTPS) {
+    a.error = "bad URL";
+    return a;
+  }
+  handle session(::WinHttpOpen(L"driftwire", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+                               WINHTTP_NO_PROXY_BYPASS, 0));
+  if (!session.h) {
+    a.error = "WinHTTP unavailable";
+    return a;
+  }
+  ::WinHttpSetTimeouts(session.h, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+  handle connect(::WinHttpConnect(session.h, host, parts.nPort, 0));
+  if (!connect.h) {
+    a.error = "cannot connect";
+    return a;
+  }
+  const std::wstring verb = wide(method);
+  handle request(::WinHttpOpenRequest(connect.h, verb.c_str(), path, nullptr, WINHTTP_NO_REFERER,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
+  if (!request.h) {
+    a.error = "cannot open the request";
+    return a;
+  }
+  DWORD off = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION | WINHTTP_DISABLE_REDIRECTS;
+  ::WinHttpSetOption(request.h, WINHTTP_OPTION_DISABLE_FEATURE, &off, sizeof(off));
+  const std::wstring headers = method == "POST" ? L"Content-Type: " + wide(content_type) : std::wstring();
+  LPVOID data = method == "POST" && !body.empty() ? const_cast<char*>(body.data()) : WINHTTP_NO_REQUEST_DATA;
+  const DWORD len = method == "POST" ? static_cast<DWORD>(body.size()) : 0;
+  if (!::WinHttpSendRequest(request.h, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
+                            headers.empty() ? 0 : static_cast<DWORD>(-1L), data, len, len, 0) ||
+      !::WinHttpReceiveResponse(request.h, nullptr)) {
+    a.error = "no answer (" + std::to_string(::GetLastError()) + ")";
+    return a;
+  }
+  DWORD status = 0, size = sizeof(status);
+  if (!::WinHttpQueryHeaders(request.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX)) {
+    a.error = "no status";
+    return a;
+  }
+  const auto header = [&](DWORD which, const wchar_t* name) {
+    wchar_t buf[2048] = {};
+    DWORD n = sizeof(buf);
+    if (!::WinHttpQueryHeaders(request.h, which, name, buf, &n, WINHTTP_NO_HEADER_INDEX)) return std::string();
+    return utf8(std::wstring(buf, n / sizeof(wchar_t)));
+  };
+  a.location = header(WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX);
+  a.nonce = header(WINHTTP_QUERY_CUSTOM, L"Replay-Nonce");
+  const std::string retry = header(WINHTTP_QUERY_RETRY_AFTER, WINHTTP_HEADER_NAME_BY_INDEX);
+  if (!retry.empty() && retry.size() < 10 && retry.find_first_not_of("0123456789") == std::string::npos) {
+    a.retry_after = std::stoll(retry);
+  }
+  std::vector<char> chunk(4096);
+  for (;;) {
+    DWORD got = 0;
+    if (!::WinHttpReadData(request.h, chunk.data(), static_cast<DWORD>(chunk.size()), &got)) {
+      a = https_reply{};
+      a.error = "cut off";
+      return a;
+    }
+    if (got == 0) break;
+    if (a.body.size() + got > max_bytes) {
+      a = https_reply{};
+      a.error = "too long";
+      return a;
+    }
+    a.body.append(chunk.data(), got);
+  }
+  a.status = static_cast<int>(status);
+  return a;
+}
+
 std::string self_path() {
   std::wstring buf(MAX_PATH, L'\0');
   for (;;) {

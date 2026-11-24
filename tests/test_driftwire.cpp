@@ -758,35 +758,88 @@ TEST_CASE("driftwire: a set too big for Bluetooth says to use Wi-Fi before Send"
 
 // ---- what is kept across launches (#442) ------------------------------------------------------------
 
-TEST_CASE("driftwire: the menu's Tunnel row is the window's switch, once a relay server is set", "[driftwire]") {
+TEST_CASE("driftwire: the Tunnel moved to the VPN add-on; its settings are kept for it, and a card says so",
+          "[driftwire]") {
+  // Nothing of the Tunnel in the window, the settings page or the menu any more.
   sp::view v;
-  CHECK(sp::build_menu(v).find(R"("id":"tunnel")") == std::string::npos);  // no relay server: no row
   v.relay_server = "relay.example:47614#TEST-RELAY-KEY-0123456789";
-  v.tunnel_relay = "relay.example:47614";
-  auto doc = mv::json::parse(sp::build_menu(v));
-  REQUIRE(doc);
-  const mv::json::value* row = nullptr;
-  for (const auto& r : doc->find("items")->a) {
-    if (const std::string* id = r.str("id"); id && *id == "tunnel") row = &r;
+  v.background = true;
+  CHECK(sp::build_menu(v).find(R"("id":"tunnel")") == std::string::npos);
+  CHECK(sp::build_settings_tree(v).find(R"("id":"tunnel")") == std::string::npos);
+  CHECK(sp::build_settings_tree(v).find("tunnel_moved") == std::string::npos);
+  // It was on here: one card says where it went.
+  v.tunnel_moved = true;
+  CHECK(sp::build_tree(v).find("The Tunnel is now the VPN add-on") != std::string::npos);
+  CHECK(sp::build_settings_tree(v).find("Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN") != std::string::npos);
+
+  // An engine keeps the Tunnel's keys in driftwire.json as they were, for the VPN add-on to take.
+  scratch_dir dir("driftwire_tunnel_moved");
+  const auto path = utf8(dir / sp::kPrefsFile);
+  sp::prefs before;
+  before.tunnel = true;
+  before.tunnel_port = 50123;
+  before.tunnel_all_apps = false;
+  before.tunnel_tls = true;
+  before.tunnel_vpn = true;
+  before.tunnel_block = true;
+  REQUIRE(sp::save_prefs(path, before));
+  fake_host host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = path;
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  {
+    sp::engine eng(host, o);
+    CHECK(eng.snapshot().tunnel_moved);
+    eng.on_event("internet", 2, "true");  // a save
+    eng.on_event("internet", 2, "false");
   }
-  REQUIRE(row);
-  CHECK(*row->str("kind") == "toggle");
-  CHECK(*row->str("label") == "Tunnel through relay.example:47614");
-  CHECK_FALSE(row->find("value")->b);
-  CHECK(sp::build_menu(v).find("TEST-RELAY-KEY") == std::string::npos);  // never the key
-  v.tunnel = true;
-  CHECK(sp::build_menu(v).find(R"("id":"tunnel","label":"Tunnel through relay.example:47614","value":true)") !=
-        std::string::npos);
-  // A long name is cut at a character, within the host's label limit.
-  v.tunnel_relay = std::string(90, 'a') + "\xC3\xA9" + std::string(40, 'b') + ":1";
-  const auto long_doc = mv::json::parse(sp::build_menu(v));
-  REQUIRE(long_doc);
-  for (const auto& r : long_doc->find("items")->a) {
-    if (const std::string* label = r.str("label")) {
-      CHECK(label->size() <= 120);
-      CHECK(label->find("\xC3\xE2") == std::string::npos);  // not cut inside the é
-    }
-  }
+  const auto after = sp::load_prefs(path);
+  REQUIRE(after);
+  CHECK(after->tunnel);
+  CHECK(after->tunnel_port == 50123);
+  CHECK_FALSE(after->tunnel_all_apps);
+  CHECK(after->tunnel_tls);
+  CHECK(after->tunnel_vpn);
+  CHECK(after->tunnel_block);
+}
+
+TEST_CASE("driftwire: a system proxy the Tunnel left set shows the card too", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_moved_record");
+  fs::create_directories(dir / "data");
+  write_text(dir / "data" / "driftwire_proxy.json", R"({"pac_url":"http://127.0.0.1:50123/x.pac","saved":""})");
+  fake_host host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = utf8(dir / "data" / sp::kPrefsFile);
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  sp::engine eng(host, o);
+  CHECK(eng.snapshot().tunnel_moved);
+  CHECK(sp::build_settings_tree(eng.snapshot()).find("puts back this computer's proxy setting") != std::string::npos);
+}
+
+TEST_CASE("driftwire: the Tunnel's card goes once the VPN add-on answers", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_moved_present");
+  sp::prefs before;
+  before.tunnel = true;
+  REQUIRE(sp::save_prefs(utf8(dir / sp::kPrefsFile), before));
+  struct vpn_here final : fake_host {
+    using fake_host::fake_host;
+    bool vpn_addon_present() override { return true; }
+  } host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = utf8(dir / sp::kPrefsFile);
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  sp::engine eng(host, o);
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_moved; }));
+  CHECK(sp::build_tree(eng.snapshot()).find("The Tunnel is now the VPN add-on") == std::string::npos);
 }
 
 TEST_CASE("driftwire: the menu-bar menu's rows are the window's switches, with what is happening now",

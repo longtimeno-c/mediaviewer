@@ -10,7 +10,7 @@
 //
 // What was there is kept as one line per service: its id, the old enable
 // flag (0, 1, or - when the key was absent) and the old URL, tab-separated.
-#include "addons/driftwire/sysproxy.h"
+#include "addons/vpn/sysproxy.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Authorization.h>
@@ -184,7 +184,7 @@ class mac_port final : public port {
   template <class F>
   status change(F each) {
     if (const status a = authorise(); a != status::ok) return a;
-    cf<SCPreferencesRef> prefs(SCPreferencesCreateWithAuthorization(kCFAllocatorDefault, CFSTR("MediaViewer Driftwire"),
+    cf<SCPreferencesRef> prefs(SCPreferencesCreateWithAuthorization(kCFAllocatorDefault, CFSTR("MediaViewer VPN"),
                                                                     nullptr, auth_));
     if (!prefs) return status::io;
     if (!SCPreferencesLock(prefs.ref, true)) return status::io;
