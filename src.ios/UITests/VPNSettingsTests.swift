@@ -43,6 +43,8 @@ final class VPNSettingsTests: XCTestCase {
   /// The question's sheet is as tall as its words and buttons: no empty half of a screen under
   /// Not Now (the owner's report, 2026-11-24).
   private func assertConsentFitsItsWords(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    // An iPad's sheet is a card in the middle of the screen: there is no bottom edge to measure from.
+    guard UIDevice.current.userInterfaceIdiom == .phone else { return }
     let gap = app.windows.firstMatch.frame.maxY - app.buttons["vpn.consent.notNow"].frame.maxY
     XCTAssertLessThan(gap, 90, "Empty space under Not Now: \(gap) pt", file: file, line: line)
     XCTAssertGreaterThan(gap, 0, "Not Now is off the screen", file: file, line: line)
