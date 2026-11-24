@@ -41,9 +41,14 @@ public struct RootView: View {
       Button("Pair with the new library") { model.confirmPendingPairLink() }
       Button("Keep this library", role: .cancel) { model.pendingPairLink = nil }
     } message: {
-      Text(model.connection.isSample
-           ? "Once the new library is paired, the sample library is removed from this phone."
-           : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your server changes.")
+      // The connection is read only while a link waits, so its updates (they come during launch)
+      // do not redraw RootView and the tabs under it: with the backup line on top of the
+      // keyboard, a redrawn TabView takes the keyboard.
+      if model.pendingPairLink != nil {
+        Text(model.connection.isSample
+             ? "Once the new library is paired, the sample library is removed from this phone."
+             : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your server changes.")
+      }
     }
     .task { await model.run() }
   }
@@ -121,7 +126,7 @@ private extension View {
 ///
 /// The hold has no limit: while any keyboard is up, the line keeps its last count (a finished
 /// backup included) and a new People tab waits. Anything that updated the line would take the
-/// keyboard. UIKit sends keyboardWillHide when the app goes to the background, so the hold ends.
+/// keyboard. UIKit hides the keyboard when the app goes to the background, so the hold ends.
 private struct KeyboardHold: View {
   struct Held: Equatable {
     var transfer: TransferActivity?
@@ -143,7 +148,9 @@ private struct KeyboardHold: View {
     Color.clear
       .onAppear { held = current }
       .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
-      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
+      // Did, not will: catching up while the keyboard is still going redrew the tabs mid-way, and
+      // the field could take it back.
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in keyboardUp = false }
       .onChange(of: current) { _, new in if !keyboardUp, new != held { held = new } }
       .onChange(of: keyboardUp) { _, up in if !up, current != held { held = current } }
   }
