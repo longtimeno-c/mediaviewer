@@ -55,6 +55,8 @@ enum MvMenuCmd : int32_t {
   kMenuToolBrush, kMenuToolRedEye, kMenuToolExtend, kMenuToolFaces,
   // The bar's Home: back to the welcome card, nothing open (owner 2026-11-18).
   kMenuHome,
+  // docs/design/16 "Folder navigation" / "Drag and drop into folders".
+  kMenuBack, kMenuForward, kMenuEnclosing, kMenuNewFolder, kMenuPasteFiles,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -319,10 +321,35 @@ void mv_chrome_set_folder_cover_callback(mv_chrome_folder_cover_fn callback);
 int32_t mv_chrome_crumb_count(void);
 bool mv_chrome_crumb_path(int32_t index, char* out_buf, int32_t out_buf_size);
 void mv_chrome_open_crumb(int32_t index);
+// What crumb `index` says: a folder's leaf, a remote folder's own name (its key names nothing).
+bool mv_chrome_crumb_name(int32_t index, char* out_buf, int32_t out_buf_size);
 bool mv_chrome_can_go_up(void);
 void mv_chrome_navigate_up(void);
+// docs/design/16 "Folder navigation": Back / Forward (shell/browse_history.h).
+// The generation moves on each Back or Forward, so the gallery knows to put
+// the scroll back where that folder had it.
+bool mv_chrome_can_go_back(void);
+bool mv_chrome_can_go_forward(void);
+void mv_chrome_go_back(void);
+void mv_chrome_go_forward(void);
+uint64_t mv_chrome_history_generation(void);
+// "Drag and drop into folders" (shell/file_drop.h): what dropping `paths` on
+// the folder `target` does -- verb (0 none, 1 copy, 2 move) | refusal << 8 --
+// with flags 1 dragged from this window, 2 Option held, 4 Command held. No
+// I/O: asked on every drag-over. An outside drag passes no paths (they are read
+// on drop). mv_chrome_drop_files does it (a job, its row in the Jobs pane) and
+// says whether it started; the drop generation moves when one lands.
+int32_t mv_chrome_drop_verdict(const char* const* paths, int32_t count, const char* target, int32_t flags);
+bool mv_chrome_drop_files(const char* const* paths, int32_t count, const char* target, int32_t flags);
+uint64_t mv_chrome_drop_generation(void);
+int32_t mv_chrome_drop_refusal_text(int32_t refusal, char* buf, int32_t size);
+// docs/plans/desktop-client.md §6: why this computer may not change files at a remote key
+// ("Home lets this computer view only…"); "" when it may, or for a local path. No I/O.
+int32_t mv_chrome_write_problem(const char* key, char* buf, int32_t size);
 // The gallery's keyboard position while on a folder tile; -1 when on images.
 int32_t mv_chrome_folder_cursor(void);
+// A click on a folder tile: the gallery's keyboard moves onto it (-1: the images).
+void mv_chrome_set_folder_cursor(int32_t index);
 // The in-progress folder-name query (`/`, folder row active). False when idle;
 // an empty string means the query is open and nothing has been typed yet.
 bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
@@ -561,8 +588,16 @@ bool mv_chrome_photos_backup_start(const char* destination_utf8);
 void mv_chrome_photos_backup_cancel(void);
 // The current (or last finished) run of this session; state 0 when none.
 void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out);
-// The destination last used (persisted); length needed, "" when none.
+// The destination last used (persisted); length needed, "" when none. A folder's path, or
+// a paired server's folder key ("remote:…/", docs/design/26 "Backup to a server"): start
+// takes either. A server's folder must be inside one of its named folders, and this
+// computer must be allowed to change files there (mv_chrome_write_problem says why not).
 int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size);
+// What a server's folder is shown as ("Home › Photos"); "" for a path. No I/O.
+int32_t mv_chrome_photos_backup_destination_name(const char* destination_utf8, char* buf, int32_t size);
+// Where the destination's manifest and last-run.txt are: the folder itself, or for a
+// server's folder a folder on this Mac.
+int32_t mv_chrome_photos_backup_home(const char* destination_utf8, char* buf, int32_t size);
 // The folders new files go into (persisted beside the destination; issue #414):
 // 0 YYYY/YYYY-MM-DD (default), 1 YYYY, 2 YYYY/MM/DD, 3 YYYY-MM-DD, 4 flat.
 // Used by the next start; files already backed up are never moved.
@@ -683,10 +718,11 @@ void mv_chrome_background_show_viewer(void);
 void mv_chrome_background_quit(void);
 void mv_chrome_background_changed(void);
 void mv_chrome_background_window_shown(void);
-// docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row
-// (a kept entry with "shell": true): the viewer comes back, Settings open at
-// Phone access. [main-thread]
-void mv_chrome_open_phone_settings(void);
+// A kept entry's Open row when its screen is a settings page: the host's Open
+// Phone access settings (docs/plans/self-hosted.md "Tray", "shell": true) or
+// an add-on's settings-place screen (docs/plans/vpn-addon.md). The viewer
+// comes back, Settings open at `addon`'s page. [main-thread]
+void mv_chrome_open_addon_settings(const char* addon);
 uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
                                       const mv_chrome_slot_theme* theme, float width, float scale);
 void mv_chrome_slots_clear_info(void);

@@ -11,6 +11,8 @@ struct BackupScreen: View {
   @Environment(AppModel.self) private var model
   @State private var folders: [BackupFolder]?
   @State private var foldersFailure: BackupState?
+  /// Which question is the newest: only its answer counts (an older one may come back later).
+  @State private var asking = 0
   @State private var choosing = false
 
   private var backup: BackupSnapshot { model.backup }
@@ -53,9 +55,10 @@ struct BackupScreen: View {
     .background(Theme.ground)
     .navigationTitle("Backup")
     .navigationBarTitleDisplayMode(.inline)
-    .task { await loadFolders() }
+    .task { await loadFolders(asking) }
     .sheet(isPresented: $choosing) {
-      FolderChoice(folders: folders ?? [], failure: foldersFailure, sample: backup.isSample, current: backup.folder, layout: backup.layout) { folder, layout in
+      FolderChoice(folders: folders, failure: foldersFailure, sample: backup.isSample, current: backup.folder, layout: backup.layout,
+                   askAgain: askAgain) { folder, layout in
         Task { await service.choose(folder: folder, layout: layout) }
       }
       .environment(model)
@@ -63,14 +66,38 @@ struct BackupScreen: View {
     }
   }
 
-  private func loadFolders() async {
+  /// Asks the server again, shown as asking until the answer is in: the owner may have added the
+  /// folder or let this phone back up since the last answer.
+  private func askAgain() {
+    asking += 1
+    folders = nil
+    foldersFailure = nil
+    let question = asking
+    Task { await loadFolders(question) }
+  }
+
+  private func chooseFolder() {
+    askAgain()
+    choosing = true
+  }
+
+  private func loadFolders(_ question: Int) async {
+    let answer: Result<[BackupFolder], BackupState>
     do {
-      folders = try await service.folders()
-      foldersFailure = nil
+      answer = .success(try await service.folders())
     } catch let state as BackupState {
-      foldersFailure = state
+      answer = .failure(state)
     } catch {
-      foldersFailure = .unreachable
+      answer = .failure(.unreachable)
+    }
+    guard question == asking else { return }
+    switch answer {
+    case .success(let list):
+      folders = list
+      foldersFailure = nil
+    case .failure(let state):
+      folders = nil
+      foldersFailure = state
     }
   }
 
@@ -129,7 +156,7 @@ struct BackupScreen: View {
       }
       .buttonStyle(SecondaryButtonStyle())
     case .folderNotAllowed, .folderGone:
-      Button("Choose another folder") { choosing = true }
+      Button("Choose another folder") { chooseFolder() }
         .buttonStyle(SecondaryButtonStyle())
     default:
       if backup.toGo > 0 || backup.total == 0 {
@@ -143,8 +170,7 @@ struct BackupScreen: View {
   private var settingsCard: some View {
     InfoCard {
       Button {
-        Task { await loadFolders() }
-        choosing = true
+        chooseFolder()
       } label: {
         row("Folder", value: backup.folder?.label ?? "Choose")
       }
@@ -206,11 +232,13 @@ struct BackupScreen: View {
 
 /// The folder, from the service's backup folders, and how files are filed in it.
 private struct FolderChoice: View {
-  let folders: [BackupFolder]
+  /// nil while the service is still being asked.
+  let folders: [BackupFolder]?
   let failure: BackupState?
   let sample: Bool
   let current: BackupFolder?
   let layout: BackupLayout
+  let askAgain: () -> Void
   let chosen: (BackupFolder, BackupLayout) -> Void
   @Environment(\.dismiss) private var dismiss
   @State private var folder: BackupFolder?
@@ -220,12 +248,25 @@ private struct FolderChoice: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
-          if let failure, let words = FailureCopy.backupLine(for: failure, sample: sample) {
+          if let words = FailureCopy.backupChoiceLine(folders: folders, failure: failure, sample: sample) {
             Text(words).font(.subheadline).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
-          } else if folders.isEmpty {
-            Text(FailureCopy.backupNoFolders).font(.subheadline).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("backup.choose.line")
+          } else if folders == nil {
+            HStack(spacing: 8) {
+              ProgressView()
+              Text(FailureCopy.backupAskingForFolders).font(.subheadline).foregroundStyle(Theme.body)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("backup.choose.asking")
           }
-          ForEach(folders) { f in
+          if folders != nil || failure != nil {
+            Button("Ask again", action: askAgain)
+              .font(.subheadline)
+              .foregroundStyle(Theme.accent)
+              .frame(minHeight: 44)
+              .accessibilityIdentifier("backup.choose.again")
+          }
+          ForEach(list) { f in
             Button {
               folder = f
             } label: {
@@ -247,7 +288,7 @@ private struct FolderChoice: View {
             .disabled(!f.writable)
             .accessibilityIdentifier("backup.folder.\(f.label)")
           }
-          if !folders.isEmpty {
+          if !list.isEmpty {
             Text("Folders").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.title).padding(.top, 8)
             ForEach(BackupLayout.allCases, id: \.self) { l in
               Button {
@@ -283,18 +324,33 @@ private struct FolderChoice: View {
             if let folder { chosen(folder, pickedLayout) }
             dismiss()
           }
-          .disabled(folder == nil)
+          .disabled(folder == nil || folders == nil || failure != nil)
           .accessibilityIdentifier("backup.choose.done")
         }
       }
       .onChange(of: folders) { _, _ in
-        if folder == nil { folder = current.flatMap { c in folders.first { $0.id == c.id } } ?? (folders.count == 1 && folders[0].writable ? folders[0] : nil) }
+        folder = BackupFolderPick.kept(folder, in: folders, current: current)
       }
       .onAppear {
-        folder = current.flatMap { c in folders.first { $0.id == c.id } } ?? (folders.count == 1 && folders[0].writable ? folders[0] : nil)
+        folder = BackupFolderPick.kept(nil, in: folders, current: current)
         pickedLayout = layout
       }
     }
+  }
+
+  private var list: [BackupFolder] { folders ?? [] }
+}
+
+/// The chooser's selection after each answer: kept only while the server still offers it to this
+/// phone; otherwise the folder in use, or the only one this phone may write. While asking (no list)
+/// a pick is held as it is, to be checked against the answer; Done stays off until then.
+enum BackupFolderPick {
+  static func kept(_ selected: BackupFolder?, in folders: [BackupFolder]?, current: BackupFolder?) -> BackupFolder? {
+    guard let folders else { return selected }
+    let usable = folders.filter(\.writable)
+    if let selected, let still = usable.first(where: { $0.id == selected.id }) { return still }
+    if let current, let still = usable.first(where: { $0.id == current.id }) { return still }
+    return usable.count == 1 && folders.count == 1 ? usable[0] : nil
   }
 }
 

@@ -98,7 +98,7 @@ final class ScrollHitchTests: XCTestCase {
 
   func testLibraryGridScrollHitches() throws {
     let app = launched("library")
-    XCTAssertTrue(app.buttons["All media"].waitForExistence(timeout: 30))
+    XCTAssertTrue(app.navigationBars["All media"].waitForExistence(timeout: 30))
     XCTAssertTrue(app.staticTexts["frame-stats"].waitForExistence(timeout: 10))
     sleep(2)
     try assertRunsAtFullRate(app)
@@ -126,6 +126,40 @@ final class ScrollHitchTests: XCTestCase {
       if field.buttons["Clear text"].exists { field.buttons["Clear text"].tap() }
       for letter in query { field.typeText(String(letter)); usleep(120_000) }
       usleep(800_000)
+    }
+  }
+
+  /// Into a folder, into one of its folders, and back twice: the zoom in from each tile and the pop
+  /// back to it (FolderNavigationTests checks what each page holds).
+  func testFolderNavigationHitches() throws {
+    let app = launched("library")
+    XCTAssertTrue(app.navigationBars["All media"].waitForExistence(timeout: 30))
+    XCTAssertTrue(app.staticTexts["frame-stats"].waitForExistence(timeout: 10))
+    try assertRunsAtFullRate(app)
+    let iphone = app.buttons["folder:iphone"]
+    XCTAssertTrue(iphone.waitForExistence(timeout: 10))
+    let first = FrameStats(app.staticTexts["frame-stats"].label)
+    measure(metrics: metrics(app), options: options) {
+      iphone.tap()
+      XCTAssertTrue(app.navigationBars["iphone"].waitForExistence(timeout: 10))
+      let year = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'folder:iphone/'")).firstMatch
+      XCTAssertTrue(year.waitForExistence(timeout: 10))
+      let yearName = year.label.components(separatedBy: ",")[0]
+      year.tap()
+      XCTAssertTrue(app.navigationBars[yearName].waitForExistence(timeout: 10))
+      app.navigationBars[yearName].buttons.firstMatch.tap()
+      XCTAssertTrue(app.navigationBars["iphone"].waitForExistence(timeout: 10))
+      app.navigationBars["iphone"].buttons.firstMatch.tap()
+      XCTAssertTrue(app.navigationBars["All media"].waitForExistence(timeout: 10))
+    }
+    // The budget (2026-11-23, Simulator, with this test's own queries in the walk): about 3.5 late
+    // frames and 90 ms of lateness for each folder change, most of it the transition's own (an empty
+    // page pushed costs nearly as much). Room for a busy Mac, not for a regression.
+    let changes = Double(options.iterationCount * 4)
+    let last = FrameStats(app.staticTexts["frame-stats"].label)
+    if let first, let last {
+      XCTAssertLessThanOrEqual((last.hitches - first.hitches) / changes, 4.5, "Late frames per folder change")
+      XCTAssertLessThanOrEqual((last.hitchMs - first.hitchMs) / changes, 120, "Lateness (ms) per folder change")
     }
   }
 

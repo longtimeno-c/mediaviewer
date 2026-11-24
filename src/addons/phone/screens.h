@@ -43,7 +43,9 @@ struct drives_state {
   std::vector<std::pair<std::string, std::string>> typed;  // drive id -> the name typed
   std::string replacing;            // a set's id
   std::string replace_with, replace_typed;
-  std::string asked;                // "combine" | "replace" until its outcome shows
+  std::string asked;                // "combine" | "replace" | "copy" until its outcome shows
+  std::string copy_from;            // Keep a copy: the picked drive copied from ("": the one with most on it)
+  std::string copy_drawn;           // the drive the Keep a copy row last showed as copied from ("": no row)
 };
 
 // This computer -> Users (docs/plans/self-host-users-smb.md §8).
@@ -85,6 +87,16 @@ class screen {
   static constexpr const char* kQrSurface = "qr";
   // Whether the last build had something that changes each second (the code's countdown).
   [[nodiscard]] bool ticking() const noexcept { return !qr_.empty(); }
+
+  // The VPN add-on's Host section (docs/plans/vpn-addon.md), from the link's
+  // `state_json`: {"where":"here"|"server"|"none", and for the first two
+  // "title", "line", "on"; "busy"; "code" while the VPN code shows; "error"}.
+  [[nodiscard]] std::string vpn_state(std::string_view state_json) const;
+  // The link's request for the VPN add-on's `method` ("vpn_set" with `on`,
+  // "vpn_code", "vpn_code_hide", "vpn_domain" with `domain`: the own domain or
+  // "none", this computer only); "" when there is nothing to host on.
+  [[nodiscard]] std::string vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                        std::string_view domain = {}) const;
 
   // A phone's ("ph", its key) or a shared folder's ("fo", its id) row id prefix.
   [[nodiscard]] static std::string row_id(const char* prefix, const std::string& of);
@@ -146,6 +158,7 @@ class screen {
   std::vector<std::string> queued_;
   // From the last build: the drives listing's ids and names, and the choices offered.
   std::vector<std::string> disk_ids_, disk_names_, set_ids_, set_names_, offered_, user_names_, user_roles_;
+  std::vector<std::string> copy_labels_;
   std::vector<std::vector<std::string>> user_folders_;
   std::vector<std::vector<std::string>> set_members_;
 

@@ -22,7 +22,7 @@ let coreLink: [String] = [
   simCore + "/libmv_infer.a", simCore + "/libmv_model_fetch.a", simCore + "/libmv_driftwire_engine.a",
   simCore + "/libmv_wire.a", simCore + "/libmv_catalogue.a", simCore + "/libmv_sha256.a",
   simTriplet + "/libsqlite3.a", simTriplet + "/libsodium.a", simTriplet + "/libblake3.a",
-  simCore + "/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+  simCore + "/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
   "-lc++", "-framework", "CoreML", "-framework", "Network", "-framework", "Security", "-framework", "SystemConfiguration",
 ]
 

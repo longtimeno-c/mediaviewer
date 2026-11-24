@@ -60,6 +60,12 @@ enum InstallWords {
   static let reinstall = "Remove and install again"
   static let reinstallTip = "Removes the installed copy, keeps its data and settings, and downloads it again."
 
+  // A damaged copy repairs itself (Windows today: AddonRepair in InstallWords.cs).
+  static let repairing = "The installed copy is damaged. Installing it again…"
+  static let keepsBreaking =
+    "The installed copy keeps losing its files. Security software is the usual cause: check what it removed and allow it, then install again."
+  static func repaired(_ name: String) -> String { "\(name) was damaged and has been installed again." }
+
   // The outcome line.
   static func downloading(_ name: String, _ version: String?) -> String {
     version.map { "Downloading \(name) \($0)…" } ?? "Downloading \(name)…"

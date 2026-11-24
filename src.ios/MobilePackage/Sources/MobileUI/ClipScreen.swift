@@ -455,6 +455,10 @@ struct ClipLivePage: View {
                  live: live, onTapPicture: onTap)
       }
     }
+    // The page is the whole screen and `live.insets` is measured from its edges (the controls'
+    // room, or the safe area when they are hidden): the cell's own safe area on top of that
+    // took the room twice, and kept a full-screen picture off the screen's edges.
+    .ignoresSafeArea()
   }
 }
 
@@ -500,15 +504,19 @@ private struct ClipBody: View {
         .padding(.top, live.insets.top)
         .padding(.bottom, live.insets.bottom)
       } else {
-        // Full screen (the viewer's controls hidden): the picture takes all but the position bar
-        // and the buttons; the moments come back with the controls.
+        // Full screen (the viewer's controls hidden): the picture is the whole screen, edge to
+        // edge, so a portrait clip is as large as the phone allows; a tap brings back the
+        // position bar, the buttons and the moments with the controls. The picture stays the
+        // first child either way, so the player is never made again by the change.
         VStack(spacing: 0) {
           picture.frame(maxHeight: .infinity)
-          below.padding(.horizontal, 16).padding(.top, live.chromeShown ? 12 : 4)
-          if live.chromeShown { momentsList }
+          if live.chromeShown {
+            below.padding(.horizontal, 16).padding(.top, 12)
+            momentsList
+          }
         }
-        .padding(.top, live.insets.top)
-        .padding(.bottom, live.insets.bottom)
+        .padding(.top, live.chromeShown ? live.insets.top : 0)
+        .padding(.bottom, live.chromeShown ? live.insets.bottom : 0)
       }
     }
     .animation(.easeOut(duration: 0.15), value: live.insets)
@@ -538,13 +546,23 @@ private struct ClipBody: View {
           .padding(.horizontal, 10)
           .padding(.vertical, 5)
           .background(Capsule().fill(.black.opacity(0.55)))
-          .padding(.top, 12)
+          // Full screen: the picture runs under the status area, the badge stays below it.
+          .padding(.top, (live.chromeShown || compactHeight || typeSize.isAccessibilitySize ? 0 : live.insets.top) + 12)
           .transition(.opacity)
           .accessibilityHidden(true)
       }
     }
     .animation(.easeOut(duration: 0.15), value: clip.isFast)
+    // Full screen has no line under the picture to say the clip is waiting: the picture says it.
+    .overlay {
+      if !live.chromeShown && clip.isWaiting {
+        ProgressView().controlSize(.large).tint(.white).accessibilityLabel("Waiting for the clip")
+      }
+    }
     .accessibilityAction(named: clip.isFast ? "Normal speed" : "Double speed") { clip.setFast(!clip.isFast) }
+    // Full screen has no button on screen to leave it: the picture itself says how.
+    .accessibilityAction(named: live.chromeShown ? "Full screen" : "Exit full screen", onTapPicture)
+    .accessibilityIdentifier(live.chromeShown ? "clip.picture" : "clip.picture.fullscreen")
   }
 
 
@@ -554,6 +572,11 @@ private struct ClipBody: View {
         Image(uiImage: image).resizable().scaledToFit()
       }
     }
+    // An element of its own, so VoiceOver reaches the picture (and its way out of full screen)
+    // before the player is there.
+    .accessibilityElement()
+    .accessibilityLabel(entry.accessibilityName)
+    .accessibilityAddTraits(.isImage)
   }
 
   @ViewBuilder

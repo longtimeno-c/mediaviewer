@@ -65,12 +65,13 @@ void book::space(const root_config& root, stat_info& out) {
 book::verdict book::reserve(const root_config& root, std::uint64_t bytes, bool meta) {
   const std::uint64_t free = free_of(root.path);
   std::unique_lock lock(m_);
-  auto& c = count(root, lock);
-  if (!meta && !no_limit(root.limit) && c.used + c.held + std::max(bytes, kMinFileCost) > root.limit) return verdict::limit;
+  auto& c = root.backup ? count(root, lock) : roots_[root.id];
+  if (root.backup && !meta && !no_limit(root.limit) && c.used + c.held + std::max(bytes, kMinFileCost) > root.limit) return verdict::limit;
   // Held bytes are not on the disk yet: every folder's, since folders may share a volume.
   std::uint64_t held_all = 0;
   for (const auto& [id, other] : roots_) held_all += other.held;
-  if (sub(free, held_all) < bytes + root.reserve) return verdict::full;
+  const std::uint64_t keep = root.backup ? root.reserve : kDefaultReserve;
+  if (sub(free, held_all) < bytes + keep) return verdict::full;
   c.held += bytes;
   return verdict::ok;
 }
@@ -79,7 +80,7 @@ void book::wrote(const std::string& root_id, std::uint64_t bytes) {
   std::lock_guard lock(m_);
   auto& c = roots_[root_id];
   c.held = sub(c.held, bytes);
-  c.used += bytes;
+  if (c.known) c.used += bytes;
 }
 
 void book::release(const std::string& root_id, std::uint64_t bytes) {
@@ -91,12 +92,12 @@ void book::release(const std::string& root_id, std::uint64_t bytes) {
 void book::removed(const std::string& root_id, std::uint64_t bytes) {
   std::lock_guard lock(m_);
   auto& c = roots_[root_id];
-  c.used = sub(c.used, bytes);
+  if (c.known) c.used = sub(c.used, bytes);
 }
 
 void book::added(const std::string& root_id, std::uint64_t bytes) {
   std::lock_guard lock(m_);
-  roots_[root_id].used += bytes;
+  if (auto& c = roots_[root_id]; c.known) c.used += bytes;
 }
 
 bool book::claim(const std::string& part) {
@@ -107,6 +108,14 @@ bool book::claim(const std::string& part) {
 void book::drop(const std::string& part) {
   std::lock_guard lock(m_);
   parts_.erase(part);
+}
+
+bool book::claimed_beneath(const std::string& dir) {
+  std::lock_guard lock(m_);
+  for (auto it = parts_.lower_bound(dir); it != parts_.end() && it->compare(0, dir.size(), dir) == 0; ++it) {
+    if (it->size() > dir.size() && ((*it)[dir.size()] == '/' || (*it)[dir.size()] == '\\')) return true;
+  }
+  return false;
 }
 
 std::unique_lock<std::mutex> book::lock_folder(const std::string& dir) {

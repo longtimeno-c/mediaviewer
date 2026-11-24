@@ -622,3 +622,182 @@ TEST_CASE("a file whose stat is refused is never held as deleted", "[shell][phot
   CHECK(p.done == 0);
 }
 #endif
+
+// ---- a server's folder as the destination (docs/design/26 "Backup to a server") ----------
+
+namespace {
+
+// A server's shared folder, as a folder here: what was sent, and what it answers.
+class fake_server final : public bk::server_folder {
+ public:
+  fs::path root;
+  bool up = true;
+  int puts = 0;
+  int stats = 0;
+  int fail_from = -1;  // the put (0-based) at which the server drops away
+  bool mute = false;       // answers that it is there, but not what it holds (a refused stat)
+  int unplug_after = -1;   // stats after which its drive is gone: everything reads "not there"
+  std::atomic<int> stops{0};
+
+  bool reachable() override { return up; }
+  void stop() noexcept override { ++stops; }
+  mv::result<bool> has(const std::string& place) override {
+    if (unplug_after >= 0 && stats >= unplug_after) {
+      up = false;
+      return false;
+    }
+    ++stats;
+    if (!up || mute) return mv::err(mv::status::io);
+    return fs::is_regular_file(root / fs::path(place));
+  }
+  mv::result<std::string> put(const std::string& local, const std::string& sub, const std::string& name,
+                              const std::atomic<bool>*, const std::function<void(std::uint64_t)>& on_bytes) override {
+    if (fail_from >= 0 && puts >= fail_from) up = false;
+    if (!up) return mv::err(mv::status::io);
+    ++puts;
+    const fs::path dir = sub.empty() ? root : root / fs::path(sub);
+    fs::create_directories(dir);
+    std::string got = name;
+    for (int n = 2; fs::exists(dir / got); ++n) {
+      const fs::path as(name);
+      got = as.stem().string() + " (" + std::to_string(n) + ")" + as.extension().string();
+    }
+    fs::copy_file(fs::path(local), dir / got);
+    if (on_bytes) on_bytes(fs::file_size(dir / got));
+    return got;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("a backup to a server sends every original there and keeps its manifest here", "[shell][photos_backup]") {
+  scratch_dir lib{"photos_backup_server_lib"}, far{"photos_backup_server_far"}, here{"photos_backup_server_here"};
+  auto server = std::make_shared<fake_server>();
+  server->root = far.root();
+  const auto run = [&](bool check_only = false) {
+    auto src = std::make_unique<fake_library>();
+    src->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 30'000, 1, true));
+    src->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.MOV", kDay2, 70'000, 2, false));
+    // Another asset's file of the same name on the same day: both kept.
+    src->files.push_back(make(lib, "C", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 31'000, 3, true));
+    bk::options o = opts_for(here.root(), here, bk::layout::year_day);
+    o.server = server;
+    o.check_only = check_only;
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), std::move(o)));
+    return run_to_end(e);
+  };
+  const std::string day1 = local(kDay1, "%Y") + "/" + local(kDay1, "%Y-%m-%d");
+  const std::string day2 = local(kDay2, "%Y") + "/" + local(kDay2, "%Y-%m-%d");
+
+  bk::progress p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.done == 3);
+  CHECK(p.fetched == 1);
+  CHECK(p.bytes == 131'000);
+  CHECK(files_under(far.root()) ==
+        std::vector<std::string>{day1 + "/IMG_0001 (2).HEIC", day1 + "/IMG_0001.HEIC", day2 + "/IMG_0002.MOV"});
+  CHECK(fs::file_size(far.root() / fs::path(day2) / "IMG_0002.MOV") == 70'000);
+  // Nothing of the photos on this machine: the manifest and the report only.
+  CHECK(files_under(here.root()).empty());
+  CHECK(fs::exists(here.root() / ".mediaviewer-photos-backup" / "manifest.sqlite"));
+
+  // Again: nothing is sent, each file is asked for once.
+  server->puts = 0;
+  server->stats = 0;
+  p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.done == 0);
+  CHECK(p.skipped == 3);
+  CHECK(server->puts == 0);
+  CHECK(server->stats == 3);
+
+  // Deleted on the server: held, not sent again by itself.
+  fs::remove(far.root() / fs::path(day2) / "IMG_0002.MOV");
+  p = run();
+  CHECK(p.held == 1);
+  CHECK(p.skipped == 2);
+  CHECK(server->puts == 0);
+}
+
+TEST_CASE("a server that cannot say is never taken for a deletion, and one that drops away stops the run",
+          "[shell][photos_backup]") {
+  scratch_dir lib{"photos_backup_server_drop_lib"}, far{"photos_backup_server_drop_far"},
+      here{"photos_backup_server_drop_here"};
+  auto server = std::make_shared<fake_server>();
+  server->root = far.root();
+  const auto run = [&] {
+    auto src = std::make_unique<fake_library>();
+    for (int i = 0; i < 4; ++i) {
+      const std::string id = "A" + std::to_string(i);
+      const std::string name = "IMG_000" + std::to_string(i) + ".HEIC";
+      src->files.push_back(make(lib, id.c_str(), bk::file_kind::original, name.c_str(), kDay1, 10'000,
+                                static_cast<std::uint8_t>(i), true));
+    }
+    bk::options o = opts_for(here.root(), here, bk::layout::flat);
+    o.server = server;
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), std::move(o)));
+    return run_to_end(e);
+  };
+  // Not reachable at the start: nothing begins.
+  server->up = false;
+  bk::progress p = run();
+  CHECK(p.state == bk::run_state::failed);
+  CHECK(p.done == 0);
+
+  // It drops away after one file: the run stops there, with one failure, not three.
+  server->up = true;
+  server->fail_from = 1;
+  p = run();
+  CHECK(p.state == bk::run_state::failed);
+  CHECK(p.done == 1);
+  CHECK(p.failed == 1);
+  CHECK(p.error.find("server") != std::string::npos);
+
+  // Back, but answering nothing about what it holds: the one file sent is skipped, never
+  // held as deleted; the rest go.
+  server->up = true;
+  server->fail_from = -1;
+  server->mute = true;
+  p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.held == 0);
+  CHECK(p.skipped == 1);
+  CHECK(p.done == 3);
+  CHECK(files_under(far.root()).size() == 4);
+
+  // Its drive unplugged while the files are asked for (each then reads "not there"): the
+  // run stops at the first such answer; nothing is held, and nothing is sent again.
+  server->mute = false;
+  server->stats = 0;
+  server->puts = 0;
+  server->unplug_after = 2;
+  p = run();
+  CHECK(p.state == bk::run_state::failed);
+  CHECK(p.held == 0);
+  CHECK(p.skipped == 2);
+  CHECK(server->puts == 0);
+  CHECK(server->stats == 2);  // not one wait per remaining file
+}
+
+TEST_CASE("cancelling a backup to a server tells the send in flight to stop", "[shell][photos_backup]") {
+  scratch_dir lib{"photos_backup_server_stop_lib"}, far{"photos_backup_server_stop_far"},
+      here{"photos_backup_server_stop_here"};
+  auto server = std::make_shared<fake_server>();
+  server->root = far.root();
+  auto src = std::make_unique<fake_library>();
+  src->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.MOV", kDay1, 10'000, 1, false));
+  src->slow_fetch = true;  // the run is mid-file when the cancel lands
+  fake_library* raw = src.get();
+  bk::options o = opts_for(here.root(), here, bk::layout::flat);
+  o.server = server;
+  bk::engine e;
+  REQUIRE(e.start(std::move(src), std::move(o)));
+  while (raw->fetches.load() == 0) std::this_thread::yield();
+  e.cancel();
+  const bk::progress p = run_to_end(e);
+  CHECK(p.state == bk::run_state::cancelled);
+  CHECK(server->stops.load() >= 1);
+  CHECK(server->puts == 0);
+}

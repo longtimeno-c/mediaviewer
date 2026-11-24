@@ -83,7 +83,14 @@ struct host_settings {
   bool stay_awake = true;            // the "system required" request while hosting
   std::string ddns;                  // the DuckDNS subdomain ("home"; "": none), as ddns::parse_subdomain gives it
   std::int64_t ddns_stamp = 0;       // when the name or its token was last set: a running host takes them again
-  std::uint16_t tls_port = 0;        // the relay's web-site look with the VPN on (0: none; `--tls-port`)
+  // The relay's web-site look with the VPN on (docs/plans/vpn-stealth.md): on unless `--tls-port off`
+  // (`look`), on `tls_port` (0: the relay's port + 1). The router maps outside 443 to it.
+  bool look = true;
+  std::uint16_t tls_port = 0;
+  // The person's own domain for the VPN (`host name domain NAME`; "": none): the VPN code, the
+  // look's SNI and its certificate carry it instead of the DuckDNS name. Its address is the
+  // person's to keep (a CNAME to the DuckDNS name, which DuckDNS keeps).
+  std::string domain;
   std::string library_id;            // the host library's id (`host pair`; "": none made yet)
   // The tray's control (docs/plans/self-hosted.md "Tray"; `host pause|resume|quit`):
   bool paused = false;               // nothing served, no relay, no stay-awake; kept until resumed
@@ -94,6 +101,13 @@ struct host_settings {
   std::string convert_helper;
 };
 [[nodiscard]] std::optional<host_settings> parse_host_settings(std::string_view json);
+// The port the relay's web-site look listens on: 0 without the VPN or with the look off.
+[[nodiscard]] std::uint16_t look_port(const host_settings& s) noexcept;
+// The name the VPN is reached by from outside: the own domain, else the DuckDNS name ("": none).
+[[nodiscard]] std::string vpn_name(const host_settings& s);
+// A domain as typed ("VPN.Example.com.", "https://vpn.example.com/"): lowercased, at least two
+// labels of [a-z0-9-] (not starting or ending with '-'), at most 253 long; nullopt otherwise.
+[[nodiscard]] std::optional<std::string> parse_domain(std::string_view typed);
 [[nodiscard]] std::string host_settings_json(const host_settings& s);
 
 struct host_layout {
@@ -115,7 +129,8 @@ struct host_layout {
 
 // The label a folder gets without --label: its last name ("Photos", "E" for E:\).
 [[nodiscard]] std::string default_label(const std::string& abs_path);
-// Adds the folder; "" when done, else why not (in words for the person).
+// Adds the folder; "" when done, else why not (in words for the person). With `backup`, a folder
+// shared already becomes a backup folder instead (nothing else about it changes).
 // `id`: 16 lowercase hex digits. `host_folder`: never shared, nor anything holding it.
 [[nodiscard]] std::string share_folder(serve::config& c, const std::string& abs_path, const std::string& label,
                                        bool backup, const volume_facts& facts, const std::string& id,

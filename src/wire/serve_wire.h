@@ -58,7 +58,10 @@ inline constexpr std::size_t kMaxLabelBytes = 64;
 // A listing, at most (a folder bigger than this says "truncated").
 inline constexpr std::size_t kMaxListBytes = 16u * 1024 * 1024;
 
-enum class op : std::uint8_t { roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, upgrade = 5, write = 6, convert = 7 };
+enum class op : std::uint8_t {
+  roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, upgrade = 5, write = 6, convert = 7,
+  mkdir = 8, move = 9, remove = 10,  // remove's wire name is "delete"
+};
 // What a phone can use to read. `admin` is apart: granted only to the owner's session.
 inline constexpr std::uint32_t kAllOps = (1u << 4) - 1;
 inline constexpr std::uint32_t kAdminOp = 1u << 4;
@@ -77,6 +80,17 @@ inline constexpr std::uint32_t kWriteOp = 1u << 6;
 // when it has a converter (a hardware encoder that opens) and its owner left it on. A
 // phone asks for a clip it cannot play itself only when serve_caps has it.
 inline constexpr std::uint32_t kConvertOp = 1u << 7;
+// Changing the shared folders (docs/design/28 "Changing files"): `mkdir`, `move` and `delete`,
+// for a device whose role is "change" (caps_msg::role). A service that lists any of them also
+// takes `write` in every folder whose root_info.writable is true, not only in backup folders.
+// An older service does not know the names and leaves them out of serve_caps: a client hides
+// its Move, Rename, Delete and New folder commands when (caps.ops & kChangeOps) != kChangeOps.
+// Like `write`, they are in the caps of any paired device that asked; each request checks the
+// device's role again, so a "view" device is refused {"why":"not-allowed"}.
+inline constexpr std::uint32_t kMkdirOp = 1u << 8;
+inline constexpr std::uint32_t kMoveOp = 1u << 9;
+inline constexpr std::uint32_t kDeleteOp = 1u << 10;
+inline constexpr std::uint32_t kChangeOps = kMkdirOp | kMoveOp | kDeleteOp;
 inline constexpr std::size_t kMaxCandidates = 8;
 inline constexpr int kPunchMs = 10000;
 struct candidate {
@@ -132,6 +146,29 @@ inline constexpr const char* kWhyBusy = "busy";                // this device is
 inline constexpr const char* kWhyName = "name";                // a name too long to keep beside its unfinished copy
 inline constexpr const char* kWhyOffline = "offline";          // the folder is not there now (a drive unplugged)
 inline constexpr std::size_t kMaxWriteName = 200;              // bytes of the last part of `rel`
+
+// ---- changing the shared folders (kChangeOps) ----------------------------------------------
+// Each answers once, with stream_end (no credit, no data):
+//   {"op":"mkdir","root","rel"}: makes the folder and any missing above it.
+//       ok {"name":rel}, or ok {"name":rel,"existing":true} for a folder already there.
+//   {"op":"move","root","rel","to_root","to_rel"}: a file or a folder, within one folder or
+//       into another this device may change. Never replaces: a taken `to_rel` is refused
+//       {"why":"exists"} (pick another name). The folders above `to_rel` are made. On one
+//       volume a rename; across volumes a copy into a hidden name beside the destination,
+//       every file's hash checked, renamed into place, and only then the source removed.
+//       ok {"name":to_rel}.
+//   {"op":"delete","root","rel"}: nothing is destroyed. The file or folder is moved into the
+//       folder's hidden trash on the same volume, as `<kTrashFolder>/<YYYY-MM-DD>/<rel>`
+//       (numbered " (2)" when that is taken), so its old place is kept in its name. Nothing
+//       empties the trash; its owner does, on the host. ok {"trash":"<YYYY-MM-DD>/<rel>"}.
+// Refusals: refused with {"why"} (kWhyNotAllowed: not "change", or a folder never changed
+// (the Catalogue); kWhyPath: the folder itself, a hidden or unsafe name, a folder moved into
+// itself; kWhyExists; kWhyBusy: another request is on that name now; kWhyName; kWhyLimit and
+// kWhyFull, for what a move would add); not_found (with {"why":"offline"} when the folder's
+// drive is gone); error for a failure of the disk.
+inline constexpr const char* kTrashFolder = ".mediaviewer-trash";
+inline constexpr const char* kWhyPath = "path";      // the folder itself, a hidden or unsafe name, a folder into itself
+inline constexpr const char* kWhyExists = "exists";  // the destination is taken (never replaced)
 // The 16 hex digits a device's files are known by in a backup folder: its unfinished
 // copies and its ledger. The first 8 bytes of BLAKE2b-256 over its public key.
 [[nodiscard]] std::string device_folder_id(const std::array<std::uint8_t, 32>& device_public);
@@ -208,6 +245,9 @@ struct open_request {
   bool meta = false;         // rel is under kBackupMetaFolder
   // convert: -1 for the plan, else the segment (0 .. plan.segments - 1)
   std::int64_t segment = -1;
+  // move: where to
+  std::string to_root;
+  std::string to_rel;
 };
 [[nodiscard]] std::vector<std::uint8_t> encode_open(const open_request& r);
 // nullopt: not a well-formed request at all. A name this build does not know
@@ -247,7 +287,10 @@ struct root_info {
   std::string id;
   std::string label;
   bool backup = false;    // a backup folder (1.1)
-  bool writable = false;  // and this device may write there
+  // This device may change files here now (write, and with kChangeOps mkdir, move, delete).
+  // A service before kChangeOps sends it only on a backup folder (where it meant "may back
+  // up here"); `backup` still says which folders are those.
+  bool writable = false;
   // Its folder is not there right now (an external drive unplugged, a share
   // not mounted): listed so the phone keeps it, every request on it answers
   // not_found with {"why":"offline"} until it is back. Sent only when true.
@@ -356,6 +399,10 @@ struct config {
   // set them (serve_admin set_addresses): sent in every session's caps, so a device paired before
   // a DuckDNS name or a new LAN address learns it without pairing again.
   std::string local, public_name;
+  // The VPN (docs/design/28 "The NAS as a VPN host"): the port this service's
+  // own relay listens on to forward its owner's laptop traffic out (0: off).
+  // Its key is in the secret store (kVpnKeyName), never here.
+  std::uint16_t vpn_port = 0;
 };
 
 // What a paired device's waiter at the relay is called: BLAKE2b-128 keyed by
@@ -366,6 +413,22 @@ struct config {
 // The relay's "host:port" (a name, an IPv4 address or "[IPv6]:port"), split;
 // false for anything else (no port, port 0, spaces or control characters).
 [[nodiscard]] bool parse_relay_address(std::string_view address, std::string& host, std::uint16_t& port);
+
+// Connecting a computer to a VPN host in one step (docs/design/28 "Connect to
+// a VPN host"): the host's relay line "host:port#KEY" (what `driftwire host vpn
+// on` prints, and the NAS's VPN answers) as a code to copy,
+// "mediaviewer://relay#host:port#KEY". It holds the relay's key.
+inline constexpr std::string_view kRelayCodePrefix = "mediaviewer://relay#";
+// The same with the relay's web-site look (docs/plans/vpn-stealth.md): the port
+// is the look's (443 outside), and the laptop reaches it with TLS and the knock
+// ("mediaviewer://relay-tls#host:443#KEY").
+inline constexpr std::string_view kRelayTlsCodePrefix = "mediaviewer://relay-tls#";
+[[nodiscard]] std::string relay_connect_code(std::string_view relay_line, bool tls = false);
+// The relay line in a pasted code, or in a bare line ("host:port#KEY"), spaces
+// and a trailing newline around it allowed; nullopt for anything else (no port,
+// a key shorter than the relay takes, a second '#', spaces inside). `tls`
+// (optional): whether it was the web-site look's code (a bare line never is).
+[[nodiscard]] std::optional<std::string> parse_relay_connect_code(std::string_view text, bool* tls = nullptr);
 // {"port":N,"name":"...","roots":[{"id","label","path"}],"relay"?,"local"?,"public"?} (each "host:port"). `any_port`: port 0
 // is accepted (the OS picks; the test build only): a service needs a fixed one. `no_roots`: a
 // config with no folders yet is accepted (`driftwire host`, which serves nothing until one is

@@ -1,0 +1,7 @@
+{
+ "description": "Your own VPN, with no VPN company: away from home, send this computer's traffic through your home computer or your server, and use this computer or your server as your laptop's way out. Nothing goes through anyone else's servers.",
+ "contributes": {
+  "api": {"min": 16, "max": 16},
+  "screens": [{"id": "settings", "title": "VPN", "place": "settings"}]
+ }
+}

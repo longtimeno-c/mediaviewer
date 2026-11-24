@@ -39,8 +39,10 @@ struct folder_row {
 struct host_row {
   bool installed = false, set_up = false, running = false, at_login = false;
   bool paused = false;  // "Tray": hosting turned off
+  bool vpn = false, vpn_on = false, tls_failed = false;  // host.json asks; the relay does; the look failed
   std::int64_t service_port = 0, offline = 0;
-  std::string name, duckdns;
+  std::int64_t relay_port = 0, relay_outside_port = 0, tls_port = 0, tls_outside_port = 0;
+  std::string name, duckdns, domain;
   std::vector<std::string> keepers;
   std::vector<std::string> stats;  // today's usage and the phones connected, in the menu's words
   // Clips the phone can't play (docs/plans/phone-clip-convert.md): the switch, and what the host found.
@@ -55,6 +57,13 @@ struct user_row {
 };
 struct disk_row {
   std::string id, name, facts, refused;
+  std::int64_t used = 0, free = 0;
+  bool mounted = false;
+  std::string used_words, free_words;
+};
+// A drive kept copied onto another (Keep a copy, the program's host_copy.h).
+struct copy_row {
+  std::string label, to_name, from_id, to_id, state, line;
 };
 struct set_row {
   std::string id, name, kind, state, line;
@@ -67,6 +76,7 @@ struct drives_listing {
   std::string error;
   std::vector<disk_row> disks;
   std::vector<set_row> sets;
+  std::vector<copy_row> copies;
 };
 struct drive_option {
   std::string choice, title, why_not, space_words, dead_words, speed_words;
@@ -104,6 +114,9 @@ struct view {
   std::int64_t unlocked_s = 0, locked_until = 0;
   std::string relay;
   std::optional<host_row> host;
+  std::string relay_line, relay_code;  // the VPN's line for the laptop and its code, while shown
+  std::int64_t nas_vpn_port = 0;       // the NAS as a VPN host: the port asked for (0: off)
+  bool nas_vpn_running = false;
   std::string host_step, host_said;
   std::optional<std::vector<user_row>> users;
   std::vector<std::string> share_addresses;
@@ -227,6 +240,7 @@ view parse(std::string_view text) {
     r.offline = i_of(*h, "offline");
     r.name = s_of(*h, "name");
     r.duckdns = s_of(*h, "duckdns");
+    r.domain = s_of(*h, "domain");
     r.keepers = strings_of(*h, "keepers");
     r.paused = b_of(*h, "paused");
     r.stats = strings_of(*h, "stats");
@@ -235,10 +249,21 @@ view parse(std::string_view text) {
     r.convert_busy = b_of(*h, "convert_busy");
     r.convert_helper = b_of(*h, "convert_helper");
     r.convert_encoder = s_of(*h, "convert_encoder");
+    r.vpn = b_of(*h, "vpn");
+    r.vpn_on = b_of(*h, "vpn_on");
+    r.tls_failed = b_of(*h, "tls_failed");
+    r.relay_port = i_of(*h, "relay_port");
+    r.relay_outside_port = i_of(*h, "relay_outside_port");
+    r.tls_port = i_of(*h, "tls_port");
+    r.tls_outside_port = i_of(*h, "tls_outside_port");
     s.host = r;
   }
   s.host_step = s_of(o, "host_step");
   s.host_said = s_of(o, "host_said");
+  s.relay_line = s_of(o, "relay_line");
+  s.relay_code = s_of(o, "relay_code");
+  s.nas_vpn_port = i_of(o, "nas_vpn_port");
+  s.nas_vpn_running = b_of(o, "nas_vpn_running");
   if (const json::value* v = o.find("users"); v && v->k == json::kind::array) {
     std::vector<user_row> list;
     for (const json::value& u : v->a) {
@@ -262,7 +287,17 @@ view parse(std::string_view text) {
     if (const json::value* v = d->find("disks"); v && v->k == json::kind::array) {
       for (const json::value& k : v->a) {
         if (s_of(k, "id").empty()) continue;
-        l.disks.push_back({s_of(k, "id"), s_of(k, "name"), s_of(k, "facts"), s_of(k, "refused")});
+        disk_row r;
+        r.id = s_of(k, "id");
+        r.name = s_of(k, "name");
+        r.facts = s_of(k, "facts");
+        r.refused = s_of(k, "refused");
+        r.used = k.integer("used").value_or(0);
+        r.free = k.integer("free").value_or(0);
+        r.mounted = b_of(k, "mounted");
+        r.used_words = s_of(k, "used_words");
+        r.free_words = s_of(k, "free_words");
+        l.disks.push_back(std::move(r));
       }
     }
     if (const json::value* v = d->find("sets"); v && v->k == json::kind::array) {
@@ -273,6 +308,13 @@ view parse(std::string_view text) {
           for (const json::value& x : m->a) r.members.push_back(s_of(x, "id"));
         }
         l.sets.push_back(std::move(r));
+      }
+    }
+    if (const json::value* v = d->find("copies"); v && v->k == json::kind::array) {
+      for (const json::value& e : v->a) {
+        if (s_of(e, "label").empty()) continue;
+        l.copies.push_back({s_of(e, "label"), s_of(e, "to_name"), s_of(e, "from_id"), s_of(e, "to_id"), s_of(e, "state"),
+                            s_of(e, "line")});
       }
     }
     s.drives = std::move(l);
@@ -447,6 +489,39 @@ void sym_button(writer& w, const std::string& id, const std::string& label, cons
   w.end_object();
 }
 
+// The VPN's status line for this computer as the server (`host vpn on|off`) and
+// for a NAS that offers it: the VPN add-on's Host section (vpn_state).
+std::string host_vpn_line(const host_row& h, const std::string& me) {
+  if (!h.vpn) {
+    return "Off. On, your laptop's VPN leaves through " + me +
+           " when you're away, so sites see your home's address. Never a way into your home network.";
+  }
+  if (!h.running) return "On once the server runs.";
+  if (!h.vpn_on) return "Turning on\xE2\x80\xA6";
+  std::string line;
+  if (h.tls_port > 0 && !h.tls_failed) {
+    // The web-site look (on by default) is what the code points at: 443 from outside when the router gave it.
+    const std::int64_t port = h.tls_outside_port > 0 ? h.tls_outside_port : h.tls_port;
+    line = "On \xC2\xB7 looks like a web site on port " + std::to_string(port);
+  } else {
+    const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
+    line = "On \xC2\xB7 relay port " + std::to_string(port);
+    if (h.tls_port > 0) line += " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port);
+  }
+  if (h.duckdns.empty() && h.domain.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
+  return line;
+}
+
+std::string nas_vpn_line(const view& s) {
+  if (s.nas_vpn_port == 0) {
+    return "Off. On, your laptop's VPN leaves through your server when you're away, so sites see your home's "
+           "address. Never a way into your home network.";
+  }
+  if (!s.nas_vpn_running) return "On, but your server couldn't listen on port " + std::to_string(s.nas_vpn_port) + ".";
+  return "On \xC2\xB7 port " + std::to_string(s.nas_vpn_port) +
+         ". Forward it on your router as you did the service's port (DSM offers it).";
+}
+
 // A folder path the server takes (wire/serve.cpp add_root): /… on a NAS or a
 // Mac, X:\… or X:/… on a Windows server.
 bool server_path(std::string_view p) {
@@ -500,9 +575,69 @@ std::string joined(const std::vector<std::string>& v, const char* sep) {
 // them, offered equally, with "RAID is not a backup" above them. A combined
 // choice erases: each drive's name is typed before Erase and combine is enabled
 // (the program checks the names again; the OS asks for an administrator).
+// Keep a copy (docs/plans/self-host-drives-keep-a-copy.md §1): with two drives
+// picked, copy the one with data onto the other and keep it up to date. Nothing
+// is erased, so no name is typed. Comes before the five choices, as recommended.
+void keep_copy_rows(writer& w, const drives_listing& l, drives_state& d, bool idle) {
+  d.copy_drawn.clear();
+  if (d.picked.size() != 2) return;
+  std::vector<const disk_row*> two;
+  for (const std::string& id : d.picked) {
+    for (const disk_row& k : l.disks) {
+      if (k.id == id) two.push_back(&k);
+    }
+  }
+  if (two.size() != 2) return;
+  for (const copy_row& c : l.copies) {
+    for (const disk_row* k : two) {
+      if (k->id == c.from_id || k->id == c.to_id) return;  // one of them is in a copy already: its row says so
+    }
+  }
+  const disk_row* from = two[0]->used >= two[1]->used ? two[0] : two[1];
+  if (two[0]->id == d.copy_from) from = two[0];
+  if (two[1]->id == d.copy_from) from = two[1];
+  const disk_row* to = from == two[0] ? two[1] : two[0];
+  d.copy_drawn = from->id;
+  const std::string q_from = "\xE2\x80\x9C" + from->name + "\xE2\x80\x9D";
+  stack(w, "dr_keep_card", 6, "vertical", "card");
+  text(w, "dr_keep_t", "Keep a copy (nothing on " + q_from + " is erased)", "heading");
+  text(w, "dr_keep_rec", "Recommended", "caption");
+  text(w, "dr_keep_what",
+       "Copies everything on " + from->name + " to " + to->name + ", then keeps the copy up to date while the server runs. "
+       "Files deleted or saved over on " + from->name + " stay in the copy's Recycle Bin for 30 days.",
+       "secondary");
+  text(w, "dr_keep_not_mirror",
+       "Not a mirror: if " + from->name + " dies, the copy has everything but the last few minutes. "
+       "Files already on " + to->name + " are left alone.",
+       "secondary");
+  std::vector<option> dirs{{from->id, "Copy " + from->name + " onto " + to->name},
+                           {to->id, "Copy " + to->name + " onto " + from->name}};
+  choice(w, "dr_keep_from", "Copy from", dirs, from->id, !idle);
+  const bool mounted = from->mounted && to->mounted;
+  const bool fits = from->used <= to->free;
+  std::string why;
+  if (!mounted) {
+    why = (from->mounted ? to->name : from->name) + " isn't mounted, so it can't be used yet.";
+  } else if (!fits) {
+    why = "Doesn't fit: " + from->name + " has " + from->used_words + " on it, " + to->name + " has " + to->free_words + " free.";
+  } else {
+    why = "Fits: " + from->used_words + " onto " + to->free_words + " free.";
+  }
+  text(w, "dr_keep_fit", why, "secondary");
+  button(w, "dr_keep_go", "Start copying", !idle || !mounted || !fits, "primary",
+         "Keep a copy of " + from->name + " on " + to->name);
+  end(w);
+}
+
 void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std::string& me) {
   const bool idle = !busy;
   if (s.drives) {
+    for (const copy_row& c : s.drives->copies) {
+      const std::string id = row_hash("cp", c.label);
+      row(w, id, "Copy of " + c.label, c.line);
+      button(w, id + "_stop", "Stop keeping a copy", !idle, "plain", "Stop keeping a copy of " + c.label);
+      end_row(w);
+    }
     for (const set_row& set : s.drives->sets) {
       const std::string id = row_hash("ds", set.id);
       row(w, id, set.name, set.line);
@@ -567,6 +702,7 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
       button(w, "dr_check", "Check again", !idle);
       end_row(w);
     }
+    keep_copy_rows(w, l, d, idle);
     if (!d.picked.empty() && s.choices) {
       text(w, "dr_not_backup", s.choices->not_a_backup, "heading");
       stack(w, "dr_options", 8, "horizontal");
@@ -885,6 +1021,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   disk_ids_.clear();
   disk_names_.clear();
+  copy_labels_.clear();
   set_ids_.clear();
   set_names_.clear();
   set_members_.clear();
@@ -897,6 +1034,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       disk_ids_.push_back(k.id);
       disk_names_.push_back(k.name);
     }
+    for (const copy_row& c : s.drives->copies) copy_labels_.push_back(c.label);
     for (const set_row& r : s.drives->sets) {
       set_ids_.push_back(r.id);
       set_names_.push_back(r.name);
@@ -973,12 +1111,16 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "host_convert") busy_text = "Changing the server's setting";
   else if (s.busy == "host_stop") busy_text = "Stopping the server";
   else if (s.busy == "host_name") busy_text = "Naming it on DuckDNS";
+  else if (s.busy == "host_vpn") busy_text = "Changing the VPN";
+  else if (s.busy == "host_vpn_line" || s.busy == "nas_vpn") busy_text = "Changing the VPN";
   else if (s.busy == "user_set" || s.busy == "user_remove" || s.busy == "users_apply")
     busy_text = s.host_step == "users" ? "Waiting for " + me + "'s administrator" : std::string("Changing the users");
   else if (s.busy == "host_drives") busy_text = "Reading the drives";
   else if (s.busy == "host_drives_choices") busy_text = "Working out the choices";
   else if (s.busy == "host_drives_combine") busy_text = "Combining the drives. Allow it in the administrator prompt.";
   else if (s.busy == "host_drives_replace") busy_text = "Replacing the drive. Allow it in the administrator prompt.";
+  else if (s.busy == "host_drives_copy") busy_text = "Setting up the copy";
+  else if (s.busy == "host_drives_copy_stop") busy_text = "Stopping the copy";
   else if (s.busy == "host_setup") {
     if (s.host_step == "share") busy_text = "Sharing the folders";
     else if (s.host_step == "name") busy_text = "Naming it on DuckDNS";
@@ -1074,9 +1216,18 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     }
     users_rows(w, s, users_, busy, me, Me, sid);
   };
+  // The VPN through this computer or the server is the VPN add-on's
+  // (docs/plans/vpn-addon.md, owner 2026-11-19): one line says where.
+  const auto vpn_rows = [&] {
+    row(w, "vpn", "VPN",
+        "Use " + (host_here ? me : std::string("your server")) +
+            " as your laptop's VPN in Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN.");
+    end_row(w);
+  };
   if (host_here && !sections) {
     host_rows();
     if (s.claimed) duck_rows();
+    vpn_rows();
     drives_rows(w, s, drives_, busy, me);
     if (s.claimed) here_users_rows();
   }
@@ -1241,9 +1392,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       const std::string id = row_hash("ph", p.key);
       std::string lead = p.guest ? (p.backup ? "Guest \xC2\xB7 Backs up \xC2\xB7 " : "Guest \xC2\xB7 ")
                                  : (p.backup ? "" : "No backup \xC2\xB7 ");
+      // A phone kept in the grants (limited) may have no end: it is there for its folders or
+      // its backup switch. Only an end date makes it timed.
+      const bool timed = p.limited && p.expires != 0;
       std::string detail;
-      if (!p.limited || p.expires == 0) {
-        detail = lead + "Key " + short_key(p.key);
+      if (!timed) {
+        detail = lead + "No time limit \xC2\xB7 Key " + short_key(p.key);
       } else if (p.expired || p.expires <= now) {
         detail = lead + "Expired " + relative(p.expires, now);
       } else {
@@ -1251,12 +1405,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       }
       row(w, id, p.name, detail);
       // Extend offers only lengths that end later than the phone's end now.
-      std::vector<option> opts{{"", p.limited ? "Extend\xE2\x80\xA6" : "Limit\xE2\x80\xA6"}};
+      std::vector<option> opts{{"", timed ? "Extend\xE2\x80\xA6" : "Add a time limit\xE2\x80\xA6"}};
       for (const auto& [label, secs] : durations()) {
-        if (!p.limited || p.expires == 0 || now + secs > p.expires) opts.push_back({std::to_string(secs), std::string(label) + " from now"});
+        if (!timed || now + secs > p.expires) opts.push_back({std::to_string(secs), std::string(label) + " from now"});
       }
-      if (p.limited) opts.push_back({"unlimited", kUnlimited});
-      choice(w, id + "_access", p.limited ? "Extend " + p.name + "'s access" : "Limit " + p.name + "'s access", opts, "",
+      if (timed) opts.push_back({"unlimited", kUnlimited});
+      choice(w, id + "_access", timed ? "Extend " + p.name + "'s access" : "Time limit for " + p.name, opts, "",
              busy || !s.has("passphrase"));
       if (s.has("backup")) {
         toggle(w, id + "_backup", "Backs up", p.backup, busy);
@@ -1445,6 +1599,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     field(w, "local", "Address on your network", local_, "server.local:7878", busy);
     public_rows(true);
     relay_rows();
+    // The VPN: this computer's own server, or a NAS that offers one.
+    if (host_here || s.has("vpn")) vpn_rows();
     end_section(w);
 
     if (host_here) {
@@ -1568,6 +1724,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_no_folders") e = "Choose a folder for your phone to read.";
   else if (r == "host_no_library") e = "Choose a folder for your phone to read, not only a backup folder.";
   else if (r == "host_twice") e = "That folder is in the list twice.";
+  else if (r == "host_domain") e.clear();  // the VPN add-on's Host section says it (vpn_state)
   else if (r == "host_bad_name") e = "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org.";
   else if (r == "host_bad_token") e = "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-\xE2\x80\xA6";
   else if (r == "host_share") e = s.host_said.empty() ? "The folder couldn't be shared." : "Couldn't share it: " + s.host_said;
@@ -1575,6 +1732,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_start") e = s.host_said.empty() ? "The server didn't start." : "The server didn't start: " + s.host_said;
   else if (r == "host_convert") e = s.host_said.empty() ? "The server's setting wasn't changed." : "The server's setting wasn't changed: " + s.host_said;
   else if (r == "host_stop") e = s.host_said.empty() ? "The server didn't stop." : "The server didn't stop: " + s.host_said;
+  else if (r == "host_vpn") e = s.host_said.empty() ? "The VPN wasn't changed." : "The VPN wasn't changed: " + s.host_said;
   else if (r == "host_not_listening") e = "The server started but isn't answering yet. Another program may be using its port.";
   else if (r == "host_no_network") e = "Claimed, but " + me + " isn't on a network, so a phone can't reach it yet.";
   else if (r == "host_failed") e = "The driftwire program couldn't be run.";
@@ -1752,6 +1910,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       if (!v.empty()) out.push_back(req("folder").s("path", v).done());
     } else if (node == "dr_label") {
       drives_.label = v;
+    } else if (node == "dr_keep_from") {
+      drives_.copy_from = v;
     } else if (node == "dr_rep_typed") {
       drives_.replace_typed = v;
     } else if (node == "dr_rep_pick") {
@@ -2054,6 +2214,30 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       drives_.choice.clear();
       drives_.picked.clear();
     }
+  } else if (node == "dr_keep_go") {
+    if (drives_.picked.size() == 2) {
+      // As drawn: the picked drive copied from, else the one with most on it (the tree's default).
+      std::string from = drives_.copy_from;
+      if (std::find(drives_.picked.begin(), drives_.picked.end(), from) == drives_.picked.end()) from = drives_.copy_drawn;
+      if (!from.empty()) {
+        const std::string to = drives_.picked[0] == from ? drives_.picked[1] : drives_.picked[0];
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_copy").key("ids").begin_array().string(from).string(to).end_array();
+        out.push_back(rw.end_object().take());
+        drives_.asked = "copy";
+        drives_.choice.clear();
+        drives_.picked.clear();
+        drives_.copy_from.clear();
+      }
+    }
+  } else if (node.substr(0, 2) == "cp" && node.size() > 5 && node.substr(node.size() - 5) == "_stop") {
+    for (const std::string& label : copy_labels_) {
+      if (row_hash("cp", label) + "_stop" == node) {
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_copy_stop").key("label").string(label);
+        out.push_back(rw.end_object().take());
+      }
+    }
   } else if (node == "dr_rep_cancel") {
     drives_.replacing.clear();
   } else if (node == "dr_rep_go") {
@@ -2167,6 +2351,64 @@ void screen::forget_secrets() {
   unlock_wanted_ = false;
   note_.clear();
   duck_note_.clear();
+}
+
+// ---- the VPN add-on's Host section (docs/plans/vpn-addon.md) -------------------------------
+
+std::string screen::vpn_state(std::string_view state_json) const {
+  const view s = parse(state_json);
+  const bool here_host = s.host && s.host->set_up;
+  const bool server = !here_host && s.claimed && s.has("vpn");
+  writer w;
+  w.begin_object();
+  if (here_host) {
+    const host_row& h = *s.host;
+    w.key("where").string("here").key("title").string(std::string("VPN through ") + here());
+    w.key("line").string(host_vpn_line(h, here())).key("on").boolean(h.vpn);
+    // Its own domain (docs/plans/vpn-stealth.md §3): what it is, and what to add at its DNS.
+    w.key("domain").string(h.domain);
+    w.key("domain_line")
+        .string(h.domain.empty()
+                    ? "Optional: the code then carries your domain instead of the DuckDNS name, which some networks block."
+                    : h.duckdns.empty() ? h.domain + ": point it at your home yourself."
+                                        : h.domain + ": a CNAME to " + h.duckdns + ".duckdns.org, and _acme-challenge." +
+                                              h.domain + " to _acme-challenge." + h.duckdns + ".duckdns.org.");
+  } else if (server) {
+    w.key("where").string("server").key("title").string("VPN through your server");
+    w.key("line").string(nas_vpn_line(s)).key("on").boolean(s.nas_vpn_port != 0);
+  } else {
+    w.key("where").string("none");
+  }
+  const bool vpn_busy = s.busy == "host_vpn" || s.busy == "host_vpn_line" || s.busy == "nas_vpn" || s.busy == "host_domain";
+  w.key("busy").boolean(vpn_busy);
+  if ((here_host || server) && !s.relay_code.empty()) w.key("code").string(s.relay_code);
+  if (s.error == "host_vpn") {
+    w.key("error").string(s.host_said.empty() ? "The VPN wasn't changed." : "The VPN wasn't changed: " + s.host_said);
+  } else if (s.error == "host_domain") {
+    w.key("error").string(s.host_said.empty() ? "That isn't a domain, like vpn.example.com." : s.host_said);
+  }
+  w.end_object();
+  return w.take();
+}
+
+std::string screen::vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                std::string_view domain) const {
+  const view s = parse(state_json);
+  const bool here_host = s.host && s.host->set_up;
+  const bool server = !here_host && s.claimed && s.has("vpn");
+  if (method == "vpn_code_hide") return req("host_vpn_hide").done();
+  if (!here_host && !server) return {};
+  if (method == "vpn_set") return req(here_host ? "host_vpn" : "nas_vpn").b("on", on).done();
+  if (method == "vpn_domain") {
+    // This computer's own: `host name domain` (a NAS keeps its name in DSM).
+    if (!here_host || domain.empty()) return {};
+    return req("host_domain").s("domain", std::string(domain)).done();
+  }
+  if (method == "vpn_code") {
+    // On again: the same port, the key once more (the NAS); `host vpn on` again prints its line.
+    return here_host ? req("host_vpn_line").done() : req("nas_vpn").b("on", true).done();
+  }
+  return {};
 }
 
 }  // namespace mv::phone::card

@@ -248,6 +248,9 @@ enum chrome_command : int {
   chrome_cmd_remote_changed = 1110,
   // Open > Home (owner 2026-11-18): back to the welcome card, nothing open.
   chrome_cmd_go_home = 1111,
+  // docs/design/16 "Folder navigation": one click on a folder tile selects it
+  // (arg: the tile's index, -1 the images); two open it (open_subfolder).
+  chrome_cmd_folder_cursor = 1112,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -494,7 +497,7 @@ static_assert(static_cast<int>(command_id::tool_smaller) == 216 && static_cast<i
               static_cast<int>(command_id::tool_extend) == 226 && static_cast<int>(command_id::tool_faces) == 227);
 static_assert(chrome_cmd_canvas_tool >= kCommandCount && chrome_cmd_tool_erase_set >= kCommandCount);
 static_assert(chrome_cmd_faces >= kCommandCount && chrome_cmd_remote_changed >= kCommandCount &&
-              chrome_cmd_go_home >= kCommandCount);
+              chrome_cmd_go_home >= kCommandCount && chrome_cmd_folder_cursor >= kCommandCount);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -535,7 +538,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
       chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min,
       chrome_cmd_canvas_tool, chrome_cmd_tool_size_set, chrome_cmd_tool_erase_set,
-      chrome_cmd_faces, chrome_cmd_remote_changed, chrome_cmd_go_home};
+      chrome_cmd_faces, chrome_cmd_remote_changed, chrome_cmd_go_home, chrome_cmd_folder_cursor};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -1320,8 +1323,11 @@ class chrome_host {
   [[nodiscard]] bool run_addon_command(const std::string& addon, const std::string& id,
                                        const std::string& json) noexcept;
   // #452: an add-on's screen, opened or brought forward (the notification-area
-  // icon's Open <screen>). False when the chrome has no such entry.
-  [[nodiscard]] bool open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
+  // icon's Open <screen>). none when the chrome has no such entry. A
+  // settings-place screen is no window (docs/plans/vpn-addon.md): the chrome
+  // wants its add-on's page and answers settings_page; the host opens Settings.
+  enum class addon_screen_opened { none, window, settings_page };
+  [[nodiscard]] addon_screen_opened open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
   // docs/design/25: an add-on package (*.mvaddon) handed to the app. The chrome
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
@@ -1361,7 +1367,8 @@ class chrome_host {
   [[nodiscard]] gallery_search_answer gallery_search(gallery_search_action action,
                                                      std::int32_t arg = 0) noexcept;
   void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
-  void apply_browse(std::int32_t folder_cursor, bool can_go_up, const std::string& crumbs,
+  // `moves`: bit 0 Up, bit 1 Back, bit 2 Forward.
+  void apply_browse(std::int32_t folder_cursor, std::int32_t moves, const std::string& crumbs,
                     bool finding = false, const std::string& query = {}) noexcept;
 
   // True when the island consumed the message (do not Translate/Dispatch).

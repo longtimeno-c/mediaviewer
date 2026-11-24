@@ -100,6 +100,30 @@ TEST_CASE("phone access: every state of the card is a tree the core accepts", "[
   }
 }
 
+TEST_CASE("phone access: only a phone with an end date reads as time-limited", "[phone-addon]") {
+  // As on 2026-11-23: an iPhone with no limit, a MacBook kept in the grants only because its
+  // backup is off (no end date), and a guest with an end.
+  const char* state = R"({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+    "nas_features":["passphrase","backup"],
+    "devices":[{"name":"iPhone","key":"b50089df00"},
+               {"name":"MacBook","key":"9d14160800","limited":true,"expires":0,"backup":false},
+               {"name":"Guest","key":"0011","guest":true,"limited":true,"expires":1800003600}]})";
+  screen c(mv::phone::card::computer::pc);
+  const std::string tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find("No time limit \xC2\xB7 Key b50089df") != std::string::npos);
+  CHECK(tree.find("No backup \xC2\xB7 No time limit \xC2\xB7 Key 9d141608") != std::string::npos);
+  CHECK(tree.find("Time limit for iPhone") != std::string::npos);
+  CHECK(tree.find("Time limit for MacBook") != std::string::npos);
+  CHECK(tree.find("Extend MacBook's access") == std::string::npos);
+  CHECK(tree.find("Extend Guest's access") != std::string::npos);
+  CHECK(tree.find("Guest \xC2\xB7 Until ") != std::string::npos);
+  // The MacBook gets a time limit from the same menu.
+  const auto r = c.on_event(screen::row_id("ph", "9d14160800") + "_access", kChange, quoted("604800"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"grant","key":"9d14160800","for_s":604800})");
+}
+
 TEST_CASE("phone access: the claimed card shows the code, its countdown, the phones and the folders", "[phone-addon]") {
   screen c(mv::phone::card::computer::pc);
   const std::string tree = c.build(kClaimed, kNow);
@@ -209,6 +233,20 @@ TEST_CASE("phone access: the claimed card is in sections, each a heading with it
   CHECK(tree.find("\"id\":\"local_row\"") != std::string::npos);
   CHECK(tree.find("\"id\":\"public_row\"") != std::string::npos);
   CHECK(tree.find("\"id\":\"backup_add_open\",\"label\":\"Add backup folder\xE2\x80\xA6\"") != std::string::npos);
+  // The VPN's one line (the VPN add-on has the switch) is in Away from home, once.
+  const std::size_t vpn = tree.find("\"id\":\"vpn_d\"");
+  REQUIRE(vpn != std::string::npos);
+  CHECK(vpn > tree.find("\"id\":\"sec_away_heading\""));
+  CHECK(vpn < tree.find("\"id\":\"sec_drives_heading\""));
+  CHECK(tree.find("\"id\":\"vpn_d\"", vpn + 1) == std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_on\"") == std::string::npos);
+  // A NAS that offers the VPN: the line too, in Away from home.
+  const std::string nas_vpn = c.build(R"({"folder":"/volume1/photo","claimed":true,"nas_features":["vpn"]})", kNow);
+  require_valid(nas_vpn);
+  const std::size_t nv = nas_vpn.find("\"id\":\"vpn_d\"");
+  REQUIRE(nv != std::string::npos);
+  CHECK(nv > nas_vpn.find("\"id\":\"sec_away_heading\""));
+  CHECK(nas_vpn.find("\"id\":\"nas_vpn_on\"") == std::string::npos);
   // Another server (not this computer): no Drives or Users.
   const std::string nas = c.build(R"({"folder":"/Volumes/nas/lib","claimed":true})", kNow);
   require_valid(nas);
@@ -294,6 +332,126 @@ TEST_CASE("phone access: this computer's server has Stop while it runs and Start
   tree = c.build(R"({"error":"host_stop","host_said":"schtasks failed","host":{"installed":true,"set_up":true,"running":true}})",
                  kNow);
   CHECK(tree.find("The server didn't stop: schtasks failed") != std::string::npos);
+}
+
+// The VPN is the VPN add-on's (docs/plans/vpn-addon.md): the card says where, and
+// answers its vpn_* requests with the state and the link's requests.
+std::string member(const std::string& json, const char* key) {
+  const auto doc = mv::json::parse(json, 2);
+  REQUIRE(doc);
+  if (const std::string* s = doc->str(key)) return *s;
+  if (const auto b = doc->boolean(key)) return *b ? "true" : "false";
+  return "-";
+}
+
+TEST_CASE("phone access: this computer's VPN, for the VPN add-on: its status, the switch and the code",
+          "[phone-addon]") {
+  screen c(mv::phone::card::computer::mac);
+  // The card: one line, no switch.
+  const char* off = R"({"host":{"installed":true,"set_up":true,"running":true,"service_port":7878}})";
+  std::string tree = c.build(off, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Use this Mac as your laptop's VPN in Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN.") !=
+        std::string::npos);
+  CHECK(tree.find("\"id\":\"vpn_on\"") == std::string::npos);
+  CHECK(c.on_event("vpn_on", kChange, "true", kNow).empty());  // an old id does nothing
+
+  // The VPN add-on's Host section.
+  std::string st = c.vpn_state(off);
+  CHECK(member(st, "where") == "here");
+  CHECK(member(st, "title") == "VPN through this Mac");
+  CHECK(member(st, "on") == "false");
+  CHECK(member(st, "line").find("Never a way into your home network") != std::string::npos);
+  CHECK(member(st, "code") == "-");
+  CHECK(c.vpn_request(off, "vpn_set", true) == R"({"do":"host_vpn","on":true})");
+  CHECK(c.vpn_request(off, "vpn_set", false) == R"({"do":"host_vpn","on":false})");
+  CHECK(c.vpn_request(off, "vpn_code", false) == R"({"do":"host_vpn_line"})");
+  CHECK(c.vpn_request(off, "vpn_code_hide", false) == R"({"do":"host_vpn_hide"})");
+  CHECK(c.vpn_request(off, "something", true).empty());
+
+  CHECK(member(c.vpn_state(R"({"busy":"host_vpn","host":{"installed":true,"set_up":true,"running":true}})"), "busy") ==
+        "true");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"vpn":true,"vpn_on":false}})"),
+               "line") == "Turning on\xE2\x80\xA6");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":false,"vpn":true}})"), "line") ==
+        "On once the server runs.");
+  st = c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,"vpn_on":true,
+    "relay_port":47614,"relay_outside_port":47700,"tls_port":443,"tls_failed":true}})");
+  CHECK(member(st, "line") == "On \xC2\xB7 relay port 47700 \xC2\xB7 the web-site look couldn't listen on port 443");
+  CHECK(member(st, "on") == "true");
+  st = c.vpn_state(R"({"relay_line":"[::1]:47614#k3y","relay_code":"mediaviewer://relay#[::1]:47614#k3y","host":{"installed":true,
+    "set_up":true,"running":true,"vpn":true,"vpn_on":true,"relay_port":47614}})");
+  CHECK(member(st, "code") == "mediaviewer://relay#[::1]:47614#k3y");
+  CHECK(member(st, "line").find("Without a DuckDNS name it works on your home network only.") != std::string::npos);
+  CHECK(member(c.vpn_state(R"({"error":"host_vpn","host_said":"could not write host.json","host":{"installed":true,"set_up":true}})"),
+               "error") == "The VPN wasn't changed: could not write host.json");
+  // Nothing to host on: none, and nothing is asked of the link.
+  const char* nothing = R"({"claimed":true,"folder":"/volume1/photo"})";
+  CHECK(member(c.vpn_state(nothing), "where") == "none");
+  CHECK(c.vpn_request(nothing, "vpn_set", true).empty());
+  CHECK(c.build(nothing, kNow).find("as your laptop's VPN") == std::string::npos);
+}
+
+TEST_CASE("phone access: the VPN's web-site look and its own domain, for the VPN add-on", "[phone-addon][vpn-stealth]") {
+  screen c(mv::phone::card::computer::mac);
+  // On with the look (on by default): the port the code points at, 443 from outside.
+  const char* look = R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615,"tls_outside_port":443}})";
+  std::string st = c.vpn_state(look);
+  CHECK(member(st, "line") == "On \xC2\xB7 looks like a web site on port 443");
+  CHECK(member(st, "domain") == "");
+  CHECK(member(st, "domain_line").find("which some networks block") != std::string::npos);
+  // Its own domain: `host name domain` (or none), for this computer only.
+  CHECK(c.vpn_request(look, "vpn_domain", false, "vpn.example.com") ==
+        R"({"do":"host_domain","domain":"vpn.example.com"})");
+  CHECK(c.vpn_request(look, "vpn_domain", false, "none") == R"({"do":"host_domain","domain":"none"})");
+  CHECK(c.vpn_request(look, "vpn_domain", false, "").empty());
+  const char* nas = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614})";
+  CHECK(c.vpn_request(nas, "vpn_domain", false, "vpn.example.com").empty());
+  // Set: the two CNAMEs it needs; the line no longer says home network only.
+  st = c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","domain":"vpn.example.com",
+    "vpn":true,"vpn_on":true,"relay_port":47614,"tls_port":47615}})");
+  CHECK(member(st, "domain") == "vpn.example.com");
+  CHECK(member(st, "domain_line") == "vpn.example.com: a CNAME to home.duckdns.org, and _acme-challenge.vpn.example.com "
+                                     "to _acme-challenge.home.duckdns.org.");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"domain":"vpn.example.com","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615}})"), "line").find("home network only") == std::string::npos);
+  CHECK(member(c.vpn_state(R"({"busy":"host_domain","host":{"installed":true,"set_up":true,"running":true}})"), "busy") ==
+        "true");
+  CHECK(member(c.vpn_state(R"({"error":"host_domain","host_said":"driftwire host: \"x\" is not a domain (vpn.example.com).",
+    "host":{"installed":true,"set_up":true}})"), "error").find("is not a domain") != std::string::npos);
+  // The look's code, given as it came.
+  CHECK(member(c.vpn_state(R"({"relay_line":"mediaviewer://relay-tls#home.duckdns.org:443#k3y",
+    "relay_code":"mediaviewer://relay-tls#home.duckdns.org:443#k3y","host":{"installed":true,"set_up":true,"running":true,
+    "vpn":true,"vpn_on":true}})"), "code") == "mediaviewer://relay-tls#home.duckdns.org:443#k3y");
+}
+
+TEST_CASE("phone access: the NAS's VPN, for the VPN add-on, when its service offers it", "[phone-addon][nas-vpn]") {
+  screen c(mv::phone::card::computer::mac);
+  // A NAS from before (no "vpn" feature): nothing.
+  const char* before = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["passphrase","relay"]})";
+  CHECK(c.build(before, kNow).find("as your laptop's VPN") == std::string::npos);
+  CHECK(member(c.vpn_state(before), "where") == "none");
+  const char* off = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["relay","vpn"],"nas_vpn_port":0})";
+  std::string tree = c.build(off, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Use your server as your laptop's VPN in Settings") != std::string::npos);
+  std::string st = c.vpn_state(off);
+  CHECK(member(st, "where") == "server");
+  CHECK(member(st, "title") == "VPN through your server");
+  CHECK(member(st, "on") == "false");
+  CHECK(c.vpn_request(off, "vpn_set", true) == R"({"do":"nas_vpn","on":true})");
+  CHECK(member(c.vpn_state(R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":false})"),
+               "line") == "On, but your server couldn't listen on port 47614.");
+  const char* on = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614,"nas_vpn_running":true,
+    "relay_code":"mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y"})";
+  st = c.vpn_state(on);
+  CHECK(member(st, "line").rfind("On \xC2\xB7 port 47614. Forward it on your router", 0) == 0);
+  CHECK(member(st, "on") == "true");
+  CHECK(member(st, "code") == "mediaviewer://relay#nas.example.com:47614#k3yk3yk3yk3yk3yk3y");
+  CHECK(c.vpn_request(on, "vpn_code", false) == R"({"do":"nas_vpn","on":true})");  // on again: the key once more
+  CHECK(c.vpn_request(on, "vpn_set", false) == R"({"do":"nas_vpn","on":false})");
+  CHECK(c.build(on, kNow).find("k3yk3yk3y") == std::string::npos);  // the card never shows the code now
 }
 
 TEST_CASE("phone access: this computer's DuckDNS name can be changed after setup", "[phone-addon]") {
@@ -764,6 +922,78 @@ TEST_CASE("phone access: the drives step offers the five ways, erases only what 
   r = c.on_event("dr_rep_go", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_replace","set":"Photos","ids":["2"],"name":"Untitled (2)"})J");
+}
+
+// Keep a copy: two drives, one full of photos, one nearly empty (as on 2026-11-23: a 4 TB
+// drive with 1.2 TB on it, its new twin with 231 MB).
+const char* kCopyState = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+  "host":{"installed":true,"set_up":true,"running":true,"service_port":7878},
+  "drives":{"os":"windows","pool_ok":true,"disks":[
+     {"id":"4","name":"Family Media Copy","facts":"x","used":231000000,"free":3999000000000,"mounted":true,
+      "used_words":"231 MB","free_words":"4 TB"},
+     {"id":"5","name":"Family Media","facts":"x","used":1200000000000,"free":2800000000000,"mounted":true,
+      "used_words":"1.2 TB","free_words":"2.8 TB",
+      "refused":"it holds a folder this server shares, which may be its only copy"}],
+   "sets":[],"copies":[]}})J";
+
+const char* kCopyKept = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+  "host":{"installed":true,"set_up":true,"running":true,"service_port":7878},
+  "drives":{"os":"windows","pool_ok":true,"disks":[],"sets":[],
+   "copies":[{"label":"Family Media","to_name":"Family Media Copy","from_id":"5","to_id":"4","state":"copying",
+              "line":"Copy on \u201cFamily Media Copy\u201d: copying, 1,204 files (420 GB) left"}]}})J";
+
+TEST_CASE("phone access: keep a copy of a full drive on another, nothing erased and nothing typed", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  (void)c.build(kCopyState, kNow);
+  (void)c.on_event("dr_open", kClick, "", kNow);
+  std::string tree = c.build(kCopyState, kNow);
+  CHECK(tree.find("Keep a copy") == std::string::npos);  // nothing picked yet
+  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
+  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  tree = c.build(kCopyState, kNow);
+  require_valid(tree);
+  // The full drive is the one copied from, though it can't be erased (that is the point).
+  CHECK(tree.find("Keep a copy (nothing on \xE2\x80\x9C" "Family Media\xE2\x80\x9D is erased)") != std::string::npos);
+  CHECK(tree.find("Recommended") != std::string::npos);
+  CHECK(tree.find("Fits: 1.2 TB onto 4 TB free.") != std::string::npos);
+  CHECK(tree.find("to erase it") == std::string::npos);  // no name to type
+  auto r = c.on_event("dr_keep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
+
+  // The other way round can be chosen; going back sends the first way again.
+  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
+  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  (void)c.build(kCopyState, kNow);
+  (void)c.on_event("dr_keep_from", kChange, quoted("4"), kNow);
+  tree = c.build(kCopyState, kNow);
+  CHECK(tree.find("Keep a copy (nothing on \xE2\x80\x9C" "Family Media Copy\xE2\x80\x9D is erased)") != std::string::npos);
+  CHECK(tree.find("Fits: 231 MB onto 2.8 TB free.") != std::string::npos);
+  (void)c.on_event("dr_keep_from", kChange, quoted("5"), kNow);
+  r = c.on_event("dr_keep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
+
+  // A copy drive too small: said with both numbers.
+  std::string small = kCopyState;
+  small.replace(small.find("3999000000000"), 13, "500000000000");
+  small.replace(small.find("\"4 TB\""), 6, "\"500 GB\"");
+  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
+  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  tree = c.build(small, kNow);
+  CHECK(tree.find("Doesn't fit: Family Media has 1.2 TB on it, Family Media Copy has 500 GB free.") != std::string::npos);
+
+  // A copy kept: its own row says how it stands, and stops with one click (the files stay).
+  screen k(mv::phone::card::computer::pc);
+  (void)k.build(kCopyKept, kNow);
+  (void)k.on_event("dr_open", kClick, "", kNow);
+  tree = k.build(kCopyKept, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Copy of Family Media") != std::string::npos);
+  CHECK(tree.find("copying, 1,204 files (420 GB) left") != std::string::npos);
+  r = k.on_event(screen::row_id("cp", "Family Media") + "_stop", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy_stop","label":"Family Media"})J");
 }
 
 TEST_CASE("phone access: users ask for the admin first, and a password is sent once and never shown", "[phone-addon]") {

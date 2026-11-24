@@ -182,6 +182,8 @@ public struct Services: Sendable {
   public let saver: PhotoSaver
   /// Phone backup (1.1, §10b).
   public private(set) var backup: BackupService = NoBackup()
+  /// Changing the files in the server's folders (file mode, a device that may): none by default.
+  public var changes: FolderChanges = NoFolderChanges()
 
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,

@@ -20,14 +20,17 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 8> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 11> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
                                                              {op::admin, "admin"},
                                                              {op::upgrade, "upgrade"},
                                                              {op::write, "write"},
-                                                             {op::convert, "convert"}}};
+                                                             {op::convert, "convert"},
+                                                             {op::mkdir, "mkdir"},
+                                                             {op::move, "move"},
+                                                             {op::remove, "delete"}}};
 
 bool lower_hex64(std::string_view s) noexcept {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
@@ -200,6 +203,7 @@ std::vector<std::uint8_t> encode_open(const open_request& r) {
     w.key("hash").string(r.hash);
   }
   if (r.kind == op::convert) w.key("seg").integer(r.segment);
+  if (r.kind == op::move) w.key("to_root").string(r.to_root).key("to_rel").string(r.to_rel);
   if (r.meta) w.key("meta").boolean(true);
   if (r.credit != 0) w.key("credit").integer(static_cast<std::int64_t>(r.credit));
   w.end_object();
@@ -262,6 +266,13 @@ std::optional<open_request> parse_open(std::span<const std::uint8_t> body, bool&
     const auto seg = doc->integer("seg");
     if (!in_range(seg, -1, kMaxConvertSegments - 1) || r.rel.empty()) return std::nullopt;
     r.segment = *seg;
+  }
+  if (r.kind == op::move) {
+    const std::string* to_root = doc->str("to_root");
+    const std::string* to_rel = doc->str("to_rel");
+    if (!to_root || !to_rel) return std::nullopt;
+    r.to_root = *to_root;
+    r.to_rel = *to_rel;
   }
   if (const json::value* m = doc->find("meta")) {
     if (m->k != json::kind::boolean) return std::nullopt;
@@ -331,6 +342,8 @@ std::string roots_json(std::span<const root_info> roots) {
     w.begin_object().key("id").string(r.id).key("label").string(r.label);
     // Only on a backup folder, so a reader from before 1.1 sees exactly what it did.
     if (r.backup) w.key("backup").boolean(true).key("writable").boolean(r.writable);
+    // Elsewhere only when true: a reader from before kChangeOps reads it on a backup folder alone.
+    if (!r.backup && r.writable) w.key("writable").boolean(true);
     if (r.offline) w.key("offline").boolean(true);
     w.end_object();
   }
@@ -350,7 +363,7 @@ std::optional<std::vector<root_info>> parse_roots(std::string_view text) {
     if (!id || !valid_id(*id) || !label || label->size() > kMaxLabelBytes) return std::nullopt;
     root_info info{*id, *label};
     info.backup = v.boolean("backup").value_or(false);
-    info.writable = info.backup && v.boolean("writable").value_or(false);
+    info.writable = v.boolean("writable").value_or(false);
     info.offline = v.boolean("offline").value_or(false);
     out.push_back(std::move(info));
   }
@@ -528,6 +541,11 @@ result<config> parse_config(std::string_view text, bool any_port, bool no_roots)
       *into = *v;
     }
   }
+  if (doc->find("vpn_port")) {
+    const auto p = doc->integer("vpn_port");
+    if (!p || *p < 0 || *p > 65535) return err(status::invalid_arg);
+    c.vpn_port = static_cast<std::uint16_t>(*p);
+  }
   return c;
 }
 
@@ -550,6 +568,7 @@ std::string config_json(const config& c) {
   if (!c.relay.empty()) w.key("relay").string(c.relay);
   if (!c.local.empty()) w.key("local").string(c.local);
   if (!c.public_name.empty()) w.key("public").string(c.public_name);
+  if (c.vpn_port != 0) w.key("vpn_port").integer(c.vpn_port);
   w.end_object();
   return w.take();
 }
@@ -638,6 +657,45 @@ bool parse_relay_address(std::string_view address, std::string& host, std::uint1
   host.assign(h);
   port = static_cast<std::uint16_t>(p);
   return true;
+}
+
+std::string relay_connect_code(std::string_view relay_line, bool tls) {
+  return std::string(tls ? kRelayTlsCodePrefix : kRelayCodePrefix) + std::string(relay_line);
+}
+
+std::optional<std::string> parse_relay_connect_code(std::string_view text, bool* tls) {
+  const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+  while (!text.empty() && space(text.front())) text.remove_prefix(1);
+  while (!text.empty() && space(text.back())) text.remove_suffix(1);
+  // The scheme in any case, as a link may arrive.
+  const auto starts = [&](std::string_view prefix) {
+    if (text.size() < prefix.size()) return false;
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+      const char a = text[i] >= 'A' && text[i] <= 'Z' ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
+      if (a != prefix[i]) return false;
+    }
+    return true;
+  };
+  bool look = false;
+  if (starts(kRelayTlsCodePrefix)) {
+    text.remove_prefix(kRelayTlsCodePrefix.size());
+    look = true;
+  } else if (starts(kRelayCodePrefix)) {
+    text.remove_prefix(kRelayCodePrefix.size());
+  }
+  if (tls) *tls = false;
+  const std::size_t hash = text.find('#');
+  if (hash == std::string_view::npos || text.find('#', hash + 1) != std::string_view::npos) return std::nullopt;
+  const std::string_view key = text.substr(hash + 1);
+  if (key.size() < 16 || key.size() > 4096) return std::nullopt;  // relay::kMinKeyChars, set_relay's cap
+  for (const char ch : key) {
+    if (static_cast<unsigned char>(ch) <= 0x20 || ch == 0x7f) return std::nullopt;
+  }
+  std::string host;
+  std::uint16_t port = 0;
+  if (!parse_relay_address(text.substr(0, hash), host, port)) return std::nullopt;
+  if (tls) *tls = look;
+  return std::string(text);
 }
 
 std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,

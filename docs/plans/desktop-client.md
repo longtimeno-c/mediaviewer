@@ -159,20 +159,44 @@ that gets its own measurement.
 - **Opening the link**: registering `mediaviewer://` on the desktop would also catch a phone's
   link; owed (§7).
 
-## 6. Write access (owner call 1, with #686 §2)
+## 6. Write access (owner call 1, with #686 §2) — built
 
-The service already says, per folder, whether this device may write there (`root_info.writable`),
-and the write op is the backup write path's, with its checks. The role (*can change files*) that
-an admin grants a desktop, from the app or `driftwire` on the host, is #686 §2's work
-(`smb-users`, through `src/wire/grants.*`). When it lands, the desktop reads `writable` and lets
-Move, rename, Trash and metadata through to a service write op; until then it is read-only whatever
-the service says.
+A desktop starts "view". When the host's admin gives it "change" (`driftwire host users role` /
+`serve grant … --role change`), the next connect's caps say so and the service marks each named
+folder `writable` for it (never the Catalogue). Then, on both hosts:
+
+- **What it may do**: add (drops, Paste files here, Copy to), New Folder, move and rename within
+  the server, and Delete, which goes to that folder's hidden trash on the server
+  (`.mediaviewer-trash/<date>/`), emptied only by its owner. Ratings, metadata and edits of a
+  remote original stay refused (`write_guard::change_allowed` lets exactly those five through).
+- **Truthful per folder**: `remote::library::can_write(key)` is the service's change ops
+  (`changes_files`) and that root's `writable`, read with the server's folders and again after a
+  reconnect whose role changed. `write_problem(key)` says why not ("Home lets this computer view
+  only…", "needs an update", "isn't answering"); greyed menu items carry it as their tip, a key
+  or a drop beeps and shows it.
+- **The seam**: every change goes through `shell/file_transfer.h` (`mixed_target` over the host's
+  `remote_ops`: the library on the Mac, the core's `mv_remote_*` 0.45 calls on Windows) and the
+  drop rule in `shell/file_drop.h`. Up is an upload (the service never replaces: " (2)"; it
+  resumes after a dropped link or an offset refusal); down is a fetch then a verified local copy,
+  and a move off the server deletes there only after that copy reads back; within one server a
+  move is the service's own. A remote folder moves only within its server; nothing goes from one
+  server to another.
+- **A role changed while linked**: the role comes once, at hello. The service re-reads its lists
+  every 2 s and cuts a link whose limit changed; the desktop learns the new role on its next
+  request. Taken away: the next change is refused `not_allowed`, and the desktop reconnects and
+  re-reads the roots at once (row and `can_write` say "view" from then). Given: the next listing
+  (opening or refreshing a folder) reconnects and re-reads them. No timer; neither side restarts.
+  A `busy` refusal (a write open there) says "try again in a moment", never a failure.
+- **Fresh at once**: each change drops the kept listing and stamps it touched; the open remote
+  folder and the folder pane list again, keeping the selection.
+
+Not yet: downloading a whole remote folder, a copy between two servers, cancelling an upload on
+Windows (the core's add has no cancel handle there), and the server-side "restore from trash".
 
 ## 7. Not in this slice
 
 - Streaming playback through `read_range` (seek before the clip has arrived).
 - The catalogue: searching the host's `.mediaviewer` from the desktop as the phone does.
-- Write access (§6).
 - `mediaviewer://pair` as a registered link on the desktop; a QR read from a webcam.
 - Linux (its host has no folder tree yet).
 

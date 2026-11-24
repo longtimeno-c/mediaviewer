@@ -1167,8 +1167,9 @@ bool chrome_host::run_addon_command(const std::string& addon, const std::string&
   return run_addon_command_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
-bool chrome_host::open_addon_screen(const std::string& addon, const std::string& screen) noexcept {
-  if (!attached_ || !open_addon_screen_) return false;
+chrome_host::addon_screen_opened chrome_host::open_addon_screen(const std::string& addon,
+                                                                const std::string& screen) noexcept {
+  if (!attached_ || !open_addon_screen_) return addon_screen_opened::none;
   // Two UTF-8 strings, each NUL-terminated, mirrored by IslandHost.OpenAddonScreen.
   std::vector<std::uint8_t> buf;
   buf.reserve(addon.size() + screen.size() + 2);
@@ -1176,7 +1177,11 @@ bool chrome_host::open_addon_screen(const std::string& addon, const std::string&
     buf.insert(buf.end(), part->begin(), part->end());
     buf.push_back(0);
   }
-  return open_addon_screen_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+  switch (open_addon_screen_(buf.data(), static_cast<std::int32_t>(buf.size()))) {
+    case 0: return addon_screen_opened::window;
+    case 1: return addon_screen_opened::settings_page;
+    default: return addon_screen_opened::none;
+  }
 }
 
 bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {
@@ -1224,13 +1229,13 @@ void chrome_host::scale_gallery(std::int32_t direction, std::int32_t index) noex
   (void)scale_gallery_(args, static_cast<std::int32_t>(sizeof(args)));
 }
 
-void chrome_host::apply_browse(std::int32_t folder_cursor, bool can_go_up,
+void chrome_host::apply_browse(std::int32_t folder_cursor, std::int32_t moves,
                                const std::string& crumbs, bool finding,
                                const std::string& query) noexcept {
   if (!attached_ || !apply_browse_) return;
   chrome_browse_args args{};
   args.folder_cursor = folder_cursor;
-  args.can_go_up = can_go_up ? 1 : 0;
+  args.can_go_up = moves;
   args.crumbs_bytes = static_cast<std::int32_t>(crumbs.size());
   args.query_bytes = finding ? static_cast<std::int32_t>(query.size()) : -1;
   args.crumbs_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(crumbs.data()));
