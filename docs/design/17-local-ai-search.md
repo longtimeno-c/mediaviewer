@@ -591,7 +591,8 @@ Corrections: rename, merge, "not this person" (`face_reject`, `faces_reject_json
 
 1. Score every person by mean pairwise cosine; shortlist the best 3 ≥ `same_person − 2 × margin`.
 2. Rescore **confirmed** people (with a pinned face) by **exemplars**: mean of the top 3 cosines to
-   pinned faces and good core (≤ 12, `build_person_proto`). Unconfirmed keep the mean.
+   pinned faces and good core (`build_person_proto`; ≤ 12, or ≤ 48 covering their looks, see
+   "Confirmed people"). Unconfirmed keep the mean.
 3. Join the best at `same_person`, unless the runner-up is within `ambiguous`: then unassigned.
 
 - Unusable faces join nobody; weak ones may join (by mean) but never start a person.
@@ -610,11 +611,11 @@ Corrections: rename, merge, "not this person" (`face_reject`, `faces_reject_json
 `face_refine.h/.cpp` (pure), `faces_db::refine_begin / refine_commit`, `engine::person_refine`.
 *refs* = pinned + good members (≤ 256); *anchors* = pins plus the refs' medoid (with pins, only if
 within `same_person` of one); *core* = refs within `same_person` of an anchor; *exemplars* = pinned
-then core, ≤ 12; **support** = mean top-3 cosine to exemplars.
+then core, ≤ 12 (more for a confirmed person, below); **support** = mean top-3 cosine to exemplars.
 
 | Verdict | Rule |
 |---|---|
-| **move** to b | support(b) ≥ join (`same_person`) and beats own, runner-up and neg(b) by `margin`; never weak; never into a person it was rejected from or that holds another face of its frame |
+| **move** to b | support(b) ≥ join (`same_person`) and beats own, runner-up and neg(b) by `margin`; never weak (but see "Confirmed people"); never into a person it was rejected from or that holds another face of its frame |
 | **evict** | support(own) < `keep` (`keep_weak` if weak); or unusable; or person is `weak_only`; or rejected from it; or neg(own) ≥ join and > support(own); or a better face of its frame is there |
 | **admit** (unassigned) | as move |
 | **regroup** | unassigned good faces within join of a leader and at join mean (average linkage), ≥ 2, one per frame → new person |
@@ -632,6 +633,25 @@ then core, ≤ 12; **support** = mean top-3 cosine to exemplars.
 - **Refinement runs only when the user asks** ("Refine faces"): `person_refine` on a worker judges
   only that person's faces (`refine_input::focus`), admits nothing; the commit skips faces changed
   since the snapshot. Tests `[refine]`.
+
+### Confirmed people
+
+A person is **confirmed** by a name or a pinned face. What the user said counts for more than what
+the clustering guessed (2026-11-23, tests `[refine]`, `[dedupe]`):
+
+- **Known by every look.** Refs are drawn one per photo or clip first (≤ 1,024,
+  `max_refs_confirmed`), and after the usual 12 exemplars come more (≤ 48,
+  `max_exemplars_confirmed`): the core face that most photos and clips not yet covered resemble at
+  join + 2 margins, repeated until each is covered by `top_k` exemplars. Pins first; anything else
+  only if another photo or clip agrees with it. The first 12 are unchanged, so support only rises.
+- **Their claim outranks an unnamed person's hold.** A face its own person supports at join + 2
+  margins still moves to a confirmed person that beats it by `margin`, when its own is unconfirmed
+  (an unnamed person that took in every baby vouches for each of them).
+- **Weak faces.** An unassigned weak face is admitted to a confirmed person at join + 2 margins
+  (and `margin` over the rest). Nothing else files it: it is not in Unknown faces.
+- **The sheet's rivals.** An unconfirmed person whose mean is no stranger to this person's core
+  (≥ join − margin / 2) is their fragment, not a rival; and a face supported at join + 2 margins is
+  asked about only when a rival scores at least as high.
 
 ### Corrections that hold
 
@@ -712,6 +732,11 @@ Undo.
 2. `find_duplicates` (`face_refine.h`, no lock): two people link when each's exemplars support the
    other at `join` (smaller kept); groups by **complete linkage**, strongest first. Never: different
    names, `no_merge`, a cross rejection. Cores < 0.24 mean pairwise are skipped.
+   **Fragments:** a confirmed person and an unconfirmed one link **one way**: the confirmed
+   person's exemplars support ≥ 75 % (`fragment_share`) of the other's clear faces at `join`, and
+   their mean; no other confirmed person within `margin`; and it is ≤ 1/8 (`fragment_part`) of the
+   confirmed person's photos and clips (a larger one must vouch back, or its faces go one by one in
+   step 1). Fragments of one confirmed person need not link each other, only not be apart.
 3. Survivor: named, then more faces, then older (`faces_db::merge_auto`); nothing pinned.
 
 Undo is Split. Tests `"[dedupe]"`.
