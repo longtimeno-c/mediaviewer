@@ -1004,6 +1004,7 @@ Reach the web through one's own relay server on a filtering network. Plan
   `driftwire_resume.json`: sender identity, destination, landed folder name, whole files (path,
   size, time, where landed), the partial (temporary, durable bytes). Rewritten ≤ 1/s; partial
   flushed ≤ every 5 s per 32 MiB. One per sender, ≤ 8, expired after 7 days; **Discard** removes.
+  The record of the receive under way is not listed under **Unfinished transfers** until it stops.
 - **Hidden temporaries** (`io::set_hidden`; Linux leading dot `.IMG_1.JPG.mvtmp`,
   `io::kHasHiddenFlag`, `temp_name`), unhidden before rename.
 - **Matching**: the offer carries file times and `"resume": true`; same path, size and time →
@@ -1103,8 +1104,9 @@ The protocol is `src/wire` (`mv_wire`, `cmake/wire.cmake`), linked by the app's 
 
 ## Not built
 
-- **The Tunnel**: the Mac VPN's Network Extension entitlement; the Windows VPN's Wintun licence and
-  elevation (owner's call); a Linux interface; the system proxy on Linux and beyond Windows' LAN
+- **The Tunnel**: activating the Mac VPN on a real Mac (v0.1.44 carries the extension with its
+  entitlement); the Windows VPN's service (Wintun allowed under `LICENSE-WINTUN.md`, administrator
+  rights from a service the add-on installs: [12](12-decision-log.md), 2026-11-19); a Linux interface; the system proxy on Linux and beyond Windows' LAN
   entry; codes over the relay's TLS port; ICMP and fragments.
 - A prompt before an own computer relays (it reveals R's address to the code's maker).
 - Bonjour discovery for transfers; IPv6 on the LAN; Bluetooth on Linux.

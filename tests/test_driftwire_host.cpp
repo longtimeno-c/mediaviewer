@@ -263,6 +263,29 @@ TEST_CASE("driftwire host: sharing and unsharing folders", "[host]") {
     CHECK(back->roots[0].label == "Card");
   }
 
+  // Two folders whose names differ only in case, both there, on a volume that tells them apart
+  // (a case-sensitive one: Linux, or a Mac's case-sensitive APFS): two folders, never one. The
+  // second is shared in its own right, and --backup on it does not turn the first into the
+  // backup folder.
+  {
+    const fs::path data = s / "case-data";
+    fs::create_directories(data);
+    fs::create_directories(s / "Trip");
+    fs::create_directories(s / "trip");
+    std::error_code ec;
+    if (!fs::equivalent(s / "Trip", s / "trip", ec) && !ec) {
+      const cli::host_layout l = cli::host_layout_of(utf8(data));
+      std::string as;
+      REQUIRE(cli::host_files::share(l, utf8(s / "Trip"), "Trip", false, 0, true, as).empty());
+      REQUIRE(cli::host_files::share(l, utf8(s / "trip"), "Trip backup", true, 0, true, as).empty());
+      const auto back = cli::host_files::config(l, true);
+      REQUIRE(back);
+      REQUIRE(back->roots.size() == 2);
+      CHECK_FALSE(back->roots[0].backup);
+      CHECK(back->roots[1].backup);
+    }
+  }
+
   CHECK_FALSE(cli::unshare_folder(c, "Nope").empty());
   CHECK(cli::unshare_folder(c, "photos").empty());
   REQUIRE(c.roots.size() == 1);

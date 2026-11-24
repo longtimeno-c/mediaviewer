@@ -59,6 +59,8 @@ final class ClipModel {
   private var seekGeneration = 0
   /// The page was left: a load still on its way must not start the player.
   private var ended = false
+  /// The clip's copy on the phone, once downloaded: played from here, never asked of the server again.
+  private var localFile: URL?
 
   init(item: MediaItem, clips: ClipService) {
     self.item = item
@@ -78,7 +80,11 @@ final class ClipModel {
   }
 
   private func route(startAt: Moment?) async {
-    let route = await clips.route(for: item)
+    if let localFile { return await open(.stream(AVURLAsset(url: localFile)), startAt: startAt) }
+    await open(await clips.route(for: item), startAt: startAt)
+  }
+
+  private func open(_ route: ClipRoute, startAt: Moment?) async {
     guard !ended else { return }
     if case .converted = route { isConverted = true }
     switch route {
@@ -266,8 +272,15 @@ final class ClipModel {
           download = file.map(Download.finished) ?? .failed
           return
         }
-        // Playable once it is on the phone, from exactly where the picture was.
+        // Playable once it is on the phone, from exactly where the picture was. Played from the
+        // copy itself: asking the server again weighs the same clip against the same slow
+        // connection and lands back on "too big".
+        guard let file else {
+          download = .failed
+          return
+        }
         let at = seconds
+        localFile = file
         download = nil
         phase = .reading
         await route(startAt: Moment(seconds: at, kind: .scene, text: ""))
@@ -442,6 +455,10 @@ struct ClipLivePage: View {
                  live: live, onTapPicture: onTap)
       }
     }
+    // The page is the whole screen and `live.insets` is measured from its edges (the controls'
+    // room, or the safe area when they are hidden): the cell's own safe area on top of that
+    // took the room twice, and kept a full-screen picture off the screen's edges.
+    .ignoresSafeArea()
   }
 }
 
@@ -487,15 +504,19 @@ private struct ClipBody: View {
         .padding(.top, live.insets.top)
         .padding(.bottom, live.insets.bottom)
       } else {
-        // Full screen (the viewer's controls hidden): the picture takes all but the position bar
-        // and the buttons; the moments come back with the controls.
+        // Full screen (the viewer's controls hidden): the picture is the whole screen, edge to
+        // edge, so a portrait clip is as large as the phone allows; a tap brings back the
+        // position bar, the buttons and the moments with the controls. The picture stays the
+        // first child either way, so the player is never made again by the change.
         VStack(spacing: 0) {
           picture.frame(maxHeight: .infinity)
-          below.padding(.horizontal, 16).padding(.top, live.chromeShown ? 12 : 4)
-          if live.chromeShown { momentsList }
+          if live.chromeShown {
+            below.padding(.horizontal, 16).padding(.top, 12)
+            momentsList
+          }
         }
-        .padding(.top, live.insets.top)
-        .padding(.bottom, live.insets.bottom)
+        .padding(.top, live.chromeShown ? live.insets.top : 0)
+        .padding(.bottom, live.chromeShown ? live.insets.bottom : 0)
       }
     }
     .animation(.easeOut(duration: 0.15), value: live.insets)
@@ -525,13 +546,23 @@ private struct ClipBody: View {
           .padding(.horizontal, 10)
           .padding(.vertical, 5)
           .background(Capsule().fill(.black.opacity(0.55)))
-          .padding(.top, 12)
+          // Full screen: the picture runs under the status area, the badge stays below it.
+          .padding(.top, (live.chromeShown || compactHeight || typeSize.isAccessibilitySize ? 0 : live.insets.top) + 12)
           .transition(.opacity)
           .accessibilityHidden(true)
       }
     }
     .animation(.easeOut(duration: 0.15), value: clip.isFast)
+    // Full screen has no line under the picture to say the clip is waiting: the picture says it.
+    .overlay {
+      if !live.chromeShown && clip.isWaiting {
+        ProgressView().controlSize(.large).tint(.white).accessibilityLabel("Waiting for the clip")
+      }
+    }
     .accessibilityAction(named: clip.isFast ? "Normal speed" : "Double speed") { clip.setFast(!clip.isFast) }
+    // Full screen has no button on screen to leave it: the picture itself says how.
+    .accessibilityAction(named: live.chromeShown ? "Full screen" : "Exit full screen", onTapPicture)
+    .accessibilityIdentifier(live.chromeShown ? "clip.picture" : "clip.picture.fullscreen")
   }
 
 
@@ -541,6 +572,11 @@ private struct ClipBody: View {
         Image(uiImage: image).resizable().scaledToFit()
       }
     }
+    // An element of its own, so VoiceOver reaches the picture (and its way out of full screen)
+    // before the player is there.
+    .accessibilityElement()
+    .accessibilityLabel(entry.accessibilityName)
+    .accessibilityAddTraits(.isImage)
   }
 
   @ViewBuilder

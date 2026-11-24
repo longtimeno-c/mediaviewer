@@ -1312,6 +1312,7 @@ void engine::load_unfinished() {
 void engine::publish_unfinished_locked() {
   v_.unfinished.clear();
   for (const auto& r : unfinished_) {
+    if (!receiving_from_.empty() && r.sender == receiving_from_) continue;  // still arriving
     view::unfinished_row row;
     row.id = r.sender.substr(0, 16);
     row.peer = r.peer.empty() ? std::string("a computer") : r.peer;
@@ -3741,6 +3742,12 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     std::lock_guard lock(m_);
     v_.in = view::in_phase::receiving;
     v_.in_handover = false;
+    // #530: the record of this sender's earlier receive is taken up by this
+    // one, and the one this receive keeps as it goes is not unfinished yet.
+    if (may_resume) {
+      receiving_from_ = sender;
+      publish_unfinished_locked();
+    }
   }
   post();
   // #472 PR 5: over a local link, to a sender that takes them, with the
@@ -3843,6 +3850,12 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
       };
     }
     r = receive_files(*ch, *offer, dest, h, may_resume ? &plan : nullptr);
+  }
+  if (may_resume) {
+    // Stopped part way, what it kept is unfinished from here (dropped below otherwise).
+    std::lock_guard lock(m_);
+    receiving_from_.clear();
+    publish_unfinished_locked();
   }
   // #530: delivered, cancelled or declined, nothing is waiting any more
   // (MediaViewer quitting is not a cancel: what arrived waits to resume).

@@ -280,6 +280,12 @@ TEST_CASE("driftwire resume: the receiver quits mid-way; started again, the next
   // A few chunks of b_big.mov are enough: each waits up to 1 s on both sides,
   // and a loaded runner's 5 ms sleeps overshoot, so 8 chunks missed the 15 s.
   REQUIRE(eventually([&] { return bea->eng.snapshot().in_bytes > 2 * sp::kChunkBytes; }));
+  // What the receive keeps as it goes is on disk, but while it runs it is
+  // the transfer under way, not an unfinished one.
+  REQUIRE(eventually([&] { return fs::exists(s / "bea_data" / sp::kResumeFile); }));
+  CHECK(bea->eng.snapshot().in == sp::view::in_phase::receiving);
+  CHECK(bea->eng.snapshot().unfinished.empty());
+  CHECK(bea->tree().find("Unfinished transfers") == std::string::npos);
   bea.reset();  // MediaViewer quits there
   ann.eng.wait_idle();
   CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);

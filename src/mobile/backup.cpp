@@ -112,7 +112,7 @@ class over_link final : public target {
     limited_ = g == 1 && scoped;
     return out;
   }
-  bool limited_to_some_folders() const override { return limited_; }
+  bool limited_to_some_folders() const override { return limited_.load(std::memory_order_acquire); }
   result<bool> trash(const std::string& root, const std::string& rel) override {
     serve::client::change_refused why;
     auto r = l_.remove(root, rel, &why);
@@ -157,7 +157,8 @@ class over_link final : public target {
 
  private:
   link_session& l_;
-  bool limited_ = false;
+  // The run's thread and the chooser's both ask folders(): each reads what the last answer said.
+  std::atomic<bool> limited_{false};
 };
 
 // ---- the sample library's folder on this phone ---------------------------------------------

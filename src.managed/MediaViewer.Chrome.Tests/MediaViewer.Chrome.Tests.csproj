@@ -44,6 +44,7 @@
     <Compile Include="..\Shared\DropWords.cs" Link="Shared\DropWords.cs" />
     <Compile Include="..\Shared\SpringLatch.cs" Link="Shared\SpringLatch.cs" />
     <Compile Include="..\Shared\KeyUpLetters.cs" Link="Shared\KeyUpLetters.cs" />
+    <Compile Include="..\Shared\ScreenTreePatch.cs" Link="Shared\ScreenTreePatch.cs" />
   </ItemGroup>
 
 </Project>

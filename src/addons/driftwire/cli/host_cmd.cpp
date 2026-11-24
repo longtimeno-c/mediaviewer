@@ -158,9 +158,18 @@ fs::path canonical_or_normal(const std::string& p) {
   return c;
 }
 
-// Whether two paths name one folder as the file system would match them: in one case on Windows
-// and the Mac, and whether or not the drive is there now (then by their spelling alone).
+// Whether two paths name one folder. With both there, the file system says (two names that
+// differ only in case are two folders on a case-sensitive volume, which a Mac can have). With
+// either away (the drive unplugged), by their spelling alone: in one case on Windows and the Mac.
 bool same_folder(const std::string& a, const std::string& b) {
+  {
+    std::error_code ea, eb, ec;
+    const fs::path pa = to_path(a), pb = to_path(b);
+    if (fs::exists(pa, ea) && !ea && fs::exists(pb, eb) && !eb) {
+      const bool same = fs::equivalent(pa, pb, ec);
+      if (!ec) return same;
+    }
+  }
   const auto key = [](const std::string& p) {
     std::string k = to_utf8(canonical_or_normal(p));
     while (k.size() > 1 && (k.back() == '/' || k.back() == '\\') && !(k.size() == 3 && k[1] == ':')) k.pop_back();

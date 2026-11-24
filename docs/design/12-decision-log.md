@@ -2186,6 +2186,47 @@ elevated helper is owed). The TCP/IP stack is Driftwire's own (`netstack.cpp`, t
 connection only): lwIP (BSD-3, compatible) is not in vcpkg, and accepting a connection to any
 address needs patches to it.
 
+**The Mac release carries the VPN's extension with its entitlement (checked 2026-11-19).** Read
+from the installed v0.1.44 (release run 43786302385): `Contents/Library/SystemExtensions/
+io.github.longtimeno-c.mediaviewer.DriftwireTunnel.systemextension` is signed by the team's
+Developer ID with `packet-tunnel-provider-systemextension`, its Developer ID profile (made
+2026-11-14) is embedded and grants it, the app claims `system-extension.install` under its own
+profile, and the app is notarized and stapled (Gatekeeper: "Notarized Developer ID"). So the
+"entitlement owed" above is settled. Not yet run: activating it on a real Mac (the extension
+approval in System Settings, the VPN configuration prompt, traffic through an exit), which no
+release can do yet because the add-on does not start the VPN; the owner chose to do that together
+once a release does.
+
+**Windows' VPN carries `wintun.dll` under an additional permission, only in its own process
+(owner, 2026-11-19, #672).** WireGuard LLC's licence for the signed `wintun.dll` lets it ship beside
+software that uses it only through `wintun.h`, but it is not GPL-compatible, so the copyright holder
+grants a GPL-3.0 §7 permission to combine MediaViewer's code with it. The permission covers only
+longtimeno-c's code, and Exiv2 (GPL-2.0-or-later, other authors) loads into `MediaViewer.exe`, so
+`wintun.dll` is never to be loaded there: only the VPN service below, which holds no third-party
+GPL code, loads it (`LICENSE-WINTUN.md`). The official signed DLL ships unchanged under its own name. Rejected: loading it
+inside the app (Exiv2's licence has no such exception); OpenVPN's tap-windows6 (GPL-2.0, no linking,
+but an older, slower NDIS 6 driver with its own install prompt); building and signing our own Wintun
+(GPL-2.0-only source, and a kernel driver needs an EV certificate and Microsoft attestation signing);
+wireguard-nt and ovpn-dco-win (they carry their own protocols, not raw packets).
+
+**Windows' VPN gets administrator rights from a service the add-on installs (owner, 2026-11-19,
+#672).** Creating the Wintun adapter, opening a session on it (its device is SYSTEM and
+Administrators only), routes, DNS and WFP filters all need an administrator, and MediaViewer installs
+per user and never elevates. Turning on **All traffic (VPN)** the first time shows one UAC prompt: the
+add-on copies its small pump program and `wintun.dll` into `Program Files` (a LocalSystem service must
+never run from the user-writable `%LocalAppData%`) and registers a Windows service. The service owns
+the adapter, routes, DNS and the kill switch's filters and passes packets to the add-on over a named
+pipe only the installing person can open, the same split as the Mac's extension (the stack, flows and
+relay stay in the add-on). It is the add-on's own code, not a second app anyone opens (2026-10-11).
+The kill switch's filters stay while the app is closed or crashed, until the person turns the VPN off;
+the service adds them again at boot while the VPN is on (today's in-process filters, in
+[28](28-driftwire.md), end at a reboot).
+Removing the add-on asks UAC once and deletes the service, its filters and the adapter. **Not built
+yet:** until it is, `vpn_win.cpp` loads Wintun in process and starts only when MediaViewer runs
+elevated, and no release ships `wintun.dll`. Rejected: a
+UAC prompt at every start (no start at login), a scheduled task (less standard, no restart on
+failure), and running the whole app elevated (today's stopgap).
+
 **Sharepoint is now Driftwire, everywhere (owner, 2026-10-19).** Microsoft already sells a product
 called SharePoint, so the add-on was renamed in full: its name on screen, its id (`driftwire`), its
 files and folders, the release packages (`mediaviewer-addon-driftwire-*`), the relay tool
