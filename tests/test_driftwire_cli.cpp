@@ -1440,7 +1440,8 @@ TEST_CASE("driftwire cli session: /host shares, shows and turns the VPN on; what
   REQUIRE(key);
   REQUIRE(ann.shows("#" + *key));  // the relay line, for the laptop, said once here
   type_line(ann, "/host");  // alone: the status
-  REQUIRE(ann.shows("VPN on (driftwire host vpn on shows the relay line again)"));  // the transcript folds the columns
+  // The transcript folds the columns; the web-site look is on by default, on the relay's port + 1.
+  REQUIRE(ann.shows("VPN on, web-site look on port 47615 (driftwire host vpn on shows the relay line again)"));
   // What asks at the terminal needs one to hand over (this one has none).
   type_line(ann, "/host setup");
   REQUIRE(ann.screen_shows("This one asks at the terminal"));

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -26,20 +27,73 @@ constexpr std::string_view kBuiltinPage =
     "<style>body{font-family:system-ui,sans-serif;max-width:36em;margin:4em auto;color:#333}</style>\n"
     "</head><body><h1>Welcome</h1><p>This site is being set up. Please check back later.</p></body></html>\n";
 
-std::string answer(const char* status, std::string_view type, std::string_view body, bool head_only) {
+// nginx's own error page for `status` ("404 Not Found"), byte for byte.
+std::string nginx_page(std::string_view status) {
+  std::string s(status);
+  return "<html>\r\n<head><title>" + s + "</title></head>\r\n<body>\r\n<center><h1>" + s +
+         "</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n";
+}
+
+// An HTTP date (RFC 9110 IMF-fixdate) for `t` seconds since 1970, UTC.
+std::string http_date(std::int64_t t) {
+  static const char* const kDays[] = {"Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"};  // 1970-01-01: Thursday
+  static const char* const kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  const std::int64_t days = t / 86400, secs = t % 86400;
+  // Civil from days (Howard Hinnant's algorithm).
+  const std::int64_t z = days + 719468, era = z / 146097, doe = z - era * 146097;
+  const std::int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const std::int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+  const std::int64_t day = doy - (153 * mp + 2) / 5 + 1, month = mp < 10 ? mp + 3 : mp - 9;
+  const std::int64_t year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+  char b[40];
+  std::snprintf(b, sizeof b, "%s, %02d %s %04d %02d:%02d:%02d GMT", kDays[days % 7], static_cast<int>(day),
+                kMonths[month - 1], static_cast<int>(year), static_cast<int>(secs / 3600),
+                static_cast<int>(secs / 60 % 60), static_cast<int>(secs % 60));
+  return b;
+}
+
+std::string answer(const char* status, std::string_view type, std::string_view body, bool head_only, bool alive,
+                   std::int64_t now) {
   std::string out = "HTTP/1.1 ";
   out += status;
-  out += "\r\nServer: nginx\r\nContent-Type: ";
+  out += "\r\nServer: nginx\r\nDate: " + http_date(now) + "\r\nContent-Type: ";
   out += type;
-  out += "\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
+  out += "\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: ";
+  out += alive ? "keep-alive" : "close";
+  out += "\r\n\r\n";
   if (!head_only) out += body;
   return out;
+}
+
+// A header's value in a request head (case-insensitive name), "" without one.
+std::string header_of(std::string_view head, std::string_view name) {
+  const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+  std::size_t at = head.find("\r\n");
+  while (at != std::string_view::npos && at + 2 < head.size()) {
+    const std::size_t start = at + 2, end = head.find("\r\n", start);
+    const auto line = head.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
+    const auto colon = line.find(':');
+    if (colon == name.size()) {
+      bool same = true;
+      for (std::size_t i = 0; i < colon; ++i) same = same && lower(line[i]) == lower(name[i]);
+      if (same) {
+        std::string v;
+        for (const char c : line.substr(colon + 1)) {
+          if (c != ' ' && c != '\t') v += lower(c);
+        }
+        return v;
+      }
+    }
+    at = end;
+  }
+  return {};
 }
 
 std::string_view type_of(std::string_view path) {
   const auto dot = path.rfind('.');
   const auto ext = dot == std::string_view::npos ? std::string_view() : path.substr(dot + 1);
-  if (ext == "html" || ext == "htm") return "text/html; charset=utf-8";
+  if (ext == "html" || ext == "htm") return "text/html";
   if (ext == "css") return "text/css";
   if (ext == "js") return "text/javascript";
   if (ext == "png") return "image/png";
@@ -129,30 +183,34 @@ std::array<std::uint8_t, kKnockBytes> knock_of(const knock_key& k, std::span<con
   return out;
 }
 
-std::string decoy_response(std::string_view head, const decoy& d) {
+std::string decoy_response(std::string_view head, const decoy& d, std::int64_t now) {
+  if (now == 0) now = static_cast<std::int64_t>(std::time(nullptr));
   const auto end = head.find_first_of("\r\n");
   const auto line = head.substr(0, end);
   const auto sp1 = line.find(' ');
   const auto sp2 = sp1 == std::string_view::npos ? sp1 : line.find(' ', sp1 + 1);
   if (sp1 == std::string_view::npos || sp2 == std::string_view::npos || line.substr(sp2 + 1, 5) != "HTTP/") {
-    return answer("400 Bad Request", "text/html", "<html><body><h1>400 Bad Request</h1></body></html>\n", false);
+    return answer("400 Bad Request", "text/html", nginx_page("400 Bad Request"), false, false, now);
   }
+  const auto version = line.substr(sp2 + 1);
+  const auto connection = header_of(head, "Connection");
+  const bool alive = version == "HTTP/1.1" ? connection != "close" : connection == "keep-alive";
   const auto method = line.substr(0, sp1);
   const bool head_only = method == "HEAD";
   if (method != "GET" && !head_only) {
-    return answer("405 Not Allowed", "text/html", "<html><body><h1>405 Not Allowed</h1></body></html>\n", false);
+    return answer("405 Not Allowed", "text/html", nginx_page("405 Not Allowed"), false, false, now);
   }
   auto path = line.substr(sp1 + 1, sp2 - sp1 - 1);
   if (const auto q = path.find('?'); q != std::string_view::npos) path = path.substr(0, q);
   const auto not_found = [&] {
-    return answer("404 Not Found", "text/html", "<html><body><h1>404 Not Found</h1></body></html>\n", head_only);
+    return answer("404 Not Found", "text/html", nginx_page("404 Not Found"), head_only, alive, now);
   };
   if (path.empty() || path.front() != '/') return not_found();
   std::string file(path == "/" ? std::string_view("/index.html") : path);
   if (file.back() == '/') file += "index.html";
   if (d.dir.empty()) {
     if (file != "/index.html") return not_found();
-    return answer("200 OK", "text/html; charset=utf-8", kBuiltinPage, head_only);
+    return answer("200 OK", "text/html", kBuiltinPage, head_only, alive, now);
   }
   // A plain path inside the folder only.
   if (file.find("..") != std::string::npos) return not_found();
@@ -163,7 +221,12 @@ std::string decoy_response(std::string_view head, const decoy& d) {
   }
   const auto page = read_page(d.dir, file.substr(1));
   if (!page) return not_found();
-  return answer("200 OK", type_of(file), *page, head_only);
+  return answer("200 OK", type_of(file), *page, head_only, alive, now);
+}
+
+bool decoy_keeps_alive(std::string_view response) noexcept {
+  const auto end = response.find("\r\n\r\n");
+  return response.substr(0, end).find("\r\nConnection: keep-alive") != std::string_view::npos;
 }
 
 std::optional<std::string> ja4_of(std::span<const std::uint8_t> record) {

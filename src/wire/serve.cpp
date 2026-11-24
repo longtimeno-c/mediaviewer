@@ -2786,6 +2786,8 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     json::writer w;
     w.begin_object().key("vpn_port").integer(vpn_port_now).key("vpn_running").boolean(running);
     if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
+    // The web-site look's port when it listens: the code is then its (relay-tls).
+    if (vpn_relay && vpn_relay->tls_port() != 0) w.key("tls_port").integer(vpn_relay->tls_port());
     if (on) w.key("key").string(key);
     w.end_object();
     sodium_memzero(key.data(), key.size());
@@ -3447,6 +3449,9 @@ bool server::state::apply_vpn_locked(std::uint16_t want) {
   sodium_memzero(v->data(), v->size());
   ro.port = want;
   ro.loopback_only = loopback_only;
+  // The web-site look beside it (docs/plans/vpn-stealth.md), on the next port,
+  // self-signed: the code the owner copies points at it.
+  ro.tls_port = static_cast<std::uint16_t>(want < 65535 ? want + 1 : want - 1);
   // All traffic, never into the home's networks, nor to the home's outside
   // address (the router's, which hairpins to its forwarded ports): the
   // outside name as the owner's desktop last set it, looked up as it changes.
@@ -3471,6 +3476,10 @@ bool server::state::apply_vpn_locked(std::uint16_t want) {
   };
   if (vpn_tweak) vpn_tweak(ro);
   auto r = relay::server::start(ro);
+  if (!r && ro.tls_port != 0) {
+    ro.tls_port = 0;  // no TLS in this build, or its port taken: the plain relay rather than none
+    r = relay::server::start(ro);
+  }
   sodium_memzero(ro.key.data(), ro.key.size());
   if (!r) return false;
   vpn_relay = std::move(*r);

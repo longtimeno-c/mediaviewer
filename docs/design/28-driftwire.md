@@ -686,8 +686,9 @@ driftwire host start-at-login on|off        per user, no administrator
 driftwire host stay-awake on|off            the "system required" request while hosting (off for laptops)
 driftwire host setup                        the guided run: a name, a folder, the router, a phone, the VPN (slice 5)
 driftwire host name duckdns|none            the DuckDNS name; subdomain and token typed or pasted, never arguments
+driftwire host name domain NAME|none        your own domain for the VPN (a CNAME to the DuckDNS name)
 driftwire host pair                         a phone's pairing QR in the terminal
-driftwire host vpn on [--tls-port N] | off  the laptop's VPN exit; `on` prints the relay line (slice 7)
+driftwire host vpn on [--tls-port N|off] | off  the laptop's VPN exit; `on` prints its code (slice 7)
 driftwire host pause | resume | quit        the server menu's control: Hosting off / on; quit stops it
 driftwire host status --watch               the status again whenever it changes (usage, phones connected)
 ```
@@ -816,21 +817,45 @@ One guided run in the order a person needs it (`cli/host_setup.*`, plan §2):
 
 ### The VPN exit: `driftwire host vpn on|off` (slice 7, 2026-11-14)
 
-`host vpn on` sets `vpn` (and `--tls-port N`, the web-site look) in `host.json`; the running host
-restarts its relay with `relay::vpn_host_defaults`: forwarding to every port (`kAnyPort`, TCP and UDP;
-all traffic, owner 2026-11-19) apart from `never_forward`'s (TCP 23, 25 and 445, and 135 and 137-139
-both kinds: what gets a home address blocklisted; mail apps use 587, 465 and 993), 128 TCP forwards and
-128 UDP flows apart (a lookup's flow gives its slot back after 10 s idle), UDP out at most 4 MiB/s for
-all flows together, never to the home's outside address (`forward_refused` =
-`refuse_name_addresses` of the DuckDNS name: the router's address hairpins to its forwarded ports), and never to a private, loopback or link-local address, nor to any of the host's own networks
-(`relay::forward_destination_ok`: a home device's global IPv6 address, the host itself; owner call 5,
-no VPN into the home network), and its router
-keeper asks for the relay's port. It prints the relay line once, `name.duckdns.org:PORT#KEY` (the LAN
-address without a name; `PORT` the router's outside port when the running host has one), for the
-laptop's **Relay (your own server)**: the only place the relay's key is ever shown. The TLS look is a
-certificate the relay makes for the name (Let's Encrypt by DNS-01 is later, call 4); if its port
-cannot be had the relay runs without it and `host status` says so. `off` turns forwarding and the
-look off, and the router's relay port closes. Tested on loopback: a laptop's Tunnel proxy
+`host vpn on` sets `vpn` in `host.json`; the running host restarts its relay with `relay::vpn_host_defaults`:
+forwarding to every port (`kAnyPort`, TCP and UDP; all traffic, owner 2026-11-19) apart from
+`never_forward`'s (TCP 23, 25 and 445, and 135 and 137-139 both kinds: what gets a home address
+blocklisted; mail apps use 587, 465 and 993), 128 TCP forwards and 128 UDP flows apart (a lookup's flow
+gives its slot back after 10 s idle), UDP out at most 4 MiB/s for all flows together, never to the
+home's outside address (`forward_refused` = `refuse_name_addresses` of the DuckDNS name and the own
+domain: the router's address hairpins to its forwarded ports), and never to a private, loopback or
+link-local address, nor to any of the host's own networks (`relay::forward_destination_ok`; owner call
+5, no VPN into the home network). **The web-site look is on by default** with the VPN
+([vpn-stealth](../plans/vpn-stealth.md), 2026-11-19): `look_port` is `tls_port` or the relay's port
++ 1 (any user may listen there, so Linux needs no privilege and a host that serves 443 keeps it), and
+the router keeper maps **only it** outside, at 443, else 8443 (`kLookFallbackPort`): the plain
+relay's cleartext `MVRL` head never reaches the internet. `--tls-port N` moves it, `--tls-port off`
+turns it off (`"look": false`; then the plain port is mapped as before); a bare `vpn on` (the
+desktop's VPN code asks it) never changes it. It prints, once, the code
+`mediaviewer://relay-tls#NAME:443#KEY` (the plain line `NAME:PORT#KEY` without the look, or when it
+could not listen), `NAME` the own domain, else the DuckDNS name, else the LAN address: the only
+place the relay's key is ever shown. The look's certificate is Let's Encrypt's when the certificate
+keeper has one (below), else self-signed for the name. `off` turns forwarding off, and the router's
+port closes.
+
+**The certificate** (`acme.*`, `cert_keeper` in `host_keepers.cpp`): with the look on and a DuckDNS
+name and token, an ACME client (RFC 8555; BoringSSL for ES256, the CSR and reading certificates;
+`acme_none.cpp` without it) gets Let's Encrypt's certificate for the name by DNS-01, the TXT set and
+cleared through DuckDNS (`ddns::set_duckdns_txt`), so no port 80. Files in `<host>/tls`
+(`account.pem`, `cert.pem`, `key.pem`; mode 600). Checked at start and daily, renewed 30 days before
+the end; after a failure 1, 2, 4 … 24 h (or the CA's Retry-After), at most 3 orders a day. The relay
+takes a new one with `relay::server::set_tls_certificate` (new connections; open forwards keep
+theirs). HTTPS to the CA is the command line's own (`cli::https_request`: NSURLSession, WinHTTP,
+libcurl), never logged. `host status` has a `certificate` line. Tested against a stand-in CA in the
+test process that checks every JWS signature, nonce and URL (`"[acme]"`); never Let's Encrypt.
+
+**Your own domain** (`host name domain NAME|none`, `host_settings::domain`; the VPN add-on's Host
+section has a **Your own domain** row for this computer, which asks Phone access (`vpn_domain`) to run
+the same command): the code, the look's SNI and its certificate carry it instead
+of the DuckDNS name, which some networks block. DuckDNS still keeps the address: the person adds
+`NAME CNAME SUB.duckdns.org` and `_acme-challenge.NAME CNAME _acme-challenge.SUB.duckdns.org`, which
+DNS-01 follows. Without DuckDNS the person points it themselves and the certificate stays
+self-signed. One name per certificate (DuckDNS keeps one TXT value). Tested on loopback: a laptop's Tunnel proxy
 (`tunnel::proxy`) with the printed line reaches a site through the host's relay, off refuses, and the
 shipped options refuse a forward to the home's own addresses (403).
 
@@ -838,9 +863,10 @@ shipped options refuse a forward to the home's own addresses (403).
 **VPN through this Mac/PC** row has a **Use as VPN** switch that runs the installed program's own
 `host vpn on|off` on the phone link's thread (`link.cpp` `host_vpn`; no second relay, forwarder or
 `host.json` writer in the app), and its status: what `host.json` asks for (`vpn`, `tls_port`) and what
-the running relay does (`state.json` `vpn` with a relay port, `relay_outside_port`, `tls_failed`): off,
-"Turning on…", "On once the server runs", or "On · relay port N" with the look's line and "home network
-only" without a DuckDNS name. The card waits up to 5 s for the running host to take the change. **VPN
+the running relay does (`state.json` `vpn` with a relay port, `relay_outside_port`, `relay_tls_port`,
+`tls_outside_port`, `tls_failed`): off, "Turning on…", "On once the server runs", or "On · looks like a
+web site on port 443" (the plain "On · relay port N" without the look) and "home network only" without
+a name. The card waits up to 5 s for the running host to take the change. **VPN
 code…** asks `vpn on` again and shows the line it printed (`self_host::relay_line_in`) as a code to copy
 (below), until Hide, the VPN going off or Settings closing; it is asked once more when the relay came
 back on another port than the one printed. Once the library is claimed, this row (or, when a NAS is the server, the NAS's row below) sits in
@@ -857,7 +883,10 @@ since the host runs its own relay) as feature `vpn`. The owner op **`set_vpn`** 
 once there is a passphrase) keeps a key of its own in the service's store (`kVpnKeyName`, apart from the
 person's other relay's `kRelayKeyName`) and `vpn_port` in `serve.json` (0: off, 47614 by default), and
 runs a `relay::server` inside the service with the host's `vpn_host_defaults`, refusing the
-addresses of its outside name as the owner's desktop last set it, public addresses only. On answers the port and the key, once, for the owner's line; a service
+addresses of its outside name as the owner's desktop last set it, public addresses only, and the web-site look on the next port (self-signed; the plain relay alone
+when it cannot listen). `set_vpn` answers `tls_port` then, and the card's code is
+`mediaviewer://relay-tls#NAME:PORT#KEY`; the SPK's service file names that port too
+(`[mediaviewer-nas-vpn-web]`, 47615) so DSM's router page offers it (outside 443 is the person's to map). On answers the port and the key, once, for the owner's line; a service
 started with `vpn_port` set starts the relay again; on again for the same port leaves a running relay as
 it is (asking for the code never cuts a laptop's forwards). `owner_status` gains `vpn_port`,
 `vpn_running`, `vpn_listening`. The desktop card (claimed NAS, the feature there) shows **VPN through
@@ -877,6 +906,8 @@ key of at least 16 characters, a host:port the field takes), fills **Your VPN se
 would (the key in the secret store, never the settings file), and turns the Tunnel on; All traffic
 (VPN) is then one switch. The card names the host, never the key. One parser in `src/wire`. Until
 2026-11-19 these were Driftwire's VPN host card and Phone access's VPN rows ([The Tunnel](#the-tunnel-2026-11-12-the-vpn-add-on-since-2026-11-19)).
+A `mediaviewer://relay-tls#` code (the web-site look's) also turns on the Tunnel's **Look like a web
+site** at the code's port; a plain code turns it off (`parse_relay_connect_code(text, &tls)`).
 Measured with `"[.vpn-host-bench]"` (a host's relay with the shipped forwarding on this Mac, the
 Tunnel's proxy, curl to a public download, alternated with direct): the same throughput as direct, about
 35 ms more to the first byte (numbers in PR #711).
@@ -932,8 +963,10 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   server** for relayed transfers: each add-on has its own field and key.
 - **Host** is Phone access's link (this computer's `driftwire host`, the claimed NAS), reached only
   through the host's `addon_request` (docs/design/18): Phone access answers caller `vpn` alone with
-  `vpn_state` (where, title, line, on, busy, code, error), `vpn_set {on}`, `vpn_code`,
-  `vpn_code_hide` (`screen::vpn_state` / `vpn_request`). The VPN add-on asks on its control thread
+  `vpn_state` (where, title, line, on, busy, code, error, and for this computer domain and
+  domain_line), `vpn_set {on}`, `vpn_code`, `vpn_code_hide`, `vpn_domain {domain}` (this computer's
+  own domain for the VPN, or "none": `host name domain`; [vpn-stealth](../plans/vpn-stealth.md))
+  (`screen::vpn_state` / `vpn_request`). No log line carries the domain (rule 6). The VPN add-on asks on its control thread
   while its page shows (every 3 s, every 0.5 s while busy) and hides the code when the page closes.
   Without Phone access the card says to add it. Phone access's card keeps one line pointing here.
 - **Moving over**: the VPN add-on's first start with no `vpn.json` takes the Tunnel's keys from
@@ -966,8 +999,14 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   --tls-port 443` (JA4 in tests `t13d1516h2_8daaf6152771_d8a2da3f94cd`). Certificate unchecked (the
   inner hop proves the key). First 32 bytes inside TLS are the **knock** (keyed BLAKE2b of exporter
   `EXPORTER-driftwire-knock`, key = Argon2id of the server key); without it the relay acts as a web
-  server (`Server: nginx`, `--decoy-dir`). `--tls-cert`/`--tls-key` or self-signed `--tls-name`.
-  Codes use the plain port.
+  server (`--decoy-dir`) as nginx does: its error pages byte for byte, `Server: nginx`, a `Date`,
+  keep-alive (HTTP/1.1, up to 100 requests), and a short request answered at once (it stops waiting
+  for a knock as soon as the bytes cannot be one). **Padded knock** (2026-11-19): this build's clients
+  knock under `EXPORTER-driftwire-knock-padded` and both sides put a length byte and 0–255 random
+  bytes before their first bytes, in the same record, so no connection's first records have fixed
+  sizes; a server takes both knocks (an older client still connects), a client of this build needs a
+  server of this build. `--tls-cert`/`--tls-key` or self-signed `--tls-name`. A VPN host's
+  `relay-tls` code carries the look's port; other codes the plain port.
 - **All traffic** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`all_traffic`,
   `/vpn all`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
   no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram

@@ -41,8 +41,8 @@ struct host_row {
   bool paused = false;  // "Tray": hosting turned off
   bool vpn = false, vpn_on = false, tls_failed = false;  // host.json asks; the relay does; the look failed
   std::int64_t service_port = 0, offline = 0;
-  std::int64_t relay_port = 0, relay_outside_port = 0, tls_port = 0;
-  std::string name, duckdns;
+  std::int64_t relay_port = 0, relay_outside_port = 0, tls_port = 0, tls_outside_port = 0;
+  std::string name, duckdns, domain;
   std::vector<std::string> keepers;
   std::vector<std::string> stats;  // today's usage and the phones connected, in the menu's words
   // Clips the phone can't play (docs/plans/phone-clip-convert.md): the switch, and what the host found.
@@ -232,6 +232,7 @@ view parse(std::string_view text) {
     r.offline = i_of(*h, "offline");
     r.name = s_of(*h, "name");
     r.duckdns = s_of(*h, "duckdns");
+    r.domain = s_of(*h, "domain");
     r.keepers = strings_of(*h, "keepers");
     r.paused = b_of(*h, "paused");
     r.stats = strings_of(*h, "stats");
@@ -246,6 +247,7 @@ view parse(std::string_view text) {
     r.relay_port = i_of(*h, "relay_port");
     r.relay_outside_port = i_of(*h, "relay_outside_port");
     r.tls_port = i_of(*h, "tls_port");
+    r.tls_outside_port = i_of(*h, "tls_outside_port");
     s.host = r;
   }
   s.host_step = s_of(o, "host_step");
@@ -471,13 +473,17 @@ std::string host_vpn_line(const host_row& h, const std::string& me) {
   }
   if (!h.running) return "On once the server runs.";
   if (!h.vpn_on) return "Turning on\xE2\x80\xA6";
-  const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
-  std::string line = "On \xC2\xB7 relay port " + std::to_string(port);
-  if (h.tls_port > 0) {
-    line += h.tls_failed ? " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port)
-                         : " \xC2\xB7 looks like a web site on port " + std::to_string(h.tls_port);
+  std::string line;
+  if (h.tls_port > 0 && !h.tls_failed) {
+    // The web-site look (on by default) is what the code points at: 443 from outside when the router gave it.
+    const std::int64_t port = h.tls_outside_port > 0 ? h.tls_outside_port : h.tls_port;
+    line = "On \xC2\xB7 looks like a web site on port " + std::to_string(port);
+  } else {
+    const std::int64_t port = h.relay_outside_port > 0 ? h.relay_outside_port : h.relay_port;
+    line = "On \xC2\xB7 relay port " + std::to_string(port);
+    if (h.tls_port > 0) line += " \xC2\xB7 the web-site look couldn't listen on port " + std::to_string(h.tls_port);
   }
-  if (h.duckdns.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
+  if (h.duckdns.empty() && h.domain.empty()) line += "\nWithout a DuckDNS name it works on your home network only.";
   return line;
 }
 
@@ -1618,6 +1624,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (r == "host_no_folders") e = "Choose a folder for your phone to read.";
   else if (r == "host_no_library") e = "Choose a folder for your phone to read, not only a backup folder.";
   else if (r == "host_twice") e = "That folder is in the list twice.";
+  else if (r == "host_domain") e.clear();  // the VPN add-on's Host section says it (vpn_state)
   else if (r == "host_bad_name") e = "That isn't a DuckDNS name. Use the name you chose there, like home or home.duckdns.org.";
   else if (r == "host_bad_token") e = "That isn't a DuckDNS token. Copy it from duckdns.org; it looks like 1a2b3c4d-\xE2\x80\xA6";
   else if (r == "host_share") e = s.host_said.empty() ? "The folder couldn't be shared." : "Couldn't share it: " + s.host_said;
@@ -2216,29 +2223,45 @@ std::string screen::vpn_state(std::string_view state_json) const {
     const host_row& h = *s.host;
     w.key("where").string("here").key("title").string(std::string("VPN through ") + here());
     w.key("line").string(host_vpn_line(h, here())).key("on").boolean(h.vpn);
+    // Its own domain (docs/plans/vpn-stealth.md §3): what it is, and what to add at its DNS.
+    w.key("domain").string(h.domain);
+    w.key("domain_line")
+        .string(h.domain.empty()
+                    ? "Optional: the code then carries your domain instead of the DuckDNS name, which some networks block."
+                    : h.duckdns.empty() ? h.domain + ": point it at your home yourself."
+                                        : h.domain + ": a CNAME to " + h.duckdns + ".duckdns.org, and _acme-challenge." +
+                                              h.domain + " to _acme-challenge." + h.duckdns + ".duckdns.org.");
   } else if (server) {
     w.key("where").string("server").key("title").string("VPN through your server");
     w.key("line").string(nas_vpn_line(s)).key("on").boolean(s.nas_vpn_port != 0);
   } else {
     w.key("where").string("none");
   }
-  const bool vpn_busy = s.busy == "host_vpn" || s.busy == "host_vpn_line" || s.busy == "nas_vpn";
+  const bool vpn_busy = s.busy == "host_vpn" || s.busy == "host_vpn_line" || s.busy == "nas_vpn" || s.busy == "host_domain";
   w.key("busy").boolean(vpn_busy);
   if ((here_host || server) && !s.relay_code.empty()) w.key("code").string(s.relay_code);
   if (s.error == "host_vpn") {
     w.key("error").string(s.host_said.empty() ? "The VPN wasn't changed." : "The VPN wasn't changed: " + s.host_said);
+  } else if (s.error == "host_domain") {
+    w.key("error").string(s.host_said.empty() ? "That isn't a domain, like vpn.example.com." : s.host_said);
   }
   w.end_object();
   return w.take();
 }
 
-std::string screen::vpn_request(std::string_view state_json, std::string_view method, bool on) const {
+std::string screen::vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                std::string_view domain) const {
   const view s = parse(state_json);
   const bool here_host = s.host && s.host->set_up;
   const bool server = !here_host && s.claimed && s.has("vpn");
   if (method == "vpn_code_hide") return req("host_vpn_hide").done();
   if (!here_host && !server) return {};
   if (method == "vpn_set") return req(here_host ? "host_vpn" : "nas_vpn").b("on", on).done();
+  if (method == "vpn_domain") {
+    // This computer's own: `host name domain` (a NAS keeps its name in DSM).
+    if (!here_host || domain.empty()) return {};
+    return req("host_domain").s("domain", std::string(domain)).done();
+  }
   if (method == "vpn_code") {
     // On again: the same port, the key once more (the NAS); `host vpn on` again prints its line.
     return here_host ? req("host_vpn_line").done() : req("nas_vpn").b("on", true).done();

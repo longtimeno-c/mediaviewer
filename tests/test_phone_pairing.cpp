@@ -98,6 +98,7 @@ struct nas {
   // What the service gave its VPN relay, before the test's tweak.
   std::mutex vpn_seen_m;
   std::vector<std::uint16_t> vpn_seen_tcp, vpn_seen_udp;
+  std::uint16_t vpn_seen_port = 0, vpn_seen_tls_port = 0;  // the ports asked (loopback listens where the OS says)
   explicit nas(bool real = false, bool with_vpn = false, std::uint16_t site = 0)
       : real_network(real), vpn_site(site), vpn(with_vpn) {
     fs::create_directories(share);
@@ -121,6 +122,8 @@ struct nas {
           std::lock_guard g(vpn_seen_m);
           vpn_seen_tcp = ro.forward_ports;
           vpn_seen_udp = ro.forward_udp_ports;
+          vpn_seen_port = ro.port;
+          vpn_seen_tls_port = ro.tls_port;
         }
         ro.forward_ports = {site};
         ro.forward_private = true;
@@ -2156,7 +2159,9 @@ TEST_CASE("phone pairing: the NAS as a VPN host: Use as VPN, its code, and a lap
   CHECK(v.boolean("nas_vpn_running") == true);
   REQUIRE(v.str("relay_code"));
   const std::string code = *v.str("relay_code");
-  CHECK(code.rfind("mediaviewer://relay#[::1]:", 0) == 0);  // the NAS's own address, as the card has it
+  // The NAS's own address, as the card has it; with the web-site look (on by default) its code.
+  const bool look = mv::driftwire::tls::available();
+  CHECK(code.rfind(look ? "mediaviewer://relay-tls#[::1]:" : "mediaviewer://relay#[::1]:", 0) == 0);
   // The key: in the NAS's store and the code, nowhere in serve.json.
   const auto kept = n.store->get(serve::kVpnKeyName);
   REQUIRE(kept);
@@ -2173,14 +2178,21 @@ TEST_CASE("phone pairing: the NAS as a VPN host: Use as VPN, its code, and a lap
     std::lock_guard g(n.vpn_seen_m);
     CHECK(n.vpn_seen_tcp == std::vector<std::uint16_t>{mv::driftwire::relay::kAnyPort});
     CHECK(n.vpn_seen_udp == std::vector<std::uint16_t>{mv::driftwire::relay::kAnyPort});
+    // The web-site look on the VPN's port + 1 (never the service's own port's).
+    CHECK(n.vpn_seen_port == mv::driftwire::relay::kDefaultPort);
+    CHECK(n.vpn_seen_tls_port == mv::driftwire::relay::kDefaultPort + 1);
   }
 
   // The laptop: the code pasted (Connect to a VPN host), its Tunnel proxy, a site through the NAS.
-  const auto line = serve::parse_relay_connect_code(code);
+  bool tls = false;
+  const auto line = serve::parse_relay_connect_code(code, &tls);
   REQUIRE(line);
+  CHECK(tls == look);
   mv::driftwire::tunnel::proxy::options po;
   // The test's relay listens on IPv4 loopback alone (net::listen(true)); a NAS's on both.
   po.relay = "127.0.0.1" + line->substr(line->find("]:") + 1);
+  po.tls = tls;  // as Connect sets it from the code, on the code's port
+  if (tls) po.tls_port = static_cast<std::uint16_t>(std::stoi(line->substr(line->find("]:") + 2)));
   auto proxy = mv::driftwire::tunnel::proxy::start(po);
   REQUIRE(proxy);
   bool echoed = false;
@@ -2373,6 +2385,7 @@ TEST_CASE("phone pairing: a guest code's phone backs nothing up, and the grant k
 #include "io/child_process.h"
 #include "addons/phone/self_host.h"
 #include "mobile/link_payload.h"
+#include "wire/tls.h"
 
 namespace {
 
@@ -2572,17 +2585,23 @@ TEST_CASE("phone pairing: This computer's VPN turns on and off from the card; a 
   CHECK(h->boolean("vpn_on") == true);
   const auto relay_port = h->integer("relay_port").value_or(0);
   REQUIRE(relay_port > 0);
-  // The line the program printed, for the laptop: this computer's address, the relay's port, its key.
+  // The line the program printed, for the laptop: this computer's address, the port, its key. With
+  // the web-site look (on by default), its code, on the look's port as the running relay listens.
+  const bool look = mv::driftwire::tls::available();
+  const auto port = look ? h->integer("relay_tls_port").value_or(0) : relay_port;
+  REQUIRE(port > 0);
   REQUIRE(v.str("relay_line"));
   const std::string line = *v.str("relay_line");
-  CHECK(line.find(":" + std::to_string(relay_port) + "#") != std::string::npos);
-  CHECK(line.size() > line.find('#') + 16);
+  CHECK(line.find(":" + std::to_string(port) + "#") != std::string::npos);
+  CHECK((line.rfind("mediaviewer://relay-tls#", 0) == 0) == look);
+  CHECK(*v.str("relay_code") == (look ? line : serve::relay_connect_code(line)));
+  CHECK(line.size() > line.rfind('#') + 16);
   {
     std::ifstream in(pc.data / "host" / "host.json", std::ios::binary);
     std::stringstream text;
     text << in.rdbuf();
     CHECK(mv::json::parse(text.str(), 4)->boolean("vpn") == true);
-    CHECK(text.str().find(line.substr(line.find('#') + 1)) == std::string::npos);  // the key is the host's secret
+    CHECK(text.str().find(line.substr(line.rfind('#') + 1)) == std::string::npos);  // the key is the host's secret
   }
   // Hidden: gone from what the card reads; asked for again, the same line.
   v = app.ask(R"({"do":"host_vpn_hide"})");

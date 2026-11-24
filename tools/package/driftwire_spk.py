@@ -33,6 +33,7 @@ PORT = 7878
 # The VPN's relay (docs/design/28 "The NAS as a VPN host"): listening only once the owner turns it on
 # from the desktop's Phone access; DSM offers to forward it beside the service's port.
 VPN_PORT = 47614  # relay::kDefaultPort
+VPN_TLS_PORT = VPN_PORT + 1  # its web-site look (serve.cpp apply_vpn_locked)
 OS_MIN = '7.2-64570'
 # DSM's arch values per build: a generic x86-64 family, and the 64-bit ARM platforms
 # (a DSM 7 SPK names platforms, not a generic "aarch64"). 32-bit ARM is not supported
@@ -197,6 +198,12 @@ title="MediaViewer VPN"
 desc="Your laptop's VPN leaves through here, once you turn it on in Phone access"
 port_forward="yes"
 dst.ports="{VPN_PORT}/tcp"
+
+[{PACKAGE}-vpn-web]
+title="MediaViewer VPN (looks like a web site)"
+desc="What the VPN code points at: forward outside port 443 to it where your router allows"
+port_forward="yes"
+dst.ports="{VPN_TLS_PORT}/tcp"
 '''
 
 

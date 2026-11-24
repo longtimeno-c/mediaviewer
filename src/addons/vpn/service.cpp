@@ -17,6 +17,15 @@
 namespace mv::driftwire::vpn {
 
 namespace {
+// Space around what was typed, gone.
+std::string trim(std::string_view s) {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\n' || s.front() == '\r')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' || s.back() == '\r')) s.remove_suffix(1);
+  return std::string(s);
+}
+}  // namespace
+
+namespace {
 
 constexpr auto kPostEvery = std::chrono::milliseconds(100);
 constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3;
@@ -194,10 +203,12 @@ void service::control_loop() {
       const auto actions = std::move(phone_actions_);
       phone_actions_.clear();
       lock.unlock();
-      for (const auto& [method, on] : actions) {
+      for (const auto& a : actions) {
         json::writer w;
-        w.begin_object().key("on").boolean(on).end_object();
-        if (!host_.ask_phone(method, w.take())) refused = true;
+        w.begin_object().key("on").boolean(a.on);
+        if (!a.domain.empty()) w.key("domain").string(a.domain);
+        w.end_object();
+        if (!host_.ask_phone(a.method, w.take())) refused = true;
       }
       lock.lock();
       phone_wanted_ = true;
@@ -347,6 +358,8 @@ void service::ask_phone_now() {
     v_.host_code = s("code");
     v_.host_on = v_.phone && doc->boolean("on").value_or(false);
     v_.host_busy = v_.phone && doc->boolean("busy").value_or(false);
+    v_.host_domain = s("domain");
+    v_.host_domain_line = s("domain_line");
     if (v_.phone) v_.host_error = s("error");
     busy = v_.host_busy;
   }
@@ -386,7 +399,7 @@ void service::settings_closed() {
   phone_due_ = {};
   // The VPN code shown (it holds the relay's key) goes when the page does.
   if (code) {
-    phone_actions_.emplace_back("vpn_code_hide", false);
+    phone_actions_.push_back({"vpn_code_hide", false, {}});
     control_cv_.notify_all();
   }
 }
@@ -857,7 +870,8 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
         wipe(typed_code_);
         typed_code_ = *text;
       }
-      line = serve::parse_relay_connect_code(typed_code_);
+      bool look = false;
+      line = serve::parse_relay_connect_code(typed_code_, &look);
       wipe(typed_code_);
       if (!line) {
         v_.connect_note = "That isn't a VPN code. Copy it again from the VPN page on your server (VPN code\xE2\x80\xA6).";
@@ -867,9 +881,18 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
         v_.server = *line;
         v_.server_shown = tunnel::relay_shown(*line);
         v_.tunnel = true;
+        // The code says whether the host looks like a web site (docs/plans/vpn-stealth.md): the
+        // Tunnel's look follows it, on the code's port, so nothing else is set by hand.
+        v_.tls = look && v_.tls_available;
+        if (v_.tls) {
+          const auto colon = line->rfind(':', line->find('#'));
+          tls_port_ = static_cast<std::uint16_t>(std::stoi(line->substr(colon + 1)));
+        }
         v_.connect_open = false;
-        v_.connect_note = "Connected to " + v_.server_shown + ". The Tunnel is on" +
-                          (v_.all_traffic_available ? "; turn on All traffic (VPN) for every app." : ".");
+        v_.connect_note = look && !v_.tls_available
+                              ? "This VPN code needs Look like a web site, which this build lacks."
+                              : "Connected to " + v_.server_shown + ". The Tunnel is on" +
+                                    (v_.all_traffic_available ? "; turn on All traffic (VPN) for every app." : ".");
       }
     }
     if (line) {
@@ -889,7 +912,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     }
     {
       std::lock_guard lock(control_m_);
-      phone_actions_.emplace_back("vpn_set", value->b);
+      phone_actions_.push_back({"vpn_set", value->b, {}});
       control_cv_.notify_all();
     }
     post();  // at once: the page shows what the click did
@@ -897,8 +920,47 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
   }
   if ((node == "host_code" || node == "host_code_hide") && kind == kClick) {
     std::lock_guard lock(control_m_);
-    phone_actions_.emplace_back(node == "host_code" ? "vpn_code" : "vpn_code_hide", false);
+    phone_actions_.push_back({node == "host_code" ? "vpn_code" : "vpn_code_hide", false, {}});
     control_cv_.notify_all();
+    return;
+  }
+  // This computer's own domain for the VPN: Phone access runs `host name domain`.
+  if (node == "domain_name" && kind == kChange && text) {
+    std::lock_guard lock(m_);
+    v_.domain_typed = *text;
+    return;
+  }
+  if ((node == "domain_change" || node == "domain_cancel") && kind == kClick) {
+    {
+      std::lock_guard lock(m_);
+      v_.domain_open = node == "domain_change";
+      v_.domain_typed.clear();
+    }
+    post_throttled();
+    return;
+  }
+  if ((node == "domain_save" || node == "domain_clear" || (node == "domain_name" && kind == kSubmit)) &&
+      (kind == kClick || kind == kSubmit)) {
+    std::string domain;
+    {
+      std::lock_guard lock(m_);
+      if (node == "domain_name" && text) v_.domain_typed = *text;
+      domain = node == "domain_clear" ? std::string("none") : trim(v_.domain_typed);
+      if (domain.empty()) {
+        v_.host_error = "Type your domain, like vpn.example.com.";
+      } else {
+        v_.domain_open = false;
+        v_.domain_typed.clear();
+        v_.host_busy = true;
+        v_.host_error.clear();
+      }
+    }
+    if (!domain.empty()) {
+      std::lock_guard lock(control_m_);
+      phone_actions_.push_back({"vpn_domain", false, domain});
+      control_cv_.notify_all();
+    }
+    post_throttled();
     return;
   }
 }
