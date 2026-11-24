@@ -40,6 +40,43 @@ final class SampleLibraryModelTests: XCTestCase {
                    "The drive with “Travel drive” isn't connected to your server. Connect it, then try again.")
   }
 
+  /// The backup folder chooser: "no backup folder" only once the server has answered with none;
+  /// while asking it says nothing of the kind, and a phone limited away from them is "not allowed".
+  func testTheFolderChooserSaysTheRealReason() {
+    let nas = BackupFolder(id: "b0b0b0b0b0b0b0b0", label: "Phone backup", writable: true)
+    XCTAssertNil(FailureCopy.backupChoiceLine(folders: nil, failure: nil, sample: false))
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: [], failure: nil, sample: false), FailureCopy.backupNoFolders)
+    XCTAssertNil(FailureCopy.backupChoiceLine(folders: [nas], failure: nil, sample: false))
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .folderNotAllowed, sample: false),
+                   FailureCopy.backupNoFolderAllowed)
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .unreachable, sample: false),
+                   FailureCopy.synologyUnreachable)
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .serviceTooOld, sample: false),
+                   FailureCopy.backupServiceTooOld)
+    for line in [FailureCopy.backupNoFolderAllowed, FailureCopy.backupAskingForFolders] {
+      XCTAssertFalse(line.contains("NAS"), line)
+    }
+  }
+
+  /// The chooser's selection follows each answer: a folder no longer offered, or no longer one this
+  /// phone may write, is let go, so Done never saves it; while asking a pick is held for the answer.
+  func testTheFolderChooserLetsGoOfAFolderNoLongerOffered() {
+    let a = BackupFolder(id: "a", label: "Phone backup", writable: true)
+    let b = BackupFolder(id: "b", label: "Family backup", writable: true)
+    let bLocked = BackupFolder(id: "b", label: "Family backup", writable: false)
+    XCTAssertEqual(BackupFolderPick.kept(b, in: [a, b], current: nil), b)
+    // Picked, then Ask again: held while asking, kept when the answer still offers it.
+    let held = BackupFolderPick.kept(b, in: nil, current: a)
+    XCTAssertEqual(held, b)
+    XCTAssertEqual(BackupFolderPick.kept(held, in: [a, b], current: a), b)
+    XCTAssertNil(BackupFolderPick.kept(nil, in: nil, current: a))
+    XCTAssertNil(BackupFolderPick.kept(b, in: [a, bLocked], current: nil))
+    XCTAssertEqual(BackupFolderPick.kept(b, in: [a], current: nil), a)  // the only one left
+    XCTAssertEqual(BackupFolderPick.kept(nil, in: [a, b], current: b), b)
+    XCTAssertNil(BackupFolderPick.kept(nil, in: [a, bLocked], current: bLocked))
+    XCTAssertNil(BackupFolderPick.kept(nil, in: [], current: a))
+  }
+
   /// An offline folder joins the top level after its own folders, once; one already listed stays.
   func testOfflineFoldersJoinTheTopLevel() {
     let own = [Folder(id: "a", name: "Photos", itemCount: 3, hasSubfolders: true)]

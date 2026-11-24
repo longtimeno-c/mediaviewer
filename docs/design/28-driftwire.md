@@ -738,7 +738,8 @@ or a Mac, from one command that runs while its user is logged in.
 
 ```
 driftwire host [--data DIR]                 the supervisor, no terminal: what starts at login
-driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it)
+driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it;
+                                                  on a folder shared already, makes it a backup folder)
 driftwire host unshare LABEL                takes one back (its files stay)
 driftwire host status                       name, ports, folders by label (offline or not), phones,
                                             VPN, staying awake, start at login
