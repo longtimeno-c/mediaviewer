@@ -189,11 +189,14 @@ std::uint16_t closed_port() {
 struct parsed_code {
   mv_vpn_status status;
   std::string relay, key;
+  std::int32_t tls = -1;
+  std::uint16_t tls_port = 1;
 };
 parsed_code parse(const std::string& text) {
   char* r = nullptr;
   char* k = nullptr;
-  parsed_code out{mv_vpn_parse_code(text.c_str(), &r, &k), {}, {}};
+  parsed_code out{};
+  out.status = mv_vpn_parse_code(text.c_str(), &r, &k, &out.tls, &out.tls_port);
   if (r) out.relay = r;
   if (k) out.key = k;
   mv_vpn_free(r);
@@ -214,7 +217,24 @@ TEST_CASE("phone vpn: the server's VPN code is read by the laptop's own parser",
     CHECK(p.status == MV_VPN_OK);
     CHECK(p.relay == "home.duckdns.org:47614");
     CHECK(p.key == kKey);
+    CHECK(p.tls == 0);  // the relay's plain port
+    CHECK(p.tls_port == 0);
   }
+  // The code a host hands out by default (vpn-stealth): the HTTPS look, on the code's own port.
+  for (const auto& text : {"mediaviewer://relay-tls#home.duckdns.org:443#" + std::string(kKey),
+                           "  MediaViewer://Relay-TLS#home.duckdns.org:443#" + std::string(kKey) + "\n"}) {
+    INFO(text);
+    const auto p = parse(text);
+    CHECK(p.status == MV_VPN_OK);
+    CHECK(p.relay == "home.duckdns.org:443");
+    CHECK(p.key == kKey);
+    CHECK(p.tls == 1);
+    CHECK(p.tls_port == 443);
+  }
+  const auto other = parse("mediaviewer://relay-tls#[2001:db8::7]:8443#" + std::string(kKey));
+  CHECK(other.status == MV_VPN_OK);
+  CHECK(other.tls == 1);
+  CHECK(other.tls_port == 8443);
   const auto v6 = parse(std::string("mediaviewer://relay#[2001:db8::7]:443#") + kKey);
   CHECK(v6.status == MV_VPN_OK);
   CHECK(v6.relay == "[2001:db8::7]:443");
@@ -230,10 +250,16 @@ TEST_CASE("phone vpn: the server's VPN code is read by the laptop's own parser",
     CHECK(p.status == MV_VPN_INVALID);
     CHECK(p.relay.empty());
     CHECK(p.key.empty());
+    CHECK(p.tls == 0);
+    CHECK(p.tls_port == 0);
   }
+  CHECK(parse("mediaviewer://relay-tls#home.duckdns.org#" + std::string(kKey)).status == MV_VPN_INVALID);  // no port
   char* r = nullptr;
   char* k = nullptr;
-  CHECK(mv_vpn_parse_code(nullptr, &r, &k) == MV_VPN_INVALID);
+  std::int32_t t = 0;
+  std::uint16_t tp = 0;
+  CHECK(mv_vpn_parse_code(nullptr, &r, &k, &t, &tp) == MV_VPN_INVALID);
+  CHECK(mv_vpn_parse_code("home.duckdns.org:47614#0123456789abcdef", &r, &k, nullptr, &tp) == MV_VPN_INVALID);
   mv_vpn_free(nullptr);  // allowed
 }
 

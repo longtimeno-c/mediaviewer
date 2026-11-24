@@ -97,7 +97,9 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   public func connect(code: String) async throws {
     var relayOut: UnsafeMutablePointer<CChar>?
     var keyOut: UnsafeMutablePointer<CChar>?
-    guard mv_vpn_parse_code(code, &relayOut, &keyOut) == MV_VPN_OK, let relayOut, let keyOut else {
+    var tls: Int32 = 0
+    var tlsPort: UInt16 = 0
+    guard mv_vpn_parse_code(code, &relayOut, &keyOut, &tls, &tlsPort) == MV_VPN_OK, let relayOut, let keyOut else {
       mv_vpn_free(relayOut)
       mv_vpn_free(keyOut)
       throw VPNCodeError.notACode  // a wrong paste overtakes nothing
@@ -106,7 +108,10 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     let key = String(cString: keyOut)
     mv_vpn_free(relayOut)
     mv_vpn_free(keyOut)
-    await inTurn { [self] in await connectMove(relay: relay, key: key) }
+    // A relay-tls code (what a host hands out by default): the HTTPS look on the code's port, the
+    // extension dialling it as the desktop's Tunnel does (the core's TLS, a browser's ClientHello).
+    let parsed = VPNCode(relay: relay, key: key, tls: tls != 0, tlsPort: tlsPort)
+    await inTurn { [self] in await connectMove(parsed) }
   }
 
   public func acceptConsent() async {
@@ -127,7 +132,8 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
 
   private func isLatest(_ run: Int) -> Bool { moves.isLatest(run) }
 
-  private func connectMove(relay: String, key: String) async {
+  private func connectMove(_ code: VPNCode) async {
+    let relay = code.relay, key = code.key
     // The knock key for the HTTPS look: Argon2id at 64 MiB, here and never in the extension (§2.1).
     let knock = await Task.detached(priority: .userInitiated) { () -> Data? in
       var out = [UInt8](repeating: 0, count: 32)
@@ -141,7 +147,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     // memory only, until the switch is turned on.
     let earlier = lock.withLock { () -> NETunnelProviderManager? in
       attempt = VPNStatusMachine.Attempt()
-      pending = VPNTunnelItem(relay: relay, key: key, knock: knock)
+      pending = VPNTunnelItem(code: code, knock: knock)
       return manager
     }
     earlier?.connection.stopVPNTunnel()

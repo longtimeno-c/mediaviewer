@@ -37,10 +37,12 @@ typedef enum mv_vpn_status {
 
 /* ---- the app ---------------------------------------------------------------------------------- */
 
-/* The server's VPN code, "mediaviewer://relay#host:port#KEY" or a bare "host:port#KEY", spaces and
- * a newline around it allowed (serve::parse_relay_connect_code, the laptop's own parser). On OK,
- * *relay is "host:port" and *key the key; free each with mv_vpn_free. */
-mv_vpn_status mv_vpn_parse_code(const char* text, char** relay, char** key);
+/* The server's VPN code, "mediaviewer://relay#host:port#KEY", "mediaviewer://relay-tls#host:port#KEY"
+ * (the server looks like a web site on that port: the HTTPS look) or a bare "host:port#KEY", spaces
+ * and a newline around it allowed (serve::parse_relay_connect_code, the laptop's own parser). On OK,
+ * *relay is "host:port" and *key the key (free each with mv_vpn_free), *tls nonzero for the HTTPS
+ * look and *tls_port its port (the code's; 0 without the look), as mv_vpn_config takes them. */
+mv_vpn_status mv_vpn_parse_code(const char* text, char** relay, char** key, int32_t* tls, uint16_t* tls_port);
 
 /* Zeroes and frees a string this header returned. NULL is fine. */
 void mv_vpn_free(char* s);

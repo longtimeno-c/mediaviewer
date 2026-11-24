@@ -31,6 +31,21 @@ public enum VPNNames {
   }
 }
 
+/// A pasted VPN code as mv_vpn_parse_code read it (the core's parser; none in Swift).
+public struct VPNCode: Equatable, Sendable {
+  public var relay: String
+  public var key: String
+  /// A relay-tls code: the server looks like a web site on `tlsPort`, the code's port.
+  public var tls: Bool
+  public var tlsPort: UInt16
+  public init(relay: String, key: String, tls: Bool, tlsPort: UInt16) {
+    self.relay = relay
+    self.key = key
+    self.tls = tls
+    self.tlsPort = tlsPort
+  }
+}
+
 /// The one secret the extension reads (§1.2): never the pairing record, the access key or the
 /// device key. JSON in a generic password, AfterFirstUnlockThisDeviceOnly.
 public struct VPNTunnelItem: Codable, Equatable, Sendable {
@@ -41,7 +56,7 @@ public struct VPNTunnelItem: Codable, Equatable, Sendable {
   /// The 32-byte knock key for the HTTPS look, derived in the app (Argon2id, 64 MiB): the
   /// extension never derives it (§2.1).
   public var knock: Data
-  /// The HTTPS look (port `tlsPort`, 0: 443). Off until S4's switch.
+  /// The HTTPS look (port `tlsPort`, 0: 443): a relay-tls code's, so the extension dials TLS.
   public var tls: Bool
   public var tlsPort: UInt16
 
@@ -51,6 +66,11 @@ public struct VPNTunnelItem: Codable, Equatable, Sendable {
     self.knock = knock
     self.tls = tls
     self.tlsPort = tlsPort
+  }
+
+  /// The item for a pasted code (mv_vpn_parse_code's answer) and its derived knock key.
+  public init(code: VPNCode, knock: Data) {
+    self.init(relay: code.relay, key: code.key, knock: knock, tls: code.tls, tlsPort: code.tls ? code.tlsPort : 0)
   }
 
   public func encoded() -> Data? { isUsable ? try? JSONEncoder().encode(self) : nil }

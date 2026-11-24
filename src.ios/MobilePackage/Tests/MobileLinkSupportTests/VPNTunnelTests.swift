@@ -51,7 +51,22 @@ final class VPNTunnelTests: XCTestCase {
     let item = VPNTunnelItem(relay: "home.duckdns.org:47614", key: "PHONE-VPN-TEST-KEY-0123456789", knock: Data(repeating: 7, count: 32))
     let data = try XCTUnwrap(item.encoded())
     XCTAssertEqual(VPNTunnelItem.decode(data), item)
-    XCTAssertFalse(item.tls)  // the HTTPS look waits for S4's switch
+    XCTAssertFalse(item.tls)  // a relay# code: the relay's plain port
+    // A relay-tls code's look and port reach the extension through the Keychain item (LinkVPN
+    // makes the item from the parsed code this way).
+    let code = VPNCode(relay: "home.duckdns.org:443", key: "PHONE-VPN-TEST-KEY-0123456789", tls: true, tlsPort: 443)
+    let look = VPNTunnelItem(code: code, knock: Data(repeating: 7, count: 32))
+    XCTAssertEqual(look.relay, "home.duckdns.org:443")
+    XCTAssertEqual(look.key, code.key)
+    let back = try XCTUnwrap(VPNTunnelItem.decode(XCTUnwrap(look.encoded())))
+    XCTAssertTrue(back.tls)
+    XCTAssertEqual(back.tlsPort, 443)
+    XCTAssertEqual(back, look)
+    // A relay# code: plain, whatever port it names.
+    let plain = VPNTunnelItem(code: VPNCode(relay: "home.duckdns.org:47614", key: code.key, tls: false, tlsPort: 47614),
+                              knock: Data(repeating: 7, count: 32))
+    XCTAssertFalse(plain.tls)
+    XCTAssertEqual(plain.tlsPort, 0)
     // A knock key that is not 32 bytes, no key, no server: not kept, and not read back.
     XCTAssertNil(VPNTunnelItem(relay: "h:1", key: "k", knock: Data(count: 31)).encoded())
     XCTAssertNil(VPNTunnelItem(relay: "h:1", key: "", knock: Data(count: 32)).encoded())

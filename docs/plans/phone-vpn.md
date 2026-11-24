@@ -53,8 +53,8 @@ arithmetic.
   request to Apple ([Apple], §4.1). App Review 5.4 applies in full. The App Store listing has to
   say what the VPN does. "Data Not Collected" stays true only if MediaViewer runs **no** relay that
   carries real traffic. **China mainland** (and any other storefront that requires a VPN licence)
-  has to come off the storefront list, or the VPN has to go in a separate app (owner call 3).
-- **When.** In a later update, after 1.0 is approved and not in the 1.0 or 1.1 submission (§4.4).
+  comes off the storefront list in the release that adds the VPN (owner call 3, decided).
+- **When.** In 1.0 (owner call 7, decided 2026-11-24; §4.4).
 - **SAMPLE.** A reviewer cannot see a VPN without a relay. The recommendation is a **Tunnel demo
   inside the app**: a small relay on loopback, running inside the extension, that carries the
   reviewer's real traffic out of the phone's own connection, clearly labelled. No server run by
@@ -200,10 +200,12 @@ key:
 - **Saving:** `NETunnelProviderManager` with `localizedDescription` "MediaViewer — your relay"
   and the protocol above. The app derives the knock key once (Argon2id, 64 MiB, in the app's own
   budget) and writes the tunnel item before it saves.
-- **On-demand** (owner call 4). The recommendation is **off in the first slice**. The person
-  turns it on and off with the switch, or from iOS Settings → VPN. Later, an
-  `NEOnDemandRuleConnect` for "any network", with an `NEOnDemandRuleDisconnect` for the home Wi-Fi
-  (the network the NAS was found on) so the tunnel does not hairpin at home. Whether iOS restarts
+- **On-demand** (owner call 4, decided 2026-11-24): an **opt-in** switch, off by default,
+  "Connect automatically (except on home Wi-Fi)". The person turns the VPN on and off with the
+  main switch, or from iOS Settings → VPN; with the opt-in on, an `NEOnDemandRuleConnect` for any
+  network and an `NEOnDemandRuleDisconnect` for the home Wi-Fi SSIDs the person picks, so the
+  tunnel does not hairpin at home. Picking "this Wi-Fi" reads the current SSID, which needs the
+  Access Wi-Fi Information entitlement on the app's App ID (§4.1) or location permission. Whether iOS restarts
   an on-demand tunnel by itself after a reboot or a provider crash is not stated by Apple. S3
   tests it.
 - **Network changes.** A Wi-Fi ↔ cellular move breaks every forward to the relay, because their
@@ -308,8 +310,8 @@ owner has done §4.1's profiles:
    + VM Tracker, or `footprint -p DriftwireTunnel` from a Mac on the same device with
    `xcrun devicectl`. Record peak `phys_footprint` for (a) Safari opening 10 heavy pages at once
    (one tab group), (b) a 100 MB download in Safari, (c) 64 parallel `URLSession` tasks (a scratch
-   app or `tools/ios` harness to be written), each with the HTTPS look off and on (on needs S4's
-   switch, or `tls = true` in the Keychain item by a debug build).
+   app or `tools/ios` harness to be written), each with the HTTPS look off and on (on: paste a
+   `relay-tls#` code, which hosts hand out by default; off: a `relay#` code).
 5. **The ceiling.** A debug-only path in the extension that grows an allocation by 1 MiB a second
    and logs the size (counts only) until jetsam; read the last line from Console.
 6. **Idle.** 30 minutes screen off, tunnel on against off, Xcode's Energy gauge or
@@ -517,21 +519,19 @@ Elsewhere in the guidelines:
 
 ### 4.4 The same app, and when
 
-**Recommendation: ship it in the same app, as a later update (1.2 or after), and only after 1.0
-is approved.** Not in the 1.0 submission, and not added to 1.1 before 1.0 is out. Why:
+**Decided (owner, 2026-11-24): in the same app, in 1.0** (calls 2 and 7). The recommendation had
+been a later update after 1.0; the owner chose 1.0. What that means for the 1.0 submission:
 
-1. **1.0's review should be about the app.** A VPN brings in 5.4, its own consent screen,
-   storefront changes and a reviewer who needs a relay. Any of these can bounce a first
-   submission, and a rejection then holds up the library app that is otherwise ready.
-2. **Storefronts.** China mainland has to come off before the VPN ships (call 3). Doing that in
-   1.0 would drop a market for a feature most people will not use, and an update can make the
-   change when it is the update that needs it.
-3. **The unknowns are real.** The memory ceiling, the IPv6 change and the idle cost (§2) might
-   change the design. They should be measured on TestFlight first, not under a review clock.
+1. **Review.** 1.0's review takes in 5.4, the consent screen, the storefront change and a reviewer
+   who needs a relay (the SAMPLE demo, call 5, and the review notes). A rejection on any of these
+   holds up the library app too, so the S4 listing work and the review notes are 1.0 work.
+2. **Storefronts.** China mainland comes off availability in 1.0 (call 3). Check then the
+   territories that require a VPN licence or have had VPN apps removed; Apple publishes no list.
+3. **The unknowns are real.** The memory ceiling, the IPv6 change and the idle cost (§2) are
+   measured on TestFlight before 1.0 is submitted (S1's device numbers), not after.
 4. **The same app, not a separate one,** because the relay, its credential and the consent all
    come from the NAS pairing. A second app would need its own pairing, its own listing and its
-   own 5.4 review for the same few people. A separate app is the fallback only if call 3 decides
-   that China must keep the library app.
+   own 5.4 review for the same few people.
 
 ## 5. The slices
 
@@ -686,7 +686,7 @@ Open after the review (2026-11-19), for a device:
 - The toggle and its rows.
 - The consent screen.
 - Status in Settings (connected, reconnecting, the relay's problem in the window's words).
-- On-demand, if call 4 says so.
+- On-demand: the opt-in "Connect automatically (except on home Wi-Fi)" switch (call 4).
 - The demo (call 5).
 - The privacy page section, the listing paragraph and the review notes.
 
@@ -755,19 +755,32 @@ Under A, the demo is clearly a demo:
 | # | Call | Recommendation |
 |---|---|---|
 | 1 | **How a phone gets a forward credential** at the relay (§1.2). Today the phone has none, by design. | **A**: the NAS hands the relay key, inside the sealed session, to phones the owner marks on the desktop card, never to guests or timed phones. Revoking such a phone means rotating the relay key; the desktop card says so. Move to B (per-phone forward keys at the relay) if more than the owner's own phones ever need it. |
-| 2 | **The VPN as a feature of this app at all**, with 5.4's consent screen and the listing paragraph (§4.2–4.3). | Yes, in the same app (§4.4 point 4). |
-| 3 | **Storefronts:** VPN apps need a licence in China mainland, and Apple removes them there without one. | Remove China mainland from availability in the update that adds the VPN. Check the territories that require a VPN licence or have had VPN apps removed (Russia removed many in 2024) at that time; Apple publishes no list. If keeping China matters more, ship the VPN as a separate app instead (not recommended: a second pairing and listing). |
-| 4 | **On-demand** (connect automatically). | Off in the first release. Add "any network, except home Wi-Fi" once S3 holds. |
+| 2 | **The VPN as a feature of this app at all**, with 5.4's consent screen and the listing paragraph (§4.2–4.3). | Yes, in the same app (§4.4 point 4). *(Decided: as recommended.)* |
+| 3 | **Storefronts:** VPN apps need a licence in China mainland, and Apple removes them there without one. | Remove China mainland from availability in the update that adds the VPN. Check the territories that require a VPN licence or have had VPN apps removed (Russia removed many in 2024) at that time; Apple publishes no list. If keeping China matters more, ship the VPN as a separate app instead (not recommended: a second pairing and listing). *(Decided: as recommended, in 1.0.)* |
+| 4 | **On-demand** (connect automatically). | Off in the first release. Add "any network, except home Wi-Fi" once S3 holds. *(Decided: an opt-in switch, off by default.)* |
 | 5 | **SAMPLE: how a reviewer sees the VPN** (§8). | **A, the labelled in-app demo**: no project relay, so the 2026-11-12 "no public relay will exist" call and "Data Not Collected" both stand. |
 | 6 | **If S1's memory gate fails:** multiplex forwards over one connection to the relay (a relay protocol change, shared with the desktop). | Decide only if S1 fails; S1 tries the smaller profile and a worker pool first. |
-| 7 | **When** (§4.4). | A later update, after 1.0 is approved. Spikes and S2–S4 may run on TestFlight before then. |
+| 7 | **When** (§4.4). | A later update, after 1.0 is approved. Spikes and S2–S4 may run on TestFlight before then. *(Decided: 1.0.)* |
 | 8 | **The extension's App ID and group names** (§4.1). | `io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel` (the Mac's suffix, #673), the Keychain group `….mobile.vpn` and `group.io.github.longtimeno-c.mediaviewer.mobile`. They cannot be renamed after release without losing the saved VPN configuration. |
+
+**Decided 2026-11-24 (owner):**
+
+- **Call 2: in the same app**, as recommended.
+- **Call 3: China mainland comes off availability** in the release that adds the VPN (1.0), as
+  recommended.
+- **Call 4: on-demand as an opt-in.** The owner: "on except home wifi should be a opt in option".
+  A switch, off by default, "Connect automatically (except on home Wi-Fi)": connect on any
+  network, disconnect on the home Wi-Fi SSIDs the person picks (§1.4).
+- **Call 7: in 1.0**, not a later update (§4.4).
+- Call 6 stays open: it matters only if S1's memory gate fails.
 
 **Decided 2026-11-19 (owner):**
 
 - **Call 1: the code, pasted.** Not A, B or C above: the phone gets its forward credential the way
   the laptop's "Connect to a VPN host…" does, by the person pasting the server's VPN code
-  `mediaviewer://relay#host:port#KEY` (Phone access → Use as VPN → VPN code… on the server). One
+  `mediaviewer://relay#host:port#KEY` (Phone access → Use as VPN → VPN code… on the server), or
+  `mediaviewer://relay-tls#…` when the host looks like a web site (vpn-stealth, the default): the
+  phone then dials TLS on the code's port, as the desktop does. One
   parser, `serve::parse_relay_connect_code` (src/wire, PR #730), behind the C ABI
   (`mv_vpn_parse_code`); no second parser in Swift. Built in but opt-in: nothing is saved to iOS's
   VPN settings or the Keychain until a code is pasted and the switch turned on, and Remove VPN
