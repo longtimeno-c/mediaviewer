@@ -731,6 +731,9 @@ class engine {
   std::unique_ptr<secrets::store> secrets_;  // under secrets_m_
   std::vector<known::device> devices_;       // under m_
   std::vector<resume_record> unfinished_;    // under m_ (#530)
+  // The sender whose receive is running: its record is kept as it goes, but
+  // it is not "unfinished" until it stops, so the window leaves it out.
+  std::string receiving_from_;               // under m_
   std::unique_ptr<power::stay_awake> awake_;  // under m_ (#530): held while bytes move, both ways
   void stay_awake(bool receiving);            // taken outside m_, kept under it
   std::mutex unfinished_io_m_;               // one write of the records at a time, outside m_
