@@ -113,6 +113,14 @@ class over_link final : public target {
     return out;
   }
   bool limited_to_some_folders() const override { return limited_.load(std::memory_order_acquire); }
+  result<bool> trash(const std::string& root, const std::string& rel) override {
+    serve::client::change_refused why;
+    auto r = l_.remove(root, rel, &why);
+    if (r) return true;
+    // Gone already is done; an offline folder is not.
+    if (r.error() == status::not_found && why.why == serve::client::change_why::not_found) return false;
+    return err(r.error());
+  }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
     return l_.list_whole(root, rel);
@@ -197,6 +205,31 @@ class on_phone final : public target {
       out.push_back({c.name, c.size, c.mtime_unix, c.is_directory});
     }
     return out;
+  }
+
+  // The service's delete (serve.cpp trash_entry), on this phone: into the folder's hidden trash,
+  // `<kTrashFolder>/<YYYY-MM-DD>/<rel>`, by a rename; a taken name gets a number.
+  result<bool> trash(const std::string& root, const std::string& rel) override {
+    if (root != root_.id || !driftwire::safe_relative(rel)) return err(status::permission_denied);
+    const std::string from = io::join_path(root_.path, io::native_relative(rel));
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(fs_path(from), ec)) return false;
+    using namespace std::chrono;
+    const year_month_day d{floor<days>(system_clock::now())};
+    char day[16];
+    std::snprintf(day, sizeof day, "%04d-%02u-%02u", static_cast<int>(d.year()), static_cast<unsigned>(d.month()),
+                  static_cast<unsigned>(d.day()));
+    const auto slash = rel.rfind('/');
+    const std::string name = slash == std::string::npos ? rel : rel.substr(slash + 1);
+    const std::string in_trash = std::string(serve::kTrashFolder) + "/" + day + (slash == std::string::npos ? "" : "/" + rel.substr(0, slash));
+    auto dir = io::make_directories_beneath(root_.path, in_trash);
+    if (!dir) return err(dir.error());
+    for (int n = 1; n <= serve::backup::kMaxNumbered; ++n) {
+      auto renamed = io::rename_no_replace(from, io::join_path(*dir, serve::backup::numbered(name, n)));
+      if (!renamed) return err(renamed.error());
+      if (*renamed == io::rename_outcome::renamed) return true;
+    }
+    return err(status::busy);
   }
 
   // The service's write, step for step (serve.cpp open_write and commit), on this phone.
@@ -563,6 +596,69 @@ engine::engine(options o, target& t, source& s, ledger& l) : o_(std::move(o)), t
 
 void engine::set_items(std::vector<item> items) { items_ = std::move(items); }
 
+void engine::set_deleted(std::vector<std::string> keys) { deleted_ = std::move(keys); }
+
+std::vector<std::string> engine::deleted_done() const {
+  std::lock_guard lock(m_);
+  return deleted_done_;
+}
+
+void engine::trash_deleted(const cancel_flag* cancel) {
+  if (deleted_.empty()) return;
+  std::set<std::string> in_photos;
+  for (const auto& it : items_) in_photos.insert(it.key);
+  std::map<std::string, std::vector<row>> rows;
+  const std::set<std::string> wanted(deleted_.begin(), deleted_.end());
+  for (auto& r : l_.all(o_.root)) {
+    if (wanted.count(r.key)) rows[r.key].push_back(std::move(r));
+  }
+  // Which of them are really to go: backed up here, and not in Photos again (restored from
+  // Recently Deleted: its copy stays).
+  std::set<std::string> going;
+  for (const auto& key : deleted_) {
+    if (!in_photos.count(key) && !rows[key].empty()) going.insert(key);
+  }
+  // Many at once is not someone deleting photos: iCloud Photos turned off with "Remove from
+  // iPhone", signing out of iCloud, a library reset. Their backups are exactly what a backup is
+  // for, so they stay where they are and the keys are done with (never mirrored later either).
+  const bool bulk = going.size() > kMaxDeletedAtOnce;
+  // A file another photo still in the ledger relies on (the same picture twice in Photos is sent
+  // once and recorded for both): it stays for that one; only this photo's row goes.
+  std::set<std::string> relied_on;
+  for (const auto& r : l_.all(o_.root)) {
+    if (!going.count(r.key)) relied_on.insert(r.rel);
+  }
+  bool changed = false;
+  bool out_of_reach = false;
+  for (const auto& key : deleted_) {
+    if (cancel && cancel->stopped()) break;
+    bool finished = true;
+    if (going.count(key) && !bulk) {
+      for (const auto& r : rows[key]) {
+        if (!relied_on.count(r.rel)) {
+          auto moved = t_.trash(o_.root, r.rel);
+          if (!moved) {
+            finished = false;
+            // Refused for this one file (not allowed, a name the service will not move): it
+            // waits, and the others are not held up behind it. Anything else is the folder,
+            // the service or the link: all of it next time.
+            if (moved.error() != status::permission_denied) out_of_reach = true;
+            break;
+          }
+          if (*moved) ++st_.trashed;
+        }
+        (void)l_.remove(r.root, r.key, r.kind, r.name);
+        changed = true;
+      }
+    }
+    if (out_of_reach) break;
+    if (!finished) continue;
+    std::lock_guard lock(m_);
+    deleted_done_.push_back(key);
+  }
+  if (changed) copy_ledger();
+}
+
 std::vector<std::string> engine::remaining() const {
   std::lock_guard lock(m_);
   return remaining_;
@@ -679,6 +775,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
   if (auto checked = check_folder(); !checked) {
     return stop_with(checked.error() == status::permission_denied ? state::not_allowed : state::unreachable);
   }
+  trash_deleted(cancel);
 
   {
     std::lock_guard lock(m_);

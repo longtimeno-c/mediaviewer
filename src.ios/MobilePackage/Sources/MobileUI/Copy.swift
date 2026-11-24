@@ -129,6 +129,9 @@ public enum FailureCopy {
     guard let folders else { return nil }
     return folders.isEmpty ? backupNoFolders : nil
   }
+  /// Owner's call (2026-11-24): a photo deleted on the phone goes to the backup folder's trash.
+  public static let backupDeletes =
+    "When a photo is deleted from this phone's Photos library, here or from another device through iCloud, its backup goes into the backup folder's trash, which is emptied only on your computer. More than 100 photos removed at once (turning off iCloud Photos, for example) are left backed up. This needs full access to Photos."
   public static let backupNoPhotos = "MediaViewer isn't allowed to read Photos. You can change that in Settings."
   public static let backupLimited = "Only the photos you chose for MediaViewer are backed up."
   /// Owner's call B8 (2026-11-12).
