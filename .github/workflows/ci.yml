@@ -229,7 +229,8 @@ jobs:
         run: |
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
-          brew install ninja autoconf autoconf-archive automake libtool
+          # nasm and Go: vcpkg's BoringSSL build (the VPN tunnel's TLS), as the macOS job.
+          brew install nasm go ninja autoconf autoconf-archive automake libtool
 
       - name: Licence check's own tests
         run: python3 tools/ios/test_licence_check.py

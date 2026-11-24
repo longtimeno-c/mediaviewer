@@ -14,6 +14,9 @@
 		AA0000000000000000000013 /* MobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000023 /* MobileKit */; };
 		AA0000000000000000000014 /* MobileUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000024 /* MobileUI */; };
 		AA0000000000000000000015 /* MobileFixtures in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000025 /* MobileFixtures */; };
+		AA0000000000000000000211 /* CMobileVPN in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000221 /* CMobileVPN */; };
+		AA0000000000000000000212 /* MobileLinkSupport in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000222 /* MobileLinkSupport */; };
+		AA0000000000000000000213 /* DriftwireTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000201 /* DriftwireTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -24,19 +27,42 @@
 			remoteGlobalIDString = AA0000000000000000000072;
 			remoteInfo = MediaViewerFixtures;
 		};
+		AA0000000000000000000231 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000204;
+			remoteInfo = DriftwireTunnel;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA0000000000000000000214 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA0000000000000000000213 /* DriftwireTunnel.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000036 /* MediaViewer.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = MediaViewer.xcconfig; path = Config/MediaViewer.xcconfig; sourceTree = "<group>"; };
 		AA0000000000000000000033 /* MediaViewerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MediaViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000031 /* MediaViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MediaViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000032 /* MediaViewerFixtures.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MediaViewerFixtures.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000201 /* DriftwireTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DriftwireTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AA0000000000000000000041 /* App/MediaViewer */ = {isa = PBXFileSystemSynchronizedRootGroup; path = App/MediaViewer; sourceTree = "<group>"; };
 		AA0000000000000000000042 /* App/MediaViewerFixtures */ = {isa = PBXFileSystemSynchronizedRootGroup; path = App/MediaViewerFixtures; sourceTree = "<group>"; };
 		AA0000000000000000000043 /* UITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = UITests; sourceTree = "<group>"; };
+		AA0000000000000000000202 /* App/DriftwireTunnel */ = {isa = PBXFileSystemSynchronizedRootGroup; path = App/DriftwireTunnel; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +94,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000203 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000211 /* CMobileVPN in Frameworks */,
+				AA0000000000000000000212 /* MobileLinkSupport in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -78,6 +113,7 @@
 				AA0000000000000000000041 /* App/MediaViewer */,
 				AA0000000000000000000042 /* App/MediaViewerFixtures */,
 				AA0000000000000000000043 /* UITests */,
+				AA0000000000000000000202 /* App/DriftwireTunnel */,
 				AA0000000000000000000062 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -88,6 +124,7 @@
 				AA0000000000000000000031 /* MediaViewer.app */,
 				AA0000000000000000000032 /* MediaViewerFixtures.app */,
 				AA0000000000000000000033 /* MediaViewerUITests.xctest */,
+				AA0000000000000000000201 /* DriftwireTunnel.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -102,12 +139,14 @@
 				AA00000000000000000001F2 /* Build the C++ core */,
 				AA0000000000000000000081 /* Sources */,
 				AA0000000000000000000051 /* Frameworks */,
+				AA0000000000000000000214 /* Embed App Extensions */,
 				AA00000000000000000001F3 /* Licence check */,
 				AA0000000000000000000083 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA0000000000000000000232 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				AA0000000000000000000041 /* App/MediaViewer */,
@@ -169,6 +208,31 @@
 			productReference = AA0000000000000000000033 /* MediaViewerUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		AA0000000000000000000204 /* DriftwireTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000207 /* Build configuration list for PBXNativeTarget "DriftwireTunnel" */;
+			buildPhases = (
+				AA0000000000000000000208 /* Build the C++ core */,
+				AA0000000000000000000209 /* Sources */,
+				AA0000000000000000000203 /* Frameworks */,
+				AA000000000000000000020A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000202 /* App/DriftwireTunnel */,
+			);
+			name = DriftwireTunnel;
+			packageProductDependencies = (
+				AA0000000000000000000221 /* CMobileVPN */,
+				AA0000000000000000000222 /* MobileLinkSupport */,
+			);
+			productName = DriftwireTunnel;
+			productReference = AA0000000000000000000201 /* DriftwireTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -199,6 +263,7 @@
 				AA0000000000000000000071 /* MediaViewer */,
 				AA0000000000000000000072 /* MediaViewerFixtures */,
 				AA0000000000000000000073 /* MediaViewerUITests */,
+				AA0000000000000000000204 /* DriftwireTunnel */,
 			);
 		};
 /* End PBXProject section */
@@ -219,6 +284,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA0000000000000000000086 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA000000000000000000020A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -258,6 +330,21 @@
 			shellPath = /bin/sh;
 			shellScript = "# A debug build links the app into a debug dylib the check cannot see through.\n[ \"$CONFIGURATION\" = Release ] || exit 0\nexec \"$SRCROOT/../build-ios-$PLATFORM_NAME/ios-licence-check.sh\" --binary \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
 		};
+		AA0000000000000000000208 /* Build the C++ core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build the C++ core";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec \"$SRCROOT/../tools/ios/build-core.sh\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -282,6 +369,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000209 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -289,6 +383,11 @@
 			isa = PBXTargetDependency;
 			target = AA0000000000000000000072 /* MediaViewerFixtures */;
 			targetProxy = AA0000000000000000000034 /* PBXContainerItemProxy */;
+		};
+		AA0000000000000000000232 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000204 /* DriftwireTunnel */;
+			targetProxy = AA0000000000000000000231 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -335,6 +434,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/Entitlements/MediaViewer.entitlements;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
@@ -351,6 +451,7 @@
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_vpn_code.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
@@ -362,6 +463,8 @@
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsqlite3.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libcrypto.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
@@ -382,6 +485,7 @@
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_vpn_code.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
@@ -393,6 +497,8 @@
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsqlite3.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libcrypto.a",
 					"$(SRCROOT)/../build-ios-iphoneos/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
@@ -420,6 +526,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/Entitlements/MediaViewer.entitlements;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
@@ -436,6 +543,7 @@
 				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
 					"$(inherited)",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_vpn_code.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_infer.a",
@@ -447,6 +555,8 @@
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsqlite3.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libcrypto.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
@@ -467,6 +577,7 @@
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(inherited)",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_link.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_vpn_code.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_search.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_ai_engine.a",
 					"$(SRCROOT)/../build-ios-iphoneos/libmv_infer.a",
@@ -478,6 +589,8 @@
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsqlite3.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libcrypto.a",
 					"$(SRCROOT)/../build-ios-iphoneos/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
@@ -573,6 +686,146 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000205 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/Entitlements/DriftwireTunnel.entitlements;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/Info/DriftwireTunnel.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "MediaViewer VPN";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_vpn.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_vpn_code.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_vpn_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libcrypto.a",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"Network",
+					"-framework",
+					"NetworkExtension",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_vpn.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_vpn_code.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_vpn_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libcrypto.a",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"Network",
+					"-framework",
+					"NetworkExtension",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000206 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000036 /* MediaViewer.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/Entitlements/DriftwireTunnel.entitlements;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/Info/DriftwireTunnel.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "MediaViewer VPN";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_vpn.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_mobile_vpn_code.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_vpn_engine.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libcrypto.a",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"Network",
+					"-framework",
+					"NetworkExtension",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_vpn.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_mobile_vpn_code.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_vpn_engine.a",
+					"$(SRCROOT)/../build-ios-iphoneos/libmv_wire.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libsodium.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libssl.a",
+					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libcrypto.a",
+					"-lc++",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"Network",
+					"-framework",
+					"NetworkExtension",
+					"-framework",
+					"Security",
+					"-framework",
+					"CoreFoundation",
+					"-framework",
+					"SystemConfiguration",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.longtimeno-c.mediaviewer.mobile.DriftwireTunnel";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -612,6 +865,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		AA0000000000000000000207 /* Build configuration list for PBXNativeTarget "DriftwireTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000205 /* Debug */,
+				AA0000000000000000000206 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -649,6 +911,14 @@
 		AA0000000000000000000025 /* MobileFixtures */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MobileFixtures;
+		};
+		AA0000000000000000000221 /* CMobileVPN */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CMobileVPN;
+		};
+		AA0000000000000000000222 /* MobileLinkSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MobileLinkSupport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

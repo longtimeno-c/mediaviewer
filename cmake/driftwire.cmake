@@ -120,6 +120,10 @@ else()
   target_link_libraries(mv_driftwire_engine PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
+# The phone's VPN (docs/plans/phone-vpn.md): its C ABI over mv_vpn_engine (cmake/vpn.cmake), for the iPhone's
+# packet tunnel extension; built everywhere the engine is, so its tests run on each OS.
+include("${CMAKE_CURRENT_LIST_DIR}/mobile-vpn.cmake")
+
 # iOS links the engine statically: no add-on module, relay or command line.
 if(IOS)
   return()
@@ -214,6 +218,8 @@ function(mv_driftwire_tests target)
     # The VPN add-on (docs/plans/vpn-addon.md): the proxy, the stack, the service, the module.
     "${MV_SOURCE_ROOT}/tests/test_vpn.cpp"
     "${MV_SOURCE_ROOT}/tests/test_vpn_addon.cpp"
+    # The phone's VPN ABI (docs/plans/phone-vpn.md S1/S2), against a relay on loopback.
+    "${MV_SOURCE_ROOT}/tests/test_phone_vpn.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
@@ -230,7 +236,8 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
   # test_phone_*.cpp: the Phone access add-on's (src/addons/phone, cmake/phone.cmake).
-  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone mv_vpn_engine)
+  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone mv_vpn_engine mv_mobile_vpn
+    mv_mobile_vpn_code)
   if(MV_DRIFTWIRE_TLS)
     target_link_libraries(${target} PRIVATE OpenSSL::Crypto)  # test_driftwire_acme.cpp's stand-in CA
     target_compile_definitions(${target} PRIVATE MV_DRIFTWIRE_TLS=1)

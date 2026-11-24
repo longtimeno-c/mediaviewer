@@ -33,6 +33,8 @@ parts = [
     ("libsodium", os.path.join(share, "libsodium", "copyright")),
     ("BLAKE3", os.path.join(share, "blake3", "copyright")),
     ("SQLite", os.path.join(share, "sqlite3", "copyright")),
+    # The VPN extension's HTTPS look (docs/plans/phone-vpn.md), inside the app's bundle.
+    ("BoringSSL", os.path.join(share, "boringssl", "copyright")),
 ]
 ort = sorted(glob.glob(os.path.join(build, "_ort", "microsoft.ml.onnxruntime-ios-*", "LICENSE")))
 if not ort:

@@ -15,3 +15,9 @@ set(VCPKG_OSX_DEPLOYMENT_TARGET 18.0)
 # Autotools ports (libsodium) would otherwise take this for a native build and
 # try to run what they compile.
 set(VCPKG_MAKE_BUILD_TRIPLET "--host=aarch64-apple-ios;--build=aarch64-apple-darwin")
+
+# BoringSSL (the VPN extension's HTTPS look) installs its bssl tool, which CMake makes an app
+# bundle on iOS and the port's install has no destination for: a plain program instead.
+if(PORT STREQUAL "boringssl")
+  set(VCPKG_CMAKE_CONFIGURE_OPTIONS "-DCMAKE_MACOSX_BUNDLE=OFF")
+endif()

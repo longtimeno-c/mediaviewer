@@ -21,7 +21,7 @@ public enum SampleChanges {
                            search: services.search, connection: services.connection, sync: services.sync,
                            clips: services.clips, saver: services.saver, backup: services.backup)
     wrapped.changes = SampleFolderChanges(library: library, other: services.changes)
-    return wrapped
+    return wrapped.with(vpn: services.vpn)
   }
 }
 

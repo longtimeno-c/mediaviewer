@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The VPN through your server's packet tunnel extension (docs/plans/phone-vpn.md §4.1); Xcode adds
+     the generated keys. It runs the whole VPN (App/DriftwireTunnel/PacketTunnelProvider.swift). -->
+<plist version="1.0">
+<dict>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.networkextension.packet-tunnel</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).PacketTunnelProvider</string>
+	</dict>
+	<!-- The team prefix, for the shared Keychain group's full name (MobileLinkSupport VPNNames). -->
+	<key>MVAppIdentifierPrefix</key>
+	<string>$(AppIdentifierPrefix)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

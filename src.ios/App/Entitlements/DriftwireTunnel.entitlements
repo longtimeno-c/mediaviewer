@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The packet tunnel extension (docs/plans/phone-vpn.md §4.1): the .vpn Keychain group only, so the
+     tunnel item is the one secret it can read. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.io.github.longtimeno-c.mediaviewer.mobile</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)io.github.longtimeno-c.mediaviewer.mobile.vpn</string>
+	</array>
+</dict>
+</plist>

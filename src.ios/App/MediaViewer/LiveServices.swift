@@ -32,6 +32,8 @@ enum LiveServices {
     // The sample library (a static copy, no server): its folders changeable on this phone, as a demo.
     return SampleChanges.wrap(services, isSample: { connection.current.isSample },
                               stamp: { connection.current.catalogue.map { "\($0.epoch)" } ?? "" })
+      // The VPN through your server (docs/plans/phone-vpn.md): the DriftwireTunnel extension.
+      .with(vpn: LinkVPN())
   }
 }
 

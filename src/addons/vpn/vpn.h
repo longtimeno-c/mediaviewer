@@ -125,6 +125,7 @@ class runner {
     std::unique_ptr<device> dev;
     settings s;
     std::function<void()> changed;  // streams opened or ended; any thread, never under the runner's lock
+    limits lim;  // the stack's caps (netstack.h); the desktop's by default
   };
   struct snapshot {
     std::uint32_t tcp_open = 0;
