@@ -817,8 +817,14 @@ One guided run in the order a person needs it (`cli/host_setup.*`, plan §2):
 ### The VPN exit: `driftwire host vpn on|off` (slice 7, 2026-11-14)
 
 `host vpn on` sets `vpn` (and `--tls-port N`, the web-site look) in `host.json`; the running host
-restarts its relay with forwarding to TCP 80 and 443 and UDP 53 (the relay's defaults; never a
-private, loopback or link-local address: owner call 5, no VPN into the home network), and its router
+restarts its relay with `relay::vpn_host_defaults`: forwarding to every port (`kAnyPort`, TCP and UDP;
+all traffic, owner 2026-11-19) apart from `never_forward`'s (TCP 23, 25 and 445, and 135 and 137-139
+both kinds: what gets a home address blocklisted; mail apps use 587, 465 and 993), 128 TCP forwards and
+128 UDP flows apart (a lookup's flow gives its slot back after 10 s idle), UDP out at most 4 MiB/s for
+all flows together, never to the home's outside address (`forward_refused` =
+`refuse_name_addresses` of the DuckDNS name: the router's address hairpins to its forwarded ports), and never to a private, loopback or link-local address, nor to any of the host's own networks
+(`relay::forward_destination_ok`: a home device's global IPv6 address, the host itself; owner call 5,
+no VPN into the home network), and its router
 keeper asks for the relay's port. It prints the relay line once, `name.duckdns.org:PORT#KEY` (the LAN
 address without a name; `PORT` the router's outside port when the running host has one), for the
 laptop's **Relay (your own server)**: the only place the relay's key is ever shown. The TLS look is a
@@ -850,8 +856,8 @@ offers it (`options::vpn`, set by `serve_cmd.cpp` only; the service inside `drif
 since the host runs its own relay) as feature `vpn`. The owner op **`set_vpn`** `{on, port?}` (unlocked
 once there is a passphrase) keeps a key of its own in the service's store (`kVpnKeyName`, apart from the
 person's other relay's `kRelayKeyName`) and `vpn_port` in `serve.json` (0: off, 47614 by default), and
-runs a `relay::server` inside the service with the relay's own forwarding defaults: TCP 80 and 443, UDP
-53, public addresses only. On answers the port and the key, once, for the owner's line; a service
+runs a `relay::server` inside the service with the host's `vpn_host_defaults`, refusing the
+addresses of its outside name as the owner's desktop last set it, public addresses only. On answers the port and the key, once, for the owner's line; a service
 started with `vpn_port` set starts the relay again; on again for the same port leaves a running relay as
 it is (asking for the code never cuts a laptop's forwards). `owner_status` gains `vpn_port`,
 `vpn_running`, `vpn_listening`. The desktop card (claimed NAS, the feature there) shows **VPN through
@@ -940,8 +946,8 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
 - **Forwarding** (`splice.*`): role `kForwarder` (2): CPace (`…forwarder-server`) then Noise NNpsk0;
   the client's sealed answer carries kind byte, port and host (`forward_host_ok`). Reply `F`, or `O`
   off, `X` port, `B` busy, `U` unreachable, `N` private, `K` kind. Then **sealed frames**
-  (`sealed_link`: 2-byte length + AEAD ≤ 16 KiB). Ports 80/443 unless `--forward-ports` (`none`
-  off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
+  (`sealed_link`: 2-byte length + AEAD ≤ 16 KiB). Ports 80/443 unless `--forward-ports` (`all`:
+  every port but `never_forward`'s, as the VPN hosts set it; `none` off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
   logs only counts. Models: `tools/formal/relay.pv`, `relay_leaked_key.pv`.
 - **Local proxy** (`tunnel.*`): SOCKS5 CONNECT (names sent as names) and HTTP CONNECT / absolute-form
   on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 3 opening at once. No UDP.
@@ -965,7 +971,7 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
 - **All traffic** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`all_traffic`,
   `/vpn all`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
   no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram
-  flows (`kForwardUdp`, `--forward-udp-ports` default 53). DNS `198.18.0.2` answered by the relay
+  flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay
   (`dns.driftwire`, `--dns`). Addresses `198.18.0.1/30`, `fd5d:7269:6674::1/64`; everything routed
   except the relay's addresses and local networks (`vpn::plan_routes`). **Block when the tunnel is
   down** (`block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,
