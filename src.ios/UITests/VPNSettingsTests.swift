@@ -40,6 +40,14 @@ final class VPNSettingsTests: XCTestCase {
     toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
   }
 
+  /// The question's sheet is as tall as its words and buttons: no empty half of a screen under
+  /// Not Now (the owner's report, 2026-11-24).
+  private func assertConsentFitsItsWords(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    let gap = app.windows.firstMatch.frame.maxY - app.buttons["vpn.consent.notNow"].frame.maxY
+    XCTAssertLessThan(gap, 90, "Empty space under Not Now: \(gap) pt", file: file, line: line)
+    XCTAssertGreaterThan(gap, 0, "Not Now is off the screen", file: file, line: line)
+  }
+
   private func status(_ app: XCUIApplication) -> String { element(app, "vpn.status").label }
 
   private func waitFor(_ app: XCUIApplication, status words: String, timeout: TimeInterval = 10) -> Bool {
@@ -116,6 +124,7 @@ final class VPNSettingsTests: XCTestCase {
       XCTAssertTrue(turnOn.waitForExistence(timeout: 10), "Switched on without asking.")
       XCTAssertTrue(app.staticTexts["Send all traffic through your server?"].exists)
       XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'home.example.net:51820'")).count > 0)
+      assertConsentFitsItsWords(app)
       save("consent", appearance)
       // Not Now leaves it off.
       app.buttons["vpn.consent.notNow"].tap()
@@ -173,6 +182,7 @@ final class VPNSettingsTests: XCTestCase {
       let turnOn = app.buttons["vpn.consent.turnOn"]
       XCTAssertTrue(turnOn.waitForExistence(timeout: 10))
       XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Nothing is routed'")).count > 0)
+      assertConsentFitsItsWords(app)
       save("sample-consent", appearance)
       turnOn.tap()
       XCTAssertTrue(waitFor(app, status: "Connected"), status(app))
