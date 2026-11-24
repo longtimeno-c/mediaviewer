@@ -106,6 +106,9 @@ class os_port {
   [[nodiscard]] virtual result<std::unique_ptr<device>> start(const settings& s) = 0;
   // Takes the interface, its routes and DNS away (the device then reads io).
   virtual void stop() = 0;
+  // Quitting, from another thread: a start() still waiting for the system or
+  // the person returns at once (status::cancelled), and none starts again.
+  virtual void cancel() {}
   // "" when Block when the tunnel is down is kept here; else why not (the
   // switch is then not offered: a kill switch that does not hold is worse
   // than none).

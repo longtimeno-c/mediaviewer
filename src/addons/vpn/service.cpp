@@ -74,6 +74,9 @@ service::~service() {
     stopping_.store(true);
     control_cv_.notify_all();
   }
+  // A start waiting for the system (the Mac asks the person to allow the
+  // extension) gives up now, so quitting never waits minutes for it.
+  if (vpn_port_) vpn_port_->cancel();
   if (control_thread_.joinable()) control_thread_.join();
   {
     // A change in progress finishes (a dialog showing waits for its answer).
@@ -626,10 +629,22 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     v_.mode = "proxy";
     return false;
   };
-  if (!on || !vpn_port_) return proxy_mode();
+  if (!on || !vpn_port_) return proxy_mode();  // a failed start's words stay until the person flips the switch
+  {
+    std::lock_guard lock(m_);
+    if (vpn_gave_up_for_ == made_for) {  // failed this run for these settings: its note says so
+      v_.mode = "proxy";
+      return false;
+    }
+  }
   std::string why;
   const auto field = relay_server_of(relay, why);
-  if (!field) return proxy_mode();  // the proxy's notes say why
+  if (!field) {
+    std::lock_guard lock(m_);
+    if (v_.all_traffic_available) v_.all_traffic_note.clear();  // the proxy's notes say why; no older words
+    v_.mode = "proxy";
+    return false;
+  }
   settings s;
   s.kill_switch = block;
   s.relay_name = field->at.substr(0, field->at.rfind(':'));
@@ -640,12 +655,33 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
   for (const auto& n : net::local_subnets()) {
     if (!net::is_public(n.base) || n.prefix >= 8) s.exclude_nets.push_back(n);
   }
+  // The first start may wait for the person (the system asks to allow the
+  // extension and to add a VPN configuration): the page says so meanwhile.
+  {
+    std::lock_guard lock(m_);
+    v_.all_traffic_note =
+        "Starting All traffic\xE2\x80\xA6 The first time, your system asks you to allow MediaViewer's network "
+        "extension and to add its VPN configuration.";
+  }
+  post();
   std::string note;
   auto dev = vpn_port_->start(s);
+  bool failed = false;   // turns the switch off: the person has to act (allow it, restart)
+  bool gave_up = false;  // a passing failure: kept on, not tried again this run
   if (!dev) {
-    note = dev.error() == status::permission_denied
-               ? "All traffic (VPN) was not allowed on this computer: the proxy carries the apps that follow it."
-               : "All traffic (VPN) could not start: the proxy carries the apps that follow it.";
+    failed = dev.error() == status::permission_denied || dev.error() == status::busy;
+    gave_up = !failed && dev.error() != status::cancelled;  // quitting: nothing to say
+    if (dev.error() == status::permission_denied) {
+      note = "All traffic (VPN) wasn't allowed. Allow MediaViewer's network extension and its VPN configuration "
+             "(on a Mac: System Settings \xE2\x86\x92 General \xE2\x86\x92 Login Items & Extensions), then turn "
+             "All traffic on again. Meanwhile the proxy carries the apps that follow it.";
+    } else if (dev.error() == status::busy) {
+      note = "Restart this computer to finish installing MediaViewer's network extension, then turn All traffic on "
+             "again. Meanwhile the proxy carries the apps that follow it.";
+    } else if (gave_up) {
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn All traffic off "
+             "and on again to try once more.";
+    }
     log_status("all traffic", dev.error());
   } else {
     runner::options o;
@@ -660,7 +696,9 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
       vpn_for_ = made_for;
     } else {
       vpn_port_->stop();
-      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it.";
+      gave_up = true;
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn All traffic off "
+             "and on again to try once more.";
       log_status("all traffic", r.error());
     }
   }
@@ -670,9 +708,17 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     runs = static_cast<bool>(vpn_run_);
   }
   if (runs) host_.log(2, "vpn: all traffic on");
-  std::lock_guard lock(m_);
-  v_.mode = runs ? "vpn" : "proxy";
-  if (!note.empty()) v_.all_traffic_note = note;
+  {
+    std::lock_guard lock(m_);
+    v_.mode = runs ? "vpn" : "proxy";
+    // The starting words go either way; never over a reason it isn't offered.
+    if (v_.all_traffic_available) v_.all_traffic_note = note;
+    // A start that failed turns the switch off: nothing else (the server, the
+    // web-site look, the next launch) asks the person again until they do.
+    if (failed) v_.all_traffic = false;
+    vpn_gave_up_for_ = gave_up ? made_for : std::string();
+  }
+  if (failed) request(false, true);  // kept off
   return runs;
 }
 
@@ -712,9 +758,15 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     {
       std::lock_guard lock(m_);
       v_.*field = value->b;
-      if (field == &view::all_traffic && vpn_port_ && value->b) {
-        v_.all_traffic_note = vpn_port_->unavailable();
-        v_.all_traffic_available = v_.all_traffic_note.empty();
+      if (field == &view::all_traffic && vpn_port_) {
+        // The person flipped it: an earlier failure's words go, and on tries afresh.
+        vpn_gave_up_for_.clear();
+        if (value->b) {
+          v_.all_traffic_note = vpn_port_->unavailable();
+          v_.all_traffic_available = v_.all_traffic_note.empty();
+        } else if (v_.all_traffic_available) {
+          v_.all_traffic_note.clear();
+        }
       }
     }
     if (retry_proxy) proxy_retry_.store(true);

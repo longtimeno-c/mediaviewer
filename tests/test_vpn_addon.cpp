@@ -397,6 +397,18 @@ TEST_CASE("vpn: the module draws its page, and asks Phone access through the hos
       return reg.screens_json().find("add Phone access") != std::string::npos;
     }));
     CHECK(reg.screens_json().find("Connect to a VPN host") != std::string::npos);
+#if defined(__APPLE__)
+    // All traffic is the Mac's packet tunnel: with the Tunnel on, a build
+    // without the signed extension (this test's) says why, not nothing.
+    REQUIRE(reg.send_event("vpn", "settings", "server", MV_SLOT_EVENT_SUBMIT,
+                           "\"127.0.0.1:9#vpn-addon-test-key-0123\"") == mv::status::ok);
+    REQUIRE(reg.send_event("vpn", "settings", "tunnel", MV_SLOT_EVENT_CHANGE, "true") == mv::status::ok);
+    REQUIRE(eventually([&] {
+      reg.drain();
+      return reg.screens_json().find("MediaViewer's network extension") != std::string::npos;
+    }));
+    REQUIRE(reg.send_event("vpn", "settings", "tunnel", MV_SLOT_EVENT_CHANGE, "false") == mv::status::ok);
+#endif
     REQUIRE(reg.close_screen("vpn", "settings") == mv::status::ok);
     reg.drain();
     v->reset();

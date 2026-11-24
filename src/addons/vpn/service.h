@@ -183,6 +183,11 @@ class service {
   std::string proxy_for_;                 // under tunnel_m_
   std::unique_ptr<runner> vpn_run_;       // under tunnel_m_
   std::string vpn_for_;                   // under tunnel_m_
+  // A start that failed for a passing reason (a timeout, the system busy at
+  // launch): not tried again for the same settings this run, so a reconcile
+  // never loops on it; the person's switch (and the saved setting) stays on.
+  // Cleared when the person turns All traffic on. Under m_.
+  std::string vpn_gave_up_for_;
   std::unique_ptr<os_port> vpn_port_;
 
   // The system proxy (the control thread's, and the destructor's after it).
