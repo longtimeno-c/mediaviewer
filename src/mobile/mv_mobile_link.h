@@ -457,6 +457,10 @@ int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space*
 int32_t mv_backup_clear_items(mv_backup* b);
 int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
                            const char* resources_json);
+/* The key of a photo Photos says was deleted (cleared with the items): the next run moves its files
+ * in the folder into the folder's trash on the server, unless it is among the items again. Never a
+ * photo merely missing from the items (hidden ones and a burst's other frames are left out of them). */
+int32_t mv_backup_add_deleted(mv_backup* b, const char* key);
 
 /* BLOCKS (the core's run thread calls it). Writes resource `index` of the photo `local_id`, the
  * original as shot (from iCloud first if need be), to `path`. MV_LINK_OK, MV_LINK_NOT_FOUND (gone from
@@ -493,6 +497,7 @@ typedef struct mv_backup_status {
   double current_fraction;
   char current[256];        /* the file being copied: this phone's own screen only */
   uint64_t failed;
+  uint64_t trashed;         /* files moved into the folder's trash this run (photos deleted from Photos) */
 } mv_backup_status;
 typedef void (*mv_backup_status_fn)(void* ctx, const mv_backup_status* status);
 
@@ -508,6 +513,9 @@ int32_t mv_backup_failures(mv_backup* b, mv_backup_failure_fn fn, void* ctx);
 /* Keys of the photos not backed up yet, as of the last run. */
 typedef void (*mv_backup_key_fn)(void* ctx, const char* key);
 int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx);
+/* Keys of the deleted photos the last run finished with: their files are in the trash, or were never
+ * backed up to that folder, or the photo is in Photos again. The rest wait for the next run. */
+int32_t mv_backup_deleted_done(mv_backup* b, mv_backup_key_fn fn, void* ctx);
 
 /* Forget: removes the sample library's on-phone "NAS" and a ledger. Nothing on a real NAS is touched. */
 void mv_backup_remove_local(const char* sample_folder, const char* ledger_path);

@@ -464,7 +464,7 @@ std::string share_folder(serve::config& c, const std::string& abs_path, const st
       if (r.label == serve::kCatalogueLabel) return "the Catalogue is never a backup folder.";
       if (!r.backup) {
         r.backup = true;
-        r.limit = static_cast<std::uint64_t>(INT64_MAX);
+        r.limit = serve::kNoLimit;
         r.reserve = serve::kDefaultReserve;
       }
       return {};
@@ -491,7 +491,7 @@ std::string share_folder(serve::config& c, const std::string& abs_path, const st
   rc.volume = facts.volume;
   if (backup) {
     rc.backup = true;
-    rc.limit = static_cast<std::uint64_t>(INT64_MAX);  // no limit of its own: the reserve keeps the drive from filling
+    rc.limit = serve::kNoLimit;  // no limit of its own: the reserve keeps the drive from filling
     rc.reserve = serve::kDefaultReserve;
   }
   c.roots.push_back(std::move(rc));
@@ -1115,7 +1115,8 @@ std::unique_ptr<host_service> host_service::start(host_service_options o, std::s
     st.next_roots = std::chrono::steady_clock::now() + std::chrono::milliseconds(st.o.roots_every_ms);
     st.set_awake_locked();
     // The keepers last: they need the ports.
-    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives, st.o.keepers.cert}) {
+    for (const auto& make : {st.o.keepers.ddns, st.o.keepers.router, st.o.keepers.drives, st.o.keepers.cert,
+                             st.o.keepers.copy}) {
       if (!make) continue;
       if (auto kp = make()) st.keepers.push_back(std::move(kp));
     }
@@ -1234,12 +1235,20 @@ std::string share_path(const host_layout& l, const std::string& typed, const std
 
 int run_share(const args& a, const host_layout& l, bool test_hooks) {
   std::string label;
-  const std::string why = share_path(l, a.host_path, a.label, a.backup, 0, test_hooks, label);
+  // --limit none or GB (args.cpp checked it); none given: 0, a new backup folder's default (no limit).
+  const std::uint64_t limit = a.limit.empty()  ? 0
+                              : a.limit == "none" ? serve::kNoLimit
+                                                  : static_cast<std::uint64_t>(std::strtod(a.limit.c_str(), nullptr) * 1e9);
+  const std::string why = share_path(l, a.host_path, a.label, a.backup, limit, test_hooks, label);
   if (!why.empty()) return fail(why, 1);
   // --backup on a folder shared already: it keeps the label it has.
   if (!a.label.empty() && !same_label(a.label, label)) print("It is shared as \"" + label + "\" already; that label stays.\n");
-  print("Shared \"" + label + "\"" + (a.backup ? ", phones may back up into it" : std::string()) +
-        ". A running host serves it within seconds.\n");
+  // No --limit: a new backup folder has none, one shared already keeps the limit it had.
+  const std::string sizes = !a.backup         ? std::string()
+                            : limit == 0      ? ", phones may back up into it"
+                            : serve::no_limit(limit) ? ", phones may back up into it with no storage limit"
+                                                     : ", phones may back up into it up to " + a.limit + " GB";
+  print("Shared \"" + label + "\"" + sizes + ". A running host serves it within seconds.\n");
   return 0;
 }
 
@@ -1433,7 +1442,12 @@ std::string status_text(const host_layout& l, bool test_hooks) {
       std::error_code ec;
       const auto at = volume_locate(r);
       const bool there = at && fs::is_directory(to_path(*at), ec);
-      out += "folder      " + r.label + (r.backup ? " (backup)" : "") + (there ? "" : "  offline") + "\n";
+      std::string kind;
+      if (r.backup) {
+        kind = serve::no_limit(r.limit) ? " (backup, no limit)"
+                                        : " (backup, up to " + std::to_string((r.limit + 500'000'000) / 1'000'000'000) + " GB)";
+      }
+      out += "folder      " + r.label + kind + (there ? "" : "  offline") + "\n";
     }
   }
   if (auto store = owner_store(l.serve + "/secrets")) {

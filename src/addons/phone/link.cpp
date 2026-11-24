@@ -1094,7 +1094,7 @@ void link::run(const std::string& request) {
     return;
   }
   if (what == "host_drives" || what == "host_drives_choices" || what == "host_drives_combine" ||
-      what == "host_drives_replace") {
+      what == "host_drives_replace" || what == "host_drives_copy" || what == "host_drives_copy_stop") {
     host_drives(what, request);
     return;
   }
@@ -1411,7 +1411,8 @@ void link::run(const std::string& request) {
       w.key("id").string(text("id"));
     }
     if (what == "set_backup" || text("backup") == "1") {
-      const auto limit = bytes("limit");
+      // "none": no limit of its own, only the reserve (serve_wire.h kNoLimit).
+      const auto limit = text("limit") == "none" ? static_cast<std::int64_t>(driftwire::serve::kNoLimit) : bytes("limit");
       const auto reserve = bytes("reserve");
       if (limit <= 0 || reserve < 0) return fail("invalid_arg");
       if (what == "add_folder") w.key("backup").boolean(true);
@@ -1734,6 +1735,35 @@ void link::host_drives(const std::string& what, const std::string& request) {
     std::lock_guard lock(m_);
     v_.drives_choices_json = r && r->code == 0 ? json_out(r->output, 8) : std::string();
     if (v_.drives_choices_json.empty()) v_.error = "host_drives";
+    return;
+  }
+  if (what == "host_drives_copy" || what == "host_drives_copy_stop") {
+    // Keep a copy: nothing is erased, so nothing is typed and no administrator is asked.
+    std::vector<std::string> args;
+    if (what == "host_drives_copy") {
+      if (ids.size() != 2) return fail("host_drives");
+      args = {"drives", "copy", ids[0], ids[1]};
+    } else {
+      const std::string label = text("label");
+      if (label.empty() || label.size() > 64 || label.front() == '-') return fail("host_drives");
+      args = {"drives", "copy-stop", label};
+    }
+    {
+      std::lock_guard lock(m_);
+      v_.host_said.clear();
+    }
+    auto r = self_host::run_host(w, args, {}, 60000);
+    if (!r || r->code != 0) return fail("host_drives_failed", r ? last_line(r->output) : std::string());
+    {
+      std::lock_guard lock(m_);
+      v_.host_said = last_line(r->output);
+    }
+    read_host();
+    auto again = self_host::run_host(w, {"drives", "list", "--json"}, {}, 60000);
+    std::lock_guard lock(m_);
+    if (again) {
+      if (std::string j = json_out(again->output, 16); !j.empty()) v_.drives_json = std::move(j);
+    }
     return;
   }
   std::vector<std::string> args;

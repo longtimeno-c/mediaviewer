@@ -9,6 +9,8 @@
 //   driftwire host drives choices DRIVE... [--json] the five choices for these drives, side by side
 //   driftwire host drives combine CHOICE DRIVE... --label NAME [--confirm-stdin]
 //   driftwire host drives replace SET DRIVE [--confirm-stdin]
+//   driftwire host drives copy FROM TO               keep a copy of FROM on TO, nothing erased (host_copy.h)
+//   driftwire host drives copy-stop FROM             stop keeping it (the copied files stay on TO)
 //
 // combine and replace show each drive's facts, refuse what the guards refuse,
 // then ask for each drive's name to be typed (at the terminal, or one line
@@ -32,12 +34,12 @@ namespace mv::driftwire::cli {
 struct host_layout;
 
 // What `host drives WORDS…` asks (pure; the tests).
-enum class drives_action : std::uint8_t { list, choices, combine, replace };
+enum class drives_action : std::uint8_t { list, choices, combine, replace, copy, copy_stop };
 struct drives_words {
   drives_action act = drives_action::list;
   drives::choice c = drives::choice::separate;
-  std::vector<std::string> ids;  // the drives (choices, combine); replace: the new drive
-  std::string set;               // replace: the set's name or id
+  std::vector<std::string> ids;  // the drives (choices, combine); replace: the new drive; copy: FROM, TO
+  std::string set;               // replace: the set's name or id; copy-stop: the drive or the copy's name
   std::string error;             // a usage error
 };
 [[nodiscard]] drives_words parse_drives_words(std::span<const std::string> words);
@@ -49,7 +51,9 @@ struct drives_words {
                                        const std::string& images_under);
 
 // `list --json` and `choices --json` (the card reads them). No mount path.
-[[nodiscard]] std::string listing_json(const drives::listing& l, const drives::guard& g);
+// `host_folder`: the copies kept (host_copy.h) are listed too, each with its drives' ids.
+[[nodiscard]] std::string listing_json(const drives::listing& l, const drives::guard& g,
+                                       const std::string& host_folder = {});
 [[nodiscard]] std::string choices_json(std::span<const drives::option> options);
 // The rows for a terminal, side by side as far as it is wide (one under another below 100 columns).
 [[nodiscard]] std::string choices_text(std::span<const drives::option> options, int columns);

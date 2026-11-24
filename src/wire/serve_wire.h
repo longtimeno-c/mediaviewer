@@ -374,7 +374,8 @@ struct root_config {
   std::string label;  // shown by the client; never the path
   std::string path;   // absolute, on the NAS; never sent
   // A backup folder (1.1): phones may create files here, never past `limit`
-  // bytes in it, and never leaving the volume less than `reserve` free.
+  // bytes in it (kNoLimit: no limit of its own), and never leaving the volume
+  // less than `reserve` free.
   bool backup = false;
   std::uint64_t limit = 0;
   std::uint64_t reserve = 0;
@@ -437,5 +438,12 @@ inline constexpr std::string_view kRelayTlsCodePrefix = "mediaviewer://relay-tls
 [[nodiscard]] std::string config_json(const config& c);
 // The free space a backup folder keeps when the owner sets none.
 inline constexpr std::uint64_t kDefaultReserve = 1ull << 30;
+// A backup folder's `limit` when it has none of its own: only the reserve
+// stops phones. INT64_MAX, not 0: 0 already means "nothing may be written"
+// to every server and card, and a server from before reads this as a limit
+// no folder reaches, so old and new agree. `driftwire host share --backup`
+// has written it since slice 6.
+inline constexpr std::uint64_t kNoLimit = 0x7fff'ffff'ffff'ffffull;
+[[nodiscard]] constexpr bool no_limit(std::uint64_t limit) noexcept { return limit >= kNoLimit; }
 
 }  // namespace mv::driftwire::serve

@@ -1501,6 +1501,222 @@ TEST_CASE("faces.db: a person's review puts the misfiled faces first; suggestion
   CHECK((*db)->loose_count() == (*db)->loose_faces(0, 100).size());
 }
 
+// ---- what the user confirmed counts for more (docs/design/17 "Confirmed people") ---------------
+
+namespace {
+
+// A direction at cosine `c` to `a`: the same person in another look, or a lookalike.
+std::vector<float> look_at(world& w, const std::vector<float>& a, float c) {
+  std::vector<float> x = w.direction();
+  float d = 0;
+  for (std::uint32_t i = 0; i < kDim; ++i) d += x[i] * a[i];
+  for (std::uint32_t i = 0; i < kDim; ++i) x[i] -= d * a[i];
+  world::normalise(x);
+  std::vector<float> v(kDim);
+  const float s = std::sqrt(1 - c * c);
+  for (std::uint32_t i = 0; i < kDim; ++i) v[i] = c * a[i] + s * x[i];
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("refine: a confirmed person is known by every look, an unconfirmed one by twelve faces",
+          "[ai][faces][refine]") {
+  world w;
+  const refine_params p;
+  const auto front = w.direction();
+  const auto side = look_at(w, front, 0.65f);  // turned: ~0.49 to a front face, ~0.76 to another turned one
+  w.face(front, 1, 0.05f, 0.9f, true);         // the cover the user named
+  for (int i = 0; i < 20; ++i) w.face(front, 1, 0.05f, 0.9f);
+  std::set<std::int64_t> sides;
+  for (int i = 0; i < 10; ++i) sides.insert(w.face(side, 1, 0.05f, 0.8f));
+  std::vector<refine_face> own = w.faces;
+  const std::int64_t probe = w.face(side, 0, 0.05f, 0.8f);
+  const std::span<const float> v(w.emb.data() + std::size_t{w.at(probe).row} * kDim, kDim);
+  const auto turned = [&](const mv::ai::person_proto& pr) {
+    return std::count_if(pr.exemplar_ids.begin(), pr.exemplar_ids.end(),
+                         [&](std::int64_t id) { return sides.count(id) != 0; });
+  };
+
+  // Twelve faces, the closest to the cover first: all front-on, and a turned
+  // face reads as doubtful.
+  refine_params twelve = p;
+  twelve.max_exemplars_confirmed = twelve.max_exemplars;
+  const auto was = mv::ai::build_person_proto(kDim, w.emb, own, 1, true, twelve);
+  CHECK(was.exemplar_ids.size() == 12);
+  CHECK(turned(was) == 0);
+  CHECK(mv::ai::exemplar_support(v, was, 0, p.top_k) < p.join + 2 * p.margin);
+
+  // Confirmed: the same twelve first, then the look they do not cover, enough
+  // of it (top_k) that a turned face is vouched for as an unmistakable one.
+  const auto now = mv::ai::build_person_proto(kDim, w.emb, own, 1, true, p);
+  REQUIRE(now.exemplar_ids.size() > 12);
+  CHECK(now.exemplar_ids.size() <= p.max_exemplars_confirmed);
+  CHECK(std::equal(was.exemplar_ids.begin(), was.exemplar_ids.end(), now.exemplar_ids.begin()));
+  CHECK(turned(now) >= static_cast<std::ptrdiff_t>(p.top_k));
+  CHECK(mv::ai::exemplar_support(v, now, 0, p.top_k) >= p.join + 2 * p.margin);
+  // A stranger is no better off for it.
+  const std::int64_t stranger = w.face(w.direction(), 0, 0.05f);
+  const std::span<const float> sv(w.emb.data() + std::size_t{w.at(stranger).row} * kDim, kDim);
+  CHECK(mv::ai::exemplar_support(sv, now, 0, p.top_k) < p.keep);
+
+  // Nobody the user confirmed (no name, no pin): twelve, as ever.
+  own[0].pinned = false;
+  CHECK(mv::ai::build_person_proto(kDim, w.emb, own, 1, false, p).exemplar_ids.size() == 12);
+}
+
+TEST_CASE("refine: a named person takes its face back from an unnamed crowd that vouches for it",
+          "[ai][faces][refine]") {
+  world w;
+  const auto anna = w.direction();
+  const auto crowd = look_at(w, anna, 0.8f);  // everyone of a kind: a little like her, more like each other
+  for (int i = 0; i < 8; ++i) w.face(anna, 1, 0.03f);
+  for (int i = 0; i < 10; ++i) w.face(crowd, 2, 0.03f);
+  const std::int64_t hers = w.face(anna, 2, 0.03f);
+  // Nobody confirmed: the crowd vouches for it as for one of its own, so it
+  // stays (a tighter fragment is no reason to move).
+  CHECK(move_of(w.run(), hers) == nullptr);
+  // Anna has a name: her claim outranks the unnamed crowd's hold.
+  w.named.push_back(1);
+  const refine_output out = w.run();
+  const refine_move* m = move_of(out, hers);
+  REQUIRE(m);
+  CHECK(m->why == refine_why::move);
+  CHECK(m->to == 1);
+  CHECK(out.moves.size() == 1);  // the crowd's own faces stay where they are
+}
+
+TEST_CASE("refine: a weak face nobody has joins a confirmed person only when unmistakable",
+          "[ai][faces][refine]") {
+  world w;
+  const refine_params p;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  for (int i = 0; i < 8; ++i) w.face(anna, 1, 0.03f);
+  for (int i = 0; i < 8; ++i) w.face(ben, 2, 0.03f);
+  const std::int64_t clear = w.face(anna, 0, 0.03f, 0.2f);   // small, but plainly her
+  const std::int64_t vague = w.face(anna, 0, 0.16f, 0.2f);   // her, as far as a blur can say
+  const std::int64_t bens = w.face(ben, 0, 0.03f, 0.2f);     // plainly Ben, whom nobody named
+  REQUIRE(w.at(clear).quality < p.weak_quality);
+  w.named.push_back(1);
+  const refine_output out = w.run();
+  const refine_move* m = move_of(out, clear);
+  REQUIRE(m);
+  CHECK(m->why == refine_why::admit);
+  CHECK(m->to == 1);
+  CHECK(move_of(out, vague) == nullptr);
+  CHECK(move_of(out, bens) == nullptr);
+}
+
+TEST_CASE("dedupe: a named person takes its fragments one way; a large or mixed one must vouch back",
+          "[ai][faces][refine][dedupe]") {
+  world w;
+  // Sam over the years: three looks with nothing in common, each with two
+  // faces the user said are Sam (one alone would be a lone pin).
+  const std::vector<std::vector<float>> looks{w.direction(), w.direction(), w.direction()};
+  for (const auto& look : looks) {
+    w.face(look, 1, 0.05f, 0.9f, true);
+    w.face(look, 1, 0.05f, 0.9f, true);
+    for (int i = 0; i < 11; ++i) w.face(look, 1, 0.05f);
+  }
+  for (int i = 0; i < 4; ++i) w.face(looks[2], 2, 0.05f);  // one session of the third look, unnamed
+  const auto zoe = w.direction();
+  for (int i = 0; i < 4; ++i) w.face(zoe, 3, 0.05f);
+  // 4: nine faces of Sam's second look and five of a stranger's, as one person.
+  const auto tom = w.direction();
+  for (int i = 0; i < 9; ++i) w.face(looks[1], 4, 0.05f, 0.9f);
+  for (int i = 0; i < 5; ++i) w.face(tom, 4, 0.05f, 0.5f);
+  std::vector<std::int64_t> where;
+  for (const refine_face& f : w.faces) where.push_back(f.person);
+  w.named.push_back(1);
+  const refine_output out = w.run();
+  const auto run = [&](const std::vector<dedupe_person>& people, bool with_faces) {
+    dedupe_input in;
+    in.dim = kDim;
+    in.protos = out.protos;
+    in.people = people;
+    if (with_faces) {
+      in.emb = w.emb;
+      in.faces = w.faces;
+      in.where = where;
+    }
+    return find_duplicates(in, {});
+  };
+  std::vector<dedupe_person> people{{1, "Sam", 39}, {2, "", 4}, {3, "", 4}, {4, "", 3}};
+
+  // The session is Sam's: Sam's faces vouch for it, though it knows only one
+  // of his looks and could never vouch for the other two.
+  groups_t g = run(people, true);
+  CHECK(together(g, 1, 2));
+  CHECK_FALSE(together(g, 1, 3));
+  for (const auto& members : g) {
+    if (std::find(members.begin(), members.end(), 2) != members.end()) CHECK(members.front() == 1);
+  }
+  // Too large to be a part of him (more than fragment_part of his photos): it
+  // must vouch back, and cannot.
+  people[1].faces = 30;
+  CHECK_FALSE(together(run(people, true), 1, 2));
+  people[1].faces = 4;
+  // The mixed one: its exemplars are all Sam's look, so they alone would hand
+  // the stranger's faces to Sam; every face of it says otherwise.
+  CHECK(together(run(people, false), 1, 4));
+  CHECK_FALSE(together(run(people, true), 1, 4));
+  // Unnamed and unpinned, Sam is nobody's hub: both ways, as before.
+  people[0].name.clear();
+  std::vector<mv::ai::person_proto> plain = out.protos;
+  for (auto& pr : plain) pr.pinned = false;
+  dedupe_input in;
+  in.dim = kDim;
+  in.protos = plain;
+  in.people = people;
+  CHECK_FALSE(together(find_duplicates(in, {}), 1, 2));
+}
+
+TEST_CASE("faces.db: a person's own unnamed fragment is no rival in their review", "[ai][faces][refine]") {
+  const std::string path = temp_db("review-fragment.db");
+  world w;
+  const auto anna = w.direction();
+  mv::ai::face_tuning t;
+  auto db = mv::ai::faces_db::open(path, t, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 8; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(100 + i, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 1);
+  const std::int64_t a = people[0].id;
+  REQUIRE((*db)->rename(a, "Anna"));
+  // Three more of her that the scan filed apart, gathered into one unnamed person.
+  mv::ai::face_tuning strict = t;
+  strict.same_person = 0.99f;
+  db->reset();
+  db = mv::ai::faces_db::open(path, strict, kDim, "q/1");
+  REQUIRE(db);
+  for (int i = 0; i < 3; ++i) {
+    const auto f = box_in(w, anna, 0.1f);
+    REQUIRE((*db)->add(400 + i, "d", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  db->reset();
+  db = mv::ai::faces_db::open(path, t, kDim, "q/1");
+  REQUIRE(db);
+  std::vector<std::int64_t> apart;
+  for (const auto& p : (*db)->people(1)) {
+    if (p.id != a) apart.push_back(p.id);
+  }
+  REQUIRE(apart.size() == 3);
+  const std::int64_t fragment = apart[0];
+  REQUIRE((*db)->assign(face_ids(**db, apart[1]), fragment, false));
+  REQUIRE((*db)->assign(face_ids(**db, apart[2]), fragment, false));
+  REQUIRE((*db)->faces_of(fragment).size() == 3);
+  // The fragment resembles each of her faces as much as she does; it is her,
+  // not someone else they might be, so the sheet asks about none of them.
+  for (const auto& r : (*db)->review(a)) {
+    CHECK_FALSE(r.check);
+    CHECK(r.rival_person != fragment);
+  }
+}
+
 // ---- the People bench (docs/design/17 "People model") ------------------------------------------
 //
 // mv_ai_tests "[.people-bench]" with MV_FACE_EVAL=<file>: real face vectors

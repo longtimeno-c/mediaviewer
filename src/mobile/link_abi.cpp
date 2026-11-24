@@ -1195,6 +1195,8 @@ struct mv_backup {
   std::vector<backup::item> items;          // under m
   std::vector<backup::failure> failures;    // under m
   std::vector<std::string> remaining;       // under m
+  std::vector<std::string> deleted;         // under m: keys Photos says were deleted
+  std::vector<std::string> deleted_done;    // under m: of those, the last run's finished ones
 };
 
 mv_backup* mv_backup_open(mv_mobile_link* l, const mv_backup_config* c) {
@@ -1269,6 +1271,14 @@ int32_t mv_backup_clear_items(mv_backup* b) {
   if (!b) return MV_LINK_INVALID;
   std::lock_guard lock(b->m);
   b->items.clear();
+  b->deleted.clear();
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_add_deleted(mv_backup* b, const char* key) {
+  if (!b || !key || !*key) return MV_LINK_INVALID;
+  std::lock_guard lock(b->m);
+  b->deleted.emplace_back(key);
   return MV_LINK_OK;
 }
 
@@ -1319,6 +1329,7 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
     {
       std::lock_guard lock(b->m);
       e.set_items(b->items);
+      e.set_deleted(b->deleted);
     }
     backup::status_report last;
     const auto st = e.run(src.flag.get(), [&](const backup::status_report& r) {
@@ -1333,12 +1344,14 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
       out.bytes = r.bytes;
       out.current_fraction = r.current_fraction;
       out.failed = r.failures.size();
+      out.trashed = r.trashed;
       put(out.current, r.current);
       status_fn(ctx, &out);
     });
     std::lock_guard lock(b->m);
     b->failures = last.failures;
     b->remaining = e.remaining();
+    b->deleted_done = e.deleted_done();
     *state_out = static_cast<int32_t>(st);
     return MV_LINK_OK;
   });
@@ -1361,6 +1374,17 @@ int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx) {
   {
     std::lock_guard lock(b->m);
     keys = b->remaining;
+  }
+  for (const auto& k : keys) fn(ctx, k.c_str());
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_deleted_done(mv_backup* b, mv_backup_key_fn fn, void* ctx) {
+  if (!b || !fn) return MV_LINK_INVALID;
+  std::vector<std::string> keys;
+  {
+    std::lock_guard lock(b->m);
+    keys = b->deleted_done;
   }
   for (const auto& k : keys) fn(ctx, k.c_str());
   return MV_LINK_OK;

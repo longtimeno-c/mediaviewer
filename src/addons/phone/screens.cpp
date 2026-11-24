@@ -57,6 +57,13 @@ struct user_row {
 };
 struct disk_row {
   std::string id, name, facts, refused;
+  std::int64_t used = 0, free = 0;
+  bool mounted = false;
+  std::string used_words, free_words;
+};
+// A drive kept copied onto another (Keep a copy, the program's host_copy.h).
+struct copy_row {
+  std::string label, to_name, from_id, to_id, state, line;
 };
 struct set_row {
   std::string id, name, kind, state, line;
@@ -69,6 +76,7 @@ struct drives_listing {
   std::string error;
   std::vector<disk_row> disks;
   std::vector<set_row> sets;
+  std::vector<copy_row> copies;
 };
 struct drive_option {
   std::string choice, title, why_not, space_words, dead_words, speed_words;
@@ -279,7 +287,17 @@ view parse(std::string_view text) {
     if (const json::value* v = d->find("disks"); v && v->k == json::kind::array) {
       for (const json::value& k : v->a) {
         if (s_of(k, "id").empty()) continue;
-        l.disks.push_back({s_of(k, "id"), s_of(k, "name"), s_of(k, "facts"), s_of(k, "refused")});
+        disk_row r;
+        r.id = s_of(k, "id");
+        r.name = s_of(k, "name");
+        r.facts = s_of(k, "facts");
+        r.refused = s_of(k, "refused");
+        r.used = k.integer("used").value_or(0);
+        r.free = k.integer("free").value_or(0);
+        r.mounted = b_of(k, "mounted");
+        r.used_words = s_of(k, "used_words");
+        r.free_words = s_of(k, "free_words");
+        l.disks.push_back(std::move(r));
       }
     }
     if (const json::value* v = d->find("sets"); v && v->k == json::kind::array) {
@@ -290,6 +308,13 @@ view parse(std::string_view text) {
           for (const json::value& x : m->a) r.members.push_back(s_of(x, "id"));
         }
         l.sets.push_back(std::move(r));
+      }
+    }
+    if (const json::value* v = d->find("copies"); v && v->k == json::kind::array) {
+      for (const json::value& e : v->a) {
+        if (s_of(e, "label").empty()) continue;
+        l.copies.push_back({s_of(e, "label"), s_of(e, "to_name"), s_of(e, "from_id"), s_of(e, "to_id"), s_of(e, "state"),
+                            s_of(e, "line")});
       }
     }
     s.drives = std::move(l);
@@ -524,6 +549,9 @@ const std::vector<std::pair<const char*, std::int64_t>>& durations() {
   return d;
 }
 constexpr const char* kUnlimited = "Until I remove it";
+// A backup folder with no storage limit of its own (serve_wire.h kNoLimit, INT64_MAX):
+// what the server says; the card sends the link "none" for it.
+constexpr std::int64_t kNoLimit = INT64_MAX;
 constexpr std::size_t kRelayKeyMinimum = 16;  // as driftwire-relay takes it
 
 std::string typed_for(const drives_state& d, const std::string& id) {
@@ -547,9 +575,69 @@ std::string joined(const std::vector<std::string>& v, const char* sep) {
 // them, offered equally, with "RAID is not a backup" above them. A combined
 // choice erases: each drive's name is typed before Erase and combine is enabled
 // (the program checks the names again; the OS asks for an administrator).
+// Keep a copy (docs/plans/self-host-drives-keep-a-copy.md §1): with two drives
+// picked, copy the one with data onto the other and keep it up to date. Nothing
+// is erased, so no name is typed. Comes before the five choices, as recommended.
+void keep_copy_rows(writer& w, const drives_listing& l, drives_state& d, bool idle) {
+  d.copy_drawn.clear();
+  if (d.picked.size() != 2) return;
+  std::vector<const disk_row*> two;
+  for (const std::string& id : d.picked) {
+    for (const disk_row& k : l.disks) {
+      if (k.id == id) two.push_back(&k);
+    }
+  }
+  if (two.size() != 2) return;
+  for (const copy_row& c : l.copies) {
+    for (const disk_row* k : two) {
+      if (k->id == c.from_id || k->id == c.to_id) return;  // one of them is in a copy already: its row says so
+    }
+  }
+  const disk_row* from = two[0]->used >= two[1]->used ? two[0] : two[1];
+  if (two[0]->id == d.copy_from) from = two[0];
+  if (two[1]->id == d.copy_from) from = two[1];
+  const disk_row* to = from == two[0] ? two[1] : two[0];
+  d.copy_drawn = from->id;
+  const std::string q_from = "\xE2\x80\x9C" + from->name + "\xE2\x80\x9D";
+  stack(w, "dr_keep_card", 6, "vertical", "card");
+  text(w, "dr_keep_t", "Keep a copy (nothing on " + q_from + " is erased)", "heading");
+  text(w, "dr_keep_rec", "Recommended", "caption");
+  text(w, "dr_keep_what",
+       "Copies everything on " + from->name + " to " + to->name + ", then keeps the copy up to date while the server runs. "
+       "Files deleted or saved over on " + from->name + " stay in the copy's Recycle Bin for 30 days.",
+       "secondary");
+  text(w, "dr_keep_not_mirror",
+       "Not a mirror: if " + from->name + " dies, the copy has everything but the last few minutes. "
+       "Files already on " + to->name + " are left alone.",
+       "secondary");
+  std::vector<option> dirs{{from->id, "Copy " + from->name + " onto " + to->name},
+                           {to->id, "Copy " + to->name + " onto " + from->name}};
+  choice(w, "dr_keep_from", "Copy from", dirs, from->id, !idle);
+  const bool mounted = from->mounted && to->mounted;
+  const bool fits = from->used <= to->free;
+  std::string why;
+  if (!mounted) {
+    why = (from->mounted ? to->name : from->name) + " isn't mounted, so it can't be used yet.";
+  } else if (!fits) {
+    why = "Doesn't fit: " + from->name + " has " + from->used_words + " on it, " + to->name + " has " + to->free_words + " free.";
+  } else {
+    why = "Fits: " + from->used_words + " onto " + to->free_words + " free.";
+  }
+  text(w, "dr_keep_fit", why, "secondary");
+  button(w, "dr_keep_go", "Start copying", !idle || !mounted || !fits, "primary",
+         "Keep a copy of " + from->name + " on " + to->name);
+  end(w);
+}
+
 void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std::string& me) {
   const bool idle = !busy;
   if (s.drives) {
+    for (const copy_row& c : s.drives->copies) {
+      const std::string id = row_hash("cp", c.label);
+      row(w, id, "Copy of " + c.label, c.line);
+      button(w, id + "_stop", "Stop keeping a copy", !idle, "plain", "Stop keeping a copy of " + c.label);
+      end_row(w);
+    }
     for (const set_row& set : s.drives->sets) {
       const std::string id = row_hash("ds", set.id);
       row(w, id, set.name, set.line);
@@ -614,6 +702,7 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
       button(w, "dr_check", "Check again", !idle);
       end_row(w);
     }
+    keep_copy_rows(w, l, d, idle);
     if (!d.picked.empty() && s.choices) {
       text(w, "dr_not_backup", s.choices->not_a_backup, "heading");
       stack(w, "dr_options", 8, "horizontal");
@@ -932,6 +1021,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   disk_ids_.clear();
   disk_names_.clear();
+  copy_labels_.clear();
   set_ids_.clear();
   set_names_.clear();
   set_members_.clear();
@@ -944,6 +1034,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       disk_ids_.push_back(k.id);
       disk_names_.push_back(k.name);
     }
+    for (const copy_row& c : s.drives->copies) copy_labels_.push_back(c.label);
     for (const set_row& r : s.drives->sets) {
       set_ids_.push_back(r.id);
       set_names_.push_back(r.name);
@@ -1028,6 +1119,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "host_drives_choices") busy_text = "Working out the choices";
   else if (s.busy == "host_drives_combine") busy_text = "Combining the drives. Allow it in the administrator prompt.";
   else if (s.busy == "host_drives_replace") busy_text = "Replacing the drive. Allow it in the administrator prompt.";
+  else if (s.busy == "host_drives_copy") busy_text = "Setting up the copy";
+  else if (s.busy == "host_drives_copy_stop") busy_text = "Stopping the copy";
   else if (s.busy == "host_setup") {
     if (s.host_step == "share") busy_text = "Sharing the folders";
     else if (s.host_step == "name") busy_text = "Naming it on DuckDNS";
@@ -1299,9 +1392,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       const std::string id = row_hash("ph", p.key);
       std::string lead = p.guest ? (p.backup ? "Guest \xC2\xB7 Backs up \xC2\xB7 " : "Guest \xC2\xB7 ")
                                  : (p.backup ? "" : "No backup \xC2\xB7 ");
+      // A phone kept in the grants (limited) may have no end: it is there for its folders or
+      // its backup switch. Only an end date makes it timed.
+      const bool timed = p.limited && p.expires != 0;
       std::string detail;
-      if (!p.limited || p.expires == 0) {
-        detail = lead + "Key " + short_key(p.key);
+      if (!timed) {
+        detail = lead + "No time limit \xC2\xB7 Key " + short_key(p.key);
       } else if (p.expired || p.expires <= now) {
         detail = lead + "Expired " + relative(p.expires, now);
       } else {
@@ -1309,12 +1405,12 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       }
       row(w, id, p.name, detail);
       // Extend offers only lengths that end later than the phone's end now.
-      std::vector<option> opts{{"", p.limited ? "Extend\xE2\x80\xA6" : "Limit\xE2\x80\xA6"}};
+      std::vector<option> opts{{"", timed ? "Extend\xE2\x80\xA6" : "Add a time limit\xE2\x80\xA6"}};
       for (const auto& [label, secs] : durations()) {
-        if (!p.limited || p.expires == 0 || now + secs > p.expires) opts.push_back({std::to_string(secs), std::string(label) + " from now"});
+        if (!timed || now + secs > p.expires) opts.push_back({std::to_string(secs), std::string(label) + " from now"});
       }
-      if (p.limited) opts.push_back({"unlimited", kUnlimited});
-      choice(w, id + "_access", p.limited ? "Extend " + p.name + "'s access" : "Limit " + p.name + "'s access", opts, "",
+      if (timed) opts.push_back({"unlimited", kUnlimited});
+      choice(w, id + "_access", timed ? "Extend " + p.name + "'s access" : "Time limit for " + p.name, opts, "",
              busy || !s.has("passphrase"));
       if (s.has("backup")) {
         toggle(w, id + "_backup", "Backs up", p.backup, busy);
@@ -1362,8 +1458,9 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       const std::string id = row_hash("fo", f.id);
       std::string detail = f.path;
       if (f.backup) {
-        detail += " \xC2\xB7 " + gigabytes(f.used) + " of " + gigabytes(f.limit) + " GB used, keeps " + gigabytes(f.reserve) +
-                  " GB free. ";
+        detail += " \xC2\xB7 " + gigabytes(f.used) +
+                  (f.limit >= kNoLimit ? " GB used, no limit, keeps " : " of " + gigabytes(f.limit) + " GB used, keeps ") +
+                  gigabytes(f.reserve) + " GB free. ";
         detail += f.indexed ? "Indexed by " + me + ": what phones send reaches search after the next scan."
                             : "Not in Local search on " + me + " yet: add this folder there so what phones send reaches search.";
       }
@@ -1373,7 +1470,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       end_row(w);
       if (editing_ == f.id) {
         stack(w, id + "_edit", 8, "horizontal");
-        field(w, "edit_limit", "Storage limit in gigabytes", edit_limit_, "GB");
+        toggle(w, "edit_no_limit", "No storage limit", edit_no_limit_);
+        if (!edit_no_limit_) field(w, "edit_limit", "Storage limit in gigabytes", edit_limit_, "GB");
         field(w, "edit_reserve", "Free space to keep on the server, in gigabytes", edit_reserve_, "GB");
         button(w, "edit_save", "Save", busy, "primary");
         button(w, "edit_cancel", "Cancel");
@@ -1398,7 +1496,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     text(w, "new_title", new_backup_ ? "Add a backup folder" : "Add a folder", "title");
     if (new_backup_) {
       text(w, "new_backup_note",
-           "Phones that back up save their new photos and videos here, up to the limit, and leave the free space you set.",
+           new_no_limit_ ? "Phones that back up save their new photos and videos here until only the free space you set is left."
+                         : "Phones that back up save their new photos and videos here, up to the limit, and leave the free space you set.",
            "secondary");
     }
     field(w, "new_label", "Name of the new shared folder", new_label_,
@@ -1413,7 +1512,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     toggle(w, "new_backup", "Phones back up to this folder", new_backup_, !can_back_up);
     if (new_backup_) {
       stack(w, "new_sizes", 8, "horizontal");
-      field(w, "new_limit", "Storage limit in gigabytes", new_limit_, "GB");
+      toggle(w, "new_no_limit", "No storage limit", new_no_limit_);
+      if (!new_no_limit_) field(w, "new_limit", "Storage limit in gigabytes", new_limit_, "GB");
       field(w, "new_reserve", "Free space to keep on the server, in gigabytes", new_reserve_, "GB");
       end(w);
     }
@@ -1793,7 +1893,10 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       edit_reserve_ = v;
     } else if (node == "host_convert") {
       out.push_back(req("host_convert").b("on", value_bool(value_json)).done());
-
+    } else if (node == "new_no_limit") {
+      new_no_limit_ = value_bool(value_json);
+    } else if (node == "edit_no_limit") {
+      edit_no_limit_ = value_bool(value_json);
     } else if (node == "new_backup") {
       new_backup_ = value_bool(value_json);
       // A suggestion the owner changes; the service refuses past what is really free.
@@ -1807,6 +1910,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       if (!v.empty()) out.push_back(req("folder").s("path", v).done());
     } else if (node == "dr_label") {
       drives_.label = v;
+    } else if (node == "dr_keep_from") {
+      drives_.copy_from = v;
     } else if (node == "dr_rep_typed") {
       drives_.replace_typed = v;
     } else if (node == "dr_rep_pick") {
@@ -2017,19 +2122,24 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   } else if (node == "new_add") {
     const std::string path = trim(new_path_);
     const std::string label = new_label_.empty() ? share_label(path) : new_label_;
-    const std::int64_t limit = bytes(new_limit_), reserve = bytes(new_reserve_);
+    const std::int64_t limit = new_no_limit_ ? kNoLimit : bytes(new_limit_), reserve = bytes(new_reserve_);
     if (!server_path(path) || share_label(path).empty()) {
       note_ = server_here_ ? "Choose the folder to share." : "Type the folder's path on the server, starting with /.";
     } else if (new_backup_ && (limit <= 0 || reserve < 0)) {
-      note_ = "Type the backup folder's limit and the space to keep free, in GB.";
+      note_ = new_no_limit_ ? "Type the space to keep free, in GB."
+                            : "Type the backup folder's limit and the space to keep free, in GB, or choose No storage limit.";
     } else {
       req r("add_folder");
       r.s("label", label).s("path", path);
-      if (new_backup_) r.s("backup", "1").s("limit", std::to_string(limit)).s("reserve", std::to_string(reserve));
+      if (new_backup_) {
+        r.s("backup", "1").s("limit", new_no_limit_ ? std::string("none") : std::to_string(limit));
+        r.s("reserve", std::to_string(reserve));
+      }
       out.push_back(r.done());
       new_label_.clear();
       new_path_.clear();
       new_backup_ = false;
+      new_no_limit_ = false;
       adding_folder_ = false;
     }
   } else if (node == "folder_add_open" || node == "backup_add_open") {
@@ -2040,12 +2150,18 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
   } else if (node == "new_cancel") {
     adding_folder_ = false;
     new_backup_ = false;
+    new_no_limit_ = false;
   } else if (node == "edit_save") {
-    const std::int64_t limit = bytes(edit_limit_), reserve = bytes(edit_reserve_);
+    const std::int64_t limit = edit_no_limit_ ? kNoLimit : bytes(edit_limit_), reserve = bytes(edit_reserve_);
     if (limit <= 0 || reserve < 0) {
-      note_ = "Type the limit and the space to keep free, in GB.";
+      note_ = edit_no_limit_ ? "Type the space to keep free, in GB."
+                             : "Type the limit and the space to keep free, in GB, or choose No storage limit.";
     } else {
-      out.push_back(req("set_backup").s("id", editing_).s("limit", std::to_string(limit)).s("reserve", std::to_string(reserve)).done());
+      out.push_back(req("set_backup")
+                        .s("id", editing_)
+                        .s("limit", edit_no_limit_ ? std::string("none") : std::to_string(limit))
+                        .s("reserve", std::to_string(reserve))
+                        .done());
       editing_.clear();
     }
   } else if (node == "edit_cancel") {
@@ -2097,6 +2213,30 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       drives_.typed.clear();
       drives_.choice.clear();
       drives_.picked.clear();
+    }
+  } else if (node == "dr_keep_go") {
+    if (drives_.picked.size() == 2) {
+      // As drawn: the picked drive copied from, else the one with most on it (the tree's default).
+      std::string from = drives_.copy_from;
+      if (std::find(drives_.picked.begin(), drives_.picked.end(), from) == drives_.picked.end()) from = drives_.copy_drawn;
+      if (!from.empty()) {
+        const std::string to = drives_.picked[0] == from ? drives_.picked[1] : drives_.picked[0];
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_copy").key("ids").begin_array().string(from).string(to).end_array();
+        out.push_back(rw.end_object().take());
+        drives_.asked = "copy";
+        drives_.choice.clear();
+        drives_.picked.clear();
+        drives_.copy_from.clear();
+      }
+    }
+  } else if (node.substr(0, 2) == "cp" && node.size() > 5 && node.substr(node.size() - 5) == "_stop") {
+    for (const std::string& label : copy_labels_) {
+      if (row_hash("cp", label) + "_stop" == node) {
+        writer rw;
+        rw.begin_object().key("do").string("host_drives_copy_stop").key("label").string(label);
+        out.push_back(rw.end_object().take());
+      }
     }
   } else if (node == "dr_rep_cancel") {
     drives_.replacing.clear();
@@ -2182,7 +2322,9 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
         out.push_back(req("remove_folder").s("id", folder_ids_[i]).done());
       } else if (rest == "_limit") {
         editing_ = folder_ids_[i];
-        edit_limit_ = gigabytes(folder_limit_[i]);
+        edit_no_limit_ = folder_limit_[i] >= kNoLimit;
+        // Turning No storage limit off starts from a suggestion, as Add backup folder... does.
+        edit_limit_ = edit_no_limit_ ? std::string("1000") : gigabytes(folder_limit_[i]);
         edit_reserve_ = gigabytes(folder_reserve_[i]);
       }
     } else if (split_row(node, "hf", i, rest) && i < host_folders_.size()) {

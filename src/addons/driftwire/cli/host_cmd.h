@@ -233,7 +233,8 @@ namespace host_files {
 [[nodiscard]] std::unique_ptr<secrets::store> store(const std::string& folder);
 // The relay's key, made if there is none (never printed but in the relay line).
 [[nodiscard]] std::optional<std::string> relay_secret(const host_layout& l);
-// `host share`: "" when shared (as `shared_as`), else why not. `limit`: a backup folder's most (0: none).
+// `host share`: "" when shared (as `shared_as`), else why not. `limit`: a backup folder's most in bytes
+// (0 or serve::kNoLimit: none of its own); not 0, on a folder shared already, it changes that folder's.
 [[nodiscard]] std::string share(const host_layout& l, const std::string& typed, const std::string& label, bool backup,
                                 std::uint64_t limit, bool any_port, std::string& shared_as);
 [[nodiscard]] bool running(const host_layout& l);

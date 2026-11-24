@@ -178,6 +178,7 @@ struct review_snapshot {
     std::vector<float> sum;  // unnormalised, n members
     std::uint32_t n = 0;
     person_proto proto;      // exemplars, when cached for a confirmed person
+    bool confirmed = false;  // a name or a pinned face
   };
   std::vector<other> others;
   std::set<std::int64_t> frame_people;  // persons sharing a frame with this one (never its rivals)

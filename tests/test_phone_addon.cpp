@@ -12,6 +12,7 @@
 #include <sodium.h>
 
 #include <chrono>
+#include <mutex>
 #include <span>
 #include <cstdlib>
 #include <string>
@@ -24,6 +25,7 @@
 #include "addon/screen.h"
 #include "addon/slots.h"
 #include "addon/store.h"
+#include "addons/phone/link.h"
 #include "addons/phone/screens.h"
 #include "core/json.h"
 #include "import_fixture.h"
@@ -96,6 +98,30 @@ TEST_CASE("phone access: every state of the card is a tree the core accepts", "[
       require_valid(c.build(state, kNow));
     }
   }
+}
+
+TEST_CASE("phone access: only a phone with an end date reads as time-limited", "[phone-addon]") {
+  // As on 2026-11-23: an iPhone with no limit, a MacBook kept in the grants only because its
+  // backup is off (no end date), and a guest with an end.
+  const char* state = R"({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+    "nas_features":["passphrase","backup"],
+    "devices":[{"name":"iPhone","key":"b50089df00"},
+               {"name":"MacBook","key":"9d14160800","limited":true,"expires":0,"backup":false},
+               {"name":"Guest","key":"0011","guest":true,"limited":true,"expires":1800003600}]})";
+  screen c(mv::phone::card::computer::pc);
+  const std::string tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find("No time limit \xC2\xB7 Key b50089df") != std::string::npos);
+  CHECK(tree.find("No backup \xC2\xB7 No time limit \xC2\xB7 Key 9d141608") != std::string::npos);
+  CHECK(tree.find("Time limit for iPhone") != std::string::npos);
+  CHECK(tree.find("Time limit for MacBook") != std::string::npos);
+  CHECK(tree.find("Extend MacBook's access") == std::string::npos);
+  CHECK(tree.find("Extend Guest's access") != std::string::npos);
+  CHECK(tree.find("Guest \xC2\xB7 Until ") != std::string::npos);
+  // The MacBook gets a time limit from the same menu.
+  const auto r = c.on_event(screen::row_id("ph", "9d14160800") + "_access", kChange, quoted("604800"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"grant","key":"9d14160800","for_s":604800})");
 }
 
 TEST_CASE("phone access: the claimed card shows the code, its countdown, the phones and the folders", "[phone-addon]") {
@@ -546,6 +572,103 @@ TEST_CASE("phone access: a folder is shared after setup on a Windows server, pic
   CHECK(r[0] == R"({"do":"add_folder","label":"Video","path":"/volume1/Video"})");
 }
 
+TEST_CASE("phone access: a backup folder may have no storage limit, only the free space to keep", "[phone-addon]") {
+  // The server's word for none is INT64_MAX (serve_wire.h kNoLimit), what `driftwire host share --backup` writes.
+  const char* unlimited = R"({"folder":"/Volumes/nas/lib","claimed":true,"nas_features":["backup"],
+    "folders":[{"id":"r2","label":"Phone backup","path":"/volume1/backup","backup":true,
+                "limit":9223372036854775807,"reserve":1000000000,"used":5000000000}]})";
+  screen c(mv::phone::card::computer::mac);
+  std::string tree = c.build(unlimited, kNow);
+  require_valid(tree);
+  CHECK(tree.find("5 GB used, no limit, keeps 1 GB free") != std::string::npos);
+  CHECK(tree.find("9223372036") == std::string::npos);
+
+  // Change limit…: No storage limit is on, and there is no limit to type.
+  const std::string row = screen::row_id("fo", "r2");
+  CHECK(c.on_event(row + "_limit", kClick, "", kNow).empty());
+  tree = c.build(unlimited, kNow);
+  require_valid(tree);
+  CHECK(tree.find(R"("id":"edit_no_limit","label":"No storage limit","value":true)") != std::string::npos);
+  CHECK(tree.find(R"("id":"edit_limit")") == std::string::npos);
+  auto r = c.on_event("edit_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"set_backup","id":"r2","limit":"none","reserve":"1000000000"})");
+  // Turned off, a limit is typed again (from a suggestion).
+  CHECK(c.on_event(row + "_limit", kClick, "", kNow).empty());
+  (void)c.on_event("edit_no_limit", kChange, "false", kNow);
+  tree = c.build(unlimited, kNow);
+  CHECK(tree.find(R"("id":"edit_limit","label":"Storage limit in gigabytes","value":"1000")") != std::string::npos);
+  (void)c.on_event("edit_limit", kChange, quoted("200"), kNow);
+  r = c.on_event("edit_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"set_backup","id":"r2","limit":"200000000000","reserve":"1000000000"})");
+
+  // A folder with a limit is changed to none.
+  screen d(mv::phone::card::computer::mac);
+  (void)d.build(kClaimed, kNow);
+  CHECK(d.on_event(row + "_limit", kClick, "", kNow).empty());
+  tree = d.build(kClaimed, kNow);
+  CHECK(tree.find(R"("id":"edit_no_limit","label":"No storage limit","value":false)") != std::string::npos);
+  CHECK(tree.find(R"("id":"edit_limit","label":"Storage limit in gigabytes","value":"1000")") != std::string::npos);
+  (void)d.on_event("edit_no_limit", kChange, "true", kNow);
+  (void)d.on_event("edit_reserve", kChange, quoted(""), kNow);
+  CHECK(d.on_event("edit_save", kClick, "", kNow).empty());  // still the free space to keep
+  CHECK(d.build(kClaimed, kNow).find("Type the space to keep free, in GB.") != std::string::npos);
+  (void)d.on_event("edit_reserve", kChange, quoted("20"), kNow);
+  r = d.on_event("edit_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"set_backup","id":"r2","limit":"none","reserve":"20000000000"})");
+
+  // Add backup folder…: No storage limit hides the limit, and the folder goes with none.
+  CHECK(c.on_event("backup_add_open", kClick, "", kNow).empty());
+  (void)c.on_event("new_no_limit", kChange, "true", kNow);
+  tree = c.build(unlimited, kNow);
+  require_valid(tree);
+  CHECK(tree.find(R"("id":"new_no_limit","label":"No storage limit","value":true)") != std::string::npos);
+  CHECK(tree.find(R"("id":"new_limit")") == std::string::npos);
+  CHECK(tree.find("until only the free space you set is left") != std::string::npos);
+  (void)c.on_event("new_path", kChange, quoted("/volume1/Camera"), kNow);
+  r = c.on_event("new_add", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"add_folder","label":"Camera","path":"/volume1/Camera","backup":"1","limit":"none","reserve":"1000000000"})");
+}
+
+TEST_CASE("phone access: the link sends a backup folder's No storage limit as the server's none", "[phone-addon]") {
+  scratch_dir dir("phone_link_no_limit");
+  std::mutex m;
+  std::vector<std::pair<std::string, std::string>> sent;
+  mv::phone::link::options o;
+  o.data_dir = (dir.root() / "phone").string();
+  o.route = [&](const char* method, const std::string& json) -> mv::result<std::string> {
+    const std::string what(method);
+    if (what != "add_root" && what != "set_backup") return mv::err(mv::status::not_found);
+    std::lock_guard lock(m);
+    sent.emplace_back(what, json);
+    return std::string(what == "add_root" ? R"({"id":"r9"})" : "{}");
+  };
+  mv::phone::link l(std::move(o));
+  REQUIRE(l.request(R"({"do":"add_folder","label":"Camera","path":"/volume1/Camera","backup":"1","limit":"none","reserve":"1000000000"})"));
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"none","reserve":"0"})"));
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"500000000000","reserve":"0"})"));
+  // Anything else is still refused here, never sent as a limit of 0.
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"unlimited","reserve":"0"})"));
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"0","reserve":"0"})"));
+  // One more that goes: the requests run in order, so the two before it are done once it is sent.
+  REQUIRE(l.request(R"({"do":"set_backup","id":"r2","limit":"7","reserve":"0"})"));
+  REQUIRE(eventually([&] {
+    std::lock_guard lock(m);
+    return sent.size() >= 4;
+  }));
+  l.stop();
+  REQUIRE(sent.size() == 4);
+  CHECK(sent[3].second == R"({"id":"r2","limit":7,"reserve":0})");
+  CHECK(sent[0].first == "add_root");
+  CHECK(sent[0].second ==
+        R"({"label":"Camera","path":"/volume1/Camera","backup":true,"limit":9223372036854775807,"reserve":1000000000})");
+  CHECK(sent[1].second == R"({"id":"r2","limit":9223372036854775807,"reserve":0})");
+  CHECK(sent[2].second == R"({"id":"r2","limit":500000000000,"reserve":0})");
+}
+
 TEST_CASE("phone access: Local search's catalogue through the host, and none without it", "[phone-addon]") {
   mv::addon::catalogue::set_provider({});
   CHECK(mv::addon::catalogue::publish("/x").error() == mv::status::not_found);
@@ -799,6 +922,78 @@ TEST_CASE("phone access: the drives step offers the five ways, erases only what 
   r = c.on_event("dr_rep_go", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_replace","set":"Photos","ids":["2"],"name":"Untitled (2)"})J");
+}
+
+// Keep a copy: two drives, one full of photos, one nearly empty (as on 2026-11-23: a 4 TB
+// drive with 1.2 TB on it, its new twin with 231 MB).
+const char* kCopyState = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+  "host":{"installed":true,"set_up":true,"running":true,"service_port":7878},
+  "drives":{"os":"windows","pool_ok":true,"disks":[
+     {"id":"4","name":"Family Media Copy","facts":"x","used":231000000,"free":3999000000000,"mounted":true,
+      "used_words":"231 MB","free_words":"4 TB"},
+     {"id":"5","name":"Family Media","facts":"x","used":1200000000000,"free":2800000000000,"mounted":true,
+      "used_words":"1.2 TB","free_words":"2.8 TB",
+      "refused":"it holds a folder this server shares, which may be its only copy"}],
+   "sets":[],"copies":[]}})J";
+
+const char* kCopyKept = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+  "host":{"installed":true,"set_up":true,"running":true,"service_port":7878},
+  "drives":{"os":"windows","pool_ok":true,"disks":[],"sets":[],
+   "copies":[{"label":"Family Media","to_name":"Family Media Copy","from_id":"5","to_id":"4","state":"copying",
+              "line":"Copy on \u201cFamily Media Copy\u201d: copying, 1,204 files (420 GB) left"}]}})J";
+
+TEST_CASE("phone access: keep a copy of a full drive on another, nothing erased and nothing typed", "[phone-addon]") {
+  screen c(mv::phone::card::computer::pc);
+  (void)c.build(kCopyState, kNow);
+  (void)c.on_event("dr_open", kClick, "", kNow);
+  std::string tree = c.build(kCopyState, kNow);
+  CHECK(tree.find("Keep a copy") == std::string::npos);  // nothing picked yet
+  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
+  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  tree = c.build(kCopyState, kNow);
+  require_valid(tree);
+  // The full drive is the one copied from, though it can't be erased (that is the point).
+  CHECK(tree.find("Keep a copy (nothing on \xE2\x80\x9C" "Family Media\xE2\x80\x9D is erased)") != std::string::npos);
+  CHECK(tree.find("Recommended") != std::string::npos);
+  CHECK(tree.find("Fits: 1.2 TB onto 4 TB free.") != std::string::npos);
+  CHECK(tree.find("to erase it") == std::string::npos);  // no name to type
+  auto r = c.on_event("dr_keep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
+
+  // The other way round can be chosen; going back sends the first way again.
+  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
+  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  (void)c.build(kCopyState, kNow);
+  (void)c.on_event("dr_keep_from", kChange, quoted("4"), kNow);
+  tree = c.build(kCopyState, kNow);
+  CHECK(tree.find("Keep a copy (nothing on \xE2\x80\x9C" "Family Media Copy\xE2\x80\x9D is erased)") != std::string::npos);
+  CHECK(tree.find("Fits: 231 MB onto 2.8 TB free.") != std::string::npos);
+  (void)c.on_event("dr_keep_from", kChange, quoted("5"), kNow);
+  r = c.on_event("dr_keep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
+
+  // A copy drive too small: said with both numbers.
+  std::string small = kCopyState;
+  small.replace(small.find("3999000000000"), 13, "500000000000");
+  small.replace(small.find("\"4 TB\""), 6, "\"500 GB\"");
+  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
+  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  tree = c.build(small, kNow);
+  CHECK(tree.find("Doesn't fit: Family Media has 1.2 TB on it, Family Media Copy has 500 GB free.") != std::string::npos);
+
+  // A copy kept: its own row says how it stands, and stops with one click (the files stay).
+  screen k(mv::phone::card::computer::pc);
+  (void)k.build(kCopyKept, kNow);
+  (void)k.on_event("dr_open", kClick, "", kNow);
+  tree = k.build(kCopyKept, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Copy of Family Media") != std::string::npos);
+  CHECK(tree.find("copying, 1,204 files (420 GB) left") != std::string::npos);
+  r = k.on_event(screen::row_id("cp", "Family Media") + "_stop", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy_stop","label":"Family Media"})J");
 }
 
 TEST_CASE("phone access: users ask for the admin first, and a password is sent once and never shown", "[phone-addon]") {

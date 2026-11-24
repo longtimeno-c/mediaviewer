@@ -40,6 +40,14 @@ struct BackupScreen: View {
           .padding(.horizontal, Theme.inset)
           .accessibilityIdentifier("backup.notBackedUp")
         }
+        if backup.folder != nil {
+          Text(FailureCopy.backupDeletes)
+            .font(.footnote)
+            .foregroundStyle(Theme.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, Theme.inset)
+            .accessibilityIdentifier("backup.deletes")
+        }
         if !backup.isSample && backup.folder != nil {
           Text(FailureCopy.backupNotIndexed)
             .font(.footnote)

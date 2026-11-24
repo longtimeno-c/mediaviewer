@@ -55,8 +55,18 @@ struct FolderScreen: View {
       .environment(\.shownPage, page)
       .toolbar {
         if let chip = model.routeChip, !page.selecting {
-          ToolbarItem(placement: .topBarTrailing) {
-            RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
+          // Under the folder's name, in the bar's middle: beside Add and Select on the trailing
+          // side it took the room the name needs, which then read "…". The same on a page that
+          // has no Add or Select, so the name does not move when a page learns it may be changed.
+          ToolbarItem(placement: .principal) {
+            VStack(spacing: 0) {
+              Text(page.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("folder-title")
+              RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
+            }
+            // Two lines in a 44 pt bar: larger type than this would be clipped.
+            .dynamicTypeSize(...DynamicTypeSize.xLarge)
           }
         }
       }

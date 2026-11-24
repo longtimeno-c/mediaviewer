@@ -33,6 +33,10 @@ enum VPNCopy {
     "Every app's traffic leaves through your server at \(host), so sites see your home's address. Your server can see which sites you visit, not what you send over HTTPS."
   }
 
+  /// The demo's line under the switch.
+  static let detailDemo =
+    "With your own server, every app's traffic would leave through it. In this demo nothing is routed."
+
   // Status.
   static let status = "Status"
   static func status(_ s: VPNStatus) -> String {
@@ -73,6 +77,9 @@ enum VPNCopy {
   static func consent(host: String) -> String {
     "Every app's traffic will leave through your own server at \(host). Your server can see which sites you visit and when; it can't see what you send over HTTPS. MediaViewer's developers see nothing: we run no server, keep no logs and collect no data."
   }
+  static let consentTitleDemo = "Try the VPN demo?"
+  /// Under the code field in the demo.
+  static let codeDemo = "Demo: a VPN code is checked, not used. The demo stays on the sample server."
   static let consentDemo =
     "This is a demo. Nothing is routed: your traffic leaves this phone as usual. It shows how the VPN works with your own server."
   static let turnOn = "Turn On"
@@ -102,5 +109,7 @@ enum VPNIDs {
   static let consentNotNow = "vpn.consent.notNow"
   static let demoBanner = "vpn.demoBanner"
   static let remove = "vpn.remove"
+  /// Remove VPN in the confirmation that asks first.
+  static let removeConfirm = "vpn.remove.confirm"
   static let notInThisBuild = "vpn.notInThisBuild"
 }

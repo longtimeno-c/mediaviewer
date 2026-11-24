@@ -1875,6 +1875,18 @@ TEST_CASE("phone pairing: the owner adds a backup folder, and changes its limit 
   auto again = (*c)->write(*id, "2026/11/b.jpg", photo.size(), hash, 0, read, {}, nullptr, &why);
   REQUIRE(again);
   CHECK(again->name == "2026/11/b.jpg");
+  // Back to 1 MB: refused again. No limit, as Phone access's link sends it: taken, past any limit.
+  REQUIRE(mac.d->set_backup(*id, {1u << 20, 0}));
+  CHECK_FALSE((*c)->write(*id, "2026/11/c.jpg", photo.size(), hash, 0, read, {}, nullptr, &why));
+  CHECK(why.why == serve::kWhyLimit);
+  REQUIRE(desk::route_request(*mac.d, "phone", "set_backup",
+                              R"({"id":")" + *id + R"(","limit":9223372036854775807,"reserve":0})"));
+  REQUIRE((*c)->write(*id, "2026/11/c.jpg", photo.size(), hash, 0, read, {}, nullptr, &why));
+  roots = mac.d->roots();
+  REQUIRE(roots);
+  const auto unlimited = std::find_if(roots->begin(), roots->end(), [&](const auto& r) { return r.id == *id; });
+  REQUIRE(unlimited != roots->end());
+  CHECK(serve::no_limit(unlimited->limit));
   // The catalogue is never a backup folder.
   roots = mac.d->roots();
   REQUIRE(roots);
