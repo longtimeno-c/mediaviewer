@@ -394,7 +394,9 @@ How it works:
   VoiceOver/Narrator name). Chrome events are checked against the tree (exists, interactive,
   enabled, value kind and range); the tree keeps the value; the add-on answers with a diff. Text
   fields report on Return and focus loss, sliders on release: never per key. Windows rebuilds a
-  screen window when its revision moves, but waits while a pointer is down.
+  screen window when its revision moves, but waits while a pointer is down; when only text nodes'
+  words and a link's `value` moved (a transfer's progress), it updates them in place instead
+  (`src.managed/Shared/ScreenTreePatch.cs`).
 - **Info sections** are asked for when the Metadata pane shows a file, once per file and width,
   never for a file without coordinates when `"when": "location"`. Drawn at the bottom of the `I`
   pane after built-in metadata, every tab, never collapsed. A `surface` is BGRA at pane width ×
