@@ -29,7 +29,7 @@ struct FileEntry: Sendable {
 }
 
 public final class LinkFiles: @unchecked Sendable {
-  private let connection: LinkConnection
+  let connection: LinkConnection
   private let originals: OriginalStore
   private let lock = NSLock()
   /// The files of the folders listed lately, by item id: what opening one needs. Bounded to the

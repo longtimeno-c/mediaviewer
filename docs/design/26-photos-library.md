@@ -238,6 +238,37 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   each run. A MediaViewer older than this, backing up into the same folder from another Mac, does
   not know `left_deleted` and copies those photos back.
 
+### Backup to a server
+
+The destination can also be a shared folder on a self-hosted server this Mac is paired with
+(File → Connect to a Server…; [desktop-client](../plans/desktop-client.md) §6), so the library is
+backed up to the hosting computer from another one with no share mounted. Settings → *Photos
+Library* → *Change…* lists each paired server's shared folders under *On a server*; one this Mac
+may only view is listed disabled (the host's owner gives the device the `change` role).
+
+- The destination is then the folder's key (`remote:<server>/<folder>/`), kept in
+  `mv.photosBackup.destination` like a path. `backup::options::server` is a
+  `backup::server_folder` (`shell/photos_backup_server.h`, over `remote::library`): the originals
+  are **sent** with the service's `write` op (resumable; the service checks the bytes against
+  their hash before a file takes its name; a taken name gets ` (2)`, nothing is replaced), into
+  the same layout folders, made with `mkdir` as needed.
+- **The manifest stays on this Mac**: `~/Library/Application Support/MediaViewer/Photos Backup
+  Servers/<hash of the key>/.mediaviewer-photos-backup/`, with `last-run.txt`. Nothing but the
+  photos is written to the server. A second Mac backing up the same library to the same folder has
+  its own manifest and sends its own copies (` (2)`).
+- A later run asks the server once per recorded file whether it is still there. Gone: held, as a
+  file deleted from a folder is. "Not there" is believed only from a folder that answers at that
+  moment: a refused stat is never a deletion, and a server that drops away (or whose drive is
+  unplugged, which reads as not found) or access taken back stops the run as failed, at the first
+  such answer; the next run goes on. Cancel stops a send in flight (`server_folder::stop`).
+- **Not there for a server:** Check library, *Skip photos already in* and the Review of held files
+  (Import's index knows folders on this machine, and a server's folder is not read back); a file
+  is hashed once by the backup and once more by the upload.
+
+**Windows** has no Photos library to back up: OneDrive and iCloud for Windows keep photos as
+ordinary folders of placeholders. Dropping such a folder onto a server's folder
+([16](16-commands.md#folder-navigation)) uploads it, each placeholder downloaded by the read.
+
 **Not done:** a schedule (run it from Settings); moving an existing backup into a newly chosen
 layout; a mirror (a file deleted in Photos stays in
 the backup); without Import, hashing an existing destination file against the source when the

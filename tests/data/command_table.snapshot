@@ -125,6 +125,10 @@ B	Remove brush	224	1
 	Red-eye tool	225	1
 	Extend edges	226	1
 	Faces tool	227	1
+Ctrl+[	Go back	228	1
+Ctrl+]	Go forward	229	1
+Ctrl+Shift+N	New folder	230	1
+Ctrl+V	Paste files here	231	1
 
 [video]
 Left	Previous	9	1
@@ -243,6 +247,10 @@ U	Clear label	180	1
 Ctrl+P	Print…	184	1
 	Wider side pane	213	1
 	Narrower side pane	214	1
+Ctrl+[	Go back	228	1
+Ctrl+]	Go forward	229	1
+Ctrl+Shift+N	New folder	230	1
+Ctrl+V	Paste files here	231	1
 
 [slideshow]
 Left	Previous	9	1
@@ -350,6 +358,10 @@ Shift+T	Page sidebar	183	1
 Ctrl+P	Print…	184	1
 	Wider side pane	213	1
 	Narrower side pane	214	1
+Ctrl+[	Go back	228	1
+Ctrl+]	Go forward	229	1
+Ctrl+Shift+N	New folder	230	1
+Ctrl+V	Paste files here	231	1
 
 [loupe]
 A	Previous	9	1
@@ -455,6 +467,10 @@ Ctrl+Shift+9	Label blue	179	1
 Ctrl+P	Print…	184	1
 	Wider side pane	213	1
 	Narrower side pane	214	1
+Ctrl+[	Go back	228	1
+Ctrl+]	Go forward	229	1
+Ctrl+Shift+N	New folder	230	1
+Ctrl+V	Paste files here	231	1
 
 [runner]
 A	Previous	9	1

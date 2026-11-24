@@ -92,6 +92,7 @@ namespace {
 class over_link final : public target {
  public:
   explicit over_link(link_session& l) : l_(l) {}
+  // (limited_: as of the last folders() answer.)
 
   result<std::vector<folder>> folders() override {
     auto can = l_.can_write();
@@ -103,8 +104,15 @@ class over_link final : public target {
     for (const auto& r : *roots) {
       if (r.backup) out.push_back({r.id, r.label, r.writable});
     }
+    // Read with the list: a link gone since answers nothing about the scope (unreachable).
+    std::int64_t expires = 0;
+    bool scoped = false;
+    const int g = l_.grant(expires, scoped);
+    if (g < 0) return err(status::io);
+    limited_ = g == 1 && scoped;
     return out;
   }
+  bool limited_to_some_folders() const override { return limited_.load(std::memory_order_acquire); }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
     return l_.list_whole(root, rel);
@@ -141,6 +149,8 @@ class over_link final : public target {
 
  private:
   link_session& l_;
+  // The run's thread and the chooser's both ask folders(): each reads what the last answer said.
+  std::atomic<bool> limited_{false};
 };
 
 // ---- the sample library's folder on this phone ---------------------------------------------
@@ -661,6 +671,8 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
     return stop_with(state::unreachable);
   }
   const auto chosen = std::find_if(folders->begin(), folders->end(), [&](const folder& f) { return f.id == o_.root; });
+  // Gone, or (to a phone limited to some folders) no longer named to it: the two look the same
+  // from here, so "choose another", whose list then says which.
   if (chosen == folders->end()) return stop_with(state::no_folder);
   if (!chosen->writable) return stop_with(state::not_allowed);
   if (!restore_if_empty()) return stop_with(state::unreachable);

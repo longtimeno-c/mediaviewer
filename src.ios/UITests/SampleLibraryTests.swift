@@ -129,6 +129,18 @@ final class SampleLibraryTests: XCTestCase {
     XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 30), "The clip did not start")
     sleep(2)
     save("07-clip")
+    // Full screen: the picture is the whole screen (a portrait clip as large as the phone
+    // allows), and a tap on it brings the position bar and the buttons back.
+    app.buttons["Full screen"].tap()
+    let full = app.descendants(matching: .any).matching(identifier: "clip.picture.fullscreen").firstMatch
+    XCTAssertTrue(full.waitForExistence(timeout: 5), "The clip did not go full screen")
+    let screen = app.windows.firstMatch.frame
+    XCTAssertEqual(full.frame.width, screen.width, accuracy: 1)
+    XCTAssertEqual(full.frame.height, screen.height, accuracy: 1)
+    XCTAssertFalse(app.buttons["Exit full screen"].exists)
+    save("08-clip-full")
+    full.tap()
+    XCTAssertTrue(app.buttons["Full screen"].waitForExistence(timeout: 5), "A tap did not bring the controls back")
   }
 
   /// Release 1.1 (§10b): backup in the sample library goes to "Sample server on this iPhone", a folder in

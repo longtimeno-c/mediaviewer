@@ -125,6 +125,19 @@ final class FolderStore: ObservableObject {
   /// Breadcrumb from the highest folder reached down to the one on screen.
   @Published private(set) var crumbs: [Crumb] = []
   @Published private(set) var canGoUp = false
+  /// docs/design/16 "Folder navigation": Back / Forward (shell/browse_history.h).
+  @Published private(set) var canGoBack = false
+  @Published private(set) var canGoForward = false
+  /// The host's Back / Forward count when this listing arrived: the gallery puts
+  /// the scroll back only for a listing a Back or Forward opened.
+  private(set) var historyGeneration: UInt64 = 0
+  private(set) var arrivedByHistory = false
+  /// Moves when a drop, paste or New Folder lands (tile counts go stale).
+  private var dropGeneration: UInt64 = 0
+  /// Folder tiles on screen, so a drop that lands refreshes only their counts.
+  private var visibleFolders = Set<Int>()
+  /// Folders whose failed summary was asked for once more.
+  private var retriedCards = Set<String>()
   /// The gallery's keyboard position while on a folder tile; -1 = on the images.
   @Published private(set) var folderCursor: Int = -1
   /// `/` on the folder row. Nil when idle; empty while the query is open and
@@ -173,6 +186,10 @@ final class FolderStore: ObservableObject {
     label: "mediaviewer.thumb-decode", qos: .userInitiated, attributes: .concurrent)
 
   private init() {
+    // The drop targets learn which files a drag from this window carries.
+    let drop = DropState.shared
+    FileDragSource.shared.began = { [weak drop] paths in drop?.ownDragBegan(paths) }
+    FileDragSource.shared.ended = { [weak drop] in drop?.ownDragEnded() }
     // main_mac.mm's g_thumb_ready_callback is always called on the main
     // thread (mv_chrome_bridge.h's contract).
     mv_chrome_set_thumb_ready_callback(thumbReadyTrampoline)
@@ -192,10 +209,22 @@ final class FolderStore: ObservableObject {
     let index = Int(mv_chrome_current_index())
     let generation = mv_chrome_listing_generation()
 
+    let back = mv_chrome_can_go_back()
+    if back != canGoBack { canGoBack = back }
+    let forward = mv_chrome_can_go_forward()
+    if forward != canGoForward { canGoForward = forward }
+    let drops = mv_chrome_drop_generation()
+    if drops != dropGeneration {
+      dropGeneration = drops
+      refreshVisibleFolderCards()
+    }
     let listingChanged = generation != listingGeneration || count != names.count
     var listing: Listing?
     if listingChanged {
       listingGeneration = generation
+      let history = mv_chrome_history_generation()
+      arrivedByHistory = history != historyGeneration
+      historyGeneration = history
       reloadListTitle()
       let fresh = readListing()
       listing = fresh
@@ -265,6 +294,10 @@ final class FolderStore: ObservableObject {
   }
 
   private func reloadListTitle() {
+    var keyBuf = [CChar](repeating: 0, count: 4096)
+    _ = keyBuf.withUnsafeMutableBufferPointer { mv_chrome_remote_open_key($0.baseAddress, Int32($0.count)) }
+    let remote = String(cString: keyBuf)
+    if remote != remoteFolder { remoteFolder = remote }
     let title: String? = mv_chrome_list_open() ? Self.bridgeString { mv_chrome_list_title($0, $1) } : nil
     guard title != listTitle else { return }
     listTitle = title
@@ -359,11 +392,17 @@ final class FolderStore: ObservableObject {
       let keep = Set(freshFolders)
       cards = cards.filter { keep.contains($0.key) }
       requestedCards.formIntersection(keep)
+      // Tiles are keyed by index: one already on screen now shows another
+      // folder and gets no fresh onAppear, so it asks here.
+      for index in visibleFolders where freshFolders.indices.contains(index) {
+        requestFolderSummaryIfNeeded(at: index)
+      }
     }
     var freshCrumbs: [Crumb] = []
     for i in 0..<Int(mv_chrome_crumb_count()) {
       guard let path = Self.string({ mv_chrome_crumb_path(Int32(i), $0, $1) }) else { continue }
-      let leaf = URL(fileURLWithPath: path).lastPathComponent
+      let named = Self.string({ mv_chrome_crumb_name(Int32(i), $0, $1) }) ?? ""
+      let leaf = named.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : named
       freshCrumbs.append(Crumb(index: i, name: leaf.isEmpty ? path : leaf, path: path))
     }
     if freshCrumbs != crumbs { crumbs = freshCrumbs }
@@ -384,6 +423,35 @@ final class FolderStore: ObservableObject {
   }
 
   func openFolder(at index: Int) { mv_chrome_open_subfolder(Int32(index)) }
+  /// One click on a tile: the keyboard's tile, nothing opened (Finder).
+  func selectFolder(at index: Int) {
+    guard folders.indices.contains(index), index != folderCursor else { return }
+    mv_chrome_set_folder_cursor(Int32(index))
+    folderCursor = index  // drawn now, not on the next poll
+  }
+  /// The folder on screen, for a drop on the grid itself; nil with none (a
+  /// result list, the empty window).
+  var currentDir: String? {
+    if listTitle == nil { return crumbs.last?.path }
+    // Another computer's folder is shown as a list: drops go into it (plan §6).
+    return remoteFolder.isEmpty ? nil : remoteFolder
+  }
+  /// The remote folder the list on screen is, "" otherwise (mv_chrome_remote_open_key).
+  @Published private(set) var remoteFolder = ""
+  func goBack() { mv_chrome_go_back() }
+  func goForward() { mv_chrome_go_forward() }
+
+  func folderTileAppeared(_ index: Int) { visibleFolders.insert(index) }
+  func folderTileDisappeared(_ index: Int) { visibleFolders.remove(index) }
+
+  /// A drop landed: the tiles on screen count their folders again (a cover or
+  /// a count that changed), off the main thread like any summary.
+  private func refreshVisibleFolderCards() {
+    for index in visibleFolders where folders.indices.contains(index) {
+      requestedCards.remove(folders[index])
+      requestFolderSummaryIfNeeded(at: index)
+    }
+  }
   func openCrumb(_ index: Int) { mv_chrome_open_crumb(Int32(index)) }
   func navigateUp() { mv_chrome_navigate_up() }
 
@@ -401,8 +469,15 @@ final class FolderStore: ObservableObject {
     path: String, ok: Bool, media: Int, subfolders: Int, flags: Int, coverThumbPath: String?
   ) {
     guard ok else {
-      // Failed or superseded: allow a later request rather than pinning a blank tile.
+      // Failed or superseded: allow a later request rather than pinning a blank
+      // tile, and ask again now if that folder's tile is on screen (Back can
+      // land on it before the old request was dropped).
       requestedCards.remove(path)
+      // Once: a folder that cannot be read is not asked about in a loop.
+      if let i = folders.firstIndex(of: path), visibleFolders.contains(i), cards[path]?.loaded == false,
+         retriedCards.insert(path).inserted {
+        requestFolderSummaryIfNeeded(at: i)
+      }
       return
     }
     guard let card = cards[path] else { return }

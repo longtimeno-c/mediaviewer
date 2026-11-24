@@ -465,7 +465,7 @@
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libssl.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libcrypto.a",
-					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
 					"Foundation",
@@ -499,7 +499,7 @@
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libssl.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libcrypto.a",
-					"$(SRCROOT)/../build-ios-iphoneos/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
+					"$(SRCROOT)/../build-ios-iphoneos/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
 					"Foundation",
@@ -557,7 +557,7 @@
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libblake3.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libssl.a",
 					"$(SRCROOT)/../build-ios-iphonesimulator/vcpkg_installed/arm64-ios-simulator/lib/libcrypto.a",
-					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+					"$(SRCROOT)/../build-ios-iphonesimulator/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
 					"Foundation",
@@ -591,7 +591,7 @@
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libblake3.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libssl.a",
 					"$(SRCROOT)/../build-ios-iphoneos/vcpkg_installed/arm64-ios/lib/libcrypto.a",
-					"$(SRCROOT)/../build-ios-iphoneos/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
+					"$(SRCROOT)/../build-ios-iphoneos/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime",
 					"-lc++",
 					"-framework",
 					"Foundation",
@@ -620,6 +620,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_FILE = App/Info/Common.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -641,6 +642,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_FILE = App/Info/Common.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

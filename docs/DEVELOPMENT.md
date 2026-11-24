@@ -449,6 +449,9 @@ their keys in the OS store ("MediaViewer Driftwire", `remote_<id>`); the cache i
 
 To try it on one Mac: run `driftwire host` (or `driftwire serve` with a `serve.json`) with a folder shared,
 take the code from `driftwire host pair` or the Phone access card, and paste it in File → Connect to a Server….
+A dev build launched with `MV_DEV_REMOTE_DIR=<folder>` keeps its servers, cache and keys there instead of
+the installed app's list and the Keychain (as `MV_DEV_THUMBS_DIR` does for thumbnails). Changing files
+(plan §6) needs the role: `driftwire serve grant <device key> --role change`, then restart the service.
 
 ```bash
 build/bin/mv_tests "[desktop-client]"          # loopback: pairing, listing, tiles, fetches, unreachable / offline / revoked
@@ -472,7 +475,19 @@ segmenter in `MobileLinkSupport/MpegTs.swift`); iOS opens none of them as files.
 TS, LPCM sound, MKV, WebM, AVI and MPG play when the server converts them (`docs/plans/phone-clip-convert.md`:
 the service lists `convert`, and `MobileLink/ConvertedClips.swift` serves its 4 s segments through the same
 loopback server); a server without it leaves them "can't play here", with the download. Folders show as
-tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`).
+tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`); each
+folder is a page on a `NavigationStack` (`LibraryModel.stack` of `FolderPage`s, `LibraryScreens.swift`).
+Its tests: `MobileUITests/FolderNavigationTests` (the model) and `UITests/FolderNavigationTests` (the
+fixtures app several folders deep and back), with the hitch figures in
+`ScrollHitchTests/testFolderNavigationHitches`. The fixture state `library.slowLink` lists each folder a second late, to see a slow connection. Changing files (Add, New Folder, Move, Rename, Delete; file mode, a "change" device):
+`MobileUI/LibraryChanges.swift` and `FolderEditing.swift` over `FolderChanges` (`MobileLink/LinkChanges.swift`,
+`mv_files_add`/`_mkdir`/`_move`/`_delete`); the fixture state `library.change` runs it over an in-memory
+server, and `UITests/FolderChangeTests` walks it; in the real app the sample library's demo of it is
+`UITests/SampleChangesTests` (`TEST_RUNNER_MV_SAMPLE_CHANGES=1`; it opens SAMPLE from the release
+when the app has none). The link's side: `mv_mobile_link_tests "change:*"`. A folder walk timed with
+no test attached (XCUITest's own work at each animation's end weighs on any transition it watches):
+`tools/ios/folder-walk.sh <src.ios> <Simulator UDID> <DerivedData> <label> <runs>` prints late frames
+per folder change from the fixtures app's `-fixtureWalk`.
 
 The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
 `DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git

@@ -611,15 +611,19 @@ built: `cli/nas_update.*`, `"[nas-update]"`, Ed25519-signed per-arch manifest, `
 `.prev` rollback after three failed starts, `MV_NAS_VAR`, `MV_NAS_UPDATE_KEY`, exit 75); claiming
 over SMB with owner operations over the channel; library rejoin; the phone's `remote_file`.
 
-### Phone backup: the write grant (1.1)
+### Phone backup and changing files: the write grant
 
-`src/wire/serve_backup.*`, `src/wire/grants.*`; plan `docs/plans/mobile.md` §10b, M11. A backup
-folder is `"backup":{"limit","reserve"}` in `serve.json` (owner's `add_root` / `set_backup`;
-Settings → Add-ons → Phone access). A phone listing `write` gets the op (bit `1u << 6`).
+`src/wire/serve_backup.*`, `src/wire/grants.*`; plans `docs/plans/mobile.md` §10b (M11),
+`docs/plans/self-host-users-smb.md` §9. A backup folder is `"backup":{"limit","reserve"}` in
+`serve.json` (owner's `add_root` / `set_backup`; Settings → Add-ons → Phone access). A client
+listing `write` gets the op (bit `1u << 6`); `mkdir`, `move`, `delete` are ops 8–10 (`kChangeOps`).
 
-**Who may write is a phone's grant** (`backup`): the paired list holds only unlimited devices with
-backup; others live in `library_grants`. Guest codes give backup off. Turning backup on needs the
-unlock. Checked per write (`device_may_write`).
+**Who may write is the device's role** (`caps.role`): "change" is an unlimited paired device or a
+grant with `backup` on (`library_grants`), "view" a grant with it off (guest codes, a desktop until
+granted). Turning it on needs the unlock. Checked per request, never from the client
+(`device_may_write`: not the owner's session, not the Catalogue, `grant::allows` for a scoped one,
+whose other folders are not in its view at all). `root_info.writable` says it per folder; a
+service before `kChangeOps` sent it only on backup folders.
 
 A write: `stream_open {"op":"write","root","rel","at","size","hash"}`, `stream_credit`,
 `stream_data`. Errors `not-allowed`, `name` (> 200 bytes), `limit`, `full`, `hash`. Folders made
@@ -628,6 +632,63 @@ writes hidden `.<name>.<device id>.mvpart`, then flushes, hashes and renames wit
 (`" (2)"`), one commit per folder at a time. Only the device's own `.mvpart` and
 `.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`) are ever replaced. Phone side
 `src/mobile/backup.*`.
+
+A write is taken in any writable folder. A backup folder keeps its limit and reserve; any other is
+never walked and only keeps `kDefaultReserve` (1 GiB) free on its volume (`book::reserve`). The
+`meta` folder exists only under a backup folder.
+
+### Changing files: `mkdir`, `move`, `delete` (2026-11-22)
+
+`serve.cpp` (`session_state::change`), wire in `serve_wire.h` "changing", client
+`serve::client::make_folder / move / remove / add` with `change_why` refusals. Listed in caps to any
+paired device that asks (as `write`); a client shows its commands only when all three are there
+(`client::changes_files()`), on folders whose `writable` is true. Each answers once with
+`stream_end`, from the session's worker thread (shared with write commits), so a long copy never
+holds up that session's reads.
+
+- **Paths**: root id + safe `rel`, never empty (a folder itself is never moved or deleted), never
+  hidden (so the trash, `.mediaviewer-phone-backup`, `.mvpart`/`.mvmove` and the Catalogue's
+  `.mediaviewer` are out of reach), walked with `stat_beneath` / `make_directories_beneath` so a
+  link at any part is refused (`path`). The rename itself is by path after that walk, as a backup
+  commit's is.
+- **`mkdir`**: the folder and any above it; one already there is ok `"existing":true`, a file there
+  `exists`.
+- **Which folder is inside which** is decided by identity (`io::identify_entry`: volume and file
+  number), never by names: a case or normalisation variant, or a named folder lying inside the one
+  moved, is the same folder. A folder that is or holds any named folder of the service (all of
+  them, not only the device's), or has a folder on another volume below it (a drive mounted
+  inside), is never moved or trashed (`path`).
+- **`move`** `{"root","rel","to_root","to_rel"}`: never replaces (`exists`); a folder into itself is
+  `path`, checked on the deepest existing part of the destination before anything is made;
+  folders above `to_rel` are then made. On one volume a `rename_no_replace`, and a rename the disk
+  refuses is `error`, never a copy. Only when the destination's volume differs from the source's
+  does it copy: into a hidden `.<name>.<device id>.mvmove` beside the destination, part files
+  (`.mvpart`, `.mvmove`) left out, every file flushed and read back uncached and hashed, every
+  folder made synced, renamed into place without replacing, and only then each source file
+  removed if it is as it was when copied (size and `mtime_ns`), each source folder once empty.
+  Between files (and between chunks for the stop) the copy checks the session is not ending and
+  the device may still change both folders (its access read again at most once a second, at once
+  on `recheck_devices`); stopped, it drops its copy and leaves the source whole (`not-allowed`, or
+  nothing when the session went). `server::options::copy_moves` (tests) takes the copy path
+  between folders on one disk, `during_copy` runs before each file.
+- **`delete`**: renames into `<root>/.mediaviewer-trash/<YYYY-MM-DD UTC>/<rel>` (" (2)" … " (99)",
+  then `exists`) on the folder's own volume; one that would need a copy is `error`, never copied
+  away. Nothing empties the trash; the owner does, on the host. No restore op yet: the trash path
+  keeps the original `rel`.
+- **A backup folder's count** (`book`): what is in its trash still counts against its limit (it is
+  on that disk, in that folder) until the owner empties it and the service starts again, so a
+  delete changes nothing. A move out takes off only the bytes actually removed; a move in counts
+  what was copied or renamed in. Only a counted folder's `used` is kept: one made a backup folder
+  later is walked fresh.
+- **Busy**: each request claims its source and destination names in the service-wide book; a
+  second request on one of them while it runs is `busy`, as is a move or delete of a folder with a
+  write still open, or another change running, anywhere inside it.
+- **Not built**: the walks check for links part by part, then rename, remove or create by path,
+  as a backup commit does: a writer on the host (or SMB) swapping a folder for a link between the
+  two could redirect one. Renames relative to the walk's own folder handles would close it.
+- Refusal words: `not-allowed`, `path`, `exists`, `busy`, `name`, `limit`, `full`; `not_found`
+  (`offline` when the drive is gone); `error`. An older service never lists the ops, so an older
+  client is unchanged and a newer one hides the commands. Tests `"[serve-change]"`.
 
 ### Clips the phone can't play: `convert` (2026-11-15)
 
@@ -678,7 +739,8 @@ or a Mac, from one command that runs while its user is logged in.
 
 ```
 driftwire host [--data DIR]                 the supervisor, no terminal: what starts at login
-driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it)
+driftwire host share PATH [--label L] [--backup]   a folder for phones (--backup: they may back up into it;
+                                                  on a folder shared already, makes it a backup folder)
 driftwire host unshare LABEL                takes one back (its files stay)
 driftwire host status                       name, ports, folders by label (offline or not), phones,
                                             VPN, staying awake, start at login

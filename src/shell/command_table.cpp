@@ -367,6 +367,12 @@ constexpr binding kBindings[] = {
     row(key::none, mod_none, kBrowse, edge, tool_red_eye),
     row(key::none, mod_none, kBrowse, edge, tool_extend),
     row(key::none, mod_none, kBrowse, edge, tool_faces),
+    // docs/design/16 "Folder navigation": Finder's and Explorer's Back / Forward,
+    // and the keyboard's twins of a drop (New Folder, Paste files here).
+    row(C('['), mod_ctrl, kViewing, edge, folder_back),
+    row(C(']'), mod_ctrl, kViewing, edge, folder_forward),
+    row(C('N'), mod_ctrl | mod_shift, kViewing, edge, new_folder),
+    row(C('V'), mod_ctrl, kViewing, edge, paste_files),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -602,6 +608,10 @@ constexpr command_info kCommands[] = {
     {tool_red_eye, "Red-eye tool"},
     {tool_extend, "Extend edges"},
     {tool_faces, "Faces tool"},
+    {folder_back, "Go back"},
+    {folder_forward, "Go forward"},
+    {new_folder, "New folder"},
+    {paste_files, "Paste files here"},
 };
 
 const char* named_key(key k) noexcept {

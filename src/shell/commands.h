@@ -449,6 +449,11 @@ enum class command_id : std::uint16_t {
   tool_red_eye,
   tool_extend,
   tool_faces,
+  // docs/design/16 "Folder navigation" / "Drag and drop into folders". Appended.
+  folder_back,     // Ctrl/Cmd+[: the folder before this one, its selection kept
+  folder_forward,  // Ctrl/Cmd+]
+  new_folder,      // Ctrl/Cmd+Shift+N: a new folder in the one on screen
+  paste_files,     // Ctrl/Cmd+V: copy the files on the clipboard into the folder on screen
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

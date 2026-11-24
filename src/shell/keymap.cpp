@@ -234,6 +234,10 @@ constexpr slug_row kSlugs[] = {
     {tool_red_eye, "tool_red_eye"},
     {tool_extend, "tool_extend"},
     {tool_faces, "tool_faces"},
+    {folder_back, "folder_back"},
+    {folder_forward, "folder_forward"},
+    {new_folder, "new_folder"},
+    {paste_files, "paste_files"},
 };
 
 struct claim {

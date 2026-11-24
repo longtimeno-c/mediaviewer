@@ -156,6 +156,7 @@ struct MediaGrid<Header: View>: View {
 
   @Environment(AppModel.self) private var model
   @Environment(\.viewerNamespace) private var namespace
+  @Environment(\.editingPage) private var editingPage
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private let columns = [GridItem(.adaptive(minimum: 120), spacing: 2)]
@@ -206,11 +207,12 @@ struct MediaGrid<Header: View>: View {
   private func tile(_ entry: GridEntry) -> some View {
     let source = "\(context)/\(entry.position)"
     Button {
-      open(entry)
+      TileTap(page: editingPage, model: model).run(.item(entry.item)) { open(entry) }
     } label: {
       MediaTile(entry: entry, images: model.services.images, fadesIn: entries.ids != nil)
     }
     .buttonStyle(TileButtonStyle())
+    .choosable(.item(entry.item))
     .accessibilityLabel(entry.caption.map { "\(entry.accessibilityName), \($0)" } ?? entry.accessibilityName)
     // Never spoken: lets a test name which item a tile is (the live parity run).
     .accessibilityIdentifier(answering.isEmpty ? "tile:\(entry.item.id.raw)" : "tile:\(entry.item.id.raw)|\(answering)")
@@ -242,7 +244,7 @@ private struct TransitionSource: ViewModifier {
   }
 }
 
-/// A wait past a second shows the content's own empty geometry.
+/// The content's own empty geometry while a listing is awaited.
 struct GridSkeleton: View {
   var body: some View {
     GeometryReader { geo in

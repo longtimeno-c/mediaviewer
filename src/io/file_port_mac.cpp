@@ -126,6 +126,27 @@ result<file_id> identify(std::string_view utf8_path) {
   return id_of(st);
 }
 
+result<file_id> identify_entry(std::string_view utf8_path) {
+  detail::simulated_round_trip();
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  const std::string path(utf8_path);
+  struct stat st{};
+  if (::lstat(path.c_str(), &st) != 0) return err(status::io);
+  if (S_ISLNK(st.st_mode)) return err(status::permission_denied);
+  if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) return err(status::io);
+  return id_of(st);
+}
+
+expected sync_directory(std::string_view utf8_dir) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  const std::string dir(utf8_dir);
+  const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return err(status::io);
+  const bool ok = durable_sync(fd);
+  ::close(fd);
+  return ok ? expected{} : err(status::io);
+}
+
 expected make_directories(std::string_view utf8_dir) {
   if (utf8_dir.empty()) return err(status::invalid_arg);
   std::string path(utf8_dir);
@@ -225,6 +246,12 @@ file_stat beneath_stat_of(const struct stat& st) noexcept {
   out.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
   out.mtime_unix = mtime_of(st);
   out.is_directory = S_ISDIR(st.st_mode);
+  // At its own precision too: a file rewritten within the second at the same size is another.
+#if defined(__APPLE__)
+  out.mtime_ns = static_cast<std::int64_t>(st.st_mtimespec.tv_sec) * 1000000000LL + st.st_mtimespec.tv_nsec;
+#else
+  out.mtime_ns = static_cast<std::int64_t>(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
   return out;
 }
 

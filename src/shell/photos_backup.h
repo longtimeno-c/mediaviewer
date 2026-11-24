@@ -157,8 +157,31 @@ class library {
                       std::int64_t mtime, const io::content_hash& hash) = 0;
 };
 
+// A destination that is not a folder on this machine: a shared folder of a self-hosted
+// server this computer is paired with and may add files to (shell/photos_backup_server.h
+// over remote::library; a fake in the tests). Places are '/'-separated, under that folder.
+// Every call BLOCKS: the run's own thread only.
+class server_folder {
+ public:
+  virtual ~server_folder() = default;
+  // The server answers and lets this computer add files to the folder now.
+  [[nodiscard]] virtual bool reachable() = 0;
+  // Whether something is at `place`. An error: it could not tell (never "gone").
+  [[nodiscard]] virtual result<bool> has(const std::string& place) = 0;
+  // [any thread] The run was cancelled: a put in flight ends soon, and later ones at once.
+  virtual void stop() noexcept {}
+  // Sends the file into `sub` ("" for the folder itself; made as needed) as `name`, or
+  // " (2)" when that is taken: nothing there is replaced. The service checks the bytes
+  // against their hash before the file takes its name. Answers the name it got.
+  [[nodiscard]] virtual result<std::string> put(const std::string& local_utf8, const std::string& sub,
+                                                const std::string& name, const std::atomic<bool>* cancel,
+                                                const std::function<void(std::uint64_t delta)>& on_bytes) = 0;
+};
+
 struct options {
-  std::string destination;  // the folder the user chose
+  // The folder the user chose. With `server`: a folder on this machine that only keeps
+  // this backup's manifest and report (one per server folder), since the files go to the server.
+  std::string destination;
   std::string scratch;      // where fetched originals wait for their verified copy
   layout folders = layout::year_day;
   // With an index: an asset whose bytes are already in the library (at
@@ -169,6 +192,9 @@ struct options {
   library_scope scope = library_scope::destination;
   // Check library: compare and report; nothing is copied or fetched.
   bool check_only = false;
+  // Set: the originals are sent here instead of copied into `destination`. No library
+  // index then (`index` is ignored): Import's index knows folders on this machine.
+  std::shared_ptr<server_folder> server{};
 };
 
 enum class run_state : std::uint8_t {
