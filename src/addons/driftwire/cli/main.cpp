@@ -293,9 +293,26 @@ int main(int argc, char** argv) {
 #else
   // Its own identity and remembered devices, never the app's (secrets.h).
   eo.make_secrets = [] { return dw::secrets::os_store(dw::secrets::kCliService); };
-  // The Tunnel's system proxy (sysproxy.h), as the add-on's.
-  eo.make_sysproxy = [] { return dw::sysproxy::os_port(); };
 #endif
+  // /vpn: the VPN add-on's engine (docs/plans/vpn-addon.md), its settings in
+  // vpn.json beside driftwire.json, where the Tunnel's were until 2026-11-19.
+  {
+    dw::vpn::service::options vo;
+    if (!data.empty()) {
+      vo.prefs_path = data + "/" + std::string(dw::vpn::kPrefsFile);
+      vo.data_dir = data;
+    }
+#if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+    // Its key in the program's own store, never the app's; the system proxy as the add-on's.
+    vo.make_secrets = [] { return dw::secrets::os_store(dw::secrets::kCliService); };
+    vo.make_sysproxy = [] { return dw::sysproxy::os_port(); };
+    if (!data.empty()) {
+      auto store = dw::secrets::os_store(dw::secrets::kCliService);
+      (void)dw::vpn::adopt_driftwire(data, data, vo.prefs_path, store.get(), store.get());
+    }
+#endif
+    so.vpn = std::move(vo);
+  }
 
   const char* term_env = std::getenv("TERM");  // NOLINT(concurrency-mt-unsafe): read at start
   const bool dumb = term_env && std::string(term_env) == "dumb";

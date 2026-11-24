@@ -45,6 +45,7 @@
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/mapping.h"
 #include "wire/net.h"
+#include "wire/relay_field.h"
 #include "addons/driftwire/race.h"
 
 namespace mv::driftwire {
@@ -57,7 +58,7 @@ inline constexpr int kCodeLifetimeMs = 10 * 60 * 1000;
 // A router lease (#499): short, renewed while held (mapping::keeper), so a
 // crash leaves a forward or pinhole open two minutes at most.
 inline constexpr int kMapLifetimeS = 120;
-inline constexpr int kReachConnectMs = 5000;  // each TCP connect of a round
+// kReachConnectMs, each TCP connect of a round: wire/relay_field.h.
 inline constexpr int kHappyEyeballsMs = 250;
 
 // #496: a link from the internet, and where it came from (source_of; "":
@@ -202,20 +203,7 @@ class way_in {
   std::thread accept_thread_;
 };
 
-// "<address>:<port>", or "<name>:<port>" resolved (the relay server only:
-// the person typed it). nullopt: neither.
-[[nodiscard]] std::optional<net::endpoint> relay_endpoint(const std::string& text);
-// Every address "<address or name>:<port>" stands for, IPv4 and IPv6 (a
-// name resolved once, here): what the VPN leaves out of its routes, since the
-// dialer may reach the relay at any of them. Empty: neither.
-[[nodiscard]] std::vector<net::address> relay_addresses(const std::string& text);
-// The relay field, "<address or name>:<port>#<key>", split (not resolved);
-// nullopt with `why` (the window's words) when it is not one.
-struct relay_server_field {
-  std::string at;   // "<address or name>:<port>"
-  std::string key;  // what only a waiter there proves (splice.h)
-};
-[[nodiscard]] std::optional<relay_server_field> relay_server_of(const std::string& text, std::string& why);
+// relay_endpoint, relay_addresses and relay_server_of: wire/relay_field.h (the VPN add-on uses them too).
 // How long a code waits for its relay server to answer before it is shown without it.
 inline constexpr int kRelaySetupMs = 3000;
 
@@ -227,7 +215,6 @@ inline constexpr int kRelaySetupMs = 3000;
                                           const std::vector<link_race::outcome>& outcomes, bool here_has_ipv6);
 // One round: a race over `places` (IPv6 first). The caller keeps `race` and
 // joins it when it is done with the winner.
-using connect_fn = std::function<result<std::unique_ptr<link>>(const net::endpoint&, int timeout_ms)>;
 void start_round(link_race& race, const std::vector<net::endpoint>& places, const connect_fn& connect);
 
 }  // namespace mv::driftwire

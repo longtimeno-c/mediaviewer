@@ -14,7 +14,9 @@
 // - while an add-on keeps the process, a menu-bar item: its label, the
 //   add-on's own rows (keep_menu: lines, checkmark toggles, buttons, a Send
 //   Files… open panel; docs/plans/driftwire-menu-and-tunnel.md), Open
-//   <screen>, Open MediaViewer, Quit MediaViewer; one item per kept entry. main_mac.mm hides the
+//   <screen> (a settings-place screen: Settings at its add-on's page, the
+//   VPN's, docs/plans/vpn-addon.md), Open MediaViewer, Quit MediaViewer;
+//   one item per kept entry. main_mac.mm hides the
 //   viewer rather than quitting while the list is not empty. While
 //   `driftwire host` runs the list also holds the app's own entry ("shell",
 //   docs/plans/self-hosted.md "Tray"): the host's status, phones, drives,
@@ -222,9 +224,7 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate, NSMenuDele
       statusItems[k.addon] = item
       drawn[k.addon] = k
       if let button = item.button {
-        // Driftwire's waves; the host's server menu, a server.
-        let symbol = k.shell ? "server.rack" : "dot.radiowaves.left.and.right"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: k.label)
+        let image = NSImage(systemSymbolName: Self.symbol(k), accessibilityDescription: k.label)
         image?.isTemplate = true
         button.image = image
         button.toolTip = k.label
@@ -244,8 +244,8 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate, NSMenuDele
         menu.addItem(.separator())
       }
       menu.addItem(entry("Open \(k.title)", of: k.addon) {
-        if k.shell {
-          mv_chrome_open_phone_settings()
+        if let page = Self.settingsPage(k, SlotStore.shared.settingsScreens) {
+          page.withCString { mv_chrome_open_addon_settings($0) }
           return
         }
         mv_chrome_background_window_shown()
@@ -256,6 +256,21 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate, NSMenuDele
       menu.addItem(entry("Quit MediaViewer", of: k.addon) { mv_chrome_background_quit() })
       item.menu = menu
     }
+  }
+
+  /// Driftwire's waves; the VPN's shield (docs/plans/vpn-addon.md, as its
+  /// "tunnel" icon); the host's server menu, a server.
+  private static func symbol(_ k: Keep) -> String {
+    if k.shell { return "server.rack" }
+    return k.addon == "vpn" ? "lock.shield" : "dot.radiowaves.left.and.right"
+  }
+
+  /// The add-on whose Settings page Open shows, or nil for a window: the host's
+  /// entry is Phone access's page, a settings-place screen its add-on's
+  /// (docs/plans/vpn-addon.md), not a window of its own.
+  private static func settingsPage(_ k: Keep, _ settingsScreens: [String: String]) -> String? {
+    if k.shell { return PhoneAccessStore.addonID }
+    return settingsScreens[k.addon] == k.screen ? k.addon : nil
   }
 
   func menuWillOpen(_ menu: NSMenu) { openMenu = menu.identifier?.rawValue }

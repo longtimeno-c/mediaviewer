@@ -62,7 +62,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ad hoc assemble cannot carry that restricted entitlement, so its copy is
 # signed without it and macOS will not load it.
 TUNNEL_SYSEXT_NAME = "DriftwireTunnel"
-TUNNEL_ENTITLEMENTS = REPO_ROOT / "src" / "addons" / "driftwire" / "mac_tunnel" / "DriftwireTunnel.entitlements"
+TUNNEL_ENTITLEMENTS = REPO_ROOT / "src" / "addons" / "vpn" / "mac_tunnel" / "DriftwireTunnel.entitlements"
 SYSEXT_INSTALL = "com.apple.developer.system-extension.install"
 NETWORK_EXTENSION = "com.apple.developer.networking.networkextension"
 PACKET_TUNNEL = "packet-tunnel-provider-systemextension"

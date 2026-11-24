@@ -2186,6 +2186,16 @@ elevated helper is owed). The TCP/IP stack is Driftwire's own (`netstack.cpp`, t
 connection only): lwIP (BSD-3, compatible) is not in vcpkg, and accepting a connection to any
 address needs patches to it.
 
+**The VPN is one add-on of its own (owner, 2026-11-19).** The Tunnel, All traffic and Connect to a
+VPN host were Driftwire's, and hosting the VPN (this computer or the NAS as the exit) was Phone
+access's card; the owner chose "One VPN add-on" ([plan](../plans/vpn-addon.md)). It reaches Phone
+access's link only through `addon_request` (Phone access answers caller `vpn` alone), keeps its own
+server field and key apart from Driftwire's relay for transfers, and takes the Tunnel's settings over
+from Driftwire once. The Mac's packet tunnel provider stays in the app's bundle (`src/addons/vpn/mac_tunnel`)
+and keeps the id `<app>.DriftwireTunnel`: 0.1.44 ships it signed with profiles for that App ID, so a
+rename would need a new App ID and profiles first. The `driftwire` program's `/tunnel` is `/vpn`
+(`/tunnel` kept), and links the add-on's engine.
+
 **The Mac release carries the VPN's extension with its entitlement (checked 2026-11-19).** Read
 from the installed v0.1.44 (release run 43786302385): `Contents/Library/SystemExtensions/
 io.github.longtimeno-c.mediaviewer.DriftwireTunnel.systemextension` is signed by the team's

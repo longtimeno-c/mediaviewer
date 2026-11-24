@@ -37,7 +37,7 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/internet.h"
+#include "wire/relay_field.h"
 #include "wire/link.h"
 #include "wire/net.h"
 #include "wire/splice.h"
