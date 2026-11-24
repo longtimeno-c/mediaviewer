@@ -7,7 +7,19 @@ detail", with its numbers; the decisions are in [12-decision-log](../design/12-d
 Tried and left out, with their numbers there: admitting into unconfirmed people by their average
 in the settle, and farthest-point (diverse) exemplars.
 
+The 2026-11-23 work (a named person known by every look, their claim over unnamed people, one-way
+fragment merges) is in docs/design/17 "Confirmed people" and "Merge duplicates". On the owner's
+copy: the sheets' "check these" 11,067 -> 4,531; one Merge duplicates folds 75 unnamed people into
+named ones (was 14) and moves 1,003 faces from unnamed people to named ones (was 79); of other
+people's faces put into a named person the sheet still asks about 98 % (was 99.9 %). LFW was not
+re-run (no vectors on that machine); nothing changes for people with no name and no pin.
+
 Not built:
+
+0. **A person that is several people** (the owner's unnamed "every baby", 390 photos). Named
+   people now take their own faces out of it one by one, and it is too large to merge whole into
+   one of them; what is left is still one person. It needs a way to split a person into tighter
+   groups on request, or an age-aware threshold: babies sit at ~0.39 to each other with this model.
 
 1. **Per-person thresholds** (stricter only). Their condition was that `[.people-heldout]` still
    files named people's faces under another named person; on the owner's copy it files none

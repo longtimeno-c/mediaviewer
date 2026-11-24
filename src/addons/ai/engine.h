@@ -868,6 +868,10 @@ class engine {
     refine_params params;
     std::uint32_t dim = 0;
     std::uint64_t serial = 0;
+    // The faces judged, and the person each is in after the moves (0 nobody;
+    // a look first: after the moves it would make): find_duplicates' input.
+    refine_snapshot snap;
+    std::vector<std::int64_t> where;
   };
   // person 0: everyone (no focus).
   [[nodiscard]] result<refine_run> refine_person_run(std::int64_t person, bool dry);

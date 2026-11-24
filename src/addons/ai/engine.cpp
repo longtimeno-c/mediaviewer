@@ -1763,7 +1763,21 @@ result<engine::refine_run> engine::refine_person_run(std::int64_t person, bool d
   r.dim = dim;
   r.serial = snap.serial;
   if (stopping_) return err(status::cancelled);
-  if (dry) return r;
+  const auto place = [&r](const std::vector<refine_move>& moves) {
+    std::map<std::int64_t, std::int64_t> to;
+    for (const refine_move& m : moves) to[m.face] = m.to > 0 ? m.to : 0;
+    r.where.clear();
+    r.where.reserve(r.snap.faces.size());
+    for (const refine_face& f : r.snap.faces) {
+      const auto it = to.find(f.id);
+      r.where.push_back(it == to.end() ? f.person : it->second);
+    }
+  };
+  if (dry) {
+    r.snap = std::move(snap);
+    place(r.out.moves);
+    return r;
+  }
   std::size_t rescanned = 0;
   {
     std::lock_guard lock(models_m_);
@@ -1784,6 +1798,8 @@ result<engine::refine_run> engine::refine_person_run(std::int64_t person, bool d
     work_cv_.notify_all();
   }
   if (r.stats.changed()) post(MV_ADDON_EVENT_AI_PEOPLE);
+  r.snap = std::move(snap);
+  place(r.stats.applied);
   return r;
 }
 
@@ -1889,6 +1905,9 @@ result<engine::dedupe_run> engine::people_dedupe_run(bool dry) {
   din.protos = rr.out.protos;
   din.people = people;
   din.apart = apart;
+  din.emb = rr.snap.emb;
+  din.faces = rr.snap.faces;
+  din.where = rr.where;
   din.cancel = &stopping_;
   r.groups = find_duplicates(din, rr.params);
   if (stopping_) return err(status::cancelled);
