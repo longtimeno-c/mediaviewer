@@ -55,6 +55,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case librarySlowLink = "library.slowLink"
   /// A device whose role is "change": Add, Select, Move, Rename and Delete in every folder.
   case libraryChange = "library.change"
+  /// The same in the sample library: its folders can be changed, and every page says "Sample library".
+  case libraryChangeSample = "library.changeSample"
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
   /// A backup running, and once a keyboard is up (with -fixtureKeyboardMeter YES) a new catalogue:
@@ -196,7 +198,7 @@ final class FixtureRun {
       world.copyContinuesAfterLeaving = false
     case .viewerRefiningUnknown: world.imageMode = .slowUnknownSize
     case .viewerSlowNetwork: world.imageMode = .slowNetwork
-    case .libraryChange:
+    case .libraryChange, .libraryChangeSample:
       world.mayChange = true
       FixtureDocuments.seed()
     case .librarySlowLink:
@@ -294,6 +296,10 @@ final class FixtureRun {
       try? await Task.sleep(for: .seconds(1))
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
+    case .libraryChangeSample:
+      var sample = FixtureWorld.connected(age: 60)
+      sample.isSample = true
+      world.publish(sample)
     case .libraryNewCatalogue:
       try? await Task.sleep(for: .seconds(4))
       world.hasPeople = true
