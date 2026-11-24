@@ -292,7 +292,9 @@ struct FixtureStore: LibraryStore {
       world.peopleFailures -= 1
       throw MediaFailure.synologyUnreachable
     }
-    return world.hasPeople ? FixtureLibrary.people : []
+    guard world.hasPeople else { return [] }
+    await MainActor.run { FixtureKeyboardMeter.notePeopleServed() }
+    return FixtureLibrary.people
   }
 
   func details(for item: MediaItem) async throws -> MediaDetails {

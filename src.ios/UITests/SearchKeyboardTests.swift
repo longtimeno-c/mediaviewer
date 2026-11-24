@@ -43,14 +43,18 @@ final class SearchKeyboardTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(Self.number("hides", in: stats.label), 1, "Dragging did not put the keyboard away")
   }
 
-  /// A new catalogue 10 s after launch (fixture state) brings the People tab: adding a tab redrew
-  /// the tabs under the keyboard and took it. The tab now waits for the keyboard to go.
+  /// A new catalogue once the keyboard is up (fixture state) brings the People tab: adding a tab
+  /// redrew the tabs under the keyboard and took it. The tab now waits for the keyboard to go.
   func testThePeopleTabArrivingDoesNotTakeTheKeyboard() throws {
     let (app, field, stats) = try typingInSearch("library.backupPeopleArrive")
-    XCTAssertFalse(app.tabBars.buttons["People"].exists, "The People tab was there before the catalogue")
-    try waitPastTheCatalogue(stats)
+    let served = NSPredicate { _, _ in Self.number("peopleServed", in: stats.label) >= 1 }
+    let waited = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: served, object: nil)], timeout: 20)
+    XCTAssertEqual(waited, .completed, "The people never came: \(stats.label)")
+    // Typing waits for the app to settle, so the redraw that follows the people has happened.
+    field.typeText("a")
     XCTAssertEqual(Self.number("hides", in: stats.label), 0, "The keyboard went away as the People tab arrived: \(stats.label)")
-    XCTAssertEqual(field.value as? String, "bo")
+    XCTAssertEqual(field.value as? String, "boa")
+    XCTAssertFalse(app.tabBars.buttons["People"].exists, "The People tab came while the keyboard was up")
     dismissKeyboard(app)
     XCTAssertTrue(app.tabBars.buttons["People"].waitForExistence(timeout: 10), "The People tab never came once the keyboard went")
   }
@@ -70,15 +74,6 @@ final class SearchKeyboardTests: XCTestCase {
     }
     field.typeText("bo")
     return (app, field, app.staticTexts["keyboard-stats"].firstMatch)
-  }
-
-  /// The fixture backup counts once a second from launch and the catalogue comes 10 s after it,
-  /// so 12 counts with the keyboard up (it was up well before 10 s) means the catalogue came
-  /// while it was.
-  private func waitPastTheCatalogue(_ stats: XCUIElement) throws {
-    let past = NSPredicate { _, _ in Self.number("ticksWhileUp", in: stats.label) >= 12 }
-    let waited = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: past, object: nil)], timeout: 25)
-    XCTAssertEqual(waited, .completed, "The keyboard was not up long enough: \(stats.label)")
   }
 
   private func dismissKeyboard(_ app: XCUIApplication) {

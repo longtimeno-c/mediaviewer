@@ -57,7 +57,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryChange = "library.change"
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
-  /// A backup running, and 10 s in a new catalogue: the People tab appears.
+  /// A backup running, and once a keyboard is up (with -fixtureKeyboardMeter YES) a new catalogue:
+  /// the People tab appears.
   case libraryBackupPeopleArrive = "library.backupPeopleArrive"
   case backupChoose = "backup.chooseFolder"
   case backupRunning = "backup.running"
@@ -298,8 +299,7 @@ final class FixtureRun {
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
     case .libraryBackupPeopleArrive:
-      // Late enough for a test to be typing in Search.
-      try? await Task.sleep(for: .seconds(10))
+      await FixtureKeyboardMeter.waitUntilUp()
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
     case .backupChoose, .backupRunning, .backupDone, .backupPausedWiFi, .backupNotAllowed, .backupLimit, .backupFull,

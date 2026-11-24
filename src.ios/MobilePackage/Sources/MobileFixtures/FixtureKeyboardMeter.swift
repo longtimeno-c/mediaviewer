@@ -4,7 +4,8 @@
 // keyboard tests. A keyboard that goes and comes back within a frame or two is gone for less time
 // than one XCUITest query takes, so a test polling for the keyboard misses it; the app's own
 // notifications do not. Published on an accessibility element the test reads, with the fixture
-// backup's counts that went by while the keyboard was up, so a test waits on those, not a clock.
+// backup's counts that went by while the keyboard was up and the lists of people served, so
+// a test waits on those, not a clock.
 #if !DEBUG
 #error("MobileFixtures is debug only and must not be built into a release")
 #endif
@@ -13,17 +14,20 @@ import UIKit
 @MainActor
 final class FixtureKeyboardMeter: NSObject {
   private static var shared: FixtureKeyboardMeter?
+  private static var waitingForUp: [CheckedContinuation<Void, Never>] = []
+  private static var isAsked: Bool { UserDefaults.standard.bool(forKey: "fixtureKeyboardMeter") }
 
   private var shows = 0
   private var hides = 0
   private var heights: [Int] = []
   private var up = false
   private var ticksWhileUp = 0
+  private var peopleServed = 0
   private var window: UIWindow?
   private let label = UILabel()
 
   static func startIfAsked(in scene: UIWindowScene) {
-    guard UserDefaults.standard.bool(forKey: "fixtureKeyboardMeter"), shared == nil else { return }
+    guard isAsked, shared == nil else { return }
     let meter = FixtureKeyboardMeter()
     shared = meter
     meter.start(scene)
@@ -58,9 +62,25 @@ final class FixtureKeyboardMeter: NSObject {
     meter.publish()
   }
 
+  /// Returns once the keyboard is up (at once with the meter off), so a fixture brings its change
+  /// while someone is typing rather than after a guessed delay.
+  static func waitUntilUp() async {
+    guard isAsked, shared?.up != true else { return }
+    await withCheckedContinuation { waitingForUp.append($0) }
+  }
+
+  /// The fixture library handed over a list of people.
+  static func notePeopleServed() {
+    guard let meter = shared else { return }
+    meter.peopleServed += 1
+    meter.publish()
+  }
+
   @objc private func willShow(_ note: Notification) {
     shows += 1
     up = true
+    Self.waitingForUp.forEach { $0.resume() }
+    Self.waitingForUp = []
     if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
       heights.append(Int(frame.height.rounded()))
     }
@@ -74,6 +94,6 @@ final class FixtureKeyboardMeter: NSObject {
   }
 
   private func publish() {
-    label.accessibilityLabel = "shows=\(shows) hides=\(hides) ticksWhileUp=\(ticksWhileUp) heights=\(heights.map(String.init).joined(separator: ","))"
+    label.accessibilityLabel = "shows=\(shows) hides=\(hides) ticksWhileUp=\(ticksWhileUp) peopleServed=\(peopleServed) heights=\(heights.map(String.init).joined(separator: ","))"
   }
 }

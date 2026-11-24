@@ -54,11 +54,14 @@ struct MainTabs: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Namespace private var viewerNamespace
   /// What the slot above the tab bar shows, and whether there is a People tab: `model.transfer`
-  /// and the people, held still while the keyboard is up (KeyboardHold).
-  @State private var held = KeyboardHold.Held()
+  /// and the people, held still while the keyboard is up (KeyboardHold). nil until the hold's
+  /// first copy, and until then read from the model, so the first frame already has the People tab
+  /// a known library has; once copied, the tabs no longer read (or redraw with) the model's values.
+  @State private var held: KeyboardHold.Held?
 
   var body: some View {
     @Bindable var model = model
+    let shown = held ?? KeyboardHold.Held(model)
     TabView(selection: $model.tab) {
       Tab("Library", systemImage: "photo.on.rectangle.angled", value: AppModel.Tab.library) {
         LibraryScreen().transferStrip()
@@ -66,7 +69,7 @@ struct MainTabs: View {
       Tab("Search", systemImage: "magnifyingglass", value: AppModel.Tab.search, role: .search) {
         SearchScreen().transferStrip()
       }
-      if held.showsPeople {
+      if shown.showsPeople {
         Tab("People", systemImage: "person.2", value: AppModel.Tab.people) {
           PeopleScreen().transferStrip()
         }
@@ -77,7 +80,7 @@ struct MainTabs: View {
     }
     .tabViewStyle(.sidebarAdaptable)
     .modifier(TabBarShrinks(searching: model.tab == .search))
-    .modifier(TransferAccessory(activity: held.transfer))
+    .modifier(TransferAccessory(activity: shown.transfer))
     .background(KeyboardHold(held: $held))
     .environment(\.viewerNamespace, viewerNamespace)
     .fullScreenCover(item: $model.viewer) { request in
@@ -122,14 +125,19 @@ private extension View {
 private struct KeyboardHold: View {
   struct Held: Equatable {
     var transfer: TransferActivity?
-    var showsPeople = false
+    var showsPeople: Bool
+
+    @MainActor init(_ model: AppModel) {
+      transfer = model.transfer
+      showsPeople = !model.people.isEmpty || model.peopleFailed
+    }
   }
 
   @Environment(AppModel.self) private var model
-  @Binding var held: Held
+  @Binding var held: Held?
   @State private var keyboardUp = false
 
-  private var current: Held { Held(transfer: model.transfer, showsPeople: !model.people.isEmpty || model.peopleFailed) }
+  private var current: Held { Held(model) }
 
   var body: some View {
     Color.clear
