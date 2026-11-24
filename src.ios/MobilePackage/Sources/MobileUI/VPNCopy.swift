@@ -47,6 +47,7 @@ enum VPNCopy {
     case .connecting: return "Connecting…"
     case .connected: return "Connected"
     case .reconnecting: return "Reconnecting…"
+    case .paused: return "Paused on home Wi-Fi or no network"
     case .failed(let p): return problem(p)
     }
   }
@@ -89,6 +90,21 @@ enum VPNCopy {
   static let demoBanner =
     "Demo: nothing is routed. Your traffic leaves this phone as usual; this shows how the VPN works with your own server."
 
+  // Connect automatically (owner call 4): opt-in, off by default.
+  static let autoConnect = "Connect automatically (except on home Wi-Fi)"
+  static let autoConnectDetail =
+    "While the VPN is on, iOS turns it on by itself on any network, and leaves it off on the home Wi-Fi networks you name here."
+  static let autoConnectDemo =
+    "In this demo nothing is turned on by itself; with your own server, iOS would."
+  static let homeNetworks = "Home Wi-Fi"
+  static let noHomeNetworks = "No home Wi-Fi named yet: the VPN connects on every network."
+  static let addHomeNetwork = "Add home Wi-Fi…"
+  static let homeNetworkField = "Wi-Fi name"
+  static let homeNetworkPrompt = "The name of your home Wi-Fi network, exactly as it appears in Settings → Wi-Fi."
+  static let add = "Add"
+  static let cancel = "Cancel"
+  static func removeHomeNetwork(_ name: String) -> String { "Remove \(name)" }
+
   // Remove.
   static let remove = "Remove VPN"
   static let removeTitle = "Remove the VPN?"
@@ -112,4 +128,10 @@ enum VPNIDs {
   /// Remove VPN in the confirmation that asks first.
   static let removeConfirm = "vpn.remove.confirm"
   static let notInThisBuild = "vpn.notInThisBuild"
+  static let autoConnect = "vpn.autoConnect"
+  static let addHomeNetwork = "vpn.homeNetwork.add"
+  static let homeNetworkField = "vpn.homeNetwork.field"
+  static let homeNetworkAddConfirm = "vpn.homeNetwork.addConfirm"
+  static func homeNetwork(_ name: String) -> String { "vpn.homeNetwork.\(name)" }
+  static func removeHomeNetwork(_ name: String) -> String { "vpn.homeNetwork.remove.\(name)" }
 }

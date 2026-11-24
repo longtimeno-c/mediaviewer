@@ -107,10 +107,24 @@ public struct VPNSharedState: Codable, Equatable, Sendable {
   public var host: String?
   /// The consent screen (App Review 5.4) was accepted on this phone.
   public var consented: Bool
+  /// Connect automatically (except on home Wi-Fi), opt-in (owner call 4), and the home networks.
+  public var autoConnect: Bool
+  public var homeNetworks: [String]
 
-  public init(host: String? = nil, consented: Bool = false) {
+  public init(host: String? = nil, consented: Bool = false, autoConnect: Bool = false, homeNetworks: [String] = []) {
     self.host = host
     self.consented = consented
+    self.autoConnect = autoConnect
+    self.homeNetworks = homeNetworks
+  }
+
+  /// State saved before Connect automatically existed reads as it off, keeping the host and consent.
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    host = try c.decodeIfPresent(String.self, forKey: .host)
+    consented = try c.decode(Bool.self, forKey: .consented)
+    autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? false
+    homeNetworks = try c.decodeIfPresent([String].self, forKey: .homeNetworks) ?? []
   }
 
   public static func load(_ defaults: UserDefaults) -> VPNSharedState {
@@ -121,6 +135,21 @@ public struct VPNSharedState: Codable, Equatable, Sendable {
 
   public func save(_ defaults: UserDefaults) {
     if let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: Self.defaultsKey) }
+  }
+}
+
+/// What iOS's on-demand rules are to be (owner call 4), apart from NetworkExtension so it is tested:
+/// LinkVPN turns it into an NEOnDemandRuleDisconnect for the home Wi-Fi, then an
+/// NEOnDemandRuleConnect for any network. On-demand runs only while the VPN is switched on and the
+/// person opted in; switching off turns it off first, or iOS would start the tunnel again.
+public struct VPNOnDemandPlan: Equatable, Sendable {
+  public var enabled: Bool
+  /// The SSIDs it stays off on (Wi-Fi only); none: it connects on every network.
+  public var stayOffOn: [String]
+
+  public init(autoConnect: Bool, homeNetworks: [String], switchedOn: Bool) {
+    enabled = autoConnect && switchedOn
+    stayOffOn = homeNetworks
   }
 }
 
@@ -216,19 +245,29 @@ public final class VPNMoves: @unchecked Sendable {
   private let lock = NSLock()
   private var latestRun = 0
   private var last: Task<Void, Never>?
+  private var queued = 0
 
   public init() {}
 
   public var latest: Int { lock.withLock { latestRun } }
   public func isLatest(_ run: Int) -> Bool { lock.withLock { run == latestRun } }
+  /// Moves called and not yet ended.
+  public var waiting: Int { lock.withLock { queued } }
 
-  /// Begins a run now; `move` runs once every earlier move has ended.
-  public func inTurn(_ move: @escaping @Sendable (Int) async -> Void) async {
+  /// Begins a run now; `move` runs once every earlier move has ended. `overtaking: false` (a setting
+  /// that changes no switch, such as Connect automatically) waits its turn too, but leaves a
+  /// switch-on in flight the latest.
+  public func inTurn(overtaking: Bool = true, _ move: @escaping @Sendable (Int) async -> Void) async {
     let turn = lock.withLock { () -> Task<Void, Never> in
-      latestRun += 1
+      if overtaking { latestRun += 1 }
       let run = latestRun
       let before = last
-      let turn = Task { await before?.value; await move(run) }
+      queued += 1
+      let turn = Task { [self] in
+        await before?.value
+        await move(run)
+        lock.withLock { queued -= 1 }
+      }
       last = turn
       return turn
     }
@@ -260,6 +299,17 @@ public enum VPNStatusMachine {
     /// Nothing to show: disconnecting, or the "disconnected" iOS posts after a save, before the
     /// start it is about to make.
     case unchanged
+  }
+
+  /// What a tunnel that went down shows (LinkVPN), and whether Connect automatically stops.
+  public enum Down: Equatable, Sendable { case off, paused, failed }
+
+  /// `armed`: iOS's on-demand is on. `serverProblem`: the extension said why (unreachable, the key
+  /// refused, not forwarding). A broken server is shown and on-demand stops, or iOS would keep
+  /// retrying it behind a "Paused"; with no problem, an armed tunnel is only held down here.
+  public static func afterDrop(armed: Bool, serverProblem: Bool) -> (shown: Down, disarm: Bool) {
+    if serverProblem { return (.failed, armed) }
+    return (armed ? .paused : .off, false)
   }
 
   public static func phase(_ status: Status, _ attempt: inout Attempt) -> Phase {

@@ -396,12 +396,14 @@ profiles through the App Store Connect API (`RELEASING.md`, "the Driftwire VPN's
 profiles"). The Mac extension's App ID is `io.github.longtimeno-c.mediaviewer.DriftwireTunnel`, and
 the phone's follows the same pattern.
 
-**Where it stands (2026-11-19).** The iOS capability is **not** granted yet. The Mac's
-Developer ID profiles (v0.1.44) carry the macOS variants (`packet-tunnel-provider-systemextension`,
-keychain groups `23FQ4A4Q35.*`); they do nothing for iOS. The project now asks for the plain iOS
-entitlements listed below (`src.ios/App/Entitlements/`), so **a signed device build fails until the
-owner does steps 1–4**. Unsigned archives (`CODE_SIGNING_ALLOWED=NO`) and Simulator builds work.
-`provision.py --ios` is **not** built yet; the hand steps below are the way for now.
+**Where it stands (2026-11-24).** Steps 1–3 are done in the portal: both App IDs,
+`….mobile` and `….mobile.DriftwireTunnel`, have **Network Extensions** and **App Groups**, each
+with `group.io.github.longtimeno-c.mediaviewer.mobile`. Step 4's development half is done:
+`xcodebuild -scheme MediaViewer -destination generic/platform=iOS -allowProvisioningUpdates
+DEVELOPMENT_TEAM=23FQ4A4Q35 build` made both iOS Development profiles, and the signed device build
+of main (`ccd329ad`) succeeds. Not done yet: a run on a real iPhone (S1's device numbers), the App
+Store profiles (an archive), the signed Mac test, and step 6 below.
+`provision.py --ios` is **not** built; the hand steps below are the way for now.
 
 **What the owner does, in order:**
 
@@ -419,6 +421,11 @@ owner does steps 1–4**. Unsigned archives (`CODE_SIGNING_ALLOWED=NO`) and Simu
    manual signing, make a Development and an App Store profile for each App ID, with Network
    Extensions and the App Group, by hand.
 5. Nothing in App Store Connect: the extension ships inside the app's record (6833437185).
+6. **For "Use this Wi-Fi" (owner call 4), not yet:** Portal → Identifiers →
+   `io.github.longtimeno-c.mediaviewer.mobile` → tick **Access Wi-Fi Information**; Save; then
+   rebuild with `-allowProvisioningUpdates`. Connect automatically works without it: iOS matches
+   the typed home Wi-Fi names itself. Only reading the current network's name, to fill one in,
+   needs it.
 
 **From a terminal (later).** S2 was to extend `provision.py` with an iOS mode
 (`--ios`), using the same API key, the same token code and the same dry run:

@@ -24,6 +24,8 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   private var manager: NETunnelProviderManager?                        // under lock
   /// This switch-on, as the status machine follows it.
   private var attempt = VPNStatusMachine.Attempt()                     // under lock
+  /// What this app last told iOS about on-demand (shown as Paused while the tunnel is down).
+  private var armed = false                                            // under lock
   /// A new code, the switch and remove, one at a time; what an overtaken one learns isn't shown.
   private let moves = VPNMoves()
   /// A pasted code not yet switched on: kept here, written nowhere (opt-in).
@@ -35,6 +37,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   private let defaults: UserDefaults
   private let item: VPNItemStore
   private var observer: NSObjectProtocol?
+  private var configurationObserver: NSObjectProtocol?
 
   /// `bundle`: the app's, whose Info.plist names its team prefix (the shared Keychain group).
   public init(bundle: Bundle = .main) {
@@ -48,6 +51,12 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
             connection === self.lock.withLock({ self.manager?.connection }) else { return }
       self.statusChanged(connection)
     }
+    // iOS may change on-demand itself (Settings → VPN): what is armed is read again, in turn.
+    configurationObserver = NotificationCenter.default.addObserver(forName: .NEVPNConfigurationChange, object: nil, queue: nil) {
+      [weak self] _ in
+      guard let self else { return }
+      Task { await self.moves.inTurn(overtaking: false) { [weak self] _ in await self?.refreshArmed() } }
+    }
     let generation = 0
     Task.detached(priority: .utility) { [weak self, item, defaults] in
       guard item.exists() else { return }
@@ -59,15 +68,18 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
           $0.status = .off
           $0.host = state.host
           $0.consented = state.consented
+          $0.autoConnect = state.autoConnect
+          $0.homeNetworks = state.homeNetworks
         }
       }
-      // A configuration saved by an earlier run: its state now.
-      await self.loadManager(generation: generation)
+      // A configuration saved by an earlier run: its state now, in turn with the moves.
+      await self.moves.inTurn(overtaking: false) { [weak self] _ in await self?.loadManager(generation: generation) }
     }
   }
 
   deinit {
     if let observer { NotificationCenter.default.removeObserver(observer) }
+    if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
   }
 
   public var current: VPNSnapshot { lock.withLock { snapshot } }
@@ -123,6 +135,12 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     await inTurn { [self] run in await (on ? switchOn(run: run) : switchOff()) }
   }
 
+  public func setAutoConnect(_ on: Bool, homeNetworks: [String]) async {
+    let home = VPNHomeNetworks.cleaned(homeNetworks)
+    // Waits its turn but overtakes no switch-on: it changes no switch.
+    await moves.inTurn(overtaking: false) { [self] _ in await autoConnectMove(on, home) }
+  }
+
   public func remove() async {
     await inTurn { [self] in await removeMove() }
   }
@@ -150,6 +168,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
       pending = VPNTunnelItem(code: code, knock: knock)
       return manager
     }
+    await disarmOnDemand()  // or iOS brings the old code's tunnel back
     earlier?.connection.stopVPNTunnel()
     publish {
       $0.status = .off
@@ -162,6 +181,8 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
       attempt = VPNStatusMachine.Attempt()
       return manager
     }
+    // On-demand off first, or iOS would start the tunnel again by itself.
+    await disarmOnDemand()
     m?.connection.stopVPNTunnel()
     publish { if $0.isSetUp { $0.status = .off } }
   }
@@ -178,7 +199,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     // Switched on: only now is anything written (the item, the host and consent).
     if let toWrite {
       guard item.save(toWrite) else {
-        failed(run: run, .other("This phone couldn't keep the VPN code. Try again."))
+        await failed(run: run, .other("This phone couldn't keep the VPN code. Try again."))
         return
       }
       lock.withLock { pending = nil }
@@ -188,6 +209,8 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     var state = VPNSharedState.load(defaults)
     state.host = host
     state.consented = state.consented || consent
+    state.autoConnect = now.autoConnect
+    state.homeNetworks = now.homeNetworks
     state.save(defaults)
     let m: NETunnelProviderManager
     do {
@@ -195,19 +218,22 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     } catch {
       // Overtaken while iOS asked: the move waiting says what is true.
       if error is CancellationError { return }
-      failed(run: run, .notAllowed)  // the person declined iOS's alert
+      await failed(run: run, .notAllowed)  // the person declined iOS's alert
       return
     }
     guard isLatest(run) else { return }
     do {
       try m.connection.startVPNTunnel()
     } catch {
-      failed(run: run, .other("iOS couldn't start the VPN."))
+      await failed(run: run, .other("iOS couldn't start the VPN."))
     }
   }
 
-  private func failed(run: Int, _ problem: VPNProblem) {
-    lock.withLock { if moves.isLatest(run) { attempt = VPNStatusMachine.Attempt() } }
+  /// A switch-on that failed: shown, and nothing left armed (its rules may be saved already).
+  private func failed(run: Int, _ problem: VPNProblem) async {
+    guard moves.isLatest(run) else { return }  // the move waiting says what is true
+    lock.withLock { attempt = VPNStatusMachine.Attempt() }
+    await disarmOnDemand()
     publish(run: run) { $0.status = .failed(problem) }
   }
 
@@ -222,6 +248,8 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
       return manager
     }
     publish { $0 = VPNSnapshot(status: .notSetUp) }
+    // Disarmed first: should removing the configuration fail, iOS must not keep retrying it.
+    await disarmOnDemand()
     m?.connection.stopVPNTunnel()
     // Ours, whether or not this run loaded it.
     let all = (try? await NETunnelProviderManager.loadAllFromPreferences()) ?? []
@@ -244,6 +272,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     guard lock.withLock({ () -> Bool in
       guard self.generation == generation else { return false }
       manager = m
+      armed = m.isOnDemandEnabled
       return true
     }) else { return }
     statusChanged(m.connection)
@@ -253,6 +282,9 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
   private func savedManager(host: String, run: Int) async throws -> NETunnelProviderManager {
     let all = try await NETunnelProviderManager.loadAllFromPreferences()
     let m = all.first(where: Self.isOurs) ?? NETunnelProviderManager()
+    let now = current
+    let plan = VPNOnDemandPlan(autoConnect: now.autoConnect, homeNetworks: now.homeNetworks, switchedOn: true)
+    Self.apply(plan, to: m)
     let proto = (m.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
     proto.providerBundleIdentifier = VPNNames.extensionBundleID
     proto.serverAddress = host
@@ -261,6 +293,7 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     m.localizedDescription = VPNNames.localizedDescription
     m.isEnabled = true
     try await m.saveToPreferences()
+    lock.withLock { armed = plan.enabled }
     try await m.loadFromPreferences()  // as iOS requires before the first start
     // Only the latest run's: an overtaken one's would hide the live tunnel's status news.
     guard lock.withLock({ () -> Bool in
@@ -271,22 +304,93 @@ public final class LinkVPN: VPNService, @unchecked Sendable {
     return m
   }
 
+  /// Connect automatically: kept in the App Group once the code is (opt-in: not before the first
+  /// switch-on), and given to iOS at once while the VPN is on.
+  private func autoConnectMove(_ on: Bool, _ home: [String]) async {
+    guard current.isSetUp else { return }
+    let (m, saved) = lock.withLock { (manager, pending == nil) }
+    publish {
+      $0.autoConnect = on
+      $0.homeNetworks = home
+    }
+    if saved {
+      var state = VPNSharedState.load(defaults)
+      state.autoConnect = on
+      state.homeNetworks = home
+      state.save(defaults)
+    }
+    // Switched on (paused at home included): iOS takes it now, on the configuration as iOS has it.
+    guard m != nil, current.isOn, let fresh = await savedOurs() else { return }
+    let plan = VPNOnDemandPlan(autoConnect: on, homeNetworks: home, switchedOn: true)
+    Self.apply(plan, to: fresh)
+    guard (try? await fresh.saveToPreferences()) != nil else { return }
+    lock.withLock { armed = plan.enabled }
+    // Turned off while held down at home: nothing will bring it up now.
+    if !plan.enabled { publish { if $0.status == .paused { $0.status = .off } } }
+  }
+
+  /// What iOS has armed now (it may have changed it itself); Paused only while it is.
+  private func refreshArmed() async {
+    let now = await savedOurs()?.isOnDemandEnabled ?? false
+    lock.withLock { armed = now }
+    if !now { publish { if $0.status == .paused { $0.status = .off } } }
+  }
+
+  /// Our configuration as iOS has it now (not a copy that may be stale), if there is one.
+  private func savedOurs() async -> NETunnelProviderManager? {
+    (try? await NETunnelProviderManager.loadAllFromPreferences())?.first(where: Self.isOurs)
+  }
+
+  /// On-demand off on our saved configuration, before any stop, or iOS starts the tunnel again by
+  /// itself (also after a switch-on that was overtaken once it had saved its rules).
+  private func disarmOnDemand() async {
+    lock.withLock { armed = false }
+    guard let m = await savedOurs(), m.isOnDemandEnabled else { return }
+    m.isOnDemandEnabled = false
+    try? await m.saveToPreferences()
+  }
+
+  /// The plan as iOS's rules: stay off on the home Wi-Fi first, then connect on any network.
+  private static func apply(_ plan: VPNOnDemandPlan, to m: NETunnelProviderManager) {
+    var rules: [NEOnDemandRule] = []
+    if !plan.stayOffOn.isEmpty {
+      let home = NEOnDemandRuleDisconnect()
+      home.interfaceTypeMatch = .wiFi
+      home.ssidMatch = plan.stayOffOn
+      rules.append(home)
+    }
+    let anywhere = NEOnDemandRuleConnect()
+    anywhere.interfaceTypeMatch = .any
+    rules.append(anywhere)
+    m.onDemandRules = rules
+    m.isOnDemandEnabled = plan.enabled
+  }
+
   private func statusChanged(_ connection: NEVPNConnection) {
     guard let status = VPNStatusMachine.Status(rawValue: connection.status.rawValue) else { return }
-    let (phase, run) = lock.withLock { (VPNStatusMachine.phase(status, &attempt), moves.latest) }
+    let (phase, run, armed) = lock.withLock { (VPNStatusMachine.phase(status, &attempt), moves.latest, self.armed) }
+    // Down while Connect automatically is on: iOS holds it off here and brings it up elsewhere.
+    let down: VPNStatus = VPNStatusMachine.afterDrop(armed: armed, serverProblem: false).shown == .paused ? .paused : .off
     switch phase {
     case .connecting: publish(run: run) { if $0.isSetUp { $0.status = .connecting } }
     case .connected:
       let since = connection.connectedDate ?? Date()
       publish(run: run) { if $0.isSetUp { $0.status = .connected(since: since) } }
     case .reconnecting: publish(run: run) { if $0.isSetUp { $0.status = .reconnecting } }
-    case .off: publish(run: run) { if $0.isSetUp { $0.status = .off } }
+    case .off: publish(run: run) { if $0.isSetUp { $0.status = down } }
     case .unchanged: break
     case .failed:
       // It stopped while wanted on: why, in the extension's words (VPNServerProblem). The answer
       // comes later; by then a newer switch move may have said something else.
       connection.fetchLastDisconnectError { [weak self] error in
-        self?.publish(run: run) { if $0.isSetUp { $0.status = Self.status(after: error) } }
+        guard let self else { return }
+        let shown = Self.status(after: error)
+        let drop = VPNStatusMachine.afterDrop(armed: armed, serverProblem: shown != .off)
+        // A broken server: shown, and iOS stops retrying it (in turn, after any move waiting).
+        if drop.disarm {
+          Task { await self.moves.inTurn(overtaking: false) { [weak self] _ in await self?.disarmOnDemand() } }
+        }
+        self.publish(run: run) { if $0.isSetUp { $0.status = drop.shown == .failed ? shown : down } }
       }
     }
   }
