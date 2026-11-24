@@ -53,8 +53,9 @@ struct MainTabs: View {
   @Environment(AppModel.self) private var model
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Namespace private var viewerNamespace
-  /// What the slot above the tab bar shows: `model.transfer`, held still while the keyboard is up.
-  @State private var slot: TransferActivity?
+  /// What the slot above the tab bar shows, and whether there is a People tab: `model.transfer`
+  /// and the people, held still while the keyboard is up (KeyboardHold).
+  @State private var held = KeyboardHold.Held()
 
   var body: some View {
     @Bindable var model = model
@@ -65,7 +66,7 @@ struct MainTabs: View {
       Tab("Search", systemImage: "magnifyingglass", value: AppModel.Tab.search, role: .search) {
         SearchScreen().transferStrip()
       }
-      if !model.people.isEmpty || model.peopleFailed {
+      if held.showsPeople {
         Tab("People", systemImage: "person.2", value: AppModel.Tab.people) {
           PeopleScreen().transferStrip()
         }
@@ -76,8 +77,8 @@ struct MainTabs: View {
     }
     .tabViewStyle(.sidebarAdaptable)
     .modifier(TabBarShrinks(searching: model.tab == .search))
-    .modifier(TransferAccessory(activity: slot))
-    .background(TransferSlotFollower(slot: $slot))
+    .modifier(TransferAccessory(activity: held.transfer))
+    .background(KeyboardHold(held: $held))
     .environment(\.viewerNamespace, viewerNamespace)
     .fullScreenCover(item: $model.viewer) { request in
       ViewerScreen(request: request, namespace: viewerNamespace)
@@ -107,24 +108,36 @@ private extension View {
   func transferStrip() -> some View { modifier(TransferStrip()) }
 }
 
-/// Copies `model.transfer` into the slot, except while the keyboard is up. Then iOS shows the slot
-/// on top of the keyboard, and any change to it (a new count, the work starting or ending) puts
-/// the keyboard away and brings it back: with a backup running at launch the keyboard left Search
-/// as the person typed. The slot catches up when the keyboard goes. Even redrawing the tabs with
-/// the same slot does it, so the count and the keyboard's state live in this view, and the tabs
-/// change only when the slot does.
-private struct TransferSlotFollower: View {
+/// What the tabs show that changes on its own during launch, copied from the model except while
+/// the keyboard is up. Then iOS shows the slot above the tab bar on top of the keyboard, and any
+/// change to it (a backup's count, the work starting or ending), or any redraw of the tabs (the
+/// People tab arriving), puts the keyboard away and brings it back: with a backup running at
+/// launch the keyboard left Search as the person typed. What is held catches up when the keyboard
+/// goes. The model is read here, so its changes redraw this view and not the tabs; the tabs change
+/// only when what is held does.
+///
+/// The hold has no limit: while any keyboard is up, the line keeps its last count (a finished
+/// backup included) and a new People tab waits. Anything that updated the line would take the
+/// keyboard. UIKit sends keyboardWillHide when the app goes to the background, so the hold ends.
+private struct KeyboardHold: View {
+  struct Held: Equatable {
+    var transfer: TransferActivity?
+    var showsPeople = false
+  }
+
   @Environment(AppModel.self) private var model
-  @Binding var slot: TransferActivity?
+  @Binding var held: Held
   @State private var keyboardUp = false
+
+  private var current: Held { Held(transfer: model.transfer, showsPeople: !model.people.isEmpty || model.peopleFailed) }
 
   var body: some View {
     Color.clear
-      .onAppear { slot = model.transfer }
+      .onAppear { held = current }
       .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
       .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
-      .onChange(of: model.transfer) { _, new in if !keyboardUp { slot = new } }
-      .onChange(of: keyboardUp) { _, up in if !up { slot = model.transfer } }
+      .onChange(of: current) { _, new in if !keyboardUp, new != held { held = new } }
+      .onChange(of: keyboardUp) { _, up in if !up, current != held { held = current } }
   }
 }
 
@@ -144,7 +157,7 @@ private struct TransferAccessory: ViewModifier {
 }
 
 /// Earlier systems have no such slot, so the same line sits at the bottom of each tab. It reads the
-/// count itself, so the tabs (and the slot above, TransferSlotFollower) are not redrawn with it.
+/// count itself, so the tabs (and the slot above, KeyboardHold) are not redrawn with it.
 private struct TransferStrip: ViewModifier {
   @Environment(AppModel.self) private var model
 

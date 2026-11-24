@@ -57,6 +57,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryChange = "library.change"
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
+  /// A backup running, and 10 s in a new catalogue: the People tab appears.
+  case libraryBackupPeopleArrive = "library.backupPeopleArrive"
   case backupChoose = "backup.chooseFolder"
   case backupRunning = "backup.running"
   case backupDone = "backup.done"
@@ -217,6 +219,9 @@ final class FixtureRun {
     case .libraryEmpty: world.libraryEmpty = true
     case .libraryBackup: world.transferTicks = 3600
     case .libraryBackupEnds: world.transferTicks = 8
+    case .libraryBackupPeopleArrive:
+      world.transferTicks = 3600
+      world.hasPeople = false
     case .backupChoose: world.backupNoFolder = true
     case .backupRunning: world.backupState = .running
     case .backupDone: world.backupState = .done
@@ -290,6 +295,11 @@ final class FixtureRun {
       world.publish(FixtureWorld.connected(age: 60))
     case .libraryNewCatalogue:
       try? await Task.sleep(for: .seconds(4))
+      world.hasPeople = true
+      world.publish(FixtureWorld.connected(age: 60))
+    case .libraryBackupPeopleArrive:
+      // Late enough for a test to be typing in Search.
+      try? await Task.sleep(for: .seconds(10))
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
     case .backupChoose, .backupRunning, .backupDone, .backupPausedWiFi, .backupNotAllowed, .backupLimit, .backupFull,

@@ -36,12 +36,54 @@ final class SearchKeyboardTests: XCTestCase {
     XCTAssertEqual(field.value as? String, "bo")
 
     // Dragging the page still puts the keyboard away, and then the line catches up.
-    let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-    top.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+    dismissKeyboard(app)
     let caughtUp = NSPredicate { _, _ in line.label != shownWhileTyping }
     XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: caughtUp, object: nil)], timeout: 10),
                    .completed, "The backup line did not catch up once the keyboard went")
     XCTAssertGreaterThanOrEqual(Self.number("hides", in: stats.label), 1, "Dragging did not put the keyboard away")
+  }
+
+  /// A new catalogue 10 s after launch (fixture state) brings the People tab: adding a tab redrew
+  /// the tabs under the keyboard and took it. The tab now waits for the keyboard to go.
+  func testThePeopleTabArrivingDoesNotTakeTheKeyboard() throws {
+    let (app, field, stats) = try typingInSearch("library.backupPeopleArrive")
+    XCTAssertFalse(app.tabBars.buttons["People"].exists, "The People tab was there before the catalogue")
+    try waitPastTheCatalogue(stats)
+    XCTAssertEqual(Self.number("hides", in: stats.label), 0, "The keyboard went away as the People tab arrived: \(stats.label)")
+    XCTAssertEqual(field.value as? String, "bo")
+    dismissKeyboard(app)
+    XCTAssertTrue(app.tabBars.buttons["People"].waitForExistence(timeout: 10), "The People tab never came once the keyboard went")
+  }
+
+  private func typingInSearch(_ state: String) throws -> (XCUIApplication, XCUIElement, XCUIElement) {
+    let app = XCUIApplication()
+    app.launchArguments = ["-fixtureState", state, "-fixtureChrome", "NO", "-fixtureKeyboardMeter", "YES"]
+    app.launch()
+    let searchTab = app.tabBars.buttons["Search"].firstMatch
+    XCTAssertTrue(searchTab.waitForExistence(timeout: 30))
+    searchTab.tap()
+    let field = app.searchFields.firstMatch
+    XCTAssertTrue(field.waitForExistence(timeout: 10))
+    field.tap()
+    guard app.keyboards.firstMatch.waitForExistence(timeout: 5) else {
+      throw XCTSkip("No software keyboard: turn off Connect Hardware Keyboard in the Simulator")
+    }
+    field.typeText("bo")
+    return (app, field, app.staticTexts["keyboard-stats"].firstMatch)
+  }
+
+  /// The fixture backup counts once a second from launch and the catalogue comes 10 s after it,
+  /// so 12 counts with the keyboard up (it was up well before 10 s) means the catalogue came
+  /// while it was.
+  private func waitPastTheCatalogue(_ stats: XCUIElement) throws {
+    let past = NSPredicate { _, _ in Self.number("ticksWhileUp", in: stats.label) >= 12 }
+    let waited = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: past, object: nil)], timeout: 25)
+    XCTAssertEqual(waited, .completed, "The keyboard was not up long enough: \(stats.label)")
+  }
+
+  private func dismissKeyboard(_ app: XCUIApplication) {
+    let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+    top.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
   }
 
   private static func number(_ name: String, in label: String) -> Int {
