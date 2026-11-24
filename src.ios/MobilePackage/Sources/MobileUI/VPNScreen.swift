@@ -107,7 +107,6 @@ struct VPNScreen: View {
       } notNow: {
         askingConsent = false
       }
-      .presentationDetents([.medium, .large])
     }
   }
 
@@ -299,6 +298,9 @@ private struct VPNConsentSheet: View {
   let message: String
   let turnOn: () -> Void
   let notNow: () -> Void
+  /// The words and buttons as laid out: the sheet is that tall and no taller. Taller than the
+  /// screen (large type), iOS stops at full height and the page scrolls.
+  @State private var height: CGFloat = 0
 
   var body: some View {
     ScrollView {
@@ -325,8 +327,10 @@ private struct VPNConsentSheet: View {
       .frame(maxWidth: Theme.readableWidth, alignment: .leading)
       .padding(24)
       .frame(maxWidth: .infinity)
+      .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
     }
     .scrollBounceBehavior(.basedOnSize)
     .background(Theme.ground)
+    .presentationDetents(height > 0 ? [.height(height)] : [.medium])
   }
 }
