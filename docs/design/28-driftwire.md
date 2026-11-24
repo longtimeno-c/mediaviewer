@@ -1042,8 +1042,9 @@ The protocol is `src/wire` (`mv_wire`, `cmake/wire.cmake`), linked by the app's 
 
 ## Not built
 
-- **The Tunnel**: the Mac VPN's Network Extension entitlement; the Windows VPN's Wintun licence and
-  elevation (owner's call); a Linux interface; the system proxy on Linux and beyond Windows' LAN
+- **The Tunnel**: activating the Mac VPN on a real Mac (v0.1.44 carries the extension with its
+  entitlement); the Windows VPN's service (Wintun allowed under `LICENSE-WINTUN.md`, administrator
+  rights from a service the add-on installs: [12](12-decision-log.md), 2026-11-19); a Linux interface; the system proxy on Linux and beyond Windows' LAN
   entry; codes over the relay's TLS port; ICMP and fragments.
 - A prompt before an own computer relays (it reveals R's address to the code's maker).
 - Bonjour discovery for transfers; IPv6 on the LAN; Bluetooth on Linux.
