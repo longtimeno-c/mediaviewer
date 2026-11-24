@@ -250,6 +250,10 @@ std::string refusal_of(const disk& d, const guard& g) {
   if (d.in_set) return "it is already part of a combined set or a storage pool";
   if (d.read_only) return "it is read-only";
   if (!d.online) return "Windows has it offline";
+  if (d.copy_drive) {
+    return "it holds MediaViewer's copy of another drive, which may be the only other copy: stop it first with "
+           "`driftwire host drives copy-stop`";
+  }
   for (const auto& v : d.volumes) {
     if (v.mount.empty()) {
       // What is on it cannot be looked at: a shared folder's drive unplugged from its

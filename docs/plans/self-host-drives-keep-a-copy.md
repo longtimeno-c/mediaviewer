@@ -3,11 +3,27 @@
 Written 2026-11-15 from the code at `49147a79`. It builds on [self-host-drives.md](self-host-drives.md)
 (`driftwire host drives`) and the host's keepers (`cli/host_keepers.h`).
 
-**Status (2026-11-15):** slice 1 is built: the pure planner and the bin's rules, in
-`cli/drive_copy.h` and tested by `mv_tests "[drive-copy]"`. Nothing copies yet. The card row's
-words move to slice 3, where they are drawn. A torn `bin.json` is refused by its parser (the
-caller keeps the bin it had); writing it to a temporary file and renaming it is the copier's job,
-in slice 2.
+**Status (2026-11-23):** slice 1 (the pure planner and the bin's rules, `cli/drive_copy.h`,
+`"[drive-copy]"`) and most of slices 2 and 3 are built:
+
+- The copier, `cli/drive_copier.h` (`"[drive-copier]"`): `.mvpart` then rename, the source's
+  time kept, replaced and deleted files moved to the bin, expiry, trimming for room, the marker.
+  An empty source beside a non-empty copy is treated as a missing drive, and a folder that fails
+  to list moves nothing to the bin as deleted.
+- The copy keeper and `copies.json`, `cli/host_copy.h`: a fourth host keeper that runs a pass on
+  each copy every 15 minutes (every 2 while something is held back or failed), and at once when
+  `copies.json` changes. It writes `copies-state.json`, which `host drives list --json` reads.
+- `host drives copy FROM TO` and `copy-stop FROM` (`"[host-drives]"`). Nothing is erased, so
+  no name is typed. A drive with a marker is refused by `refusal_of()`.
+- The card's row (`phone/screens.cpp`, `"[phone-addon]"`): with two drives picked, "Keep a copy"
+  comes first and is marked Recommended, with Copy from, whether it fits, and Start copying.
+  Each copy kept gets a status row with Stop keeping a copy.
+
+Not built yet: changes are found by the 15-minute compare, not `io::tree_watch`; there is no
+background I/O priority; the monthly SHA-256 check; the Recycle Bin list, Restore and Empty;
+the first copy's time estimate; erasing an unformatted or FAT32 copy drive (the copy refuses
+nothing there yet, and a FAT32 drive can't hold a file over 4 GB); `use-copy` (slice 4); and the
+phone's bin (slice 5).
 
 ## The problem
 
