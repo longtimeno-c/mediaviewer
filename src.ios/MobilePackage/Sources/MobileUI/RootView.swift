@@ -53,28 +53,31 @@ struct MainTabs: View {
   @Environment(AppModel.self) private var model
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Namespace private var viewerNamespace
+  /// What the slot above the tab bar shows: `model.transfer`, held still while the keyboard is up.
+  @State private var slot: TransferActivity?
 
   var body: some View {
     @Bindable var model = model
     TabView(selection: $model.tab) {
       Tab("Library", systemImage: "photo.on.rectangle.angled", value: AppModel.Tab.library) {
-        LibraryScreen().transferStrip(model)
+        LibraryScreen().transferStrip()
       }
       Tab("Search", systemImage: "magnifyingglass", value: AppModel.Tab.search, role: .search) {
-        SearchScreen().transferStrip(model)
+        SearchScreen().transferStrip()
       }
       if !model.people.isEmpty || model.peopleFailed {
         Tab("People", systemImage: "person.2", value: AppModel.Tab.people) {
-          PeopleScreen().transferStrip(model)
+          PeopleScreen().transferStrip()
         }
       }
       Tab("Settings", systemImage: "gearshape", value: AppModel.Tab.connection) {
-        SettingsScreen().transferStrip(model)
+        SettingsScreen().transferStrip()
       }
     }
     .tabViewStyle(.sidebarAdaptable)
     .modifier(TabBarShrinks(searching: model.tab == .search))
-    .transferAccessory(model)
+    .modifier(TransferAccessory(activity: slot))
+    .background(TransferSlotFollower(slot: $slot))
     .environment(\.viewerNamespace, viewerNamespace)
     .fullScreenCover(item: $model.viewer) { request in
       ViewerScreen(request: request, namespace: viewerNamespace)
@@ -101,12 +104,27 @@ private struct TabBarShrinks: ViewModifier {
 
 // Phone backup (release 1.1, docs/plans/mobile.md §10b): its line above the tab bar while it runs.
 private extension View {
-  func transferStrip(_ model: AppModel) -> some View {
-    modifier(TransferStrip(activity: model.transfer))
-  }
+  func transferStrip() -> some View { modifier(TransferStrip()) }
+}
 
-  func transferAccessory(_ model: AppModel) -> some View {
-    modifier(TransferAccessory(activity: model.transfer))
+/// Copies `model.transfer` into the slot, except while the keyboard is up. Then iOS shows the slot
+/// on top of the keyboard, and any change to it (a new count, the work starting or ending) puts
+/// the keyboard away and brings it back: with a backup running at launch the keyboard left Search
+/// as the person typed. The slot catches up when the keyboard goes. Even redrawing the tabs with
+/// the same slot does it, so the count and the keyboard's state live in this view, and the tabs
+/// change only when the slot does.
+private struct TransferSlotFollower: View {
+  @Environment(AppModel.self) private var model
+  @Binding var slot: TransferActivity?
+  @State private var keyboardUp = false
+
+  var body: some View {
+    Color.clear
+      .onAppear { slot = model.transfer }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
+      .onChange(of: model.transfer) { _, new in if !keyboardUp { slot = new } }
+      .onChange(of: keyboardUp) { _, up in if !up { slot = model.transfer } }
   }
 }
 
@@ -125,16 +143,17 @@ private struct TransferAccessory: ViewModifier {
   }
 }
 
-/// Earlier systems have no such slot, so the same line sits at the bottom of each tab.
+/// Earlier systems have no such slot, so the same line sits at the bottom of each tab. It reads the
+/// count itself, so the tabs (and the slot above, TransferSlotFollower) are not redrawn with it.
 private struct TransferStrip: ViewModifier {
-  let activity: TransferActivity?
+  @Environment(AppModel.self) private var model
 
   func body(content: Content) -> some View {
     if #available(iOS 26.1, *) {
       content
     } else {
       content.safeAreaInset(edge: .bottom, spacing: 0) {
-        if let activity {
+        if let activity = model.transfer {
           TransferLine(activity: activity)
             .padding(Theme.inset)
             .background(Theme.surface)

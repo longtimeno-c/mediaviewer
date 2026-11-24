@@ -694,6 +694,7 @@ final class FixtureBackup: BackupService, @unchecked Sendable {
         try? await Task.sleep(for: .seconds(1))
         if Task.isCancelled { return }
         change { $0.backedUp = min($0.total, $0.backedUp + 1); $0.currentName = "IMG_\(4000 + $0.backedUp).HEIC" }
+        await MainActor.run { FixtureKeyboardMeter.noteBackupTick() }
       }
       change { $0.state = .done; $0.currentName = nil; $0.backedUp = $0.total }
     }

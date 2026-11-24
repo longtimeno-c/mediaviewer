@@ -421,7 +421,10 @@ private struct WindowAnchor: UIViewRepresentable {
 
   func updateUIView(_ view: UIView, context: Context) {
     DispatchQueue.main.async {
-      if let scene = view.window?.windowScene { FixtureFrameMeter.startIfAsked(in: scene) }
+      if let scene = view.window?.windowScene {
+        FixtureFrameMeter.startIfAsked(in: scene)
+        FixtureKeyboardMeter.startIfAsked(in: scene)
+      }
     }
     guard showsButton, context.coordinator.overlay == nil else { return }
     DispatchQueue.main.async {
