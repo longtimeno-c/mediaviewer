@@ -6982,6 +6982,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   if (!visible) [self clearGalleryRange];  // #413: the range belongs to the grid
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  [self syncTreeBottom];
   [self applyPageSidebarLayout];  // issue #429: not under the grid
   [self syncToolBar];  // S3: the tool bar is not over the grid
   [self textSync];
@@ -7013,6 +7014,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [self stripHintToggled];
   [self setFilmstripVisible:!_filmstripVisible];
 }
+// The folder pane stops above the filmstrip, except while the gallery is up: the grid covers
+// the strip then, and a pane that stopped short would leave the strip showing beneath it.
+- (void)syncTreeBottom {
+  const BOOL strip = !self.filmstripHost.hidden && !_galleryVisible;
+  self.treeBottom.constant = -(strip ? kFilmstripHeightPoints : 0.0);
+}
 - (void)setFilmstripVisible:(BOOL)visible {
   _filmstripVisible = visible;
   [self applyFilmstripLayout];
@@ -7028,7 +7035,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   self.transportBottom.constant = -(shown ? kFilmstripHeightPoints + 10.0 : 10.0);
   self.toolBarBottom.constant = -(shown ? kFilmstripHeightPoints + 8.0 : 8.0);  // S3
   const CGFloat pane_bottom = -(shown ? kFilmstripHeightPoints : 0.0);
-  self.treeBottom.constant = pane_bottom;
+  [self syncTreeBottom];
   self.resumeBottom.constant = pane_bottom - 8.0;
   [self syncColumnBottom];
   [self layoutHintNotice];
