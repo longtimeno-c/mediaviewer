@@ -81,6 +81,13 @@ class target {
   // answer: the service names only those, so with none of them a backup folder, folders() is
   // empty though the server may have one.
   [[nodiscard]] virtual bool limited_to_some_folders() const { return false; }
+  // A backed-up file into the folder's hidden trash (a photo deleted from Photos): true when
+  // moved, false when it was not there. status::unsupported_format: a service that cannot.
+  [[nodiscard]] virtual result<bool> trash(const std::string& root, const std::string& rel) {
+    (void)root;
+    (void)rel;
+    return err(status::unsupported_format);
+  }
 };
 
 [[nodiscard]] std::unique_ptr<target> link_target(link_session& link);
@@ -196,6 +203,7 @@ struct status_report {
   std::uint64_t files_done = 0;   // files in the ledger and in the folder
   std::uint64_t copied = 0;       // files copied this run
   std::uint64_t bytes = 0;        // sent this run
+  std::uint64_t trashed = 0;      // files moved into the folder's trash this run (photos deleted from Photos)
   std::string current;            // the file being copied (this phone's own screen only)
   double current_fraction = 0;
   std::vector<failure> failures;  // this run's
@@ -214,6 +222,12 @@ class engine {
   engine(options o, target& t, source& s, ledger& l);
   // Newest first (§10b: recent photos are safe soonest).
   void set_items(std::vector<item> items);
+  // Keys of photos Photos says were deleted (never merely missing from the items: hidden photos
+  // and a burst's other frames are left out of those). A run moves their files in this folder
+  // into its trash, never one whose key is in the items again; deleted_done() then names the keys
+  // handled. One it could not finish (the folder offline, an older service, the link) stays out.
+  void set_deleted(std::vector<std::string> keys);
+  [[nodiscard]] std::vector<std::string> deleted_done() const;
   // One run, to the end or the first state that stops it. `report` is called
   // from this thread as things change.
   state run(const cancel_flag* cancel, const std::function<void(const status_report&)>& report);
@@ -225,6 +239,7 @@ class engine {
   [[nodiscard]] bool restore_if_empty();
   [[nodiscard]] result<present_set> check_folder();
   [[nodiscard]] bool item_done(const item& it) const;
+  void trash_deleted(const cancel_flag* cancel);
   void copy_ledger();
 
   options o_;
@@ -234,6 +249,8 @@ class engine {
   std::vector<item> items_;
   mutable std::mutex m_;
   std::vector<std::string> remaining_;  // under m_
+  std::vector<std::string> deleted_;
+  std::vector<std::string> deleted_done_;  // under m_
   status_report st_;
   bool restored_ = false;  // rows came from the NAS's copy this run: send ours back
 };

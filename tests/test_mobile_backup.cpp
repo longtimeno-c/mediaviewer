@@ -499,6 +499,121 @@ TEST_CASE("backup: the folders offered follow the server while the phone is conn
   }
 }
 
+namespace {
+
+// One run with Photos' deletions: the last report and the keys it finished with.
+std::pair<bk::status_report, std::vector<std::string>> run_deleting(bk::target& t, camera_roll& roll, std::vector<bk::item> items,
+                                                                     std::vector<std::string> deleted, bk::ledger& l,
+                                                                     const fs::path& scratch, const std::string& root) {
+  bk::engine e(options_for(scratch, root), t, roll, l);
+  e.set_items(std::move(items));
+  e.set_deleted(std::move(deleted));
+  mob::cancel_flag cancel;
+  bk::status_report last;
+  (void)e.run(&cancel, [&](const bk::status_report& s) { last = s; });
+  return {last, e.deleted_done()};
+}
+
+std::size_t trashed_under(const fs::path& root) {
+  std::size_t n = 0;
+  const fs::path trash = root / serve::kTrashFolder;
+  if (!fs::exists(trash)) return 0;
+  for (auto it = fs::recursive_directory_iterator(trash); it != fs::recursive_directory_iterator(); ++it) {
+    if (it->is_regular_file()) ++n;
+  }
+  return n;
+}
+
+// The real target, but the folder's trash out of reach (offline, an older service).
+struct no_trash final : bk::target {
+  bk::target& t;
+  explicit no_trash(bk::target& real) : t(real) {}
+  mv::result<std::vector<bk::folder>> folders() override { return t.folders(); }
+  mv::result<serve::stat_info> space(const std::string& r) override { return t.space(r); }
+  mv::result<std::vector<serve::list_entry>> list(const std::string& r, const std::string& rel) override { return t.list(r, rel); }
+  mv::result<serve::client::write_done> write(const std::string& r, const std::string& rel, std::uint64_t size,
+                                              const std::string& hash, std::uint64_t at, const serve::client::read_fn& read,
+                                              const std::function<void(std::uint64_t)>& progress, const mob::cancel_flag* cancel,
+                                              serve::client::write_refused* why, bool meta) override {
+    return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta);
+  }
+  mv::result<std::vector<std::string>> ledger_ids(const std::string& r) override { return t.ledger_ids(r); }
+  mv::result<std::string> read_ledger(const std::string& r, const std::string& id) override { return t.read_ledger(r, id); }
+  std::string device_id() const override { return t.device_id(); }
+  mv::result<bool> trash(const std::string&, const std::string&) override { return mv::err(mv::status::not_found); }
+};
+
+void check_deletions(bk::target& target, const fs::path& folder, const std::string& root) {
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  fs::create_directories(scratch);
+  camera_roll roll(phone.root / "roll", scratch, 6, 11);
+  auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+  REQUIRE(ledger);
+  REQUIRE(run_deleting(target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+  const std::size_t all = files_under(folder).size();
+  REQUIRE(all == roll.resource_count());
+
+  const bk::item gone = roll.items[1];    // deleted in Photos: a Live Photo, two files
+  const bk::item hidden = roll.items[2];  // hidden in Photos: left out of the items, not deleted
+  const bk::item back = roll.items[4];    // deleted, then put back from Recently Deleted
+  std::vector<bk::item> now;
+  for (const auto& it : roll.items) {
+    if (it.key != gone.key && it.key != hidden.key) now.push_back(it);
+  }
+  const std::vector<std::string> deleted{gone.key, back.key, "cloud-never-backed-up"};
+
+  // The trash out of reach: nothing moves, nothing is forgotten, the key waits.
+  no_trash blocked(target);
+  auto [stuck, stuck_done] = run_deleting(blocked, roll, now, deleted, **ledger, scratch, root);
+  CHECK(stuck.trashed == 0);
+  CHECK(std::find(stuck_done.begin(), stuck_done.end(), gone.key) == stuck_done.end());
+  CHECK((*ledger)->find(root, gone.key, gone.resources[0].kind, gone.resources[0].name));
+
+  auto [report, done] = run_deleting(target, roll, now, deleted, **ledger, scratch, root);
+  CHECK(report.now == bk::state::done);
+  CHECK(report.trashed == gone.resources.size());
+  std::sort(done.begin(), done.end());
+  std::vector<std::string> want = deleted;
+  std::sort(want.begin(), want.end());
+  CHECK(done == want);
+  // Moved, never deleted: in the trash, out of the folder and the ledger; the rest as they were.
+  CHECK(trashed_under(folder) == gone.resources.size());
+  CHECK(files_under(folder).size() == all);  // (files_under counts the trash too)
+  for (const auto& r : gone.resources) CHECK_FALSE((*ledger)->find(root, gone.key, r.kind, r.name));
+  for (const auto& r : hidden.resources) CHECK((*ledger)->find(root, hidden.key, r.kind, r.name));
+  for (const auto& r : back.resources) CHECK((*ledger)->find(root, back.key, r.kind, r.name));
+
+  // Asked again (the app had not heard it was done): nothing more moves.
+  auto [again, again_done] = run_deleting(target, roll, now, deleted, **ledger, scratch, root);
+  CHECK(again.trashed == 0);
+  CHECK(again_done.size() == deleted.size());
+  CHECK(trashed_under(folder) == gone.resources.size());
+}
+
+}  // namespace
+
+TEST_CASE("backup: a photo deleted from Photos goes into the folder's trash, and nothing else does", "[mobile-link]") {
+  SECTION("on the server") {
+    nas n;
+    n.start();
+    const key32 device = random_key();
+    n.pair(device);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    check_deletions(*target, n.backup, kBackupRoot);
+  }
+  SECTION("in the sample library's folder on the phone") {
+    temp_root phone;
+    const fs::path nas = phone.root / "sample-nas";
+    auto target = bk::local_target(nas.string(), "0123456789abcdef", bk::kSampleLimit,
+                                   [](const std::string&) { return std::uint64_t{1} << 40; });
+    check_deletions(*target, nas, bk::kSampleFolderId);
+  }
+}
+
 TEST_CASE("backup: the sample library's folder on the phone runs the same backup and sends nothing", "[mobile-link]") {
   temp_root phone;
   const fs::path scratch = phone.root / "scratch";

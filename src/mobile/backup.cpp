@@ -113,6 +113,14 @@ class over_link final : public target {
     return out;
   }
   bool limited_to_some_folders() const override { return limited_; }
+  result<bool> trash(const std::string& root, const std::string& rel) override {
+    serve::client::change_refused why;
+    auto r = l_.remove(root, rel, &why);
+    if (r) return true;
+    // Gone already is done; an offline folder is not.
+    if (r.error() == status::not_found && why.why == serve::client::change_why::not_found) return false;
+    return err(r.error());
+  }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
     return l_.list_whole(root, rel);
@@ -196,6 +204,31 @@ class on_phone final : public target {
       out.push_back({c.name, c.size, c.mtime_unix, c.is_directory});
     }
     return out;
+  }
+
+  // The service's delete (serve.cpp trash_entry), on this phone: into the folder's hidden trash,
+  // `<kTrashFolder>/<YYYY-MM-DD>/<rel>`, by a rename; a taken name gets a number.
+  result<bool> trash(const std::string& root, const std::string& rel) override {
+    if (root != root_.id || !driftwire::safe_relative(rel)) return err(status::permission_denied);
+    const std::string from = io::join_path(root_.path, io::native_relative(rel));
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(fs_path(from), ec)) return false;
+    using namespace std::chrono;
+    const year_month_day d{floor<days>(system_clock::now())};
+    char day[16];
+    std::snprintf(day, sizeof day, "%04d-%02u-%02u", static_cast<int>(d.year()), static_cast<unsigned>(d.month()),
+                  static_cast<unsigned>(d.day()));
+    const auto slash = rel.rfind('/');
+    const std::string name = slash == std::string::npos ? rel : rel.substr(slash + 1);
+    const std::string in_trash = std::string(serve::kTrashFolder) + "/" + day + (slash == std::string::npos ? "" : "/" + rel.substr(0, slash));
+    auto dir = io::make_directories_beneath(root_.path, in_trash);
+    if (!dir) return err(dir.error());
+    for (int n = 1; n <= serve::backup::kMaxNumbered; ++n) {
+      auto renamed = io::rename_no_replace(from, io::join_path(*dir, serve::backup::numbered(name, n)));
+      if (!renamed) return err(renamed.error());
+      if (*renamed == io::rename_outcome::renamed) return true;
+    }
+    return err(status::busy);
   }
 
   // The service's write, step for step (serve.cpp open_write and commit), on this phone.
@@ -562,6 +595,46 @@ engine::engine(options o, target& t, source& s, ledger& l) : o_(std::move(o)), t
 
 void engine::set_items(std::vector<item> items) { items_ = std::move(items); }
 
+void engine::set_deleted(std::vector<std::string> keys) { deleted_ = std::move(keys); }
+
+std::vector<std::string> engine::deleted_done() const {
+  std::lock_guard lock(m_);
+  return deleted_done_;
+}
+
+void engine::trash_deleted(const cancel_flag* cancel) {
+  if (deleted_.empty()) return;
+  std::set<std::string> in_photos;
+  for (const auto& it : items_) in_photos.insert(it.key);
+  std::map<std::string, std::vector<row>> rows;
+  const std::set<std::string> wanted(deleted_.begin(), deleted_.end());
+  for (auto& r : l_.all(o_.root)) {
+    if (wanted.count(r.key)) rows[r.key].push_back(std::move(r));
+  }
+  bool changed = false;
+  for (const auto& key : deleted_) {
+    if (cancel && cancel->stopped()) break;
+    bool finished = true;
+    // In Photos again (restored from Recently Deleted): its copy stays.
+    if (!in_photos.count(key)) {
+      for (const auto& r : rows[key]) {
+        auto moved = t_.trash(o_.root, r.rel);
+        if (!moved) {
+          finished = false;
+          break;
+        }
+        (void)l_.remove(r.root, r.key, r.kind, r.name);
+        changed = true;
+        if (*moved) ++st_.trashed;
+      }
+    }
+    if (!finished) break;  // offline, an older service, the link: all of it next time
+    std::lock_guard lock(m_);
+    deleted_done_.push_back(key);
+  }
+  if (changed) copy_ledger();
+}
+
 std::vector<std::string> engine::remaining() const {
   std::lock_guard lock(m_);
   return remaining_;
@@ -678,6 +751,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
   if (auto checked = check_folder(); !checked) {
     return stop_with(checked.error() == status::permission_denied ? state::not_allowed : state::unreachable);
   }
+  trash_deleted(cancel);
 
   {
     std::lock_guard lock(m_);

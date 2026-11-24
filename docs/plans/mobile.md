@@ -682,7 +682,7 @@ point is simply not done, and the next run does it again.
 | Leaving the app | Stops after the current file. Picks up where it left off next time. |
 | Same name, different photo | ` (2)`, never overwrites |
 | Same name and size already there | Hash the NAS file. If identical, record it and skip. This only helps in the same folder: the desktop's Photos backup does not do the same check and uses a different default layout, so running both into one tree can still make duplicates. |
-| Deleting | Never deletes from Photos. Never mirrors a deletion to the NAS. |
+| Deleting | Never deletes from Photos. A photo deleted on the phone (Photos' persistent change history, full access only; never a photo merely missing from the listing, such as a hidden one) has its backed-up files moved into the backup folder's hidden trash on the next run, which only the owner empties (owner's call 2026-11-24; before, the NAS kept every copy). One put back from Recently Deleted is left alone. |
 | Storage limit | The service refuses writes past the limit set for the backup folder, and the screen says so |
 | Foreground priority | Viewing and search come first (§8.2): backup uses its own lane and pauses while a photo is loading |
 
