@@ -289,6 +289,20 @@ TEST_CASE("phone relay: a VPN host's code carries its relay line, and nothing el
   CHECK(serve::parse_relay_connect_code("MediaViewer://Relay#" + line) == line);
   CHECK(serve::parse_relay_connect_code(line) == line);
   CHECK(serve::parse_relay_connect_code("mediaviewer://relay#[::1]:9#R36ZJ1CHD5PB6TFD") == "[::1]:9#R36ZJ1CHD5PB6TFD");
+  // The web-site look's code (docs/plans/vpn-stealth.md): the same line, and it says so.
+  bool tls = true;
+  CHECK(serve::parse_relay_connect_code(code, &tls) == line);
+  CHECK_FALSE(tls);
+  CHECK(serve::parse_relay_connect_code(line, &tls) == line);
+  CHECK_FALSE(tls);  // a bare line is the plain relay
+  const std::string look = serve::relay_connect_code("home.duckdns.org:443#R36ZJ1CHD5PB6TFD50J3T2C8C6", true);
+  CHECK(look == "mediaviewer://relay-tls#home.duckdns.org:443#R36ZJ1CHD5PB6TFD50J3T2C8C6");
+  CHECK(serve::parse_relay_connect_code(" " + look + "\n", &tls) == "home.duckdns.org:443#R36ZJ1CHD5PB6TFD50J3T2C8C6");
+  CHECK(tls);
+  CHECK(serve::parse_relay_connect_code("MEDIAVIEWER://RELAY-TLS#home.duckdns.org:443#R36ZJ1CHD5PB6TFD50J3", &tls));
+  CHECK(tls);
+  CHECK_FALSE(serve::parse_relay_connect_code("mediaviewer://relay-tls#home.duckdns.org#R36ZJ1CHD5PB6TFD50J3", &tls));
+  CHECK_FALSE(serve::parse_relay_connect_code("mediaviewer://relay-tls#", &tls));
   for (const char* bad : {"", "mediaviewer://relay#", "home.duckdns.org:47614", "home.duckdns.org#R36ZJ1CHD5PB6TFD50J3",
                           "home.duckdns.org:47614#short", "home.duckdns.org:47614#R36ZJ1CHD5PB6 TFD50J3",
                           "home.duckdns.org:47614#R36ZJ1CHD5PB6TFD50J3#x", "home duckdns.org:47614#R36ZJ1CHD5PB6TFD50J3",

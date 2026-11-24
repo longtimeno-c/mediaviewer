@@ -140,14 +140,18 @@ TEST_CASE("phone self host: the VPN is read as `host vpn` writes it, and its rel
   CHECK(v.on);
   CHECK(v.tls_port == 443);
   hs.tls_port = 0;
+  CHECK(sh::parse_vpn(cli::host_settings_json(hs)).tls_port == cli::look_port(hs));  // on by default
+  CHECK(cli::look_port(hs) == 47615);
+  hs.look = false;
   CHECK(sh::parse_vpn(cli::host_settings_json(hs)).tls_port == 0);
   CHECK_FALSE(sh::parse_vpn("not json").on);
   // state.json: what the running relay does, and the router's outside port for it.
-  const auto st = sh::parse_state(R"({"relay_port":47614,"vpn":true,"tls_failed":true,"relay_outside_port":47615})");
+  const auto st = sh::parse_state(R"({"relay_port":47614,"vpn":true,"tls_failed":true,"relay_outside_port":47615,"tls_outside_port":443})");
   REQUIRE(st);
   CHECK(st->vpn);
   CHECK(st->tls_failed);
   CHECK(st->relay_outside_port == 47615);
+  CHECK(st->tls_outside_port == 443);
 
   // `host vpn on`'s own words (host_setup.cpp host_vpn): the indented line.
   const std::string printed =
@@ -165,6 +169,10 @@ TEST_CASE("phone self host: the VPN is read as `host vpn` writes it, and its rel
   CHECK(sh::relay_line_in("  home.duckdns.org:port#key\n").empty());
   CHECK(sh::relay_line_in("  home:1#\n").empty());                  // no key
   CHECK(sh::relay_line_in("").empty());
+  // The web-site look's code, as `vpn on` prints it then.
+  CHECK(sh::relay_line_in("Paste it:\n\n  mediaviewer://relay-tls#home.duckdns.org:443#k3yk3yk3yk3yk3yk3y\n\n") ==
+        "mediaviewer://relay-tls#home.duckdns.org:443#k3yk3yk3yk3yk3yk3y");
+  CHECK(sh::relay_line_in("  mediaviewer://relay-tls#home.duckdns.org#k3yk3yk3yk3yk3yk3y\n").empty());
 }
 
 TEST_CASE("phone self host: a name and a token are read by DuckDNS's rules", "[phone-self-host]") {

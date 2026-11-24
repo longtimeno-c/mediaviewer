@@ -14,6 +14,8 @@ import NetworkExtension
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var link: NWConnection?
+  // The link's events, one at a time.
+  private let queue = DispatchQueue(label: "DriftwireTunnel.link")
   private var buffer = Data()
 
   override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -27,44 +29,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       return
     }
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: proto.serverAddress ?? "127.0.0.1")
+    // The routes as the add-on planned them (vpn_mac.mm, plan_routes), both
+    // families: IPv6 into the tunnel too, or an app's IPv6 goes around it.
+    guard let include4 = Self.routes(config["include4"]), let exclude4 = Self.routes(config["exclude4"]),
+          let include6 = Self.routes(config["include6"]), let exclude6 = Self.routes(config["exclude6"]),
+          let address6 = config["address6"] as? String, let prefix6 = config["prefix6"] as? Int
+    else {
+      completionHandler(NEVPNError(.configurationInvalid))
+      return
+    }
     let v4 = NEIPv4Settings(addresses: [address4], subnetMasks: [Self.mask(prefix4)])
-    if let include4 = Self.routes(config["include4"]), let exclude4 = Self.routes(config["exclude4"]) {
-      v4.includedRoutes = include4.map(Self.route4)
-      v4.excludedRoutes = exclude4.map(Self.route4)
-    } else {
-      // An add-on from before IPv6 (vpn_mac.mm sends both).
-      v4.includedRoutes = [NEIPv4Route.default()]
-      var excluded: [NEIPv4Route] = []
-      for a in (config["exclude"] as? [String]) ?? [] where !a.contains(":") {
-        excluded.append(NEIPv4Route(destinationAddress: a, subnetMask: "255.255.255.255"))
-      }
-      for n in Self.routes(config["excludeNets"]) ?? [] where !n.base.contains(":") && n.prefix > 0 {
-        excluded.append(Self.route4(n))
-      }
-      v4.excludedRoutes = excluded
-    }
+    v4.includedRoutes = include4.map(Self.route4)
+    v4.excludedRoutes = exclude4.map(Self.route4)
     settings.ipv4Settings = v4
-    // IPv6 into the tunnel too: without it an app's IPv6 goes around the
-    // tunnel (the relay carries it, vpn.h settings). An older add-on sends no
-    // IPv6 routes: the default route still, with its relay and networks left
-    // out, never IPv6 left alone.
-    let address6 = (config["address6"] as? String) ?? "fd5d:7269:6674::1"
-    let prefix6 = (config["prefix6"] as? Int) ?? 64
     let v6 = NEIPv6Settings(addresses: [address6], networkPrefixLengths: [NSNumber(value: prefix6)])
-    if let include6 = Self.routes(config["include6"]), let exclude6 = Self.routes(config["exclude6"]) {
-      v6.includedRoutes = include6.map(Self.route6)
-      v6.excludedRoutes = exclude6.map(Self.route6)
-    } else {
-      v6.includedRoutes = [NEIPv6Route.default()]
-      var excluded: [NEIPv6Route] = []
-      for a in (config["exclude"] as? [String]) ?? [] where a.contains(":") {
-        excluded.append(NEIPv6Route(destinationAddress: a, networkPrefixLength: 128))
-      }
-      for n in Self.routes(config["excludeNets"]) ?? [] where n.base.contains(":") && n.prefix > 0 {
-        excluded.append(Self.route6(n))
-      }
-      v6.excludedRoutes = excluded
-    }
+    v6.includedRoutes = include6.map(Self.route6)
+    v6.excludedRoutes = exclude6.map(Self.route6)
     settings.ipv6Settings = v6
     let dns = NEDNSSettings(servers: [dns4])
     dns.matchDomains = [""]  // every name
@@ -77,20 +57,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       }
       let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
       self.link = c
+      // Answered once. Nobody listening (a configuration left from an
+      // earlier run, connected from System Settings) is .waiting, not
+      // .failed: give up then too, rather than say Connecting for ever.
+      var answered = false
+      let answer: (Error?) -> Void = { e in
+        guard !answered else { return }
+        answered = true
+        completionHandler(e)
+      }
       c.stateUpdateHandler = { state in
         switch state {
         case .ready:
           c.send(content: Data((token + "\n").utf8), completion: .contentProcessed { _ in })
           self.readFromApp(c)
           self.readFromInterface(c)
-          completionHandler(nil)
-        case .failed(let e):
-          completionHandler(e)
+          answer(nil)
+        case .failed(let e), .waiting(let e):
+          c.cancel()
+          answer(e)
         default:
           break
         }
       }
-      c.start(queue: .global(qos: .userInitiated))
+      c.start(queue: self.queue)  // serial: the state handler (and `answered`) one at a time
     }
   }
 

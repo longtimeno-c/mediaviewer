@@ -68,6 +68,11 @@ struct view {
   std::string host_where;        // "here", "server" or "none"
   std::string host_title, host_line, host_code, host_error;
   bool host_on = false, host_busy = false;
+  // This computer's own domain for the VPN (docs/plans/vpn-stealth.md §3; "here" only):
+  // what it is ("": none), the words about it, and its form while open.
+  std::string host_domain, host_domain_line;
+  bool domain_open = false;
+  std::string domain_typed;
 };
 
 // The settings page (contribution API 8, place "settings"). Pure; tested.
@@ -183,6 +188,11 @@ class service {
   std::string proxy_for_;                 // under tunnel_m_
   std::unique_ptr<runner> vpn_run_;       // under tunnel_m_
   std::string vpn_for_;                   // under tunnel_m_
+  // A start that failed for a passing reason (a timeout, the system busy at
+  // launch): not tried again for the same settings this run, so a reconcile
+  // never loops on it; the person's switch (and the saved setting) stays on.
+  // Cleared when the person turns All traffic on. Under m_.
+  std::string vpn_gave_up_for_;
   std::unique_ptr<os_port> vpn_port_;
 
   // The system proxy (the control thread's, and the destructor's after it).
@@ -205,8 +215,14 @@ class service {
   bool reconcile_wanted_ = false, save_wanted_ = false, post_pending_ = false;  // under control_m_
   bool phone_wanted_ = false;                                                  // under control_m_
   // Under control_m_: what was clicked for Phone access, in order ("vpn_set"
-  // with its value, "vpn_code", "vpn_code_hide"), sent by the control thread.
-  std::vector<std::pair<std::string, bool>> phone_actions_;
+  // with its value, "vpn_code", "vpn_code_hide", "vpn_domain" with the domain),
+  // sent by the control thread.
+  struct phone_action {
+    std::string method;
+    bool on = false;
+    std::string domain;
+  };
+  std::vector<phone_action> phone_actions_;
   std::uint64_t asked_ = 0, done_ = 0;       // under control_m_ (settle)
   std::chrono::steady_clock::time_point post_due_{}, phone_due_{}, keep_due_{};  // under control_m_
   std::atomic<std::chrono::steady_clock::time_point> last_post_{};

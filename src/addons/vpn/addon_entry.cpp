@@ -25,6 +25,7 @@
 #include <string>
 
 #include "addons/vpn/service.h"
+#include "addons/vpn/vpn.h"
 #include "io/file_port.h"
 #include "wire/secrets.h"
 
@@ -151,6 +152,14 @@ struct addon_state {
         // and Use for all apps are on.
         o.make_sysproxy = [] { return mv::driftwire::sysproxy::os_port(); };
       }
+#if defined(__APPLE__)
+      // All traffic (VPN): the Mac's packet tunnel (vpn_mac.mm). Its
+      // unavailable() only reads the extension's signature, never prompts,
+      // so it is made offline too: a build without the signed extension
+      // says why instead of offering the switch. (Windows: its own service,
+      // docs/plans; Linux: none yet.)
+      o.make_vpn = [] { return vpn::make_os_port(); };
+#endif
       svc = std::make_unique<vpn::service>(*bridge, std::move(o));
     }
     return *svc;

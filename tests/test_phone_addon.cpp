@@ -366,6 +366,40 @@ TEST_CASE("phone access: this computer's VPN, for the VPN add-on: its status, th
   CHECK(c.build(nothing, kNow).find("as your laptop's VPN") == std::string::npos);
 }
 
+TEST_CASE("phone access: the VPN's web-site look and its own domain, for the VPN add-on", "[phone-addon][vpn-stealth]") {
+  screen c(mv::phone::card::computer::mac);
+  // On with the look (on by default): the port the code points at, 443 from outside.
+  const char* look = R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615,"tls_outside_port":443}})";
+  std::string st = c.vpn_state(look);
+  CHECK(member(st, "line") == "On \xC2\xB7 looks like a web site on port 443");
+  CHECK(member(st, "domain") == "");
+  CHECK(member(st, "domain_line").find("which some networks block") != std::string::npos);
+  // Its own domain: `host name domain` (or none), for this computer only.
+  CHECK(c.vpn_request(look, "vpn_domain", false, "vpn.example.com") ==
+        R"({"do":"host_domain","domain":"vpn.example.com"})");
+  CHECK(c.vpn_request(look, "vpn_domain", false, "none") == R"({"do":"host_domain","domain":"none"})");
+  CHECK(c.vpn_request(look, "vpn_domain", false, "").empty());
+  const char* nas = R"({"claimed":true,"folder":"/volume1/photo","nas_features":["vpn"],"nas_vpn_port":47614})";
+  CHECK(c.vpn_request(nas, "vpn_domain", false, "vpn.example.com").empty());
+  // Set: the two CNAMEs it needs; the line no longer says home network only.
+  st = c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"duckdns":"home","domain":"vpn.example.com",
+    "vpn":true,"vpn_on":true,"relay_port":47614,"tls_port":47615}})");
+  CHECK(member(st, "domain") == "vpn.example.com");
+  CHECK(member(st, "domain_line") == "vpn.example.com: a CNAME to home.duckdns.org, and _acme-challenge.vpn.example.com "
+                                     "to _acme-challenge.home.duckdns.org.");
+  CHECK(member(c.vpn_state(R"({"host":{"installed":true,"set_up":true,"running":true,"domain":"vpn.example.com","vpn":true,
+    "vpn_on":true,"relay_port":47614,"tls_port":47615}})"), "line").find("home network only") == std::string::npos);
+  CHECK(member(c.vpn_state(R"({"busy":"host_domain","host":{"installed":true,"set_up":true,"running":true}})"), "busy") ==
+        "true");
+  CHECK(member(c.vpn_state(R"({"error":"host_domain","host_said":"driftwire host: \"x\" is not a domain (vpn.example.com).",
+    "host":{"installed":true,"set_up":true}})"), "error").find("is not a domain") != std::string::npos);
+  // The look's code, given as it came.
+  CHECK(member(c.vpn_state(R"({"relay_line":"mediaviewer://relay-tls#home.duckdns.org:443#k3y",
+    "relay_code":"mediaviewer://relay-tls#home.duckdns.org:443#k3y","host":{"installed":true,"set_up":true,"running":true,
+    "vpn":true,"vpn_on":true}})"), "code") == "mediaviewer://relay-tls#home.duckdns.org:443#k3y");
+}
+
 TEST_CASE("phone access: the NAS's VPN, for the VPN add-on, when its service offers it", "[phone-addon][nas-vpn]") {
   screen c(mv::phone::card::computer::mac);
   // A NAS from before (no "vpn" feature): nothing.

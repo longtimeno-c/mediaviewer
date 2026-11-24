@@ -100,6 +100,7 @@ struct owner_state {
 // relay's key for the owner's relay line, once.
 struct vpn_answer {
   std::int64_t port = 0;
+  std::int64_t tls_port = 0;  // the web-site look's, listening (0: none)
   bool running = false;
   std::string key;
 };

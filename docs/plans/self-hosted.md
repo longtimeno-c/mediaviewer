@@ -130,8 +130,9 @@ NAT64), and in the relay line for the laptop.
 
 ### 5.1 Ports
 Two TCP ports at most: the service's (7878 by default, `serve.json`) and, with the VPN on, the relay's.
-With the TLS look, the relay takes 443 instead (`--tls-port`), unless the router's 443 is someone
-else's (`mapping` never takes over a port already forwarded). Nothing else: never SMB, never RDP.
+With the TLS look (on by default with the VPN, [vpn-stealth](vpn-stealth.md)), only the look's port is
+mapped, at outside 443, or 8443 when the router's 443 is someone else's (`mapping` never takes over a
+port already forwarded). Nothing else: never SMB, never RDP.
 
 ### 5.2 The router
 `serve` deliberately "never touches a router's mapping" (`docs/design/28`). The host changes that, for
@@ -181,17 +182,15 @@ service. What is new is the drive being a PC's drive:
 ## 7. The VPN part: the PC as the exit
 
 The Tunnel/VPN client needs only a relay with forwarding. On the host, `host vpn on` turns forwarding
-on (`--forward-ports 80,443`, `--forward-udp-ports 53` as the relay's defaults) and maps the relay's
+on (every port, TCP and UDP, apart from the blocklisting ones: `relay::vpn_host_defaults`) and maps the relay's
 port. The laptop puts `name.duckdns.org:PORT#KEY` in **Relay (your own server)** once and turns on the
 Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 
 - The relay already refuses to forward to private, loopback and link-local addresses, so the VPN is
   **not a way into the home network**. If the owner wants "VPN home to reach my own LAN" that is a
   different feature (§9 call 5), not this.
-- **The TLS look** with a real certificate passes a prober best. DuckDNS supports TXT records, so a
-  later slice can get a Let's Encrypt certificate for `name.duckdns.org` by DNS-01 with no port 80
-  needed. That is an ACME client (BoringSSL is already linked); out of the first slices, self-signed
-  until then (§9 call 4).
+- **The TLS look** is on by default with the VPN and gets a Let's Encrypt certificate by DNS-01
+  through DuckDNS's TXT (built 2026-11-19, [vpn-stealth](vpn-stealth.md); self-signed until then).
 - **Home upload speed** is the VPN's speed. `host status` shows the relay's measured totals only (never
   hosts, rule 6).
 
@@ -245,7 +244,8 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
    on the phone and desktop, demoable in SAMPLE. **Copy built 2026-11-14 (§15); the card (§16).**
 7. **`host vpn on`** and the relay line; `docs/design/28` gains "Self-hosting", `docs/DEVELOPMENT.md`
    the run recipe. **Built 2026-11-14** (§16).
-8. Later: Let's Encrypt via DNS-01; a custom DDNS URL; the laptop as a `serve` client.
+8. Let's Encrypt via DNS-01 and the person's own domain (by CNAME): **built 2026-11-19**
+   ([vpn-stealth](vpn-stealth.md)). Later: a custom DDNS update URL; the laptop as a `serve` client.
 
 **Verify (proposed):** on a Windows PC and a Mac, `driftwire host setup` with a DuckDNS name and a
 UPnP router makes the name resolve to the home's address, opens the service's port, and pairs a phone
@@ -434,7 +434,7 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   desktop's card and get its library, since a phone that pinned the host library would be refused
   once the desktop published. `host unshare` takes only the host library's Catalogue with the last
   folder, never a desktop's.
-- **`host vpn on`**: forwarding on in the running host's relay (TCP 80, 443, UDP 53; private,
+- **`host vpn on`**: forwarding on in the running host's relay (every port but 23, 25, 135-139 and 445, TCP and UDP; private,
   loopback and link-local refused, call 5), the relay's port mapped, the relay line
   `name.duckdns.org:PORT#KEY` printed (the LAN address without a name). `--tls-port 443`: the
   relay's TLS look with its own self-signed certificate for the name (call 4); a look that cannot

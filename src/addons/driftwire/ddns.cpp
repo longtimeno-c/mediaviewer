@@ -160,6 +160,33 @@ std::string duckdns_url(std::string_view base, const request& r, bool clear) {
   return u;
 }
 
+std::string duckdns_txt_url(std::string_view base, std::string_view subdomain, std::string_view token,
+                            std::string_view value) {
+  std::string u(base);
+  u += "/update?domains=";
+  u += subdomain;
+  u += "&token=";
+  u += token;
+  u += "&txt=";
+  u += value;
+  if (value.empty()) u += "&clear=true";
+  u += "&verbose=true";
+  return u;
+}
+
+bool set_duckdns_txt(const fetch_fn& fetch, std::string_view base, std::string_view subdomain, std::string_view token,
+                     std::string_view value, int timeout_ms) {
+  const auto sub = parse_subdomain(subdomain);
+  const auto tok = parse_token(token);
+  if (!fetch || !sub || *sub != subdomain || !tok || *tok != token) return false;
+  for (const char c : value) {
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+    if (!ok) return false;
+  }
+  const fetch_answer a = fetch(duckdns_txt_url(base, subdomain, token, value), timeout_ms);
+  return a.status == 200 && trim(a.body).substr(0, 2) == "OK";
+}
+
 answer parse_duckdns(std::string_view body) {
   answer a;
   a.what = outcome::bad_answer;

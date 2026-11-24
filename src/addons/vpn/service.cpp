@@ -17,6 +17,15 @@
 namespace mv::driftwire::vpn {
 
 namespace {
+// Space around what was typed, gone.
+std::string trim(std::string_view s) {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\n' || s.front() == '\r')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' || s.back() == '\r')) s.remove_suffix(1);
+  return std::string(s);
+}
+}  // namespace
+
+namespace {
 
 constexpr auto kPostEvery = std::chrono::milliseconds(100);
 constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3;
@@ -74,6 +83,9 @@ service::~service() {
     stopping_.store(true);
     control_cv_.notify_all();
   }
+  // A start waiting for the system (the Mac asks the person to allow the
+  // extension) gives up now, so quitting never waits minutes for it.
+  if (vpn_port_) vpn_port_->cancel();
   if (control_thread_.joinable()) control_thread_.join();
   {
     // A change in progress finishes (a dialog showing waits for its answer).
@@ -191,10 +203,12 @@ void service::control_loop() {
       const auto actions = std::move(phone_actions_);
       phone_actions_.clear();
       lock.unlock();
-      for (const auto& [method, on] : actions) {
+      for (const auto& a : actions) {
         json::writer w;
-        w.begin_object().key("on").boolean(on).end_object();
-        if (!host_.ask_phone(method, w.take())) refused = true;
+        w.begin_object().key("on").boolean(a.on);
+        if (!a.domain.empty()) w.key("domain").string(a.domain);
+        w.end_object();
+        if (!host_.ask_phone(a.method, w.take())) refused = true;
       }
       lock.lock();
       phone_wanted_ = true;
@@ -344,6 +358,8 @@ void service::ask_phone_now() {
     v_.host_code = s("code");
     v_.host_on = v_.phone && doc->boolean("on").value_or(false);
     v_.host_busy = v_.phone && doc->boolean("busy").value_or(false);
+    v_.host_domain = s("domain");
+    v_.host_domain_line = s("domain_line");
     if (v_.phone) v_.host_error = s("error");
     busy = v_.host_busy;
   }
@@ -383,7 +399,7 @@ void service::settings_closed() {
   phone_due_ = {};
   // The VPN code shown (it holds the relay's key) goes when the page does.
   if (code) {
-    phone_actions_.emplace_back("vpn_code_hide", false);
+    phone_actions_.push_back({"vpn_code_hide", false, {}});
     control_cv_.notify_all();
   }
 }
@@ -626,10 +642,22 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     v_.mode = "proxy";
     return false;
   };
-  if (!on || !vpn_port_) return proxy_mode();
+  if (!on || !vpn_port_) return proxy_mode();  // a failed start's words stay until the person flips the switch
+  {
+    std::lock_guard lock(m_);
+    if (vpn_gave_up_for_ == made_for) {  // failed this run for these settings: its note says so
+      v_.mode = "proxy";
+      return false;
+    }
+  }
   std::string why;
   const auto field = relay_server_of(relay, why);
-  if (!field) return proxy_mode();  // the proxy's notes say why
+  if (!field) {
+    std::lock_guard lock(m_);
+    if (v_.all_traffic_available) v_.all_traffic_note.clear();  // the proxy's notes say why; no older words
+    v_.mode = "proxy";
+    return false;
+  }
   settings s;
   s.kill_switch = block;
   s.relay_name = field->at.substr(0, field->at.rfind(':'));
@@ -640,12 +668,33 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
   for (const auto& n : net::local_subnets()) {
     if (!net::is_public(n.base) || n.prefix >= 8) s.exclude_nets.push_back(n);
   }
+  // The first start may wait for the person (the system asks to allow the
+  // extension and to add a VPN configuration): the page says so meanwhile.
+  {
+    std::lock_guard lock(m_);
+    v_.all_traffic_note =
+        "Starting All traffic\xE2\x80\xA6 The first time, your system asks you to allow MediaViewer's network "
+        "extension and to add its VPN configuration.";
+  }
+  post();
   std::string note;
   auto dev = vpn_port_->start(s);
+  bool failed = false;   // turns the switch off: the person has to act (allow it, restart)
+  bool gave_up = false;  // a passing failure: kept on, not tried again this run
   if (!dev) {
-    note = dev.error() == status::permission_denied
-               ? "All traffic (VPN) was not allowed on this computer: the proxy carries the apps that follow it."
-               : "All traffic (VPN) could not start: the proxy carries the apps that follow it.";
+    failed = dev.error() == status::permission_denied || dev.error() == status::busy;
+    gave_up = !failed && dev.error() != status::cancelled;  // quitting: nothing to say
+    if (dev.error() == status::permission_denied) {
+      note = "All traffic (VPN) wasn't allowed. Allow MediaViewer's network extension and its VPN configuration "
+             "(on a Mac: System Settings \xE2\x86\x92 General \xE2\x86\x92 Login Items & Extensions), then turn "
+             "All traffic on again. Meanwhile the proxy carries the apps that follow it.";
+    } else if (dev.error() == status::busy) {
+      note = "Restart this computer to finish installing MediaViewer's network extension, then turn All traffic on "
+             "again. Meanwhile the proxy carries the apps that follow it.";
+    } else if (gave_up) {
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn All traffic off "
+             "and on again to try once more.";
+    }
     log_status("all traffic", dev.error());
   } else {
     runner::options o;
@@ -660,7 +709,9 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
       vpn_for_ = made_for;
     } else {
       vpn_port_->stop();
-      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it.";
+      gave_up = true;
+      note = "All traffic (VPN) could not start: the proxy carries the apps that follow it. Turn All traffic off "
+             "and on again to try once more.";
       log_status("all traffic", r.error());
     }
   }
@@ -670,9 +721,17 @@ bool service::sync_vpn(bool on, const std::string& relay, bool tls, std::uint16_
     runs = static_cast<bool>(vpn_run_);
   }
   if (runs) host_.log(2, "vpn: all traffic on");
-  std::lock_guard lock(m_);
-  v_.mode = runs ? "vpn" : "proxy";
-  if (!note.empty()) v_.all_traffic_note = note;
+  {
+    std::lock_guard lock(m_);
+    v_.mode = runs ? "vpn" : "proxy";
+    // The starting words go either way; never over a reason it isn't offered.
+    if (v_.all_traffic_available) v_.all_traffic_note = note;
+    // A start that failed turns the switch off: nothing else (the server, the
+    // web-site look, the next launch) asks the person again until they do.
+    if (failed) v_.all_traffic = false;
+    vpn_gave_up_for_ = gave_up ? made_for : std::string();
+  }
+  if (failed) request(false, true);  // kept off
   return runs;
 }
 
@@ -712,9 +771,15 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     {
       std::lock_guard lock(m_);
       v_.*field = value->b;
-      if (field == &view::all_traffic && vpn_port_ && value->b) {
-        v_.all_traffic_note = vpn_port_->unavailable();
-        v_.all_traffic_available = v_.all_traffic_note.empty();
+      if (field == &view::all_traffic && vpn_port_) {
+        // The person flipped it: an earlier failure's words go, and on tries afresh.
+        vpn_gave_up_for_.clear();
+        if (value->b) {
+          v_.all_traffic_note = vpn_port_->unavailable();
+          v_.all_traffic_available = v_.all_traffic_note.empty();
+        } else if (v_.all_traffic_available) {
+          v_.all_traffic_note.clear();
+        }
       }
     }
     if (retry_proxy) proxy_retry_.store(true);
@@ -805,7 +870,8 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
         wipe(typed_code_);
         typed_code_ = *text;
       }
-      line = serve::parse_relay_connect_code(typed_code_);
+      bool look = false;
+      line = serve::parse_relay_connect_code(typed_code_, &look);
       wipe(typed_code_);
       if (!line) {
         v_.connect_note = "That isn't a VPN code. Copy it again from the VPN page on your server (VPN code\xE2\x80\xA6).";
@@ -815,9 +881,18 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
         v_.server = *line;
         v_.server_shown = tunnel::relay_shown(*line);
         v_.tunnel = true;
+        // The code says whether the host looks like a web site (docs/plans/vpn-stealth.md): the
+        // Tunnel's look follows it, on the code's port, so nothing else is set by hand.
+        v_.tls = look && v_.tls_available;
+        if (v_.tls) {
+          const auto colon = line->rfind(':', line->find('#'));
+          tls_port_ = static_cast<std::uint16_t>(std::stoi(line->substr(colon + 1)));
+        }
         v_.connect_open = false;
-        v_.connect_note = "Connected to " + v_.server_shown + ". The Tunnel is on" +
-                          (v_.all_traffic_available ? "; turn on All traffic (VPN) for every app." : ".");
+        v_.connect_note = look && !v_.tls_available
+                              ? "This VPN code needs Look like a web site, which this build lacks."
+                              : "Connected to " + v_.server_shown + ". The Tunnel is on" +
+                                    (v_.all_traffic_available ? "; turn on All traffic (VPN) for every app." : ".");
       }
     }
     if (line) {
@@ -837,7 +912,7 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     }
     {
       std::lock_guard lock(control_m_);
-      phone_actions_.emplace_back("vpn_set", value->b);
+      phone_actions_.push_back({"vpn_set", value->b, {}});
       control_cv_.notify_all();
     }
     post();  // at once: the page shows what the click did
@@ -845,8 +920,47 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
   }
   if ((node == "host_code" || node == "host_code_hide") && kind == kClick) {
     std::lock_guard lock(control_m_);
-    phone_actions_.emplace_back(node == "host_code" ? "vpn_code" : "vpn_code_hide", false);
+    phone_actions_.push_back({node == "host_code" ? "vpn_code" : "vpn_code_hide", false, {}});
     control_cv_.notify_all();
+    return;
+  }
+  // This computer's own domain for the VPN: Phone access runs `host name domain`.
+  if (node == "domain_name" && kind == kChange && text) {
+    std::lock_guard lock(m_);
+    v_.domain_typed = *text;
+    return;
+  }
+  if ((node == "domain_change" || node == "domain_cancel") && kind == kClick) {
+    {
+      std::lock_guard lock(m_);
+      v_.domain_open = node == "domain_change";
+      v_.domain_typed.clear();
+    }
+    post_throttled();
+    return;
+  }
+  if ((node == "domain_save" || node == "domain_clear" || (node == "domain_name" && kind == kSubmit)) &&
+      (kind == kClick || kind == kSubmit)) {
+    std::string domain;
+    {
+      std::lock_guard lock(m_);
+      if (node == "domain_name" && text) v_.domain_typed = *text;
+      domain = node == "domain_clear" ? std::string("none") : trim(v_.domain_typed);
+      if (domain.empty()) {
+        v_.host_error = "Type your domain, like vpn.example.com.";
+      } else {
+        v_.domain_open = false;
+        v_.domain_typed.clear();
+        v_.host_busy = true;
+        v_.host_error.clear();
+      }
+    }
+    if (!domain.empty()) {
+      std::lock_guard lock(control_m_);
+      phone_actions_.push_back({"vpn_domain", false, domain});
+      control_cv_.notify_all();
+    }
+    post_throttled();
     return;
   }
 }

@@ -204,8 +204,62 @@ TEST_CASE("vpn: the Host section is Phone access's answer; its switch and code a
   }));
   // Every request was one of Phone access's documented ones.
   for (const auto& [method, json] : host.asked()) {
-    CHECK((method == "vpn_state" || method == "vpn_set" || method == "vpn_code" || method == "vpn_code_hide"));
+    CHECK((method == "vpn_state" || method == "vpn_set" || method == "vpn_code" || method == "vpn_code_hide" ||
+           method == "vpn_domain"));
   }
+}
+
+TEST_CASE("vpn: this computer's own domain is set from the Host section, through Phone access",
+          "[vpn][vpn-stealth]") {
+  vpn_test::fake_host host;
+  std::mutex m;
+  std::string domain, sent;
+  host.phone = [&](const std::string& method, const std::string& json) -> std::optional<std::string> {
+    std::lock_guard lock(m);
+    if (method == "vpn_domain") {
+      sent = json;
+      const auto d = mv::json::parse(json, 2);
+      domain = d && d->str("domain") && *d->str("domain") != "none" ? *d->str("domain") : std::string();
+    }
+    mv::json::writer w;
+    w.begin_object().key("where").string("here").key("title").string("VPN through this Mac");
+    w.key("line").string("On").key("on").boolean(true).key("busy").boolean(false);
+    w.key("domain").string(domain).key("domain_line").string(domain.empty() ? "Optional" : domain + ": a CNAME");
+    w.end_object();
+    return w.take();
+  };
+  vpn::service::options o;
+  o.offline = true;
+  o.phone_every = std::chrono::milliseconds(50);
+  vpn::service svc(host, o);
+  svc.settings_opened();
+  REQUIRE(eventually([&] { return host.settings().find(R"("id":"domain_change","label":"Add)") != std::string::npos; }));
+  CHECK(host.settings().find("Your own domain") != std::string::npos);
+  svc.on_event("domain_change", 1, "");
+  REQUIRE(eventually([&] { return host.settings().find(R"("id":"domain_name")") != std::string::npos; }));
+  svc.on_event("domain_save", 1, "");  // nothing typed: said so, nothing asked
+  CHECK(svc.snapshot().host_error.find("Type your domain") != std::string::npos);
+  svc.on_event("domain_name", 2, "\" vpn.example.com \"");
+  svc.on_event("domain_save", 1, "");
+  REQUIRE(eventually([&] { return svc.snapshot().host_domain == "vpn.example.com"; }));
+  {
+    std::lock_guard lock(m);
+    CHECK(sent.find(R"("domain":"vpn.example.com")") != std::string::npos);
+  }
+  REQUIRE(eventually([&] { return host.settings().find(R"("id":"domain_change","label":"Change)") != std::string::npos; }));
+  svc.on_event("domain_change", 1, "");
+  svc.on_event("domain_clear", 1, "");
+  REQUIRE(eventually([&] { return svc.snapshot().host_domain.empty(); }));
+  {
+    std::lock_guard lock(m);
+    CHECK(sent.find(R"("domain":"none")") != std::string::npos);
+  }
+  // A server elsewhere (a NAS): no domain row; its name is DSM's.
+  host.phone = [](const std::string&, const std::string&) -> std::optional<std::string> {
+    return std::string(R"({"where":"server","title":"VPN through your server","line":"On","on":true,"busy":false})");
+  };
+  REQUIRE(eventually([&] { return svc.snapshot().host_where == "server"; }));
+  REQUIRE(eventually([&] { return host.settings().find("Your own domain") == std::string::npos; }));
 }
 
 TEST_CASE("vpn: a switch Phone access refuses says so; a switch then a close sends both, in order", "[vpn]") {
@@ -397,6 +451,18 @@ TEST_CASE("vpn: the module draws its page, and asks Phone access through the hos
       return reg.screens_json().find("add Phone access") != std::string::npos;
     }));
     CHECK(reg.screens_json().find("Connect to a VPN host") != std::string::npos);
+#if defined(__APPLE__)
+    // All traffic is the Mac's packet tunnel: with the Tunnel on, a build
+    // without the signed extension (this test's) says why, not nothing.
+    REQUIRE(reg.send_event("vpn", "settings", "server", MV_SLOT_EVENT_SUBMIT,
+                           "\"127.0.0.1:9#vpn-addon-test-key-0123\"") == mv::status::ok);
+    REQUIRE(reg.send_event("vpn", "settings", "tunnel", MV_SLOT_EVENT_CHANGE, "true") == mv::status::ok);
+    REQUIRE(eventually([&] {
+      reg.drain();
+      return reg.screens_json().find("MediaViewer's network extension") != std::string::npos;
+    }));
+    REQUIRE(reg.send_event("vpn", "settings", "tunnel", MV_SLOT_EVENT_CHANGE, "false") == mv::status::ok);
+#endif
     REQUIRE(reg.close_screen("vpn", "settings") == mv::status::ok);
     reg.drain();
     v->reset();
