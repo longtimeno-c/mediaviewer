@@ -586,6 +586,12 @@ add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
   src/shell/browse_path.h
+  # docs/design/16 "Folder navigation" / "Drag and drop into folders": Back /
+  # Forward, what a drop becomes, and the copy / move worker (shared with Windows).
+  src/shell/browse_history.h
+  src/shell/file_drop.h
+  src/shell/file_transfer.cpp
+  src/shell/file_transfer.h
   # The one key router and command table, shared with Windows (docs/design/16): the
   # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
   # translates virtual keys. Pure C++, no platform header.
@@ -612,6 +618,8 @@ add_library(mv_shell STATIC
   # Check library: the backup's index is the Import add-on's, through mv.import.1.
   src/shell/photos_backup_library.cpp
   src/shell/photos_backup_library.h
+  src/shell/photos_backup_server.cpp
+  src/shell/photos_backup_server.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
@@ -933,6 +941,10 @@ if(MV_BUILD_TESTS)
     tests/test_dino_game.cpp
     tests/test_browse_index.cpp
     tests/test_browse_path.cpp
+    tests/test_browse_history.cpp
+    tests/test_abi_text.cpp
+    tests/test_file_drop.cpp
+    tests/test_file_transfer.cpp
     tests/test_dir_tree.cpp
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp

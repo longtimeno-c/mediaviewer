@@ -15,6 +15,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 using Windows.Graphics;
 
+using MediaViewer.Shared;
 namespace MediaViewer.Chrome;
 
 /// <summary>
@@ -48,6 +49,8 @@ public static partial class IslandHost
     private static FrameworkElement? _barPathRow;
     private static ScrollViewer? _barPathScroller;
     private static Button? _barUpButton;
+    private static Button? _barBackButton;
+    private static Button? _barForwardButton;
     private static Button? _barRootButton;
     private static TextBlock? _barPathCurrent;
     private static double _barNameNatural;
@@ -68,6 +71,8 @@ public static partial class IslandHost
     private static readonly ObservableCollection<FolderCardVm> Folders = new();
     private static int _folderCursor = -1;
     private static bool _canGoUp;
+    private static bool _canGoBack;
+    private static bool _canGoForward;
     private static string? _folderQuery;
     private static readonly List<(string Name, string Path)> Crumbs = new();
 
@@ -167,7 +172,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < 32) return unchecked((int)0x80070057);
             ChromeBrowseArgs args = Marshal.PtrToStructure<ChromeBrowseArgs>(arg);
             _folderCursor = args.FolderCursor;
-            _canGoUp = args.CanGoUp != 0;
+            // Bit 0 Up, bit 1 Back, bit 2 Forward (main.cpp push_browse_state).
+            (_canGoUp, _canGoBack, _canGoForward) = DropWords.Moves(args.CanGoUp);
             _folderQuery = args.QueryBytes < 0
                 ? null
                 : (args.QueryBytes == 0 || args.QueryUtf8 == 0
@@ -609,7 +615,10 @@ public static partial class IslandHost
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        WireFileDrop(root);
+        // The grid is the folder on screen: what is dropped on it goes there
+        // (with nothing open, a drop opens it, as on the canvas).
+        WireFolderDrop(root, () => Crumbs.Count > 0 ? Crumbs[^1].Path : "",
+                       () => Crumbs.Count > 0 ? Crumbs[^1].Name : "");
         root.Children.Add(BuildGallerySearchBar());
         Grid.SetRow(_galleryScroll, 1);
         root.Children.Add(_galleryScroll);
@@ -652,6 +661,18 @@ public static partial class IslandHost
     {
         _barUpButton = PathIconButton("\uE74A", () => Send(Command.FolderUp));
         AutomationProperties.SetName(_barUpButton, "Up one folder");
+        // docs/design/16 "Folder navigation": Explorer's Back / Forward, beside Up.
+        _barBackButton = PathIconButton("\uE72B", () => Send(Command.FolderBack));
+        AutomationProperties.SetName(_barBackButton, "Back");
+        _barForwardButton = PathIconButton("\uE72A", () => Send(Command.FolderForward));
+        AutomationProperties.SetName(_barForwardButton, "Forward");
+        var moves = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _barBackButton, _barForwardButton, _barUpButton },
+        };
         _barRootButton = PathIconButton("\uE80F", () => Send(Command.OpenCrumb, 0));
         AutomationProperties.SetName(_barRootButton, "Return to browsing root");
         // Issue #444: Share beside Home, in Home's column so the trail's
@@ -706,7 +727,7 @@ public static partial class IslandHost
         };
         for (int i = 0; i < 7; ++i)
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 0 });
-        Put(row, _barUpButton, 0);
+        Put(row, moves, 0);
         Put(row, rootAndShare, 1);
         Put(row, scroller, 2);
         Put(row, _barPathCurrent, 3);
@@ -853,6 +874,10 @@ public static partial class IslandHost
         {
             ToolTipService.SetToolTip(_barUpButton, "Open the enclosing folder" + KeyNote(Command.FolderUp));
         }
+        if (_barBackButton is not null)
+            ToolTipService.SetToolTip(_barBackButton, "Back to the folder before" + KeyNote(Command.FolderBack));
+        if (_barForwardButton is not null)
+            ToolTipService.SetToolTip(_barForwardButton, "Forward" + KeyNote(Command.FolderForward));
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
         // docs/design/25 §7: while the pack is attached it is the local-scope provider.
@@ -872,6 +897,8 @@ public static partial class IslandHost
         if (trail is null || up is null || root is null || current is null || row is null) return;
         // TextButton's FlattenButton dims a disabled button.
         up.IsEnabled = _canGoUp;
+        if (_barBackButton is not null) _barBackButton.IsEnabled = _canGoBack;
+        if (_barForwardButton is not null) _barForwardButton.IsEnabled = _canGoForward;
         row.Visibility = Crumbs.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         root.IsEnabled = Crumbs.Count > 1;
         ToolTipService.SetToolTip(root, Crumbs.Count > 0 ? "Return to browsing root: " + Crumbs[0].Path : "No folder open");
@@ -935,6 +962,10 @@ public static partial class IslandHost
                 // The Mac's crumb: .truncationMode(.middle) inside 120.
                 if (crumb.Content is TextBlock label) SetMiddleTrimmed(label, piece.Name, 120 - 8);
                 ToolTipService.SetToolTip(crumb, Crumbs[index].Path);
+                // Drop files on a segment: they go into that folder.
+                string crumbPath = Crumbs[index].Path;
+                string crumbName = piece.Name;
+                WireFolderDrop(crumb, () => crumbPath, () => crumbName);
                 trail.Children.Add(crumb);
             }
         }
@@ -1426,7 +1457,11 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) ShowLayer(outline, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
-            border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            // One click selects the tile, two open it (Finder, Explorer).
+            border.Tapped += (_, _) => Send(Command.FolderCursor, vm.Index);
+            border.DoubleTapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            // Drop files on it; rest on it with a drag and it opens.
+            WireFolderDrop(border, () => vm.Path, () => vm.Name, () => Send(Command.OpenSubfolder, vm.Index));
             AttachFolderContextMenu(border, vm);
             if (!vm.Requested)
             {
@@ -1526,7 +1561,9 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) ShowLayer(ring, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
-            border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            border.Tapped += (_, _) => Send(Command.FolderCursor, vm.Index);
+            border.DoubleTapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            WireFolderDrop(border, () => vm.Path, () => vm.Name, () => Send(Command.OpenSubfolder, vm.Index));
             AttachFolderContextMenu(border, vm);
             if (!vm.Requested)
             {

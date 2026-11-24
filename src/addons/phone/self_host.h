@@ -193,6 +193,7 @@ struct folder_choice {
 // The folders serve.json shares now, for a setup run again.
 struct shared_folder {
   std::string path, label;
+  bool backup = false;  // a backup folder already
 };
 [[nodiscard]] std::vector<shared_folder> shared_folders(const where& w);
 // A path as the OS would match it: canonical where it exists, no trailing
@@ -204,6 +205,12 @@ struct shared_folder {
 // A label for each folder, none the same as another or as one in `taken`
 // (the program refuses a label in use): "Photos", "Photos 2".
 [[nodiscard]] std::vector<std::string> unique_labels(std::span<const folder_choice> f, std::span<const std::string> taken);
+// What the card's setup asks `host share` for: each folder not shared yet, under a label of its
+// own; and each folder shared already that is ticked as a backup folder and is not one yet, under
+// the label it has (`host share --backup` makes it one, changing nothing else). A shared folder left unticked
+// stays as it is: a backup folder stops being one only on the Phone access card.
+[[nodiscard]] std::vector<folder_choice> share_plan(std::span<const folder_choice> chosen,
+                                                    std::span<const shared_folder> shared);
 // Whether something answers on this computer's loopback at `port`.
 [[nodiscard]] bool answers(std::uint16_t port, int timeout_ms = 1000);
 // Names the host on DuckDNS as `host name duckdns` does (that command takes

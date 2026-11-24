@@ -369,6 +369,7 @@ expected engine::start(std::unique_ptr<source> src, options opts) {
   join();
   source_ = std::move(src);
   options_ = std::move(opts);
+  if (options_.server) options_.index.reset();
   cancel_.store(false, std::memory_order_release);
   {
     std::lock_guard lock(mutex_);
@@ -381,7 +382,11 @@ expected engine::start(std::unique_ptr<source> src, options opts) {
   return {};
 }
 
-void engine::cancel() noexcept { cancel_.store(true, std::memory_order_release); }
+void engine::cancel() noexcept {
+  cancel_.store(true, std::memory_order_release);
+  // A send in flight (its hash, a connect, the wait for the service) stops too.
+  if (running_.load(std::memory_order_acquire) && options_.server) options_.server->stop();
+}
 
 void engine::join() noexcept {
   if (thread_.joinable()) thread_.join();
@@ -441,6 +446,13 @@ void engine::run() {
     running_.store(false, std::memory_order_release);
   };
   const bool check_only = options_.check_only;
+  server_folder* const far = options_.server.get();
+  // The place the files go answers: the folder, or the server's folder.
+  const auto destination_answers = [&] {
+    if (far) return far->reachable();
+    const auto root = io::stat_path(options_.destination);
+    return root && root->is_directory;
+  };
 
   auto listed = source_->enumerate(&cancel_);
   if (!listed) {
@@ -462,8 +474,7 @@ void engine::run() {
   if (check_only) {
     // Report only: nothing is created in the destination. An existing manifest
     // is read (and gains the `found` column, its own bookkeeping).
-    const auto root = io::stat_path(options_.destination);
-    if (!root || !root->is_directory) {
+    if (!destination_answers()) {
       {
         std::lock_guard lock(mutex_);
         check_ = check_report{};
@@ -477,6 +488,10 @@ void engine::run() {
     if (!io::make_directories(options_.destination) || !io::make_directories(keep) ||
         !io::make_directories(options_.scratch)) {
       finish(run_state::failed, "The destination folder could not be written.");
+      return;
+    }
+    if (far && !far->reachable()) {
+      finish(run_state::failed, "The server is not reachable, or this computer may not add files to that folder.");
       return;
     }
     if (!log.open(manifest_path)) {
@@ -597,9 +612,9 @@ void engine::run() {
   const auto fail_file = [&](const asset_file& f) {
     failures.push_back(f.filename);
     set([&](progress& p) { ++p.failed; });
-    const auto root = io::stat_path(options_.destination);
-    if (!root || !root->is_directory) {
-      abort_why = "The destination folder is no longer reachable; run again when it is back.";
+    if (!destination_answers()) {
+      abort_why = far ? "The server is no longer reachable; run again when it is back."
+                      : "The destination folder is no longer reachable; run again when it is back.";
       return true;
     }
     return false;
@@ -628,6 +643,11 @@ void engine::run() {
         // see the place, answered "nowhere". An error, a scope that cannot see
         // it (found under "every library", checked now under "this folder"),
         // or an unreachable folder all leave it found.
+        if (far) {  // no index there: nothing is ever recorded as found with a place
+          ++report.in_backup;
+          set([&](progress& p) { ++p.skipped; });
+          continue;
+        }
         const bool outside = is_absolute(row->path);
         const std::string where = outside ? row->path
                                           : io::join_path(options_.destination, io::native_relative(row->path));
@@ -677,6 +697,25 @@ void engine::run() {
       } else {
         // Wherever it was written, in whichever layout: a layout change moves nothing.
         const std::string place = stored_place(row->path);
+        if (far) {
+          // On the server: there, or the server could not say (never taken for deleted),
+          // or gone from it: held, as a file deleted from a folder is.
+          const auto there = far->has(place);
+          // "Not there" or no answer is believed only from a folder that answers now: a
+          // server gone, or its drive unplugged (which also reads as not found), stops the
+          // run here rather than holding, or waiting on, every file after this one.
+          if ((!there || !there.value()) && !destination_answers()) {
+            abort_why = "The server is no longer reachable; run again when it is back.";
+            break;
+          }
+          if (there && !there.value()) {
+            hold(f, *row, place);
+          } else {
+            ++report.in_backup;
+            set([&](progress& p) { ++p.skipped; });
+          }
+          continue;
+        }
         const std::string where = io::join_path(options_.destination, io::native_relative(place));
         const auto st = io::stat_path(where);
         if (st && !st->is_directory && st->size == row->bytes) {
@@ -800,6 +839,30 @@ void engine::run() {
     }
 
     const std::string sub = layout_subdir(f.created_unix, options_.folders);
+    if (far) {
+      // To the server: hashed here for the manifest (the service checks the bytes it got
+      // against the same hash before the file takes its name), then sent.
+      const auto st = io::stat_path(src);
+      auto h = st ? io::hash_file(src, io::read_mode::sequential, &cancel_) : result<io::content_hash>(err(status::io));
+      auto name = h ? far->put(src, sub, f.filename, &cancel_,
+                               [&](std::uint64_t delta) { set([&](progress& p) { p.bytes += delta; }); })
+                    : result<std::string>(err(h.error()));
+      if (!tmp.empty()) (void)io::remove_file(tmp);
+      if (!name) {
+        if (cancel_.load(std::memory_order_acquire)) {
+          stopped = true;
+          break;
+        }
+        if (fail_file(f)) break;
+        continue;
+      }
+      log.record(f, sub.empty() ? *name : sub + "/" + *name, st->size, h->hex());
+      set([&](progress& p) {
+        ++p.done;
+        if (!tmp.empty()) ++p.fetched;
+      });
+      continue;
+    }
     const std::string dir = sub.empty() ? options_.destination
                                         : io::join_path(options_.destination, io::native_relative(sub));
     // The folder is made only now, after the bytes are here (a fetch can take

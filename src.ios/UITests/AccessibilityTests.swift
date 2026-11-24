@@ -12,6 +12,12 @@ final class AccessibilityTests: XCTestCase {
     return app
   }
 
+  /// MV_SHOT_DIR (TEST_RUNNER_MV_SHOT_DIR to xcodebuild): keeps a picture of the screen there.
+  private func shot(_ name: String) {
+    guard let dir = ProcessInfo.processInfo.environment["MV_SHOT_DIR"] else { return }
+    try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
+  }
+
   func testViewerControlsAreReachableWithoutAClip() throws {
     let app = launched("viewer")
     XCTAssertTrue(app.buttons["Save to Photos"].waitForExistence(timeout: 30))
@@ -25,6 +31,31 @@ final class AccessibilityTests: XCTestCase {
     XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 30))
     XCTAssertEqual(app.buttons.matching(identifier: "Save to Photos").count, 1)
     XCTAssertEqual(app.buttons.matching(identifier: "Details").count, 1)
+  }
+
+  /// Full screen: the picture is the whole screen, so a portrait clip is as large as the phone
+  /// allows (it was the space left above the position bar and the buttons), and with no button
+  /// on screen the picture itself offers the way back.
+  func testClipFullScreenFillsTheScreen() throws {
+    let app = launched("clip")
+    XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 30))
+    let shown = app.descendants(matching: .any).matching(identifier: "clip.picture").firstMatch
+    XCTAssertTrue(shown.waitForExistence(timeout: 5))
+    let screen = app.windows.firstMatch.frame
+    XCTAssertLessThan(shown.frame.height, screen.height * 0.8, "With its controls the picture shares the screen")
+    shot("clip-controls")
+    app.buttons["Full screen"].tap()
+    let full = app.descendants(matching: .any).matching(identifier: "clip.picture.fullscreen").firstMatch
+    XCTAssertTrue(full.waitForExistence(timeout: 5), "The clip did not go full screen")
+    XCTAssertEqual(full.frame.minX, screen.minX, accuracy: 1)
+    XCTAssertEqual(full.frame.minY, screen.minY, accuracy: 1)
+    XCTAssertEqual(full.frame.width, screen.width, accuracy: 1)
+    XCTAssertEqual(full.frame.height, screen.height, accuracy: 1)
+    XCTAssertFalse(app.buttons["Pause"].exists)
+    shot("clip-full")
+    full.tap()
+    XCTAssertTrue(app.buttons["Full screen"].waitForExistence(timeout: 5), "A tap did not bring the controls back")
+    XCTAssertTrue(app.buttons["Pause"].exists || app.buttons["Play"].exists)
   }
 
   func testRunningCopyReadsItsLineAndKeepsCancel() throws {

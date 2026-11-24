@@ -12,6 +12,7 @@ std::mutex g_m;
 std::unordered_set<std::string> g_paths;
 std::string g_prefix;  // with a trailing separator
 std::string g_remote_prefix;  // the remote folder's cache (docs/plans/desktop-client.md)
+std::function<bool(std::string_view)> g_remote_writable;  // under g_m
 
 constexpr std::string_view kPhotosKey = "photos:";
 constexpr std::string_view kRemoteKey = "remote:";
@@ -65,6 +66,25 @@ bool is_remote(std::string_view path) {
 
 const char* write_protected_notice(std::string_view path) {
   return is_remote(path) ? kRemoteWriteProtectedNotice : kWriteProtectedNotice;
+}
+
+bool change_allowed(std::string_view path, file_change op) {
+  (void)op;  // the same rule for each of the five: the service checks each request again
+  if (path.empty()) return false;
+  if (!write_protected(path)) return true;
+  // Only a remote key itself: never its cached original (a file here that stands for it).
+  if (path.size() <= kRemoteKey.size() || path.substr(0, kRemoteKey.size()) != kRemoteKey) return false;
+  std::function<bool(std::string_view)> check;
+  {
+    std::lock_guard lock(g_m);
+    check = g_remote_writable;
+  }
+  return check && check(path);
+}
+
+void set_remote_writable(std::function<bool(std::string_view)> check) {
+  std::lock_guard lock(g_m);
+  g_remote_writable = std::move(check);
 }
 
 void set_remote_cache_prefix(std::string_view dir) {

@@ -109,7 +109,7 @@ file_id id_of(HANDLE h) noexcept {
 // read, so a cloud placeholder stays one). A symlink or junction is
 // status::permission_denied; a directory status::io. OneDrive's own reparse
 // points are not links and pass, as in walk_dir.
-result<file_id> identify_w(const std::wstring& path) {
+result<file_id> identify_w(const std::wstring& path, bool allow_directory = false) {
   HANDLE h = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
   if (h == INVALID_HANDLE_VALUE) return err(status::io);
@@ -122,7 +122,7 @@ result<file_id> identify_w(const std::wstring& path) {
     ::CloseHandle(h);
     return err(status::permission_denied);
   }
-  if (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+  if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !allow_directory) {
     ::CloseHandle(h);
     return err(status::io);
   }
@@ -138,6 +138,18 @@ result<file_id> identify(std::string_view utf8_path) {
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
   return identify_w(path);
+}
+
+result<file_id> identify_entry(std::string_view utf8_path) {
+  detail::simulated_round_trip();
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  return identify_w(path, true);
+}
+
+expected sync_directory(std::string_view utf8_dir) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  return {};  // MoveFileExW(MOVEFILE_WRITE_THROUGH) and NTFS's journal keep the entries
 }
 
 result<file_stat> stat_path(std::string_view utf8_path) {
@@ -318,6 +330,8 @@ result<file_stat> stat_beneath(std::string_view root, std::string_view relative_
   file_stat out;
   out.size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
   out.mtime_unix = unix_from_filetime(info.ftLastWriteTime);
+  out.mtime_ns = ((static_cast<std::int64_t>(info.ftLastWriteTime.dwHighDateTime) << 32 |
+                   info.ftLastWriteTime.dwLowDateTime) - kEpochDelta) * 100;
   out.is_directory = (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   return out;
 }
