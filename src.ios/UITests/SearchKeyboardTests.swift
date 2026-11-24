@@ -5,6 +5,12 @@
 // while the keyboard is up iOS shows the tab bar's bottom slot on top of it: each new count in
 // that slot put the keyboard away and brought it back. Needs the Simulator's software keyboard
 // (I/O > Keyboard > Connect Hardware Keyboard off).
+//
+// These tests type by tapping the on-screen keys, never with typeText: typeText types through a
+// virtual hardware keyboard, and where the keyboard setting "minimise the keyboard when a hardware
+// keyboard is used" is on (com.apple.keyboard.preferences AutomaticMinimizationEnabled), iOS puts
+// the on-screen keyboard away as it connects and keeps it away for later runs. That is iOS doing
+// what it should, not the app taking the keyboard.
 import XCTest
 
 final class SearchKeyboardTests: XCTestCase {
@@ -20,20 +26,18 @@ final class SearchKeyboardTests: XCTestCase {
     let line = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'backed up'")).firstMatch
     XCTAssertTrue(line.waitForExistence(timeout: 10), "No backup line above the tab bar")
     field.tap()
-    guard app.keyboards.firstMatch.waitForExistence(timeout: 5) else {
-      throw XCTSkip("No software keyboard: turn off Connect Hardware Keyboard in the Simulator")
-    }
-    field.typeText("bo")
+    let stats = app.staticTexts["keyboard-stats"].firstMatch
+    try requireSoftwareKeyboard(app, stats)
+    Self.tapKeys("bo", in: app)
     let shownWhileTyping = line.label
 
     // The app's own count of the keyboard going: a drop and return within a frame or two is
     // shorter than one query here, so watching for the keyboard would miss it.
-    let stats = app.staticTexts["keyboard-stats"].firstMatch
     let threeCounts = NSPredicate { _, _ in Self.number("ticksWhileUp", in: stats.label) >= 3 }
     let waited = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: threeCounts, object: nil)], timeout: 15)
     XCTAssertEqual(waited, .completed, "The backup never counted while the keyboard was up: \(stats.label)")
     XCTAssertEqual(Self.number("hides", in: stats.label), 0, "The keyboard went away as the backup counted: \(stats.label)")
-    XCTAssertEqual(field.value as? String, "bo")
+    XCTAssertEqual((field.value as? String)?.lowercased(), "bo")
 
     // Dragging the page still puts the keyboard away, and then the line catches up.
     dismissKeyboard(app)
@@ -51,9 +55,9 @@ final class SearchKeyboardTests: XCTestCase {
     let waited = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: served, object: nil)], timeout: 20)
     XCTAssertEqual(waited, .completed, "The people never came: \(stats.label)")
     // Typing waits for the app to settle, so the redraw that follows the people has happened.
-    field.typeText("a")
+    Self.tapKeys("a", in: app)
     XCTAssertEqual(Self.number("hides", in: stats.label), 0, "The keyboard went away as the People tab arrived: \(stats.label)")
-    XCTAssertEqual(field.value as? String, "boa")
+    XCTAssertEqual((field.value as? String)?.lowercased(), "boa")
     XCTAssertFalse(app.tabBars.buttons["People"].exists, "The People tab came while the keyboard was up")
     dismissKeyboard(app)
     XCTAssertTrue(app.tabBars.buttons["People"].waitForExistence(timeout: 10), "The People tab never came once the keyboard went")
@@ -69,11 +73,27 @@ final class SearchKeyboardTests: XCTestCase {
     let field = app.searchFields.firstMatch
     XCTAssertTrue(field.waitForExistence(timeout: 10))
     field.tap()
-    guard app.keyboards.firstMatch.waitForExistence(timeout: 5) else {
-      throw XCTSkip("No software keyboard: turn off Connect Hardware Keyboard in the Simulator")
+    let stats = app.staticTexts["keyboard-stats"].firstMatch
+    try requireSoftwareKeyboard(app, stats)
+    Self.tapKeys("bo", in: app)
+    return (app, field, stats)
+  }
+
+  /// The on-screen keyboard came up (the app saw keyboardWillShow). With a hardware keyboard
+  /// attached it does not, and there is nothing here to test.
+  private func requireSoftwareKeyboard(_ app: XCUIApplication, _ stats: XCUIElement) throws {
+    let shown = NSPredicate { _, _ in Self.number("shows", in: stats.label) >= 1 }
+    guard app.keyboards.firstMatch.waitForExistence(timeout: 5),
+          XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: shown, object: nil)], timeout: 5) == .completed else {
+      throw XCTSkip("No on-screen keyboard: turn off Connect Hardware Keyboard in the Simulator, or restart it if a test typed with typeText where the keyboard minimises for a hardware keyboard")
     }
-    field.typeText("bo")
-    return (app, field, app.staticTexts["keyboard-stats"].firstMatch)
+  }
+
+  /// Types by tapping the on-screen keys (see the note at the top).
+  private static func tapKeys(_ text: String, in app: XCUIApplication) {
+    for character in text {
+      app.keyboards.keys.matching(NSPredicate(format: "label ==[c] %@", String(character))).firstMatch.tap()
+    }
   }
 
   private func dismissKeyboard(_ app: XCUIApplication) {

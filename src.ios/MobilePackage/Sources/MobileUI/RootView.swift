@@ -141,16 +141,27 @@ private struct KeyboardHold: View {
   @Environment(AppModel.self) private var model
   @Binding var held: Held?
   @State private var keyboardUp = false
+  /// Counts keyboardWillShow, and what the count was at the last keyboardWillHide: a show that
+  /// interrupts a hide still running comes as willHide, willShow, didHide, and that late didHide
+  /// must not end the hold under a keyboard that is up again.
+  @State private var shows = 0
+  @State private var showsAtHide = 0
 
   private var current: Held { Held(model) }
 
   var body: some View {
     Color.clear
       .onAppear { held = current }
-      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+        shows += 1
+        keyboardUp = true
+      }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in showsAtHide = shows }
       // Did, not will: catching up while the keyboard is still going redrew the tabs mid-way, and
       // the field could take it back.
-      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in keyboardUp = false }
+      .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+        if shows == showsAtHide { keyboardUp = false }
+      }
       .onChange(of: current) { _, new in if !keyboardUp, new != held { held = new } }
       .onChange(of: keyboardUp) { _, up in if !up, current != held { held = current } }
   }
