@@ -583,7 +583,7 @@ std::vector<shared_folder> shared_folders(const where& w) {
   if (w.data_dir.empty()) return out;
   if (const auto text = read_small(w.data_dir + "/host/serve/serve.json")) {
     if (auto c = serve::parse_config(*text, true, true)) {
-      for (const auto& r : c->roots) out.push_back({r.path, r.label});
+      for (const auto& r : c->roots) out.push_back({r.path, r.label, r.backup});
     }
   }
   return out;
@@ -659,6 +659,25 @@ std::vector<std::string> unique_labels(std::span<const folder_choice> f, std::sp
     out.push_back(l);
   }
   return out;
+}
+
+std::vector<folder_choice> share_plan(std::span<const folder_choice> chosen, std::span<const shared_folder> shared) {
+  std::vector<folder_choice> fresh, again;
+  for (const auto& f : chosen) {
+    const std::string key = same_path_key(f.path);
+    const auto s = std::find_if(shared.begin(), shared.end(), [&](const shared_folder& x) { return same_path_key(x.path) == key; });
+    if (s == shared.end()) {
+      fresh.push_back(f);
+    } else if (f.backup && !s->backup) {
+      again.push_back({s->path, s->label, true});  // as serve.json has it: matched even with its drive away
+    }
+  }
+  std::vector<std::string> taken;
+  for (const auto& s : shared) taken.push_back(s.label);
+  const auto labels = unique_labels(fresh, taken);  // the program refuses a label in use
+  for (std::size_t i = 0; i < fresh.size(); ++i) fresh[i].label = labels[i];
+  fresh.insert(fresh.end(), again.begin(), again.end());
+  return fresh;
 }
 
 bool answers(std::uint16_t port, int timeout_ms) {

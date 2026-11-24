@@ -1827,21 +1827,11 @@ void link::host_setup(const std::string& request) {
   }
 
   // 1. The folders, each with the program's own `host share` (its rules: never
-  // the host's own folder, nor one holding it). One already shared stays.
+  // the host's own folder, nor one holding it). One already shared stays, made a
+  // backup folder when it is ticked as one (self_host::share_plan).
   step("share");
-  const auto shared = self_host::shared_folders(w);
-  std::vector<self_host::folder_choice> fresh;
-  for (const auto& f : folders) {
-    const std::string key = self_host::same_path_key(f.path);
-    bool there = false;
-    for (const auto& s : shared) there = there || self_host::same_path_key(s.path) == key;
-    if (!there) fresh.push_back(f);
-  }
-  std::vector<std::string> taken;
-  for (const auto& s : shared) taken.push_back(s.label);
-  const auto labels = self_host::unique_labels(fresh, taken);  // the program refuses a label in use
-  for (std::size_t i = 0; i < fresh.size(); ++i) {
-    auto r = self_host::run_host(w, self_host::share_args(fresh[i].path, labels[i], fresh[i].backup));
+  for (const auto& f : self_host::share_plan(folders, self_host::shared_folders(w))) {
+    auto r = self_host::run_host(w, self_host::share_args(f.path, f.label, f.backup));
     if (!r) return fail("host_failed");
     if (r->code != 0) return fail("host_share", first_line(r->output));
   }

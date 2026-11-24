@@ -148,6 +148,9 @@ Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
 | `Ctrl+↑` | Viewing | Up one folder, selecting the folder left |
 | `Ctrl+←` / `Ctrl+→` | browse, video | Previous / next sibling folder |
+| `Ctrl+[` / `Ctrl+]` | Viewing | Back / Forward through folders, each with the selection it had ([Folder navigation](#folder-navigation)) |
+| `Ctrl+Shift+N` | Viewing | New folder in the folder on screen |
+| `Ctrl+V` | Viewing | Paste files here: the clipboard's files copied into the folder on screen |
 | `Enter` | browse, video | Edit workspace |
 | `?` | all | Cheat sheet for the current mode |
 | `F3` | all | Frame-time overlay |
@@ -202,9 +205,54 @@ a bottom-right card, "Press T to hide the filmstrip and scroll" (document) or "�
 ← →" (clip), when the strip changes what input does. Fades after 8 s, no focus; once `T` is used
 or "Got it" clicked it never returns (`[hints] filmstrip_t` / `mv.hint.filmstripT`).
 
-**Gallery.** Full-client grid: item / row navigation, click opens. Child folders are tiles (one
-row above photos in mixed folders); `Enter` opens, `/` finds a tile. Opening the gallery pauses a
-clip; closing resumes it. Folder path sits in the command bar left of `?`, with Up and Root.
+**Gallery.** Full-client grid: item / row navigation, click opens a photo. Child folders are tiles
+ahead of the photos in the same grid (Mac; Windows keeps its folder row in mixed folders); one
+click selects a tile, a double-click or `Enter` opens it, `/` finds one. Opening the gallery pauses
+a clip; closing resumes it. Folder path sits in the command bar left of `?`, with Back, Forward, Up
+and Root.
+
+#### Folder navigation
+
+Finder's and Explorer's model on both hosts (`shell/browse_history.h`, beside `browse_path.h`):
+
+- Every move to another folder (tile, crumb, Up, sibling, tree, sidebar place, Open, Recent) records
+  the folder left with its selected item and folder tile; a result list is no place. `Ctrl+[` /
+  `Ctrl+]` (Go ▸ Back / Forward on the Mac, the bar's chevrons) reopen it with that selection; a new
+  move clears Forward. 64 deep; a folder that went is forgotten.
+- Another computer's folder has the same bar: server › named folder › … (`remote::key_chain`,
+  names from the server), Back / Forward / Up, crumbs that take drops; only a search result list
+  shows its title and count instead. The grid starts right of the folder pane, never under it.
+- The grid's scroll comes back with Back / Forward (Mac `GalleryScroll`, per folder); any other
+  arrival starts at the top on what the host selected. Listings load on the pool as before.
+- The folder pane (`Ctrl+Shift+E`, Mac) leads with places: the home folders, every mounted volume
+  (re-read on mount / eject, off the main thread), paired servers, the Photos library, then the
+  trail's tree. Each row, tile and crumb is a drop target.
+- Type-to-select is `/` (letters are commands here).
+
+#### Drag and drop into folders
+
+One rule for every target and both chromes, `shell/file_drop.h` (`decide_drop`), asked on each
+drag-over with no I/O (Mac `mv_chrome_drop_verdict`, Windows a synchronous `WM_COPYDATA`):
+
+- A drag from this window **moves**, `⌥` / `Ctrl` copies. A drag from Finder / Explorer or another
+  app **copies** ("adds"), `⌘` / `Shift` moves. The grid is the folder on screen; a tile, a crumb or
+  a sidebar place is that folder. With no folder open a drop opens what it carries, as the canvas.
+- Refused, with words on the target: read-only places (Photos library, read-only lists), another
+  computer's folder this device may not change (the server's reason, plan §6), a folder into
+  itself, a move onto the folder it is already in, a remote folder leaving its server, and files
+  of one server going to another. A remote file dropped on a local folder comes down; a move
+  deletes it on the server (into its trash) only after the local copy reads back.
+- Feedback: accent ring + wash on the target (Mac), a dashed / thin body ring when refused, a line
+  "Move 3 items to Trip" at the foot of the grid (Mac) or the drag caption (Windows). A tile rested
+  on for 0.7 s opens (spring-loading).
+- The work is `shell/file_transfer.h` on the pool: never replaces (`name (2).ext`), a move on one
+  volume is a rename, across volumes a verified copy then removal (a file that will not go takes
+  its copy back), a failure removes what it wrote. Each run is a row in the Jobs pane beside clip
+  jobs (Mac; it opens after 1.2 s if still running) and ends with a notice. `transfer_target` is the
+  one seam; `mixed_target` sends `remote:` paths through the host's remote library
+  ([desktop-client §6](../plans/desktop-client.md)).
+- Keyboard twins: Paste files here (`Ctrl+V`), New Folder (`Ctrl+Shift+N`; the Mac names it first),
+  Move to… / Copy to… (`Shift+F8` / `Shift+F7`).
 
 **Home** (owner 2026-11-18): the first item of the bar's **Open** menu on both hosts (Mac
 `kMenuHome`, Windows `chrome_cmd_go_home`). Whatever is open closes (a slideshow, the Edit
@@ -274,8 +322,9 @@ Slideshow and **Go**. Each item posts its command id.
   one stem (`io::rename_stop`, [24](24-transfer.md) "Rename"), no re-decode. Refused in a result
   list, for a Photos library file, with unsaved edits or a write in flight, or for invalid names.
 - **Delete**: Recycle Bin / Trash only; where there is none the item is refused and counted.
-- **Drag-out**: cells (and the canvas) drag originals plus pairs as `CF_HDROP`, copy-only; a
-  marked cell drags the marks.
+- **Drag-out**: cells (and the canvas) drag originals plus pairs as `CF_HDROP`, copy-only to
+  other apps; a marked cell drags the marks. Inside the app they move into folders
+  ([Drag and drop into folders](#drag-and-drop-into-folders)).
 - **Opening** (argv, drop anywhere): first existing entry wins; a file opens its folder with it
   selected; nothing existing beeps. A watcher refresh keeps the current item (else the next).
 
@@ -456,8 +505,8 @@ scene folds away before the welcome card). Opening a file skips that.
 ## Folder tree
 
 Left strip, hidden by default; `Ctrl+Shift+E` shows and focuses (`↑` `↓` walk, `→` `←`
-expand/collapse, `Enter` opens, `Esc` to canvas, again closes). Names only, from
-`mv_list_subdirectories` on a worker. Rooted at the browsing trail's root (`shell/browse_path.h`),
+expand/collapse, `Enter` opens, `Esc` to canvas, again closes). Places above it on the Mac
+([Folder navigation](#folder-navigation)). Names only, from `mv_list_subdirectories` on a worker. Rooted at the browsing trail's root (`shell/browse_path.h`),
 the open folder expanded and marked; opening outside the trail starts a new root.
 
 ## Overlays on the hot path

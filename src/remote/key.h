@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mv::remote {
 
@@ -57,6 +58,10 @@ struct key_parts {
 }
 // The folder a key is in ("" for the server's top).
 [[nodiscard]] std::string parent_key(std::string_view key);
+// A folder key's trail for the path bar (docs/design/16 "Folder navigation"): the server's
+// top, the named folder, then each folder below it down to `folder_key` itself. Empty for
+// anything that is not a folder key.
+[[nodiscard]] std::vector<std::string> key_chain(std::string_view folder_key);
 // The last segment of <rel> ("" for a server's top or a named folder).
 [[nodiscard]] std::string leaf_name(std::string_view key);
 [[nodiscard]] bool is_hex16(std::string_view s) noexcept;

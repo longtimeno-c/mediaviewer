@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "remote/key.h"
 
+#include <algorithm>
+
 namespace mv::remote {
 
 bool is_hex16(std::string_view s) noexcept {
@@ -87,6 +89,15 @@ std::string parent_key(std::string_view key) {
   p.rel = slash == std::string::npos ? std::string{} : k->rel.substr(0, slash);
   p.folder = true;
   return make_key(p);
+}
+
+std::vector<std::string> key_chain(std::string_view folder_key) {
+  std::vector<std::string> out;
+  auto k = parse_key(folder_key);
+  if (!k || !k->folder) return out;
+  for (std::string at = make_key(*k); !at.empty(); at = parent_key(at)) out.push_back(at);
+  std::reverse(out.begin(), out.end());
+  return out;
 }
 
 std::string leaf_name(std::string_view key) {

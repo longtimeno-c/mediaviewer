@@ -16,8 +16,9 @@
 //      go no further: message 3 needs the device's key);
 //   4. only then does it do any key work or say anything;
 //   5. the device key from the finished handshake must be a paired one:
-//      paired devices hold a read grant on the named folders, and may create
-//      files in the backup folders (serve_backup.h); a device
+//      paired devices hold a read grant on the named folders; a device whose
+//      role is "change" may also add, move and delete files in them
+//      (serve_wire.h "changing", serve_backup.h for backup folders); a device
 //      that is not paired, or was revoked, is told so, sealed, and refused.
 //
 // A running session is cut within kDevicesRecheckMs of its device being
@@ -138,13 +139,19 @@ class server {
     std::function<bool(const config&)> save_config;
     // Taken around every change of the paired list ("": none), against `serve add`.
     std::string devices_lock;
-    // Phone backup (1.1): whether a device may create files in the backup
-    // folders. Empty: its grant decides (docs/plans/mobile.md §10b.1, B2): an
-    // unlimited paired device may, a limited one only with `backup` on and only
-    // in its folders, and the owner's session never. The tests set it.
+    // Whether a device may change files (role "change": phone backup's writes, and
+    // kChangeOps's add, mkdir, move and delete) in the folders it sees. Empty: its grant
+    // decides (docs/plans/mobile.md §10b.1, B2; self-host-users-smb.md §9): an unlimited
+    // paired device may, a limited one only with `backup` on and only in its folders, the
+    // owner's session never, and nobody in the Catalogue. The tests set it.
     std::function<bool(const std::array<std::uint8_t, 32>&)> may_write;
     // Tests: a volume's free bytes, instead of asking the OS.
     std::function<std::uint64_t(const std::string&)> free_bytes;
+    // Tests: a move between two named folders always copies, checks and removes, as one
+    // across volumes does (serve_wire.h "changing"), so that path runs on one disk.
+    bool copy_moves = false;
+    // Tests: called on the worker before each file a move copies (a revoke in the middle).
+    std::function<void()> during_copy;
     // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
     // it. Empty: the system clock.
     std::function<std::int64_t()> now_unix;

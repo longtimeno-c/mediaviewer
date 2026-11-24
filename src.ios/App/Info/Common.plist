@@ -11,6 +11,9 @@
 	<array>
 		<string>io.github.longtimeno-c.mediaviewer.mobile.first-copy</string>
 	</array>
+	<!-- The fixtures app's own folder in Files, holding a document for Add from Files to pick. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

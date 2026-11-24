@@ -142,6 +142,13 @@ uses this mechanism.
   again** when the copy on disk is unusable (keeps data). A working copy whose update failed is
   never removed. Details go to the log, never a message that could hold a path. Words:
   `src.managed/Shared/InstallWords.cs`, `InstallWords.swift`.
+- **A damaged copy repairs itself** (Windows; slot add-ons). When the load refuses an installed
+  copy's files (one missing or changed: antivirus quarantining a bundled `.exe` is the case seen),
+  the chrome installs it again over the damaged copy, once per process, only while the automatic
+  update check is on, keeping data (`AddonRepair`, `RepairDamagedSlotAddons`). If the fresh copy
+  breaks again, or its files do not verify as they land, it does not loop: the card says the copy
+  keeps losing its files and that security software is the usual cause. The Mac still offers only
+  the Reinstall button.
 - **Signed, verified, then loaded.** Two fixed release assets per platform:
   `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by plain GET
   (no identifier, query or cookies). `manifest.json` lists files, SHA-256 and a licence per file,

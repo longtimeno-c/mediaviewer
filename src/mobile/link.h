@@ -170,6 +170,31 @@ class link_session final : public remote_file {
       const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
       const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false);
+  // Changing the shared folders (serve_client.h "changing the shared folders"): plain
+  // pass-throughs to the live client, each blocking (a worker). changes_files(): the
+  // service has mkdir, move and delete; show New folder / Move / Rename / Delete only then,
+  // and on a folder only when its root_info.writable. A dropped link is dropped here, as
+  // write() does; `add` resumes after an offset refusal with `at` = `why->have`.
+  [[nodiscard]] result<bool> changes_files();
+  [[nodiscard]] result<driftwire::serve::client::change_done> add(
+      const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
+      std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
+      const cancel_flag* cancel, driftwire::serve::client::change_refused* why = nullptr);
+  // The phone's Add: the file at `local_path`, hashed here, sent with add() and carried on after an
+  // offset refusal (a cancel or a drop left this device's unfinished copy), once more from the start
+  // after a hash refusal, and once more on a new link after a drop (waiting out "busy" while the
+  // service lets go of the old stream). `progress` gets the bytes the service has, of the size.
+  [[nodiscard]] result<driftwire::serve::client::change_done> add_file(
+      const std::string& root, const std::string& rel, const std::string& local_path,
+      const std::function<void(std::uint64_t done, std::uint64_t total)>& progress, const cancel_flag* cancel,
+      driftwire::serve::client::change_refused* why);
+  [[nodiscard]] result<driftwire::serve::client::change_done> make_folder(
+      const std::string& root, const std::string& rel, driftwire::serve::client::change_refused* why = nullptr);
+  [[nodiscard]] result<driftwire::serve::client::change_done> move(
+      const std::string& root, const std::string& rel, const std::string& to_root, const std::string& to_rel,
+      driftwire::serve::client::change_refused* why = nullptr);
+  [[nodiscard]] result<driftwire::serve::client::change_done> remove(
+      const std::string& root, const std::string& rel, driftwire::serve::client::change_refused* why = nullptr);
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list_meta(const std::string& root, const std::string& rel);
   // The whole listing or an error: status::io when the service cut it short, so a caller that
   // drops what is not listed never drops what was merely past the cut.

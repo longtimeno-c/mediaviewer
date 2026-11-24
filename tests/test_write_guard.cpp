@@ -60,3 +60,27 @@ TEST_CASE("a remote folder's keys and cache are read-only, with their own words"
   set_remote_cache_prefix("");
   CHECK_FALSE(write_protected("/Users/x/Library/Caches/MediaViewer/Remote/0123456789abcdef/h/IMG_0001.JPG"));
 }
+
+TEST_CASE("a change device may add, make folders, move, rename and delete on writable remote keys, nothing else",
+          "[shell][write_guard][desktop-client]") {
+  using namespace mv::shell;
+  const std::string writable = "remote:0123456789abcdef/a1a1a1a1a1a1a1a1/Trips/IMG_0001.JPG";
+  const std::string viewed = "remote:0123456789abcdef/b2b2b2b2b2b2b2b2/IMG_0002.JPG";
+  set_remote_writable([](std::string_view key) { return key.find("/a1a1a1a1a1a1a1a1/") != std::string_view::npos; });
+  for (const auto op : {file_change::add, file_change::make_folder, file_change::move, file_change::rename,
+                        file_change::remove}) {
+    CHECK(change_allowed(writable, op));
+    CHECK_FALSE(change_allowed(viewed, op));  // that folder: view only
+    CHECK(change_allowed("/Users/a/Pictures/IMG_3.jpg", op));  // a local file, as before
+    CHECK_FALSE(change_allowed("photos:0A1B2C3D/L0/001", op));
+  }
+  // Ratings, metadata and edits ask write_protected, which a remote file stays.
+  CHECK(write_protected(writable));
+  // Its cached original is a file here that stands for it: never changed as if it were it.
+  set_remote_cache_prefix("/c/Remote");
+  CHECK_FALSE(change_allowed("/c/Remote/0123456789abcdef/h/IMG_0001.JPG", file_change::remove));
+  set_remote_cache_prefix("");
+  // No check registered (a host without the library): nothing remote may change.
+  set_remote_writable(nullptr);
+  CHECK_FALSE(change_allowed(writable, file_change::add));
+}

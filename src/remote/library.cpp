@@ -16,6 +16,7 @@
 #include "io/file.h"
 #include "io/media_extensions.h"
 #include "io/replace.h"
+#include "io/verified_copy.h"
 #include "mobile/link_payload.h"
 #include "wire/serve.h"
 #include "wire/serve_wire.h"
@@ -185,6 +186,10 @@ struct library::server_rt {
   std::atomic<reach> state{reach::unknown};
   std::atomic<std::int64_t> failed_at_ms{0};
   std::atomic<int> role{0};  // role_code: 0 not known this run
+  // The service has mkdir / move / delete (serve::client::changes_files), and whether the
+  // writable roots were read since the last connect that changed the role.
+  std::atomic<bool> changes{false};
+  std::atomic<bool> rights_known{false};
 
   ~server_rt() {
     sodium_memzero(device_key.data(), device_key.size());
@@ -250,7 +255,14 @@ class link_reader final : public range_reader {
 library::library(config c) : cfg_(std::move(c)), cache_(cfg_.cache_dir, cfg_.cache_cap) {
   (void)sodium_init();
   // Made here, once: pairing, forgetting and loading run on different threads.
-  if (!cfg_.store) own_store_ = driftwire::secrets::os_store(driftwire::secrets::kAppService);
+  if (cfg_.store) return;
+  if (!cfg_.dev_keys_dir.empty()) {
+    // Never the OS store as a fallback: a dev run must not touch the installed app's keys.
+    if (driftwire::secrets::owner_only_folder(cfg_.dev_keys_dir))
+      own_store_ = driftwire::secrets::file_store(cfg_.dev_keys_dir);
+    return;
+  }
+  own_store_ = driftwire::secrets::os_store(driftwire::secrets::kAppService);
 }
 
 library::~library() {
@@ -574,6 +586,14 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
   if (done) {
     std::string word;
     if (s.link->role(word) >= 0 && s.role.exchange(role_code(word)) != role_code(word)) {
+      // The role is the caps' (sent once, at hello): a new one means what it may change is
+      // read again now, so can_write never answers from the old role meanwhile.
+      s.rights_known.store(false);
+      if (auto roots = s.link->roots()) {
+        note_rights(s, roots.value());
+      } else {
+        forget_rights(s);
+      }
       gen_.fetch_add(1, std::memory_order_acq_rel);  // the rows say what it may do
     }
     keep_addresses(s);
@@ -589,6 +609,8 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
         if (f.problem == mobile::route_problem::wrong_service) r = reach::wrong_service;
       }
       s.role.store(0);  // what it may do there is no longer known (set_state bumps)
+      s.rights_known.store(false);
+      s.changes.store(false);
       set_state(s, r);
       break;
     }
@@ -609,6 +631,12 @@ result<listing> library::list(std::string_view folder_key, bool person, const mo
   auto s = find(k->server);
   if (!s) return err(status::not_found);
   auto live = list_live(*s, *k, folder_key, person, cancel);
+  // The service cut the link as this asked (its limit changed: a role or folders the admin
+  // changed): a person's listing connects again once rather than failing or going stale.
+  if (!live && person && (live.error() == status::io || live.error() == status::timeout) &&
+      !(cancel && cancel->stopped())) {
+    live = list_live(*s, *k, folder_key, person, cancel);
+  }
   if (live) {
     keep_listing(s->id, folder_key, live.value());
     return live;
@@ -697,6 +725,7 @@ result<listing> library::list_live(server_rt& srv, const key_parts& kp, std::str
   if (k->root.empty()) {
     auto roots = s->link->roots();
     if (!roots) return err(roots.error());
+    note_rights(*s, roots.value());
     out.title = s->name;
     std::lock_guard lock(stamps_m_);
     for (const serve::root_info& r : roots.value()) {
@@ -713,6 +742,10 @@ result<listing> library::list_live(server_rt& srv, const key_parts& kp, std::str
   }
   auto entries = s->link->list(k->root, k->rel);
   if (!entries) return err(entries.error());
+  // A folder opened before its server's top this run: what this device may change there.
+  if (!s->rights_known.load()) {
+    if (auto roots = s->link->roots()) note_rights(*s, roots.value());
+  }
   out.title = k->rel.empty() ? display_name(folder_key) : leaf_name(folder_key);
   if (out.title.empty() && k->rel.empty()) {
     // Opened before its server's top was listed this session (a pinned tree,
@@ -984,6 +1017,252 @@ result<std::vector<std::uint8_t>> library::tile(std::string_view file_key, const
   return jpeg;
 }
 
-bool library::can_write(std::string_view) const noexcept { return false; }
+void library::forget_rights(server_rt& s) {
+  s.changes.store(false);
+  s.rights_known.store(false);
+  std::lock_guard lock(stamps_m_);
+  const std::string prefix = s.id + "/";
+  for (auto it = writable_.lower_bound(prefix); it != writable_.end() && it->first.rfind(prefix, 0) == 0; ++it) {
+    it->second = false;
+  }
+}
+
+// A change refused "not-allowed": the role or a folder's grant changed since this link's hello
+// (the service cuts a link whose limit changed, but a change in flight can still meet it). Ask
+// again now -- a fresh hello for the role, the roots for each folder -- so the next answer is
+// the server's, not the one this link started with.
+void library::recheck_rights(server_rt& s) {
+  mobile::route_report report;
+  if (s.link->reconnect(report, nullptr, cfg_.connect_timeout_ms)) {
+    std::string word;
+    if (s.link->role(word) >= 0) s.role.store(role_code(word));
+    if (auto roots = s.link->roots()) {
+      note_rights(s, roots.value());
+    } else {
+      forget_rights(s);
+    }
+  } else {
+    forget_rights(s);
+  }
+  gen_.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void library::note_rights(server_rt& s, const std::vector<serve::root_info>& roots) {
+  auto changes = s.link->changes_files();
+  const bool can = changes && changes.value();
+  bool moved = s.changes.exchange(can) != can;
+  {
+    std::lock_guard lock(stamps_m_);
+    // A folder the server no longer lists for this device (a narrower grant) is not writable:
+    // every entry of this server is cleared first, then the listed ones set.
+    const std::string prefix = s.id + "/";
+    for (auto it = writable_.lower_bound(prefix); it != writable_.end() && it->first.rfind(prefix, 0) == 0; ++it) {
+      if (it->second) moved = true;
+      it->second = false;
+    }
+    for (const auto& r : roots) {
+      if (!is_hex16(r.id)) continue;
+      // Its label too: a subfolder opened first (Back, a pin) still names its folder in the trail.
+      labels_[make_key(key_parts{s.id, r.id, {}, true})] = r.label;
+      const bool w = can && r.writable && r.label != serve::kCatalogueLabel;
+      bool& slot = writable_[s.id + "/" + r.id];
+      if (w) moved = true;  // set again after the clear above; a bump is cheap
+      slot = w;
+    }
+  }
+  s.rights_known.store(true);
+  if (moved) gen_.fetch_add(1, std::memory_order_acq_rel);  // the commands say what it may do
+}
+
+bool library::can_write(std::string_view key) const noexcept {
+  auto k = parse_key(key);
+  if (!k || k->root.empty()) return false;
+  auto s = find(k->server);
+  if (!s || !s->changes.load() || role_word(s->role.load()) == std::string_view("view")) return false;
+  std::lock_guard lock(stamps_m_);
+  auto it = writable_.find(k->server + "/" + k->root);
+  return it != writable_.end() && it->second;
+}
+
+std::string library::write_problem(std::string_view key) const {
+  if (can_write(key)) return {};
+  auto k = parse_key(key);
+  auto s = k ? find(k->server) : nullptr;
+  if (!s) return "On another computer: read-only from here";
+  const std::string name = s->name.empty() ? std::string("the server") : s->name;
+  if (k->root.empty()) return "Pick one of " + name + "'s folders first";
+  if (s->state.load() != reach::online) return name + " isn't answering: nothing can be changed there now";
+  if (!s->rights_known.load()) return "Still asking " + name + " what this computer may change";
+  if (role_word(s->role.load()) == std::string_view("view")) {
+    return name + " lets this computer view only. Its owner can allow changes in driftwire.";
+  }
+  if (!s->changes.load()) return name + " needs an update before files can be changed from here";
+  return "Read-only: " + name + " doesn't let this computer change this folder";
+}
+
+result<std::shared_ptr<library::server_rt>> library::live_server(const key_parts& k, const mobile::cancel_flag* cancel) {
+  auto s = find(k.server);
+  if (!s) return err(status::not_found);
+  MV_TRY_VOID(connect(*s, true, cancel));
+  if (!s->rights_known.load()) {
+    if (auto roots = s->link->roots()) note_rights(*s, roots.value());
+  }
+  return s;
+}
+
+void library::forget_changed(std::string_view server, std::string_view folder_key, std::string_view item_key) {
+  std::error_code ec;
+  fs::remove(fs_path(listing_file(server, folder_key)), ec);
+  if (item_key.empty()) return;
+  // A folder that moved or went: the listings kept for the folders inside it too, or a server
+  // that does not answer would show them again under keys that no longer exist. Each file
+  // names its key; a walk of this server's few listings, on the worker.
+  if (!item_key.empty() && item_key.back() == '/') {
+    const fs::path dir = fs_path(listing_file(server, item_key)).parent_path();
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+      auto bytes = io::read_all(utf8_of(it->path()));
+      if (!bytes) continue;
+      auto doc = json::parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+      const std::string* key = doc ? doc->str("key") : nullptr;
+      if (key && key->rfind(item_key, 0) == 0) {
+        std::error_code rm;
+        fs::remove(it->path(), rm);
+      }
+    }
+  }
+  std::lock_guard lock(stamps_m_);
+  // A file's stamp, or everything listed under a folder that moved or went.
+  for (auto it = stamps_.lower_bound(item_key); it != stamps_.end() && it->first.rfind(item_key, 0) == 0;) {
+    it = stamps_.erase(it);
+  }
+}
+
+namespace {
+// A change's refusal as the caller's status (serve_client.h's table), with `why` filled.
+status change_status(status st, const serve::client::change_refused& w, serve::client::change_refused* why) {
+  if (why) *why = w;
+  // "busy": a write is open on that name, or beneath the folder, right now. Not a refusal
+  // to say no to: the same change works in a moment, and the words say so.
+  if (w.why == serve::client::change_why::busy) return status::busy;
+  return st;
+}
+std::string key_in(const key_parts& folder, const std::string& rel, bool is_folder) {
+  key_parts p{folder.server, folder.root, rel, is_folder};
+  return make_key(p);
+}
+}  // namespace
+
+result<std::string> library::add_file(std::string_view folder_key, const std::string& local_path,
+                                      const std::string& name, const mobile::cancel_flag* cancel,
+                                      const std::function<void(std::uint64_t)>& progress, change_refused* why) {
+  auto k = parse_key(folder_key);
+  if (!k || !k->folder || k->root.empty() || name.empty() || is_hidden(name) || name.find('/') != std::string::npos) {
+    return err(status::invalid_arg);
+  }
+  std::error_code ec;
+  const std::uint64_t size = fs::file_size(fs_path(local_path), ec);
+  if (ec) return err(status::not_found);
+  auto hashed = io::hash_file(local_path, io::read_mode::sequential, cancel ? &cancel->stop : nullptr);
+  if (!hashed) return err(hashed.error());
+  const std::string hash = hashed.value().hex();
+  std::ifstream in(fs_path(local_path), std::ios::binary);
+  if (!in) return err(status::io);
+  const serve::client::read_fn read = [&in](std::uint64_t at, std::span<std::uint8_t> into) -> result<std::size_t> {
+    in.clear();
+    in.seekg(static_cast<std::streamoff>(at));
+    in.read(reinterpret_cast<char*>(into.data()), static_cast<std::streamsize>(into.size()));
+    if (in.bad()) return err(status::io);
+    return static_cast<std::size_t>(in.gcount());
+  };
+  const std::string rel = join_rel(k->rel, name);
+  std::uint64_t at = 0;
+  int tries = 6;
+  for (;;) {
+    auto s = live_server(*k, cancel);
+    if (!s) return err(s.error());
+    change_refused w;
+    auto r = s.value()->link->add(k->root, rel, size, hash, at, read, progress, cancel, &w);
+    if (r) {
+      forget_changed(k->server, folder_key, {});
+      return key_in(*k, r->rel, false);
+    }
+    if (cancel && cancel->stopped()) return err(change_status(status::cancelled, w, why));
+    // Where the unfinished copy on the server ends: go on from there.
+    if (w.why == serve::client::change_why::offset && w.have != at && --tries > 0) {
+      at = w.have;
+      continue;
+    }
+    // The link went: connect again and ask; an unfinished copy answers with an offset.
+    if ((r.error() == status::io || r.error() == status::timeout) && --tries > 0) continue;
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
+}
+
+result<std::string> library::make_folder(std::string_view parent_key, const std::string& name, change_refused* why) {
+  auto k = parse_key(parent_key);
+  if (!k || !k->folder || k->root.empty() || name.empty() || is_hidden(name) || name.find('/') != std::string::npos) {
+    return err(status::invalid_arg);
+  }
+  auto s = live_server(*k, nullptr);
+  if (!s) return err(s.error());
+  change_refused w;
+  auto r = s.value()->link->make_folder(k->root, join_rel(k->rel, name), &w);
+  if (!r) {
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
+  forget_changed(k->server, parent_key, {});
+  if (r->existing) return err(change_status(status::permission_denied, {serve::client::change_why::exists, "exists", 0}, why));
+  return key_in(*k, r->rel, true);
+}
+
+result<std::string> library::move(std::string_view key, std::string_view to_folder_key, const std::string& name,
+                                  change_refused* why) {
+  auto from = parse_key(key);
+  auto to = parse_key(to_folder_key);
+  if (!from || !to || from->root.empty() || from->rel.empty() || !to->folder || to->root.empty() ||
+      from->server != to->server || name.empty() || is_hidden(name) || name.find('/') != std::string::npos) {
+    return err(status::invalid_arg);
+  }
+  auto s = live_server(*from, nullptr);
+  if (!s) return err(s.error());
+  change_refused w;
+  auto r = s.value()->link->move(from->root, from->rel, to->root, join_rel(to->rel, name), &w);
+  if (!r) {
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
+  forget_changed(from->server, parent_key(key), key);
+  forget_changed(to->server, to_folder_key, {});
+  return key_in(*to, r->rel, from->folder);
+}
+
+result<std::string> library::remove(std::string_view key, change_refused* why) {
+  auto k = parse_key(key);
+  if (!k || k->root.empty() || k->rel.empty()) return err(status::invalid_arg);
+  auto s = live_server(*k, nullptr);
+  if (!s) return err(s.error());
+  change_refused w;
+  auto r = s.value()->link->remove(k->root, k->rel, &w);
+  if (!r) {
+    if (w.why == serve::client::change_why::not_allowed) recheck_rights(*s.value());
+    return err(change_status(r.error(), w, why));
+  }
+  forget_changed(k->server, parent_key(key), key);
+  return r->rel;
+}
+
+result<bool> library::exists(std::string_view key) {
+  auto k = parse_key(key);
+  if (!k || k->root.empty()) return err(status::invalid_arg);
+  if (k->rel.empty()) return true;
+  auto s = live_server(*k, nullptr);
+  if (!s) return err(s.error());
+  auto info = s.value()->link->stat(k->root, k->rel);
+  if (info) return true;
+  if (info.error() == status::not_found) return false;
+  return err(info.error());
+}
 
 }  // namespace mv::remote

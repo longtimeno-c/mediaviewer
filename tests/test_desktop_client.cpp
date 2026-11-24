@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "clip_fixture.h"
+#include "shell/photos_backup_server.h"
 #include "fixtures.h"
 #include "import_fixture.h"
 #include "image/pipeline.h"
@@ -234,6 +235,13 @@ TEST_CASE("remote keys: a folder ends in a slash, nothing climbs out", "[desktop
   CHECK(rm::parent_key("remote:" + s + "/" + r + "/2024/IMG 1.JPG") == "remote:" + s + "/" + r + "/2024/");
   CHECK(rm::parent_key("remote:" + s + "/" + r + "/") == "remote:" + s + "/");
   CHECK(rm::leaf_name("remote:" + s + "/" + r + "/2024/IMG 1.JPG") == "IMG 1.JPG");
+  // The path bar's trail: the server, its named folder, each folder below.
+  CHECK(rm::key_chain("remote:" + s + "/" + r + "/2024/Trip/") ==
+        std::vector<std::string>{"remote:" + s + "/", "remote:" + s + "/" + r + "/", "remote:" + s + "/" + r + "/2024/",
+                                 "remote:" + s + "/" + r + "/2024/Trip/"});
+  CHECK(rm::key_chain("remote:" + s + "/") == std::vector<std::string>{"remote:" + s + "/"});
+  CHECK(rm::key_chain("remote:" + s + "/" + r + "/2024/IMG 1.JPG").empty());  // a file has no trail
+  CHECK(rm::key_chain("/Users/x").empty());
   for (const std::string& bad : std::vector<std::string>{"remote:", "remote:xyz/", "remote:" + s, "remote:" + s + "/" + r,
                                 "remote:" + s + "/" + r + "/../x", "remote:" + s + "/" + r + "/a//b",
                                 "remote:" + s + "/" + r + "/a\\b", "photos:abc", "/Users/x.jpg"}) {
@@ -362,6 +370,29 @@ TEST_CASE("a desktop whose OS store refuses the keys says so, not unreachable", 
   const std::string words = rm::pair_problem_words(id.error(), "Home");
   CHECK(words.find("Can't reach") == std::string::npos);
   CHECK(words.find("could not keep the keys") != std::string::npos);
+}
+
+// A dev run against a throwaway server (MV_DEV_REMOTE_DIR): its keys in files in that folder,
+// read back by the next run, and the library makes that store itself (the hosts sit above wire/).
+TEST_CASE("a desktop given a dev keys folder keeps its keys there and finds them again", "[desktop-client]") {
+  host h;
+  scratch_dir dir{"desktop_dev_keys"};
+  const fs::path keys = dir.root() / "keys";
+  rm::config cfg = desktop_config(dir.root(), nullptr);
+  cfg.dev_keys_dir = utf8(keys);
+  {
+    rm::library lib(cfg);
+    REQUIRE(lib.load());
+    auto id = lib.pair(h.code(), std::time(nullptr));
+    if (!id) FAIL("pair: " << mv::status_name(id.error()));
+  }
+  REQUIRE(fs::is_directory(keys));
+  CHECK_FALSE(fs::is_empty(keys));
+  rm::library again(cfg);
+  REQUIRE(again.load());
+  const auto servers = again.servers();
+  REQUIRE(servers.size() == 1);
+  CHECK(servers[0].state != rm::reach::access_ended);  // its keys were found
 }
 
 // 2026-11-18: a local Mac build has no keychain group, so the OS store is null;
@@ -648,6 +679,287 @@ TEST_CASE("unreachable, offline and ended are said plainly", "[desktop-client]")
 // resolution (fetch + full decode), and arrow-to-next for a neighbour the
 // viewer already fetched (the ±2 prefetch) and for one it did not. Beside
 // them, the same file from a local disk. MV_REMOTE_BENCH_JSON=path writes them.
+// Plan §6: the host's admin lets this desktop change files, as `driftwire host` does it
+// (serve.cpp set_access): "change" for every folder with no limit is the paired list; "view"
+// is the grants list with backup off. The next connect learns the role.
+void allow_changes(host& h, bool allow, bool restart = true) {
+  std::vector<dw::serve::grants::grant> granted;
+  REQUIRE(dw::serve::grants::load(*h.store, granted));
+  auto devices = dw::known::load(*h.store);
+  if (allow) {
+    const auto g = std::find_if(granted.begin(), granted.end(), [](const auto& x) { return x.name == "Test Desktop"; });
+    REQUIRE(g != granted.end());
+    dw::known::device d;
+    d.name = g->name;
+    d.key = g->key;
+    devices.push_back(d);
+    granted.erase(g);
+    REQUIRE(dw::known::save(*h.store, devices));
+  } else {
+    const auto d = std::find_if(devices.begin(), devices.end(), [](const auto& x) { return x.name == "Test Desktop"; });
+    REQUIRE(d != devices.end());
+    dw::serve::grants::grant g;
+    g.name = d->name;
+    g.key = d->key;
+    g.backup = false;
+    g.created = 1;
+    granted.push_back(g);
+    devices.erase(d);
+    REQUIRE(dw::serve::grants::save(*h.store, granted));
+    REQUIRE(dw::known::save(*h.store, devices));
+  }
+  if (allow) {
+    REQUIRE(dw::serve::grants::save(*h.store, granted));
+  }
+  // The service keeps who may write between requests; the admin op and its own re-read of the
+  // lists (recheck_devices, also on a timer) clear that. `restart`: as a host restart would.
+  if (!restart) {
+    h.srv->recheck_devices();
+    return;
+  }
+  const std::uint16_t port = h.port;
+  h.stop();
+  h.start(port);
+}
+
+TEST_CASE("changing files: a view desktop is refused, a change desktop adds, makes, moves and deletes",
+          "[desktop-client][remote-change]") {
+  host h;
+  put_file(h.photos / "2024" / "a.jpg", photo(64, 48, 1));
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  const std::string year = photos + "2024/";
+
+  // View (owner call 1): read-only, with a reason a command can show, and every change refused.
+  CHECK_FALSE(d.lib->can_write(year));
+  CHECK(d.lib->write_problem(year).find("view only") != std::string::npos);
+  rm::library::change_refused why;
+  auto refused = d.lib->make_folder(year, "Trip", &why);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error() == mv::status::permission_denied);
+  CHECK(why.why == dw::serve::client::change_why::not_allowed);
+  CHECK_FALSE(fs::exists(h.photos / "2024" / "Trip"));
+
+  // The admin allows changes: a new run learns it from the caps and the folders' answer.
+  allow_changes(h, true);
+  d.relaunch();
+  {
+    auto l = d.lib->list(rm::server_key(*id));
+    if (!l) FAIL("list after allow: " << mv::status_name(l.error()) << " state " << rm::reach_name(d.lib->servers()[0].state));
+  }
+  CHECK(d.lib->servers()[0].role == "change");
+  CHECK(d.lib->can_write(year));
+  CHECK(d.lib->can_write(year + "a.jpg"));
+  CHECK(d.lib->write_problem(year).empty());
+
+  // New folder, then the same name again: never a second one under it.
+  auto trip = d.lib->make_folder(year, "Trip");
+  REQUIRE(trip);
+  CHECK(*trip == year + "Trip/");
+  CHECK(fs::is_directory(h.photos / "2024" / "Trip"));
+  auto again = d.lib->make_folder(year, "Trip", &why);
+  CHECK_FALSE(again);
+  CHECK(why.why == dw::serve::client::change_why::exists);
+
+  // A subfolder opened first in a new run still names its folder (the path bar's trail).
+  d.relaunch();
+  REQUIRE(d.lib->list(year));
+  CHECK(d.lib->display_name(photos) == "Photos");
+
+  // A listing kept from before the change is not what the next list shows.
+  auto before = d.lib->list(year);
+  REQUIRE(before);
+  CHECK(before->folders.size() == 1);
+
+  // Add a local file, and the same name again: " (2)", never a replace.
+  scratch_dir local{"desktop_local"};
+  put_file(local / "b.jpg", photo(32, 24, 5));
+  auto added = d.lib->add_file(trip.value(), utf8(local / "b.jpg"), "b.jpg");
+  REQUIRE(added);
+  CHECK(*added == year + "Trip/b.jpg");
+  put_file(local / "other.jpg", photo(32, 24, 6));
+  auto second = d.lib->add_file(trip.value(), utf8(local / "other.jpg"), "b.jpg");
+  REQUIRE(second);
+  CHECK(*second == year + "Trip/b (2).jpg");
+  CHECK(fs::file_size(h.photos / "2024" / "Trip" / "b.jpg") == fs::file_size(local / "b.jpg"));
+  auto listed = d.lib->list(trip.value());
+  REQUIRE(listed);
+  CHECK(listed->files.size() == 2);  // at once, not the listing kept from before
+
+  // Rename and move: a taken name is refused as exists, nothing replaced.
+  auto clash = d.lib->move(year + "a.jpg", trip.value(), "b.jpg", &why);
+  CHECK_FALSE(clash);
+  CHECK(why.why == dw::serve::client::change_why::exists);
+  auto moved = d.lib->move(year + "a.jpg", trip.value(), "a.jpg");
+  REQUIRE(moved);
+  CHECK(*moved == year + "Trip/a.jpg");
+  CHECK_FALSE(fs::exists(h.photos / "2024" / "a.jpg"));
+  auto renamed = d.lib->move(*moved, trip.value(), "beach.jpg");
+  REQUIRE(renamed);
+  CHECK(fs::exists(h.photos / "2024" / "Trip" / "beach.jpg"));
+  auto after = d.lib->list(year);
+  REQUIRE(after);
+  CHECK(after->files.empty());
+  REQUIRE(d.lib->exists(*renamed));
+  CHECK(d.lib->exists(*renamed).value());
+
+  // Delete: into the server's trash, gone from every listing.
+  auto gone = d.lib->remove(*renamed);
+  REQUIRE(gone);
+  CHECK(gone->find("beach.jpg") != std::string::npos);
+  CHECK_FALSE(fs::exists(h.photos / "2024" / "Trip" / "beach.jpg"));
+  CHECK_FALSE(d.lib->exists(*renamed).value());
+
+  // Taken back: the next run is view again and says so.
+  allow_changes(h, false);
+  d.relaunch();
+  REQUIRE(d.lib->list(rm::server_key(*id)));
+  CHECK_FALSE(d.lib->can_write(year));
+}
+
+TEST_CASE("changing files: a role changed while linked is followed without a restart on either side",
+          "[desktop-client][remote-change]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);  // start as a change device (one restart: the setup)
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  REQUIRE(d.lib->can_write(photos));
+  REQUIRE(d.lib->make_folder(photos, "Before"));
+
+  // The admin takes it back while this desktop is linked; the service re-reads its lists (its
+  // timer, or the admin op), cutting the link whose limit changed. Nothing here restarts.
+  allow_changes(h, false, /*restart=*/false);
+  // Before the desktop asks the server anything, it cannot know: the role came at hello.
+  // The next change is refused by the service, and the desktop asks again at once (a fresh
+  // hello and the roots), so the row and can_write say "view" from then on.
+  rm::library::change_refused why;
+  auto refused = d.lib->make_folder(photos, "After", &why);
+  REQUIRE_FALSE(refused);
+  CHECK_FALSE(fs::exists(h.photos / "After"));
+  CHECK_FALSE(d.lib->can_write(photos));
+  CHECK(d.lib->servers()[0].role == "view");
+  CHECK(d.lib->write_problem(photos).find("view only") != std::string::npos);
+
+  // Given again: the next listing (opening or refreshing a folder) reconnects, learns the role
+  // and re-reads what it may change. Still no restart.
+  allow_changes(h, true, /*restart=*/false);
+  REQUIRE(d.lib->list(photos));
+  CHECK(d.lib->servers()[0].role == "change");
+  CHECK(d.lib->can_write(photos));
+  CHECK(d.lib->make_folder(photos, "Again"));
+}
+
+TEST_CASE("changing files: a moved folder's inner listings are not shown again when offline",
+          "[desktop-client][remote-change]") {
+  host h;
+  put_file(h.photos / "Trip" / "Day1" / "a.jpg", photo(32, 24, 1));
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  const std::string day1 = photos + "Trip/Day1/";
+  REQUIRE(d.lib->list(photos + "Trip/"));
+  REQUIRE(d.lib->list(day1));  // kept, for when the server does not answer
+  REQUIRE(d.lib->move(photos + "Trip/", photos, "2026 Trip"));
+  h.stop();
+  // Offline: the old inner folder is not offered from what was kept; it is not there.
+  auto stale = d.lib->list(day1);
+  CHECK_FALSE(stale);
+}
+
+TEST_CASE("changing files: a folder the server stops letting it change is read again after a refusal",
+          "[desktop-client][remote-change]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  REQUIRE(d.lib->can_write(photos));
+  // Still "change", but now limited to another folder (the Catalogue): Photos is not its any more.
+  std::vector<dw::serve::grants::grant> granted;
+  REQUIRE(dw::serve::grants::load(*h.store, granted));
+  auto devices = dw::known::load(*h.store);
+  const auto me = std::find_if(devices.begin(), devices.end(), [](const auto& x) { return x.name == "Test Desktop"; });
+  REQUIRE(me != devices.end());
+  dw::serve::grants::grant g;
+  g.name = me->name;
+  g.key = me->key;
+  g.backup = true;
+  g.created = 1;
+  g.roots = std::vector<std::string>{"c2c2c2c2c2c2c2c2"};
+  granted.push_back(g);
+  devices.erase(me);
+  REQUIRE(dw::serve::grants::save(*h.store, granted));
+  REQUIRE(dw::known::save(*h.store, devices));
+  h.srv->recheck_devices();
+  // The role is the same, so nothing said so; the next change is refused and the desktop asks
+  // again: Photos is no longer writable here.
+  CHECK_FALSE(d.lib->make_folder(photos, "Nope"));
+  CHECK_FALSE(fs::exists(h.photos / "Nope"));
+  CHECK_FALSE(d.lib->can_write(photos));
+}
+
+TEST_CASE("changing files: an upload cut short goes on from what reached the server", "[desktop-client][remote-change]") {
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  REQUIRE(d.lib->can_write(photos));
+
+  scratch_dir local{"desktop_upload"};
+  std::vector<std::uint8_t> big(6u << 20);
+  std::mt19937 rng(7);
+  for (auto& b : big) b = static_cast<std::uint8_t>(rng());
+  put_file(local / "clip.mov", big);
+
+  // Cut after the first megabytes, as a closed lid or a lost network would.
+  struct {
+    mv::mobile::cancel_flag flag;
+  } cancel;
+  std::uint64_t first_sent = 0;
+  auto cut = d.lib->add_file(photos, utf8(local / "clip.mov"), "clip.mov", &cancel.flag, [&](std::uint64_t sent) {
+    first_sent = sent;
+    if (sent >= (2u << 20)) cancel.flag.stop.store(true);
+  });
+  REQUIRE_FALSE(cut);
+  CHECK(cut.error() == mv::status::cancelled);
+  CHECK_FALSE(fs::exists(h.photos / "clip.mov"));
+
+  // Again: it goes on from the server's unfinished copy, not from the start.
+  std::uint64_t lowest = UINT64_MAX;
+  auto done = d.lib->add_file(photos, utf8(local / "clip.mov"), "clip.mov", nullptr, [&](std::uint64_t sent) {
+    lowest = std::min(lowest, sent);
+  });
+  REQUIRE(done);
+  CHECK(*done == photos + "clip.mov");
+  CHECK(lowest > 0);  // the first bytes it reported were past the start
+  auto landed = mv::io::read_all(utf8(h.photos / "clip.mov"));
+  REQUIRE(landed);
+  CHECK(landed.value() == big);
+}
+
 TEST_CASE("remote folder timings over loopback", "[.perf-bench][.desktop-client-perf]") {
   using clock = std::chrono::steady_clock;
   const auto ms = [](clock::time_point t0) { return std::chrono::duration<double, std::milli>(clock::now() - t0).count(); };
@@ -736,3 +1048,135 @@ TEST_CASE("remote folder timings over loopback", "[.perf-bench][.desktop-client-
   }
 }
 
+// docs/design/26 "Backup to a server": the Photos backup's server destination over a real
+// service. Only a desktop the host lets change files is a destination at all.
+TEST_CASE("a Photos backup's server folder: refused for a view desktop, made, filled and asked for a change one",
+          "[desktop-client][remote-change][photos_backup]") {
+  namespace bk = mv::shell::backup;
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  CHECK_FALSE(bk::make_server_folder(*d.lib, rm::server_key(*id)));  // a server's top holds no files
+  CHECK_FALSE(bk::make_server_folder(*d.lib, "/Volumes/photos"));
+  auto view = bk::make_server_folder(*d.lib, photos);
+  REQUIRE(view);
+  CHECK_FALSE(view->reachable());
+
+  allow_changes(h, true);
+  d.relaunch();
+  auto far = bk::make_server_folder(*d.lib, photos);
+  REQUIRE(far);
+  CHECK(far->reachable());
+
+  scratch_dir local{"desktop_backup_local"};
+  put_file(local / "one.jpg", photo(32, 24, 7));
+  put_file(local / "two.jpg", photo(32, 24, 8));
+  std::uint64_t sent = 0;
+  const auto count = [&](std::uint64_t delta) { sent += delta; };
+  auto name = far->put(utf8(local / "one.jpg"), "2024/2024-05-17", "IMG_1.jpg", nullptr, count);
+  REQUIRE(name);
+  CHECK(*name == "IMG_1.jpg");
+  CHECK(sent == fs::file_size(local / "one.jpg"));
+  CHECK(fs::file_size(h.photos / "2024" / "2024-05-17" / "IMG_1.jpg") == fs::file_size(local / "one.jpg"));
+  // The same day again (its folders are there already), the same name: both kept.
+  name = far->put(utf8(local / "two.jpg"), "2024/2024-05-17", "IMG_1.jpg", nullptr, {});
+  REQUIRE(name);
+  CHECK(*name == "IMG_1 (2).jpg");
+  // A new run of the app meets the folders already there.
+  d.relaunch();
+  far = bk::make_server_folder(*d.lib, photos);
+  name = far->put(utf8(local / "two.jpg"), "2024/2024-05-17", "IMG_2.jpg", nullptr, {});
+  REQUIRE(name);
+  // The folder itself (the flat layout).
+  name = far->put(utf8(local / "one.jpg"), "", "flat.jpg", nullptr, {});
+  REQUIRE(name);
+  CHECK(fs::exists(h.photos / "flat.jpg"));
+
+  auto there = far->has("2024/2024-05-17/IMG_1.jpg");
+  REQUIRE(there);
+  CHECK(*there);
+  there = far->has("2024/2024-05-17/gone.jpg");
+  REQUIRE(there);
+  CHECK_FALSE(*there);
+
+  // A stop asked before the send: nothing goes.
+  std::atomic<bool> stop{true};
+  CHECK_FALSE(far->put(utf8(local / "one.jpg"), "", "stopped.jpg", &stop, {}));
+  CHECK_FALSE(fs::exists(h.photos / "stopped.jpg"));
+
+  // The host stops answering: it cannot say, which is not "gone".
+  h.stop();
+  CHECK_FALSE(far->reachable());
+  CHECK_FALSE(far->has("2024/2024-05-17/IMG_1.jpg"));
+
+  // One manifest folder per server folder, the key not readable in it.
+  const std::string a = bk::server_state_dir(utf8(local.root()), photos);
+  CHECK(a == bk::server_state_dir(utf8(local.root()), photos));
+  CHECK(a != bk::server_state_dir(utf8(local.root()), photos + "2024/"));
+  CHECK(a.find("remote") == std::string::npos);
+}
+
+// The whole way: the backup engine, the server folder, a real service.
+TEST_CASE("a Photos backup run reaches a paired server's folder, and a second run sends nothing",
+          "[desktop-client][remote-change][photos_backup]") {
+  namespace bk = mv::shell::backup;
+  struct two_photos final : bk::source {
+    fs::path dir;
+    mv::result<std::vector<bk::asset_file>> enumerate(const std::atomic<bool>*) override {
+      // 2024-05-17 and three days on, at noon UTC: the same day in every time zone a test runs in.
+      return std::vector<bk::asset_file>{{"A", bk::file_kind::original, "IMG_1.jpg", 1715947200, 0},
+                                         {"B", bk::file_kind::original, "IMG_2.jpg", 1716206400, 0}};
+    }
+    mv::result<std::string> local_file(const bk::asset_file& f) override { return utf8(dir / f.filename); }
+    mv::expected fetch(const bk::asset_file&, const std::string&, const std::atomic<bool>*) override {
+      return mv::err(mv::status::unsupported_format);
+    }
+  };
+  host h;
+  desktop d;
+  auto id = d.lib->pair(h.code(), std::time(nullptr));
+  REQUIRE(id);
+  allow_changes(h, true);
+  d.relaunch();
+  auto top = d.lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  const std::string photos = top->folders[0].key;
+  scratch_dir local{"desktop_backup_run"};
+  put_file(local / "IMG_1.jpg", photo(32, 24, 1));
+  put_file(local / "IMG_2.jpg", photo(48, 32, 2));
+  const auto run = [&] {
+    auto src = std::make_unique<two_photos>();
+    src->dir = local.root();
+    bk::options o{bk::server_state_dir(utf8(local / "state"), photos), utf8(local / "tmp")};
+    o.folders = bk::layout::year;
+    o.server = bk::make_server_folder(*d.lib, photos);
+    REQUIRE(o.server);
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), std::move(o)));
+    e.join();
+    return e.snapshot();
+  };
+  bk::progress p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.done == 2);
+  CHECK(p.failed == 0);
+  CHECK(fs::file_size(h.photos / "2024" / "IMG_1.jpg") == fs::file_size(local / "IMG_1.jpg"));
+  CHECK(fs::file_size(h.photos / "2024" / "IMG_2.jpg") == fs::file_size(local / "IMG_2.jpg"));
+  CHECK_FALSE(fs::exists(h.photos / ".mediaviewer-photos-backup"));  // the manifest stays here
+
+  p = run();
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.done == 0);
+  CHECK(p.skipped == 2);
+
+  // Access taken back: the run fails at the start, nothing is held or lost.
+  allow_changes(h, false);
+  d.relaunch();
+  p = run();
+  CHECK(p.state == bk::run_state::failed);
+  CHECK(p.held == 0);
+}
