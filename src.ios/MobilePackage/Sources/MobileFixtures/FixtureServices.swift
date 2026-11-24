@@ -51,6 +51,8 @@ final class FixtureWorld: @unchecked Sendable {
   var backupState: BackupState?
   var backupSample = false
   var backupNoFolder = false
+  /// The VPN through your server: nil is a build without the tunnel (NoVPN).
+  var vpn: FixtureVPN?
   var recents = ["boats at sunset", "mountains by a lake", "birthday cake", "receipt from the hardware shop"]
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
 
@@ -85,7 +87,7 @@ final class FixtureWorld: @unchecked Sendable {
                             connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
                             clips: FixtureClips(world: self), saver: FixtureSaver(world: self), backup: FixtureBackup(world: self))
     services.changes = FixtureFolderChanges(world: self)
-    return services
+    return services.with(vpn: vpn ?? NoVPN())
   }
 }
 
@@ -838,5 +840,75 @@ enum FixtureClip {
     done.wait()
     try? FileManager.default.moveItem(at: temp, to: url)
     return url
+  }
+}
+
+/// A stand-in for the tunnel: takes a code shaped like the server's (`mediaviewer://relay#host:port#KEY`),
+/// asks for the consent before the first switch-on, and connects at once. Routes nothing.
+final class FixtureVPN: VPNService, @unchecked Sendable {
+  static let host = "home.example.net:51820"
+  static let code = "mediaviewer://relay#home.example.net:51820#Zml4dHVyZS12cG4ta2V5LTEyMzQ1Njc4"
+
+  private let delivery = NSLock()
+  private let lock = NSLock()
+  private var snapshot: VPNSnapshot
+  private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]
+
+  init(_ start: VPNSnapshot = VPNSnapshot(status: .notSetUp)) { snapshot = start }
+
+  /// The "host:port" in a VPN code, or nil when it is not one.
+  static func host(inCode code: String) -> String? {
+    let prefix = "mediaviewer://relay#"
+    guard code.hasPrefix(prefix) else { return nil }
+    let parts = code.dropFirst(prefix.count).split(separator: "#", omittingEmptySubsequences: false)
+    guard parts.count == 2, parts[1].count >= 16, let colon = parts[0].lastIndex(of: ":") else { return nil }
+    let name = parts[0][..<colon], port = parts[0][parts[0].index(after: colon)...]
+    guard !name.isEmpty, let p = Int(port), (1...65_535).contains(p) else { return nil }
+    return String(parts[0])
+  }
+
+  var current: VPNSnapshot { lock.withLock { snapshot } }
+
+  func updates() -> AsyncStream<VPNSnapshot> {
+    AsyncStream { continuation in
+      let id = UUID()
+      // Told outside the lock and in order, as DemoVPN does: onTermination takes the lock.
+      delivery.withLock {
+        let first = lock.withLock {
+          listeners[id] = continuation
+          return snapshot
+        }
+        continuation.yield(first)
+      }
+      continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
+    }
+  }
+
+  func connect(code: String) async throws {
+    guard let host = Self.host(inCode: code) else { throw VPNCodeError.notACode }
+    publish { $0.status = .off; $0.host = host }
+  }
+
+  func acceptConsent() async { publish { $0.consented = true } }
+
+  func setOn(_ on: Bool) async {
+    guard on else { publish { $0.status = .off }; return }
+    guard current.isSetUp, current.consented, !current.isOn else { return }
+    publish { $0.status = .connecting }
+    await Task.yield()
+    guard current.status == .connecting else { return }
+    publish { $0.status = .connected(since: Date()) }
+  }
+
+  func remove() async { publish { $0 = VPNSnapshot(status: .notSetUp) } }
+
+  private func publish(_ change: (inout VPNSnapshot) -> Void) {
+    delivery.withLock {
+      let (value, list) = lock.withLock {
+        change(&snapshot)
+        return (snapshot, Array(listeners.values))
+      }
+      list.forEach { $0.yield(value) }
+    }
   }
 }

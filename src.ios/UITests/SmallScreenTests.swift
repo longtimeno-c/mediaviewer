@@ -13,6 +13,7 @@ final class SmallScreenTests: XCTestCase {
     "library.handedOver", "search.recents", "search.results", "search.nothing", "search.filtered", "search.unsupportedTower",
     "search.failed", "search.warmingUp", "viewer", "viewer.gone", "viewer.cannotDecode", "details", "clip", "clip.tooBig",
     "clip.notPlayable", "people", "people.none", "connection", "connection.unreachable", "settings.light",
+    "vpn.notInThisBuild", "vpn.notSetUp", "vpn.connected", "vpn.failed", "vpn.sample",
   ]
 
   /// Screens that are words in the middle of the page: at this size they must scroll.

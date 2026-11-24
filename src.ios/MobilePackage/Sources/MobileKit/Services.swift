@@ -185,6 +185,16 @@ public struct Services: Sendable {
   /// Changing the files in the server's folders (file mode, a device that may): none by default.
   public var changes: FolderChanges = NoFolderChanges()
 
+  /// The VPN through your server (docs/plans/phone-vpn.md). `NoVPN` until the tunnel extension ships.
+  public private(set) var vpn: VPNService = NoVPN()
+
+  /// The same services with this VPN.
+  public func with(vpn: VPNService) -> Services {
+    var copy = self
+    copy.vpn = vpn
+    return copy
+  }
+
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,
               saver: PhotoSaver, backup: BackupService) {

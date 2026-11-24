@@ -72,6 +72,12 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case backupTooOld = "backup.serviceTooOld"
   case backupNoPhotos = "backup.noPhotosAccess"
   case backupSample = "backup.sample"
+  case vpnNotInThisBuild = "vpn.notInThisBuild"
+  case vpnNotSetUp = "vpn.notSetUp"
+  case vpnOff = "vpn.off"
+  case vpnConnected = "vpn.connected"
+  case vpnFailed = "vpn.failed"
+  case vpnSample = "vpn.sample"
   case searchRecents = "search.recents"
   case searchTyping = "search.typing"
   case searchResults = "search.results"
@@ -175,6 +181,8 @@ final class FixtureRun {
                                     cacheBytes: base.cacheBytes)
     case .connectionFromMac:
       snapshot = FixtureWorld.connected(source: .nearbyMac)
+    case .vpnSample:
+      snapshot.isSample = true
     default:
       break
     }
@@ -237,6 +245,12 @@ final class FixtureRun {
     case .backupSample:
       world.backupSample = true
       world.backupState = .running
+    case .vpnNotSetUp: world.vpn = FixtureVPN()
+    case .vpnOff: world.vpn = FixtureVPN(VPNSnapshot(status: .off, host: FixtureVPN.host))
+    case .vpnConnected:
+      world.vpn = FixtureVPN(VPNSnapshot(status: .connected(since: Date().addingTimeInterval(-1_800)), host: FixtureVPN.host, consented: true))
+    case .vpnFailed:
+      world.vpn = FixtureVPN(VPNSnapshot(status: .failed(.serverUnreachable), host: FixtureVPN.host, consented: true))
     default: break
     }
     self.world = world
@@ -312,6 +326,9 @@ final class FixtureRun {
          .backupTooOld, .backupNoPhotos, .backupSample:
       model.tab = .connection
       model.showsBackup = true
+    case .vpnNotInThisBuild, .vpnNotSetUp, .vpnOff, .vpnConnected, .vpnFailed, .vpnSample:
+      model.tab = .connection
+      model.showsVPN = true
     case .searchFailed:
       model.tab = .search
       model.search.setText("boats at sunset")
