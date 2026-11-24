@@ -82,11 +82,14 @@ TEST_CASE("drive copier: the first pass copies everything and changes nothing on
   CHECK(r.complete());
   CHECK(got(d.copied / "2024" / "Trip" / "IMG_0001.JPG") == "jpeg one");
   CHECK(got(d.copied / "notes.txt") == "hello");
-  CHECK(fs::last_write_time(d.copied / "notes.txt") == before);  // the source's time kept
+  // Compared as a bool: libc++'s file time is an __int128 Catch can't print.
+  const bool kept = fs::last_write_time(d.copied / "notes.txt") == before;
+  CHECK(kept);  // the source's time kept
   CHECK(!fs::exists(d.copied / "System Volume Information"));
   // The source: the same bytes and times.
   CHECK(got(d.source / "notes.txt") == "hello");
-  CHECK(fs::last_write_time(d.source / "notes.txt") == before);
+  const bool untouched = fs::last_write_time(d.source / "notes.txt") == before;
+  CHECK(untouched);
   // What was on the copy drive is left alone; the marker says the copy is whole.
   CHECK(got(d.copy / "already there.txt") == "left alone");
   const auto m = dc::read_marker(utf8(d.copy));

@@ -136,13 +136,17 @@ std::string disk_at(const drives::listing& l, const std::string& mount) {
   return {};
 }
 
-// Where a copy's volume is now ("": not attached). POSIX: a volume's root is a mount point.
-std::string where_now(const std::string& path, const std::string& volume) {
+// Where a copy's volume is now ("": not attached). POSIX: a volume's root is a mount point, so a
+// folder an unplugged drive left behind is not it. `plain`: the test build, whose disk images are
+// mounted on folders it made (the guard keeps it to those).
+std::string where_now(const std::string& path, const std::string& volume, bool plain) {
   serve::root_config r;
   r.path = path;
   r.volume = volume;
 #if !defined(_WIN32)
-  r.mount = path != "/";
+  r.mount = !plain && path != "/";
+#else
+  (void)plain;
 #endif
   return volume_locate(r).value_or(std::string());
 }
@@ -202,8 +206,9 @@ std::string listing_json(const drives::listing& l, const drives::guard& g, const
       }
       st.to_name = c.to_name;
       w.begin_object().key("label").string(c.label).key("to_name").string(c.to_name);
-      w.key("from_id").string(disk_at(l, where_now(c.from, c.from_volume)));
-      w.key("to_id").string(disk_at(l, where_now(c.to, c.to_volume)));
+      const bool plain = !g.images_under.empty();
+      w.key("from_id").string(disk_at(l, where_now(c.from, c.from_volume, plain)));
+      w.key("to_id").string(disk_at(l, where_now(c.to, c.to_volume, plain)));
       w.key("state").string(copy_state_word(st.state));
       w.key("line").string(copy_line(st, drives::this_os() == drives::os_kind::mac)).end_object();
     }
@@ -504,10 +509,10 @@ int copy_cmd(ctx& c, const drives_words& w) {
   const std::string label = folder_safe(fv->label.empty() ? from.name : fv->label);
   std::vector<copy_entry> copies = read_copies(c.l.folder);
   for (const auto& e : copies) {
-    if (e.label == label || same_path(where_now(e.from, e.from_volume), fv->mount)) {
+    if (e.label == label || same_path(where_now(e.from, e.from_volume, c.test_hooks), fv->mount)) {
       return fail("a copy of " + from.name + " is kept already (on " + e.to_name + ").", 1);
     }
-    if (same_path(where_now(e.to, e.to_volume), tv->mount)) {
+    if (same_path(where_now(e.to, e.to_volume, c.test_hooks), tv->mount)) {
       return fail(to.name + " keeps a copy of " + e.label + " already.", 1);
     }
   }
@@ -539,13 +544,13 @@ int copy_stop_cmd(ctx& c, const drives_words& w) {
   const drives::listing l = listed(*c.port);
   std::vector<copy_entry> copies = read_copies(c.l.folder);
   const auto it = std::find_if(copies.begin(), copies.end(), [&](const copy_entry& e) {
-    return e.label == w.set || (l.error.empty() && disk_at(l, where_now(e.from, e.from_volume)) == w.set);
+    return e.label == w.set || (l.error.empty() && disk_at(l, where_now(e.from, e.from_volume, c.test_hooks)) == w.set);
   });
   if (it == copies.end()) return fail("no copy of \"" + w.set + "\" is kept.", 2);
   const copy_entry e = *it;
   copies.erase(it);
   if (!write_copies(c.l.folder, copies)) return fail("couldn't save the copy's settings.", 1);
-  if (const std::string to = where_now(e.to, e.to_volume); !to.empty()) drive_copy::remove_marker(to);
+  if (const std::string to = where_now(e.to, e.to_volume, c.test_hooks); !to.empty()) drive_copy::remove_marker(to);
   print("Stopped keeping a copy of \"" + e.label + "\". What was copied stays on " + e.to_name + ", in \"" +
         drive_copy::copy_folder_name(e.label) + "\".\n");
   return 0;
