@@ -1142,6 +1142,13 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* catalogue_publish)(void* host, const char* destination_utf8);
   mv_status(MV_CALL* catalogue_cancel)(void* host);
   mv_status(MV_CALL* catalogue_json)(void* host, char* out_utf8, uint32_t capacity, uint32_t* out_size);
+  /* [any-thread] 1: this load of Local search should attach for Settings
+   * (folders and settings) without opening the towers, starting indexing
+   * threads, or downloading weights. 0 or NULL: load models as today. The
+   * first search or set_setting "start" then opens them, as does anything
+   * else that asks for work (Resume, Rescan, an export or import). Appended
+   * after catalogue_json: the pack reads it only when `struct_size` covers it. */
+  uint32_t(MV_CALL* ai_models_held)(void* host);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1243,6 +1250,12 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
  * Windows, the chrome assembly). Events post to `session`'s queue. A second
  * load of a loaded add-on returns the same interface. MV_ERR_UNSUPPORTED_FORMAT:
  * the add-on needs an update. MV_ERR_CORRUPT: it failed verification. */
+/* 0.46: one-shot for the next mv_addon_load of "ai" through the host door:
+ * the pack attaches without opening the towers (Settings → Local search).
+ * 0 (the default) loads models as today. Search, install, Resume and Faces
+ * leave this at 0. Consumed by that load. [any-thread, no-block] */
+MV_API void MV_CALL mv_ai_hold_models(uint32_t hold);
+
 MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap);

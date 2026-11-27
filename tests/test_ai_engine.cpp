@@ -2285,6 +2285,73 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
 }
 
+TEST_CASE("settings attach without models: folders and settings work until start", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; }, kSettleMs));
+  CHECK(r.status().state == MV_AI_STATE_IDLE);
+  CHECK(r.eng->settings_json().find("\"models_held\":true") != std::string::npos);
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  const auto roots = mv::json::parse(r.eng->roots_json());
+  REQUIRE(roots);
+  CHECK_FALSE(roots->a.empty());
+  REQUIRE(r.eng->set_setting("precision", "3"));
+  CHECK(r.eng->settings_json().find("\"precision\":3") != std::string::npos);
+  CHECK((r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0);
+  REQUIRE(r.eng->clear_index());
+  {
+    const auto unknown = mv::json::parse(r.eng->unknown_faces_json(0, 10));
+    REQUIRE(unknown);
+    CHECK(unknown->integer("total").value_or(-1) == 0);
+  }
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  CHECK((r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0);
+  REQUIRE(r.eng->set_setting("start", "1"));
+  REQUIRE(wait_for(
+      [&] {
+        return (r.status().flags & MV_AI_STATUS_MODELS_HELD) == 0 && r.status().state != MV_AI_STATE_LOADING;
+      },
+      kSettleMs));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
+TEST_CASE("held models: the first search opens the towers and indexing follows", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; }, kSettleMs));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  // Asked before anything is indexed: it finds nothing, and it is what starts the work.
+  (void)r.search("red");
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) == 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
+TEST_CASE("held models: asking for work opens the towers", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  const auto held = [&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; };
+  REQUIRE(wait_for(held, kSettleMs));
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(held());
+  SECTION("Resume (the launch notice, a folder's row)") { REQUIRE(r.eng->set_setting("resume_root", "0")); }
+  SECTION("Rescan") { REQUIRE(r.eng->root_rescan(*root)); }
+  SECTION("typing in the search field") { (void)r.eng->suggest_json("re"); }
+  SECTION("an export, which the control loop runs") {
+    // Renamed into place when the job ends: held, it never ran.
+    REQUIRE(r.eng->export_index(utf8(r.dir / "held.mvindex"), {}, 0));
+    CHECK(wait_for([&] { return fs::exists(r.dir / "held.mvindex"); }, kSettleMs));
+  }
+  REQUIRE(wait_for([&] { return !held(); }, kSettleMs));  // the status is a snapshot
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
 constexpr const char* kSchemaNow = "12";
 
@@ -3418,6 +3485,20 @@ TEST_CASE("people: the sheet's review, move to, yes, not this person, merge and 
   auto unknown = mv::json::parse(r.eng->unknown_faces_json(0, 50));
   REQUIRE(unknown);
   CHECK(unknown->integer("total"));
+  std::atomic<bool> stop{false};
+  std::thread reader([&] {
+    while (!stop.load()) {
+      (void)r.eng->unknown_faces_json(0, 1);
+      (void)r.eng->people_json();
+    }
+  });
+  REQUIRE(r.eng->clear_index());
+  stop.store(true);
+  reader.join();
+  auto gone = mv::json::parse(r.eng->unknown_faces_json(0, 50));
+  REQUIRE(gone);
+  CHECK(gone->integer("total").value_or(-1) == 0);
+  CHECK(mv::json::parse(r.eng->people_json())->a.empty());
 }
 
 TEST_CASE("people in the open folder: only those with a face there, counted and covered there",

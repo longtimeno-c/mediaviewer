@@ -734,6 +734,19 @@ TEST_CASE("a place term's assets come from the provider that declares place:, or
   }
 }
 
+TEST_CASE("the host table tells the AI pack when Settings wants its models held", "[addon][ai]") {
+  // Issue #292: mv_ai_hold_models sets the service for one load; the pack reads it here.
+  for (const bool hold : {false, true}) {
+    mv::addon::host_services svc;
+    svc.ai_hold_models = hold;
+    mv::addon::host_table t(svc);
+    const mv_host_api* api = t.api();
+    REQUIRE(api->struct_size >= offsetof(mv_host_api, ai_models_held) + sizeof(api->ai_models_held));
+    REQUIRE(api->ai_models_held);
+    CHECK(api->ai_models_held(api->host) == (hold ? 1u : 0u));
+  }
+}
+
 TEST_CASE("the host table's place_matches serves the AI pack the provider's paths", "[addon][slots][places]") {
   slot_registry r;
   mv::addon::host_services svc;

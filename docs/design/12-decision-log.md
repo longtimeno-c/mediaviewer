@@ -1856,6 +1856,15 @@ is first opened that session, so the first search after launch may say "Indexing
 a while. Launch → first pixel and idle memory / CPU with the pack installed, before and after, are
 owed on both platforms (the measurement needs a release-signed pack).
 
+**Settings manages libraries without the models (2026-11-14, owner; issue #292).** Start now gated
+the pack's own panel, so indexed folders, the index cap, Clear, compute, precision and the rest
+were invisible until the towers opened. Settings now attaches the pack with the towers held
+(`engine_options::defer_models`, `mv_ai_hold_models`): folders and those settings save; ONNX
+sessions, indexing threads and weight download still wait for the first search or **Start
+indexing**. `MV_AI_STATUS_MODELS_HELD` is the line. **Cost:** opening Settings still verifies the
+pack (hashes), which can take seconds; it does not open the models. Files added before the first
+search of the session still wait to be indexed (#292's cost, unchanged).
+
 **An unfinished index waits for Resume (2026-10-11, owner; issue #299, amending the entry
 above).** Reopening the app after a quit or a kill part-way through a large root (the Photos
 library) used to carry on by itself, which loads ONNX Runtime and the model sessions even for an

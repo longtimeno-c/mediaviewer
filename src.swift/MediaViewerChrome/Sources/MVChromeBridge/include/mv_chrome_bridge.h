@@ -874,6 +874,12 @@ bool mv_addon2_elsewhere(void);                                            // [m
 // unloaded, since launch -- or in such a window its reader, if it is due.
 // False when nothing is on its way. [main-thread]
 bool mv_addon2_ai_wake(void);
+// Settings → Local search: attach without opening the towers (issue #292,
+// 2026-11-14). A later window loads its reader. False when nothing is on
+// its way. [main-thread]
+bool mv_addon2_ai_manage(void);
+// The in-flight load is that Settings attach (pill: Opening, not Starting).
+bool mv_addon2_ai_opening(void);
 // Installed and verified at launch, not loaded, nothing on its way (issue
 // #292): the first search starts it, so the search icon offers it. [main-thread]
 bool mv_addon2_ai_on_demand(void);

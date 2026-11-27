@@ -666,11 +666,18 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     state->h = std::make_unique<mv::ai::host>(&state->host);
     auto data = state->h->data_dir();
     if (!data) return to_mv(data.error());
+    bool defer_models = false;
+    const std::size_t held = offsetof(mv_host_api, ai_models_held) + sizeof(host->ai_models_held);
+    if (!read_only && host->struct_size >= held && host->ai_models_held) {
+      defer_models = host->ai_models_held(host->host) != 0;
+    }
     state->eng = std::make_unique<engine>(
         &state->host, mv::ai::pack_deps(*state->h, mv::ai::platform::self_dir(), *data),
         // Issue #299: an index left unfinished waits for Resume (both hosts' launch
-        // notice and the folder rows' Resume ask for it).
-        mv::ai::engine_options{.read_only = read_only, .hold_unfinished = true});
+        // notice and the folder rows' Resume ask for it). defer_models: Settings
+        // without opening the towers (issue #292, 2026-11-14).
+        mv::ai::engine_options{
+            .read_only = read_only, .hold_unfinished = true, .defer_models = defer_models});
     if (auto started = state->eng->start(); !started) return to_mv(started.error());
 
     mv_ai_api& a = state->api;

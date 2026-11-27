@@ -28,9 +28,11 @@ internal sealed partial class ManagePanel
     private readonly AiApi _api;
     private readonly Look _look;
     private readonly StatusPill _status;
+    private readonly FrameworkElement _statusCard;
     private readonly TextBlock _compute;
     private readonly Button _pause;
     private readonly Button _indexAnyway;
+    private readonly FrameworkElement _heldRow;
     private readonly ComboBox _computeBox;
     // Shown only while a Fast or High from before is stored (no picker now).
     private readonly FrameworkElement _legacyQualityRow;
@@ -161,7 +163,19 @@ internal sealed partial class ManagePanel
         statusActions.Children.Add(_pause);
         Grid.SetColumn(statusActions, 1);
         statusRow.Children.Add(statusActions);
-        Root.Children.Add(Stroked(_look.Card(statusRow, 12)));
+        var heldText = _look.Text(
+            "Search and indexing have not started, so the models stay unloaded. Folders and these settings are saved.", 12);
+        heldText.TextWrapping = TextWrapping.Wrap;
+        Button startIndexing = _look.Button("Start indexing", () => Set("start", "1"));
+        startIndexing.HorizontalAlignment = HorizontalAlignment.Left;
+        var heldBody = new StackPanel { Spacing = 8 };
+        heldBody.Children.Add(heldText);
+        heldBody.Children.Add(startIndexing);
+        _heldRow = Stroked(_look.Card(heldBody, 12));
+        _heldRow.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_heldRow);
+        _statusCard = Stroked(_look.Card(statusRow, 12));
+        Root.Children.Add(_statusCard);
 
         // Sections as on the Mac (ManagementView.section): a 15 semibold title
         // over one card with a hairline stroke, its rows inside.
@@ -654,11 +668,17 @@ internal sealed partial class ManagePanel
     {
         if (!_chrome.StatusValid)
         {
+            _heldRow.Visibility = Visibility.Collapsed;
+            _statusCard.Visibility = Visibility.Visible;
             _status.ShowNotRunning();
             _compute.Text = "";
             return;
         }
         MvAiStatus s = _chrome.Status;
+        bool held = (s.Flags & MvAiStatus.FlagModelsHeld) != 0;
+        _heldRow.Visibility = held ? Visibility.Visible : Visibility.Collapsed;
+        _statusCard.Visibility = held ? Visibility.Collapsed : Visibility.Visible;
+        _pause.Visibility = held ? Visibility.Collapsed : Visibility.Visible;
         _status.Show(s);
         string? why = Look.FallbackReason(s);
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
@@ -968,10 +988,30 @@ internal sealed partial class ManagePanel
     private void ClearIndex()
     {
         _confirmClear = false;
-        ShowIndexConfirm();
-        try { _api.ClearIndex(); }
-        catch (MediaViewerException) { }
-        _chrome.ReadStatus();
+        // Drop the confirm row after this click returns: clearing the button's
+        // own parent from its click tears the WinUI tree down underneath it.
+        AiChrome chrome = _chrome;
+        chrome.Host.Post(() => ShowIndexConfirm());
+        _ = Task.Run(() =>
+        {
+            bool cleared = true;
+            try { _api.ClearIndex(); }
+            catch (MediaViewerException) { cleared = false; }
+            chrome.Host.Post(() =>
+            {
+                // Said, not swallowed: the indexer did not stop in time, or an
+                // import holds the index (the Mac's line, ManagementView).
+                if (!cleared && !_confirmClear)
+                {
+                    TextBlock note = _look.Text("The index could not be cleared. Try again in a moment.", 12);
+                    note.TextWrapping = TextWrapping.Wrap;
+                    note.Margin = new Thickness(12, 0, 12, 10);
+                    _indexConfirm.Children.Clear();
+                    _indexConfirm.Children.Add(note);
+                }
+                chrome.ReadStatus();
+            });
+        });
     }
 
     // ---- roots ----------------------------------------------------------------------
@@ -1264,24 +1304,32 @@ internal sealed partial class ManagePanel
     private void RootCall(Action call)
     {
         // Said, not swallowed (2026-10-05: a folder add that did nothing looked
-        // like indexing that never ran).
-        string? error = null;
-        try { call(); }
-        catch (MediaViewerException ex)
+        // like indexing that never ran). Native work is off the UI thread
+        // (rule 1): a remove or add can wait on the index.
+        AiChrome chrome = _chrome;
+        _ = Task.Run(() =>
         {
-            error = ex.Status switch
+            string? error = null;
+            try { call(); }
+            catch (MediaViewerException ex)
             {
-                MvStatus.Busy => "An import is running. Try again when it finishes.",
-                MvStatus.InvalidArg => "That isn't a folder on this PC.",
-                MvStatus.PermissionDenied => "MediaViewer isn't allowed to read that folder.",
-                _ => "That didn't work. Try again, or pick the folder another way.",
-            };
-        }
-        ShowRootError(error);
-        _rootsPressed = true;
-        RefreshRoots();
-        _chrome.RefreshCoverage();
-        _chrome.ReadStatus();
+                error = ex.Status switch
+                {
+                    MvStatus.Busy => "An import is running. Try again when it finishes.",
+                    MvStatus.InvalidArg => "That isn't a folder on this PC.",
+                    MvStatus.PermissionDenied => "MediaViewer isn't allowed to read that folder.",
+                    _ => "That didn't work. Try again, or pick the folder another way.",
+                };
+            }
+            chrome.Host.Post(() =>
+            {
+                ShowRootError(error);
+                _rootsPressed = true;
+                RefreshRoots();
+                chrome.RefreshCoverage();
+                chrome.ReadStatus();
+            });
+        });
     }
 
     private void ShowRootError(string? text)
@@ -1425,7 +1473,10 @@ internal sealed partial class ManagePanel
         if (!_faces.IsOn) return;
         if (!ready)
         {
-            TextBlock notice = _look.Text(_chrome.Host.IsPieceInstalled("ai-faces")
+            bool held = (s.Flags & MvAiStatus.FlagModelsHeld) != 0;
+            TextBlock notice = _look.Text(held
+                ? "Faces already in the index stay put. They show here once you start indexing."
+                : _chrome.Host.IsPieceInstalled("ai-faces")
                 ? "People is loading. Faces are found once it is ready."
                 : "Install People above to find faces. Until then nothing about faces is computed.", 12);
             notice.Margin = new Thickness(12, 0, 12, 10);
