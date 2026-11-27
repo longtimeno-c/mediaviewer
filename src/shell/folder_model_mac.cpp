@@ -58,7 +58,7 @@ expected folder_model::open(std::string_view dir_utf8, job_system& jobs) noexcep
 }
 
 expected folder_model::open_list(std::string title_utf8, std::vector<list_entry> entries,
-                                 job_system& jobs) noexcept {
+                                 job_system& jobs, std::vector<io::subdir_entry> subfolders) noexcept {
   std::lock_guard<std::mutex> ops(ops_mutex_);
   jobs_ = &jobs;
   // Nothing to watch: a result list changes only when the user searches again.
@@ -108,7 +108,7 @@ expected folder_model::open_list(std::string title_utf8, std::vector<list_entry>
     state_->list_title = std::move(title_utf8);
     state_->items = std::move(items);
     state_->moments = std::move(moments);
-    state_->subdirs.clear();
+    state_->subdirs = std::move(subfolders);
   }
   state_->changed.store(true, std::memory_order_release);
   if (state_->notify) state_->notify(state_->notify_user);
