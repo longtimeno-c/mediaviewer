@@ -235,7 +235,8 @@ mv_mobile_status mv_mobile_library_people(mv_mobile_library* l, mv_mobile_person
     auto got = l->cat->people();
     if (!got) return map_status(got.error());
     for (const auto& p : *got) {
-      const mv_mobile_person row{p.key.c_str(), p.name.c_str(), p.items, p.face_asset};
+      const mv::mobile::face_box b = p.face.value_or(mv::mobile::face_box{});
+      const mv_mobile_person row{p.key.c_str(), p.name.c_str(), p.items, p.face_asset, b.x, b.y, b.w, b.h};
       visit(user, &row);
     }
     return MV_MOBILE_OK;

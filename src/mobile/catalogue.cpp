@@ -46,6 +46,11 @@ class stmt {
     return t ? std::string(t, static_cast<std::size_t>(sqlite3_column_bytes(s_, c))) : std::string();
   }
   [[nodiscard]] bool null(int c) const noexcept { return sqlite3_column_type(s_, c) == SQLITE_NULL; }
+  [[nodiscard]] double real(int c) const noexcept { return sqlite3_column_double(s_, c); }
+  void reset() noexcept {
+    sqlite3_reset(s_);
+    sqlite3_clear_bindings(s_);
+  }
 
  private:
   sqlite3_stmt* s_ = nullptr;
@@ -357,19 +362,26 @@ result<std::vector<folder>> catalogue::folders_under(std::string_view parent) co
 result<std::vector<person>> catalogue::people() const {
   std::vector<person> out;
   if (!faces_) return out;
-  // The face a person is shown by: their highest-scoring face, the earliest
-  // face id on a tie, so every run agrees.
+  // The face a person is shown by: the cover the desktop marked (pinned, with
+  // the only box it sends); from an older desktop, which sends no box, their
+  // highest-scoring face. The earliest face id on a tie, so every run agrees.
   stmt q(faces_,
          "SELECT p.id, p.name, COUNT(DISTINCT f.asset_id),"
-         " (SELECT asset_id FROM faces WHERE person_id = p.id ORDER BY score DESC, id LIMIT 1)"
+         " (SELECT id FROM faces WHERE person_id = p.id ORDER BY pinned DESC, score DESC, id LIMIT 1)"
          " FROM people p JOIN faces f ON f.person_id = p.id GROUP BY p.id ORDER BY p.name, p.id");
-  if (!q.ok()) return err(status::corrupt);
+  stmt cover(faces_, "SELECT asset_id, x, y, w, h FROM faces WHERE id = ?1");
+  if (!q.ok() || !cover.ok()) return err(status::corrupt);
   while (q.next()) {
     person p;
     p.key = std::to_string(q.i64(0));
     p.name = q.text(1);
     p.items = static_cast<std::uint32_t>(q.i64(2));
-    p.face_asset = q.i64(3);
+    cover.reset();
+    if (!cover.bind(1, q.i64(3)).next()) continue;
+    p.face_asset = cover.i64(0);
+    const face_box b{cover.real(1), cover.real(2), cover.real(3), cover.real(4)};
+    // Only a box inside the picture: anything else is a centre crop, as before.
+    if (b.w > 0 && b.h > 0 && b.x >= 0 && b.y >= 0 && b.x + b.w <= 1.0001 && b.y + b.h <= 1.0001) p.face = b;
     out.push_back(std::move(p));
   }
   return out;

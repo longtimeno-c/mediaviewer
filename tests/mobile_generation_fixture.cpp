@@ -186,15 +186,31 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
       return 2;
     }
 
-    // One named person, on asset 1 (variant 1 names them differently).
+    // One named person, on asset 1 (variant 1 names them differently). Variant 0 is a People
+    // cover that is not the obvious face: Anna's cover is the face she was named by (pinned) at the
+    // top right of a.jpg, which an unnamed baby's sharper face fills the middle of; her
+    // highest-scoring face is in b.jpg, and her clearest pinned one in the clip, whose phone tile
+    // is its poster, not that moment.
     const fs::path faces = root / "faces.db";
     {
       auto made = mv::ai::faces_db::open(faces.string(), mv::ai::face_tuning{}, 128, "fixture-faces/pre1");
       if (!made) return 2;
     }
-    if (!exec(faces, std::string("INSERT INTO people(id, name, created_at) VALUES(1, '") + (b ? "Bruno" : "Anna") + "', 1);"
-                     "INSERT INTO faces(id, asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, spec) VALUES"
-                     "(1, 1, '" + p + "/" + first + "', -1, 0, 0, 1, 1, 0.9, 1, zeroblob(512), 'fixture-faces/pre1');")) {
+    const std::string face_cols =
+        "INSERT INTO faces(id, asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, spec, pinned, quality) VALUES";
+    if (!exec(faces, std::string("INSERT INTO people(id, name, created_at) VALUES(1, '") + (b ? "Bruno" : "Anna") + "', 1);" +
+                         face_cols + "(1, 1, '" + p + "/" + first + "', -1, " +
+                         (b ? "0, 0, 1, 1, 0.9, 1, zeroblob(512), 'fixture-faces/pre1', 0, NULL);"
+                            : "0.7, 0.05, 0.2, 0.25, 0.7, 1, zeroblob(512), 'fixture-faces/pre1', 1, 0.9);"))) {
+      return 2;
+    }
+    if (!b && !exec(faces, "INSERT INTO people(id, name, created_at) VALUES(2, '', 1);" + face_cols +
+                               "(2, 2, '" + p + "/trip/b.jpg', -1, 0.4, 0.4, 0.2, 0.2, 0.99, 1, zeroblob(512),"
+                               " 'fixture-faces/pre1', 0, 0.5),"
+                               "(3, 3, '" + p + "/trip/day1/c.mov', 4000, 0.1, 0.1, 0.3, 0.3, 0.95, 1, zeroblob(512),"
+                               " 'fixture-faces/pre1', 1, 0.95),"
+                               "(4, 1, '" + p + "/a.jpg', -1, 0.4, 0.45, 0.2, 0.2, 0.99, 2, zeroblob(512),"
+                               " 'fixture-faces/pre1', 0, 0.95);")) {
       return 2;
     }
 

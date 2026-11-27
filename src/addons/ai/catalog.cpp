@@ -380,8 +380,11 @@ expected make_database(const build_options& o, const std::string& file, build_co
 
 // A faces.db a read-only engine opens as its own (faces_db::open_read_only),
 // made from the app's schema: named people and which assets and moments they
-// are in. Never an embedding (owner call 7): `emb` is empty and the box is
-// dropped, so nothing of a face leaves this machine but who it was.
+// are in. Never an embedding (owner call 7): `emb` is empty. Every box is
+// dropped but one per person, their cover's, so the phone's People page crops
+// to that face as the app's does: the app's cover order (faces_db::people),
+// over the stills this share holds only, since a clip's phone tile is its
+// poster, not the moment the face was found in. The cover is marked pinned.
 expected make_people(const build_options& o, const std::string& catalogue, const std::string& file, build_counts& n) {
   {
     MV_TRY(auto fresh, faces_db::open(file, face_tuning{}, 128, "names-only"));
@@ -411,6 +414,11 @@ expected make_people(const build_options& o, const std::string& catalogue, const
                 " WHERE f.person_id IN (SELECT id FROM main.people)") ||
       // A name whose faces are all in folders this share does not hold stays here.
       !exec(db, "DELETE FROM main.people WHERE id NOT IN (SELECT person_id FROM main.faces)") ||
+      !exec(db, "UPDATE main.faces SET (x, y, w, h, pinned) = (SELECT s.x, s.y, s.w, s.h, 1 FROM src.faces s"
+                " WHERE s.id = main.faces.id) WHERE id IN (SELECT (SELECT s.id FROM src.faces s"
+                " JOIN main.faces m ON m.id = s.id WHERE s.person_id = p.id AND s.pts_ms < 0 AND s.w > 0 AND s.h > 0"
+                " ORDER BY s.pinned DESC, COALESCE(s.quality, 0) DESC, s.score * s.w * s.h DESC, s.id LIMIT 1)"
+                " FROM main.people p)") ||
       !exec(db, "COMMIT")) {
     return err(status::io);
   }

@@ -273,7 +273,7 @@ private struct CoreLibrary: LibraryStore {
   func people() async throws -> [Person] {
     let g = try await catalogue.generation()
     return try peopleRows(g).map { row in
-      Person(id: row.id, name: row.name, itemCount: row.count, face: try itemFor(g, asset: row.face))
+      Person(id: row.id, name: row.name, itemCount: row.count, face: try itemFor(g, asset: row.face), faceBox: row.box)
     }
   }
 
@@ -307,6 +307,7 @@ private struct PersonRow {
   let id, name: String
   let count: Int
   let face: Int64
+  let box: CGRect?
 }
 
 private func peopleRows(_ g: Generation) throws -> [PersonRow] {
@@ -316,7 +317,10 @@ private func peopleRows(_ g: Generation) throws -> [PersonRow] {
       guard let user, let row, let key = row.pointee.key, let name = row.pointee.name else { return }
       user.assumingMemoryBound(to: [PersonRow].self).pointee.append(
         PersonRow(id: String(cString: key), name: String(cString: name),
-                  count: Int(row.pointee.item_count), face: row.pointee.face_asset_id))
+                  count: Int(row.pointee.item_count), face: row.pointee.face_asset_id,
+                  box: row.pointee.face_w > 0 && row.pointee.face_h > 0
+                    ? CGRect(x: row.pointee.face_x, y: row.pointee.face_y, width: row.pointee.face_w, height: row.pointee.face_h)
+                    : nil))
     }, ptr)
   }
   guard status == MV_MOBILE_OK else { throw CatalogueOpenFailure.unreadable }

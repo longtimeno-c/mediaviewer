@@ -6642,7 +6642,31 @@ TEST_CASE("people travel as names and links, never as embeddings", "[ai][engine]
   CHECK(only_cell(file, "SELECT COUNT(*) FROM people") == "1");  // the named one
   CHECK(only_cell(file, "SELECT COUNT(*) FROM faces") == "2");
   CHECK(only_cell(file, "SELECT COALESCE(SUM(length(emb)), 0) FROM faces") == "0");
-  CHECK(only_cell(file, "SELECT COALESCE(SUM(w + h), 0) FROM faces") == "0.0");
+  // One box only, the cover's, so the phone's People icon is that face as the app's is.
+  CHECK(only_cell(file, "SELECT COUNT(*) FROM faces WHERE w > 0 OR h > 0 OR x > 0 OR y > 0") == "1");
+  CHECK(only_cell(file, "SELECT COUNT(*) FROM faces WHERE pinned = 1 AND w > 0") == "1");
+  {
+    auto now = mv::json::parse(p.a.eng->people_json());
+    REQUIRE(now);
+    const mv::json::value* cover = nullptr;
+    for (const auto& v : now->a) {
+      if (*v.integer("id") == anna) cover = v.find("cover_box");
+    }
+    REQUIRE(cover);
+    REQUIRE(cover->a.size() == 4);
+    REQUIRE(cover->a[2].d > 0);
+    auto cat = mv::mobile::catalogue::open(utf8(p.gen()), utf8(p.base));
+    REQUIRE(cat);
+    auto people = (*cat)->people();
+    REQUIRE(people);
+    REQUIRE(people->size() == 1);
+    REQUIRE((*people)[0].face);
+    CHECK(std::abs((*people)[0].face->x - cover->a[0].d) < 1e-4);
+    CHECK(std::abs((*people)[0].face->y - cover->a[1].d) < 1e-4);
+    CHECK(std::abs((*people)[0].face->w - cover->a[2].d) < 1e-4);
+    CHECK(std::abs((*people)[0].face->h - cover->a[3].d) < 1e-4);
+    CHECK(utf8(fs::path(only_cell(file, "SELECT path FROM faces WHERE w > 0")).filename()).find("anna") == 0);
+  }
   CHECK(only_cell(file, "SELECT path FROM faces LIMIT 1").rfind("/", 0) == 0);
   CHECK(only_cell(file, "SELECT path FROM faces LIMIT 1").find(utf8(p.a.photos())) == std::string::npos);
   auto settings = mv::json::parse(read_all(p.gen() / "settings.json"));

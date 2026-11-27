@@ -78,10 +78,16 @@ struct listing {
   std::vector<month> months;
 };
 
+// A face's box in 0..1 of its picture as shown (oriented).
+struct face_box {
+  double x = 0, y = 0, w = 0, h = 0;
+};
+
 struct person {
   std::string key, name;
   std::uint32_t items = 0;
   std::int64_t face_asset = 0;
+  std::optional<face_box> face;  // on face_asset; none from a desktop that sends no box
 };
 
 struct details {

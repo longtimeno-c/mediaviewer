@@ -144,6 +144,9 @@ typedef struct mv_mobile_person {
   const char* name;
   uint32_t item_count;
   int64_t face_asset_id;  /* the item whose picture stands for this person */
+  /* Their face on it, x y w h in 0..1 of the picture as shown; face_w 0: none (an older desktop),
+   * so a centre crop. */
+  double face_x, face_y, face_w, face_h;
 } mv_mobile_person;
 typedef void (*mv_mobile_person_fn)(void* user, const mv_mobile_person* person);
 /* Named people, in name order. None when the generation has no faces.db. */

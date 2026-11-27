@@ -263,7 +263,7 @@ private struct PersonCell: View {
         .aspectRatio(1, contentMode: .fit)
         .overlay {
           if let face = face ?? model.services.images.cachedImage(for: person.face.id) {
-            Image(uiImage: face).resizable().scaledToFill()
+            FaceIcon(image: face, box: person.faceBox)
           }
         }
         .clipShape(Circle())
@@ -277,6 +277,24 @@ private struct PersonCell: View {
     .accessibilityLabel("\(person.name), \(person.itemCount) photos and clips")
     .accessibilityAddTraits(.isButton)
     .task { face = await model.services.images.thumbnail(for: person.face) }
+  }
+}
+
+/// The person's own face, framed as the desktop frames it (FaceCrop): the picture scaled and moved
+/// so that square fills the cell. Layout only: no pixels are copied on the main thread.
+struct FaceIcon: View {
+  let image: UIImage
+  let box: CGRect?
+
+  var body: some View {
+    GeometryReader { geo in
+      let crop = FaceCrop.square(of: image.size, box: box)
+      let k = crop.width > 0 ? geo.size.width / crop.width : 1
+      Image(uiImage: image).resizable()
+        .frame(width: image.size.width * k, height: image.size.height * k)
+        .offset(x: -crop.minX * k, y: -crop.minY * k)
+    }
+    .clipped()
   }
 }
 

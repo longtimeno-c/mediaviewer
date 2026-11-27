@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -298,6 +299,57 @@ TEST_CASE("a layout whose files have gone leaves no half work folder", "[mobile]
   CHECK_FALSE(fs::exists(work));
 }
 
+struct person_row {
+  std::string name;
+  uint32_t items;
+  int64_t asset;
+  double x, y, w, h;
+};
+void add_person(void* user, const mv_mobile_person* p) {
+  static_cast<std::vector<person_row>*>(user)->push_back(
+      {p->name, p->item_count, p->face_asset_id, p->face_x, p->face_y, p->face_w, p->face_h});
+}
+
+// The People page's round icon is the person's own face, as the desktop's is: not a centre crop
+// of a photo someone else fills (2026-11-27: "Nigel" showed as the baby in the middle).
+TEST_CASE("a person's cover is the desktop's cover face, with its box and no other", "[mobile]") {
+  generation_fixture g("people-cover");
+  // What the publisher sends: one box, the cover's, marked as it; every other face is a link only.
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open_v2((g.gen / "faces.db").string().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* s = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "SELECT id, pinned, x, y, w, h FROM faces ORDER BY id", -1, &s, nullptr) == SQLITE_OK);
+    std::vector<std::array<double, 6>> rows;
+    while (sqlite3_step(s) == SQLITE_ROW) {
+      std::array<double, 6> r{};
+      for (int i = 0; i < 6; ++i) r[i] = sqlite3_column_double(s, i);
+      rows.push_back(r);
+    }
+    sqlite3_finalize(s);
+    sqlite3_close_v2(db);
+    // The unnamed baby's face is not published at all.
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0] == std::array<double, 6>{1, 1, 0.7, 0.05, 0.2, 0.25});  // the pinned still
+    CHECK(rows[1] == std::array<double, 6>{2, 0, 0, 0, 0, 0});            // the higher score: no box
+    CHECK(rows[2] == std::array<double, 6>{3, 0, 0, 0, 0, 0});            // the clip, pinned there: no box
+  }
+
+  mv_mobile_library* lib = g.open();
+  REQUIRE(lib);
+  std::vector<person_row> people;
+  REQUIRE(mv_mobile_library_people(lib, &add_person, &people) == MV_MOBILE_OK);
+  REQUIRE(people.size() == 1);
+  CHECK(people[0].name == "Anna");
+  CHECK(people[0].items == 3);
+  CHECK(people[0].asset == 1);
+  CHECK(people[0].x == 0.7);  // REAL, copied exactly
+  CHECK(people[0].y == 0.05);  // REAL, copied exactly
+  CHECK(people[0].w == 0.2);  // REAL, copied exactly
+  CHECK(people[0].h == 0.25);  // REAL, copied exactly
+  mv_mobile_library_close(lib);
+}
+
 TEST_CASE("a truncated catalogue is refused", "[mobile]") {
   generation_fixture g("truncated");
   fs::resize_file(g.gen / "catalog.db", fs::file_size(g.gen / "catalog.db") - 1);
@@ -394,8 +446,8 @@ TEST_CASE("names, dates and files answer without a model; meaning waits for one"
   for (const char* q : {"@Anna", "person:Anna"}) {
     const auto by_name = paths(q, &st);
     CHECK(st == MV_MOBILE_OK);
-    REQUIRE(by_name.size() == 1);
-    CHECK(by_name[0] == "/" + g.uuid + "/a.jpg");
+    CHECK(std::set<std::string>(by_name.begin(), by_name.end()) ==
+          std::set<std::string>{"/" + g.uuid + "/a.jpg", "/" + g.uuid + "/trip/b.jpg", "/" + g.uuid + "/trip/day1/c.mov"});
   }
   // A picture's meaning needs the tower: an error, never a silent "nothing found".
   CHECK(paths("mountains", &st).empty());

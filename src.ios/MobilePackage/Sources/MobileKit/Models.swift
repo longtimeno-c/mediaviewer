@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/plans/mobile.md: the value types the screens read. Plain data, nothing about how the
 // core stores it.
+import CoreGraphics
 import Foundation
 
 public struct MediaID: Hashable, Sendable {
@@ -198,12 +199,33 @@ public struct Person: Identifiable, Hashable, Sendable {
   public let itemCount: Int
   /// The item whose picture stands for this person.
   public let face: MediaItem
+  /// Their face on `face`'s picture, in 0...1 of it as shown (the desktop's cover box). nil from a
+  /// desktop that sends none: the icon is then the picture's middle.
+  public let faceBox: CGRect?
 
-  public init(id: String, name: String, itemCount: Int, face: MediaItem) {
+  public init(id: String, name: String, itemCount: Int, face: MediaItem, faceBox: CGRect? = nil) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.face = face
+    self.faceBox = faceBox
+  }
+}
+
+/// The square of a picture a person's round icon shows, as the desktop's People covers are cut
+/// (AIChrome Thumbs.crop): the face squared, 1.6 times its longer side so a circle frames it, kept
+/// inside the picture. With no box, the picture's middle square.
+public enum FaceCrop {
+  public static func square(of size: CGSize, box: CGRect?) -> CGRect {
+    let w = size.width, h = size.height
+    let short = min(w, h)
+    guard w > 0, h > 0, let box, box.width > 0, box.height > 0 else {
+      return CGRect(x: (w - short) / 2, y: (h - short) / 2, width: short, height: short)
+    }
+    let cx = box.midX * w, cy = box.midY * h
+    let side = min(max(box.width * w, box.height * h) * 1.6, short)
+    let x = min(max(cx - side / 2, 0), w - side), y = min(max(cy - side / 2, 0), h - side)
+    return CGRect(x: x, y: y, width: side, height: side)
   }
 }
 
