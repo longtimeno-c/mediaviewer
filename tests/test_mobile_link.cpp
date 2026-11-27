@@ -97,6 +97,7 @@ struct publisher {
   fs::path nas;  // the destination; .mediaviewer is under it
   fs::path work;
   std::vector<std::pair<std::string, std::string>> gen_files;  // more files in each generation (thumbs.idx)
+  int assets = 1;  // catalog.db's rows: ids 1..assets
 
   publisher(fs::path nas_dir, fs::path work_dir) : nas(std::move(nas_dir)), work(std::move(work_dir)) {
     auto [p, s] = catalog::make_keypair();
@@ -152,6 +153,11 @@ struct publisher {
                          "INSERT INTO assets VALUES(1, '/root-uuid/2024/pic.bin', NULL, 70000, 0, 0);"
                          "INSERT INTO speech VALUES(4200, 5000, 1, 'hello world');",
                          nullptr, nullptr, nullptr) == SQLITE_OK);
+    for (int id = 2; id <= assets; ++id) {
+      const std::string row = "INSERT INTO assets VALUES(" + std::to_string(id) + ", '/root-uuid/2024/pic" +
+                              std::to_string(id) + ".bin', NULL, 70000, 0, 0);";
+      REQUIRE(sqlite3_exec(db, row.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+    }
     sqlite3_close(db);
   }
 
@@ -1231,6 +1237,93 @@ TEST_CASE("sync: a copy over lanes stopped part-way leaves a prefix, and resumes
   REQUIRE(mob::copy_catalogue(remote, cfg, again, nullptr, nullptr) == mob::sync_outcome::installed);
   CHECK(rec->first_offset(kExtraRel) == held.size());  // nothing on the phone asked for again
   CHECK(rec->handed_bytes(kExtraRel) == whole.size() - held.size());
+}
+
+TEST_CASE("sync: a generation published mid-copy keeps what is the same, fetches the rest, and installs the new set",
+          "[mobile-link]") {
+  rig r;
+  auto rec = std::make_shared<lane_record>();
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  const fs::path library = cfg.library_dir;
+  const std::uint64_t mb = 1024 * 1024;
+  // Two files no generation changes, and the rows: three photos, then one deleted on the server.
+  r.pub.gen_files = {{"same_a.bin", std::string(3 * mb, 'a')}, {"same_b.bin", std::string(3 * mb, 'b')}};
+  r.pub.assets = 3;
+  r.pub.publish(2);
+
+  // A slow link: the copy of generation 2 is cut short inside same_b.bin.
+  auto plan = mob::check_catalogue(remote, cfg);
+  REQUIRE(plan.outcome == mob::sync_outcome::copy_available);
+  REQUIRE(plan.generation == 2);
+  mob::cancel_flag stop;
+  const std::uint64_t cut = plan.total_bytes - 2 * mb;
+  CHECK(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t done, std::uint64_t) {
+    if (done > cut) stop.stop.store(true);
+  }, &stop) == mob::sync_outcome::cancelled);
+  const fs::path part = library / "staging" / "1-2" / "same_b.bin.part";
+  REQUIRE(fs::exists(library / "staging" / "1-2" / "same_a.bin"));
+  REQUIRE(fs::exists(part));
+  const std::uint64_t held = fs::file_size(part);
+  REQUIRE(held > 0);
+  REQUIRE(held < 3 * mb);
+
+  // Meanwhile the server deletes a photo and publishes generation 3.
+  r.pub.assets = 2;
+  r.pub.publish(3);
+  auto next = mob::check_catalogue(remote, cfg);
+  REQUIRE(next.outcome == mob::sync_outcome::copy_available);
+  REQUIRE(next.generation == 3);
+  CHECK(next.done_bytes >= 3 * mb + held);  // what the cut copy holds of it counts
+  CHECK(fs::exists(part));  // a check, which runs beside a copy, moves nothing
+  rec->handed.clear();
+  REQUIRE(mob::copy_catalogue(remote, cfg, next, nullptr, nullptr) == mob::sync_outcome::installed);
+  CHECK(rec->handed_bytes("gen/000003/same_a.bin") == 0);  // kept whole
+  CHECK(rec->first_offset("gen/000003/same_b.bin") == held);  // resumed where it stopped
+  CHECK(rec->handed_bytes("gen/000003/same_b.bin") == 3 * mb - held);
+  CHECK(rec->handed_bytes("gen/000003/catalog.db") == fs::file_size(r.catalogue_home / ".mediaviewer" / "gen/000003/catalog.db"));
+  const auto installed = mob::read_installed(cfg.library_dir);
+  REQUIRE(installed);
+  CHECK(installed->generation == 3);
+  CHECK_FALSE(fs::exists(library / "staging" / "1-2"));
+  CHECK_FALSE(fs::exists(library / "gen" / installed->dir / "plan.json"));
+
+  // The phone shows the new set: the deleted photo is not in it.
+  const auto ids = [&] {
+    std::vector<std::int64_t> out;
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open_v2((library / "gen" / installed->dir / "catalog.db").c_str(), &db, SQLITE_OPEN_READONLY, nullptr) ==
+            SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "SELECT id FROM assets ORDER BY id", -1, &q, nullptr) == SQLITE_OK);
+    while (sqlite3_step(q) == SQLITE_ROW) out.push_back(sqlite3_column_int64(q, 0));
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    return out;
+  }();
+  CHECK(ids == std::vector<std::int64_t>{1, 2});
+
+  SECTION("the next generation takes what it shares from the installed one") {
+    r.pub.publish(4);
+    auto fourth = mob::check_catalogue(remote, cfg);
+    REQUIRE(fourth.generation == 4);
+    rec->handed.clear();
+    REQUIRE(mob::copy_catalogue(remote, cfg, fourth, nullptr, nullptr) == mob::sync_outcome::installed);
+    CHECK(rec->handed_bytes("gen/000004/same_a.bin") == 0);
+    CHECK(rec->handed_bytes("gen/000004/same_b.bin") == 0);
+    CHECK(rec->handed_bytes("gen/000004/extra.bin") > 0);  // changed: brought
+    CHECK(mob::read_installed(cfg.library_dir)->generation == 4);
+  }
+  SECTION("a file the manifest names with another hash is fetched, never taken from the phone") {
+    r.pub.gen_files[0].second = std::string(3 * mb, 'c');  // same name and size, other bytes
+    r.pub.publish(4);
+    auto fourth = mob::check_catalogue(remote, cfg);
+    rec->handed.clear();
+    REQUIRE(mob::copy_catalogue(remote, cfg, fourth, nullptr, nullptr) == mob::sync_outcome::installed);
+    CHECK(rec->handed_bytes("gen/000004/same_a.bin") == 3 * mb);
+    CHECK(read_all(library / "gen" / mob::read_installed(cfg.library_dir)->dir / "same_a.bin") == std::string(3 * mb, 'c'));
+  }
 }
 
 namespace {
