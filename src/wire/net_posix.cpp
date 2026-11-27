@@ -97,6 +97,14 @@ int wait_for(int fd, short events, int timeout_ms) noexcept {
   }
 }
 
+// A full send buffer is waited on in slices this long.
+constexpr int kWriteSliceMs = 250;
+
+std::int64_t steady_ns() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 class tcp_link final : public link {
  public:
   explicit tcp_link(int fd) : fd_(fd) {
@@ -108,9 +116,9 @@ class tcp_link final : public link {
     // it would only hold a small request, or a reply's last short packet,
     // for the peer's delayed ack.
     (void)::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    // A stalled write is a dropped link: the channel pings, so a healthy
-    // receiver never leaves the send buffer full this long.
-    timeval tv{kSilenceMs / 1000, 0};
+    // A full send buffer is waited on in slices (write_all): between them
+    // the write checks whether the peer is still alive.
+    timeval tv{0, kWriteSliceMs * 1000};
     (void)::setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
   }
   ~tcp_link() override {
@@ -120,14 +128,23 @@ class tcp_link final : public link {
 
   expected write_all(std::span<const std::uint8_t> bytes) override {
     std::size_t sent = 0;
+    std::int64_t moved = steady_ns();
     while (sent < bytes.size()) {
       if (down_.load()) return err(status::cancelled);
       const ssize_t n = ::send(fd_, bytes.data() + sent, bytes.size() - sent, kSendFlags);
       if (n < 0) {
         if (errno == EINTR) continue;
-        return err(errno == EAGAIN || errno == EWOULDBLOCK ? status::timeout : status::io);
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return err(status::io);
+        // Full for a slice. A dead peer: nothing moved and nothing heard for
+        // the stall limit. A peer still heard from (its pings) is alive and
+        // only slow to read: a Driftwire receiver waiting on its disk.
+        if (steady_ns() - std::max(moved, heard_ns_.load()) >= std::int64_t{stall_ms_.load()} * 1000000) {
+          return err(status::timeout);
+        }
+        continue;
       }
       sent += static_cast<std::size_t>(n);
+      moved = steady_ns();
     }
     return {};
   }
@@ -144,6 +161,7 @@ class tcp_link final : public link {
         if (errno == EINTR || errno == EAGAIN) continue;
         return err(down_.load() ? status::cancelled : status::io);
       }
+      if (n > 0) heard_ns_.store(steady_ns());
       return static_cast<std::size_t>(n);
     }
   }
@@ -160,9 +178,13 @@ class tcp_link final : public link {
     return ::getsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &on, &len) == 0 && on != 0;
   }
 
+  void set_stall_ms_for_tests(int ms) noexcept override { stall_ms_.store(ms); }
+
  private:
   int fd_;
   std::atomic<bool> down_{false};
+  std::atomic<std::int64_t> heard_ns_{0};  // steady clock: the last byte read from the peer
+  std::atomic<int> stall_ms_{kSilenceMs};
 };
 
 endpoint endpoint_of(const sockaddr_storage& s);  // below
