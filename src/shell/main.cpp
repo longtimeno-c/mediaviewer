@@ -1035,7 +1035,7 @@ int welcome_row_at_pointer(const app_state* app, bool* on_remove = nullptr) noex
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
                                 static_cast<float>(in.chrome_height_px), scale, in.recents.count, 0.0f,
-                                in.recents.icloud);
+                                mv::shell::welcome_lead_rows(in.recents));
   const int row = mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
   // OneDrive's row has no remove button: it leaves when OneDrive does.
   if (row >= 0 && on_remove && !(in.recents.icloud && row == 0)) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
