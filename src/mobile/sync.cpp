@@ -9,12 +9,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <set>
+#include <thread>
 
 #include "addons/ai/catalog.h"
 #include "wire/wire.h"
@@ -418,6 +423,199 @@ sync_outcome finish_install(const sync_config& c, sync_plan& plan, const std::st
 
 }  // namespace
 
+namespace {
+
+// The copy over several connections (remote_file::open_lane). Over a long path one TCP
+// connection's loss recovery caps it far below the link (CUBIC at 150 ms and 0.1 % loss: about
+// 0.4 MB/s), and each connection recovers on its own, so a file goes as segments over every lane,
+// two reads per lane so a segment's request never leaves a lane idle. Segments are written in
+// order: the .part file stays a prefix of the file, as a one-lane copy leaves it, so a resume (by
+// this version or an older one) is the same. What arrives ahead of the write point waits in
+// memory, at most kAheadBytes.
+constexpr std::uint64_t kSegmentBytes = 2u * 1024 * 1024;
+constexpr std::uint64_t kAheadBytes = 24u * 1024 * 1024;
+constexpr int kReadsPerLane = 2;
+// Less than this left to bring, and the copy stays on the one link: lanes cost a handshake each.
+constexpr std::uint64_t kLaneMinBytes = 8u * 1024 * 1024;
+
+// Bytes written to a .part reach the disk before it is hashed or renamed.
+void flush_close(int fd) {
+#if defined(F_FULLFSYNC)
+  (void)::fcntl(fd, F_FULLFSYNC);
+#else
+  (void)::fsync(fd);
+#endif
+  ::close(fd);
+}
+
+// Lanes opened side by side; those that come up.
+std::vector<std::unique_ptr<remote_file>> open_lanes(remote_file& remote, int n, const cancel_flag* cancel) {
+  std::vector<std::unique_ptr<remote_file>> got(static_cast<std::size_t>(std::max(0, n)));
+  std::vector<std::thread> openers;
+  for (auto& slot : got) openers.emplace_back([&remote, &slot, cancel] { slot = remote.open_lane(cancel); });
+  for (auto& t : openers) t.join();
+  std::erase_if(got, [](const std::unique_ptr<remote_file>& l) { return !l; });
+  return got;
+}
+
+// [at, size) of `rel` over `lanes`, appended to `fd` in order. nullopt: all of it is written.
+// `progress` gets the bytes received so far, on this thread, as do `allowed` and the cancel check.
+std::optional<sync_outcome> fetch_parallel(const std::vector<remote_file*>& lanes, const std::string& root,
+                                           const std::string& rel, std::uint64_t at, std::uint64_t size, int fd,
+                                           const std::function<void(std::uint64_t)>& progress,
+                                           const cancel_flag* cancel, const std::function<bool()>& may_move) {
+  struct segment {
+    std::uint64_t end = 0;
+    std::uint64_t got = 0;      // received up to here
+    std::uint64_t data_at = 0;  // where data[0] goes
+    std::vector<std::uint8_t> data;
+    bool busy = false;
+  };
+  std::mutex m;
+  std::condition_variable cv;
+  std::map<std::uint64_t, segment> segs;  // by start; those not yet all written
+  std::uint64_t next = at, written = at, received = 0, reported = 0;
+  bool stop = false;
+  std::optional<sync_outcome> failed;
+  cancel_flag halt;  // what the reads see: the person's cancel, or this copy's end
+  int alive = 0;
+
+  const auto fail = [&](sync_outcome why) {  // m held
+    if (!failed) failed = why;
+    stop = true;
+    cv.notify_all();
+  };
+  const auto worker = [&](remote_file* lane) {
+    for (;;) {
+      std::uint64_t start = 0, from = 0, end = 0;
+      {
+        std::unique_lock l(m);
+        const auto pick = [&] {
+          for (auto& [s, seg] : segs) {
+            if (!seg.busy && seg.got < seg.end) {  // given back by a lane that went
+              seg.busy = true;
+              start = s;
+              return true;
+            }
+          }
+          if (next >= size || next >= written + kAheadBytes) return false;
+          start = next;
+          next = std::min(size, next + kSegmentBytes);
+          segment& seg = segs[start];
+          seg.end = next;
+          seg.got = seg.data_at = start;
+          seg.busy = true;
+          return true;
+        };
+        cv.wait(l, [&] { return stop || pick(); });
+        if (stop) return;
+        from = segs.at(start).got;
+        end = segs.at(start).end;
+      }
+      bool bad = false;
+      auto r = lane->read_range(
+          root, rel, from, end - from,
+          [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+            std::lock_guard l(m);
+            if (stop) return false;
+            segment& seg = segs.at(start);
+            if (offset != seg.got || bytes.size() > seg.end - seg.got) {
+              bad = true;
+              return false;
+            }
+            seg.data.insert(seg.data.end(), bytes.begin(), bytes.end());
+            seg.got += bytes.size();
+            received += bytes.size();
+            cv.notify_all();
+            return true;
+          },
+          &halt, true);
+      std::lock_guard l(m);
+      segment& seg = segs.at(start);
+      seg.busy = false;
+      if (seg.got == seg.end) {
+        cv.notify_all();
+        continue;
+      }
+      if (stop) return;
+      if (bad || r) {
+        fail(sync_outcome::unreachable);  // cut short or out of order: the next run resumes
+        return;
+      }
+      if (r.error() == status::io || r.error() == status::timeout) {
+        // This lane went: what it had of the segment stays, and another lane brings the rest.
+        if (--alive == 0) fail(sync_outcome::unreachable);
+        cv.notify_all();
+        return;
+      }
+      fail(outcome_of_read(r.error()));
+      return;
+    }
+  };
+
+  std::vector<std::thread> workers;
+  alive = static_cast<int>(lanes.size()) * kReadsPerLane;
+  for (remote_file* lane : lanes) {
+    for (int i = 0; i < kReadsPerLane; ++i) workers.emplace_back(worker, lane);
+  }
+  for (;;) {
+    std::vector<std::uint8_t> out;
+    std::uint64_t now_received = 0;
+    {
+      std::unique_lock l(m);
+      // A segment all written goes once its worker has let go of it.
+      const auto tidy = [&] {
+        while (!segs.empty() && segs.begin()->second.data_at == segs.begin()->second.end && !segs.begin()->second.busy) {
+          segs.erase(segs.begin());
+        }
+      };
+      const auto writable = [&] {
+        tidy();
+        return !segs.empty() && segs.begin()->second.data_at == written && !segs.begin()->second.data.empty();
+      };
+      // Woken by each chunk too, so the Wi-Fi rule is asked about as often as a one-lane copy asks.
+      cv.wait_for(l, std::chrono::milliseconds(100), [&] { return stop || writable() || received != reported; });
+      reported = received;
+      if (writable()) {
+        segment& seg = segs.begin()->second;
+        out.swap(seg.data);
+        seg.data_at += out.size();
+      }
+      now_received = received;
+      if (out.empty() && (stop || written == size)) break;
+    }
+    if (!out.empty()) {
+      if (::write(fd, out.data(), out.size()) != static_cast<ssize_t>(out.size())) {
+        std::lock_guard l(m);
+        fail(sync_outcome::no_space);
+        break;
+      }
+      std::lock_guard l(m);
+      written += out.size();
+      cv.notify_all();  // room ahead again
+      if (written == size) stop = true;
+    }
+    if (progress) progress(now_received);
+    // The person's cancel and the Wi-Fi rule, asked on this thread only, as a one-lane copy asks.
+    const bool cancelled = cancel && cancel->stopped();
+    if (cancelled || !may_move()) {
+      std::lock_guard l(m);
+      fail(cancelled ? sync_outcome::cancelled : sync_outcome::waiting);
+    }
+  }
+  {
+    std::lock_guard l(m);
+    stop = true;
+    cv.notify_all();
+  }
+  halt.stop.store(true);
+  for (auto& t : workers) t.join();
+  if (written == size) return std::nullopt;
+  return failed.value_or(sync_outcome::unreachable);
+}
+
+}  // namespace
+
 sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan& plan, const sync_progress& progress,
                             const cancel_flag* cancel, const sync_allowed& allowed) {
   if (plan.outcome != sync_outcome::copy_available) return plan.outcome;
@@ -457,6 +655,10 @@ sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan
 
   std::uint64_t done_total = plan.done_bytes;
   if (progress) progress(done_total, plan.total_bytes);
+  std::vector<std::unique_ptr<remote_file>> extra;
+  if (c.lanes > 1 && needed >= kLaneMinBytes && may_move()) extra = open_lanes(remote, c.lanes - 1, cancel);
+  std::vector<remote_file*> lanes{&remote};
+  for (auto& l : extra) lanes.push_back(l.get());
   for (const sync_file& f : plan.files) {
     const fs::path final_path = f.model ? library / f.local_rel : staging / f.local_rel;
     if (fs::file_size(final_path, ec) == f.size && !ec) continue;
@@ -474,37 +676,46 @@ sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan
     if (have < f.size) {
       const int fd = ::open(part.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
       if (fd < 0) return sync_outcome::no_space;
-      bool write_failed = false;
-      bool paused = false;
-      std::uint64_t at = have;
-      auto got = remote.read_range(
-          plan.catalogue_root, f.remote_rel, at, f.size - at,
-          [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
-            if (offset != at) return false;
-            if (!may_move()) {
-              paused = true;
-              return false;
-            }
-            if (::write(fd, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
-              write_failed = true;
-              return false;
-            }
-            at += bytes.size();
-            done_total += bytes.size();
-            if (progress) progress(done_total, plan.total_bytes);
-            return true;
-          },
-          cancel, true);
-#if defined(F_FULLFSYNC)
-      (void)::fcntl(fd, F_FULLFSYNC);
-#else
-      (void)::fsync(fd);
-#endif
-      ::close(fd);
-      if (write_failed) return sync_outcome::no_space;
-      if (paused) return sync_outcome::waiting;
-      if (!got) return outcome_of_read(got.error());
-      if (at != f.size) return sync_outcome::unreachable;  // cut short: the next run resumes
+      if (lanes.size() > 1 && f.size - have > kSegmentBytes) {
+        const std::uint64_t before = done_total;
+        const auto failed = fetch_parallel(
+            lanes, plan.catalogue_root, f.remote_rel, have, f.size, fd,
+            [&](std::uint64_t received) {
+              if (progress) progress(before + received, plan.total_bytes);
+            },
+            cancel, may_move);
+        flush_close(fd);
+        if (failed) return *failed;
+        done_total = before + (f.size - have);
+        if (progress) progress(done_total, plan.total_bytes);
+      } else {
+        bool write_failed = false;
+        bool paused = false;
+        std::uint64_t at = have;
+        auto got = remote.read_range(
+            plan.catalogue_root, f.remote_rel, at, f.size - at,
+            [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+              if (offset != at) return false;
+              if (!may_move()) {
+                paused = true;
+                return false;
+              }
+              if (::write(fd, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
+                write_failed = true;
+                return false;
+              }
+              at += bytes.size();
+              done_total += bytes.size();
+              if (progress) progress(done_total, plan.total_bytes);
+              return true;
+            },
+            cancel, true);
+        flush_close(fd);
+        if (write_failed) return sync_outcome::no_space;
+        if (paused) return sync_outcome::waiting;
+        if (!got) return outcome_of_read(got.error());
+        if (at != f.size) return sync_outcome::unreachable;  // cut short: the next run resumes
+      }
     }
     if (cancel && cancel->stopped()) return sync_outcome::cancelled;
     const auto hash = sha256_file_hex(part);
