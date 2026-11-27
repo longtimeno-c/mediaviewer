@@ -10,6 +10,10 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
 #include <cstring>
 #include <algorithm>
 #include <filesystem>
@@ -40,6 +44,7 @@
 #include "mobile/sound_tower.h"
 #include "mobile/sync.h"
 #include "mobile/testing.h"
+#include "tcp_path.h"
 
 namespace fs = std::filesystem;
 namespace mob = mv::mobile;
@@ -190,10 +195,14 @@ class counting_link final : public dw::link {
   std::shared_ptr<std::atomic<std::uint64_t>> sent_;
 };
 
+// What becomes of each connection the service accepts (the benches: a long, lossy path).
+using link_wrap = std::function<std::unique_ptr<dw::link>(std::unique_ptr<dw::link>)>;
+
 class counting_listener final : public dw::net::listener {
  public:
-  counting_listener(std::unique_ptr<dw::net::listener> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
-      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  counting_listener(std::unique_ptr<dw::net::listener> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent,
+                    std::shared_ptr<link_wrap> path = nullptr)
+      : inner_(std::move(inner)), sent_(std::move(sent)), path_(std::move(path)) {}
   std::uint16_t port() const noexcept override { return inner_->port(); }
   mv::result<std::unique_ptr<dw::link>> accept(int timeout_ms) override { return wrap(inner_->accept(timeout_ms)); }
   mv::result<std::unique_ptr<dw::link>> accept_from(int timeout_ms, dw::net::address& from) override {
@@ -207,10 +216,13 @@ class counting_listener final : public dw::net::listener {
  private:
   mv::result<std::unique_ptr<dw::link>> wrap(mv::result<std::unique_ptr<dw::link>> l) {
     if (!l) return l;
-    return std::unique_ptr<dw::link>(std::make_unique<counting_link>(std::move(*l), sent_));
+    std::unique_ptr<dw::link> counted = std::make_unique<counting_link>(std::move(*l), sent_);
+    if (path_ && *path_) return (*path_)(std::move(counted));
+    return counted;
   }
   std::unique_ptr<dw::net::listener> inner_;
   std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+  std::shared_ptr<link_wrap> path_;
 };
 
 struct rig {
@@ -224,6 +236,7 @@ struct rig {
   std::string payload;
   std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
   std::shared_ptr<std::atomic<std::uint64_t>> served = std::make_shared<std::atomic<std::uint64_t>>(0);  // bytes the service sent
+  std::shared_ptr<link_wrap> path = std::make_shared<link_wrap>();  // set: connections accepted after it go through it
 
   std::string photos_label = "Photos";
   std::string relay_address;  // the person's own relay, for start(): the service waits there
@@ -263,10 +276,10 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.cfg.relay = relay_address;
-    o.make_listener = [sent = served]() -> std::unique_ptr<dw::net::listener> {
+    o.make_listener = [sent = served, path = path]() -> std::unique_ptr<dw::net::listener> {
       auto l = dw::net::listen_internet(0, true, 32);
       REQUIRE(l);
-      return std::make_unique<counting_listener>(std::move(*l), sent);
+      return std::make_unique<counting_listener>(std::move(*l), sent, path);
     };
     o.now_unix = [this] {
       const auto t = fake_now.load();
@@ -559,6 +572,9 @@ TEST_CASE("sync: copy, hash check, install, resume, signatures and generations",
   }
 
   SECTION("the service going away mid-copy (airplane mode) leaves nothing half-installed, and the next run resumes") {
+    // One link: the stop below runs inside the progress call, and lanes would bring the rest
+    // meanwhile. Every lane going away: "sync: when every lane goes ...".
+    cfg.lanes = 1;
     std::atomic<bool> stopped{false};
     auto out = mob::copy_catalogue(s, cfg, plan, [&](std::uint64_t done, std::uint64_t) {
       if (done > 64 * 1024 && !stopped.exchange(true)) r.srv->stop();
@@ -990,6 +1006,231 @@ TEST_CASE("sync: bytes stop when they may not move, resume when they may, and a 
                             nullptr) == mob::sync_outcome::installed);
   CHECK(moved == 0);
   CHECK(mob::read_installed(cfg.library_dir)->generation == 1);
+}
+
+namespace {
+
+// The NAS's catalogue folder read straight from disk in 256 KB chunks, as the service hands it
+// over, and as many more lanes as `lanes` (open_lane): what a copy spreads over, and what it was
+// handed on each.
+struct lane_record {
+  std::mutex m;
+  std::condition_variable cv;
+  int lanes = 0;                   // still to hand out
+  int opened = 0;
+  int active = 0;                  // reads of `gate_rel` running now
+  std::string gate_rel;            // a read of this waits (10 s at most) until another runs beside it
+  bool overlapped = false;
+  int drop_lane = -1;              // this lane's first read of `gate_rel` ends with io after drop_after bytes
+  std::uint64_t drop_after = 0;
+  bool dropped = false;
+  bool drop_all = false;           // every read of `gate_rel` ends so
+  std::map<std::string, std::vector<std::pair<std::uint64_t, std::uint64_t>>> handed;  // rel: [from, to)
+  std::uint64_t handed_bytes(const std::string& rel) {
+    std::uint64_t n = 0;
+    for (const auto& [a, b] : handed[rel]) n += b - a;
+    return n;
+  }
+  std::uint64_t first_offset(const std::string& rel) {
+    std::uint64_t first = UINT64_MAX;
+    for (const auto& [a, b] : handed[rel]) first = std::min(first, a);
+    return first;
+  }
+};
+
+class disk_remote final : public mob::remote_file {
+ public:
+  disk_remote(fs::path root, std::shared_ptr<lane_record> rec, int id = 0)
+      : root_(std::move(root)), rec_(std::move(rec)), id_(id) {}
+  mv::result<std::vector<serve::root_info>> roots() override { return std::vector<serve::root_info>{}; }
+  mv::result<std::vector<serve::list_entry>> list(const std::string&, const std::string&) override {
+    return std::vector<serve::list_entry>{};
+  }
+  mv::result<serve::stat_info> stat(const std::string&, const std::string&) override { return serve::stat_info{}; }
+  mv::expected read_range(const std::string&, const std::string& rel, std::uint64_t at, std::uint64_t length,
+                          const mob::byte_sink& sink, const mob::cancel_flag* cancel, bool) override {
+    std::ifstream f(root_ / rel, std::ios::binary);
+    if (!f) return mv::err(mv::status::not_found);
+    f.seekg(0, std::ios::end);
+    const auto size = static_cast<std::uint64_t>(f.tellg());
+    const std::uint64_t end = length > size - std::min(at, size) ? size : at + length;
+    const bool gated = rel == rec_->gate_rel;
+    bool drop = false;
+    if (gated) {
+      std::unique_lock l(rec_->m);
+      ++rec_->active;
+      rec_->cv.notify_all();
+      if (!rec_->overlapped) rec_->cv.wait_for(l, std::chrono::seconds(10), [&] { return rec_->active >= 2; });
+      if (rec_->active >= 2) rec_->overlapped = true;
+      drop = rec_->drop_all || (id_ == rec_->drop_lane && !rec_->dropped);
+    }
+    const auto leave = [&] {
+      if (!gated) return;
+      std::lock_guard l(rec_->m);
+      --rec_->active;
+    };
+    std::vector<char> buf(256 * 1024);
+    std::uint64_t sent = 0;
+    for (std::uint64_t pos = at; pos < end;) {
+      if (cancel && cancel->stopped()) {
+        leave();
+        return mv::err(mv::status::cancelled);
+      }
+      if (drop && sent >= rec_->drop_after) {
+        std::lock_guard l(rec_->m);
+        rec_->dropped = true;
+        --rec_->active;
+        return mv::err(mv::status::io);
+      }
+      const auto n = static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), end - pos));
+      f.seekg(static_cast<std::streamoff>(pos));
+      f.read(buf.data(), static_cast<std::streamsize>(n));
+      {
+        std::lock_guard l(rec_->m);
+        rec_->handed[rel].push_back({pos, pos + n});
+      }
+      if (!sink(pos, std::span(reinterpret_cast<const std::uint8_t*>(buf.data()), n))) {
+        leave();
+        return mv::err(mv::status::cancelled);
+      }
+      pos += n;
+      sent += n;
+    }
+    leave();
+    return {};
+  }
+  std::unique_ptr<mob::remote_file> open_lane(const mob::cancel_flag*) override {
+    std::lock_guard l(rec_->m);
+    if (rec_->lanes <= 0) return nullptr;
+    --rec_->lanes;
+    return std::make_unique<disk_remote>(root_, rec_, ++rec_->opened);
+  }
+
+ private:
+  fs::path root_;
+  std::shared_ptr<lane_record> rec_;
+  int id_;
+};
+
+constexpr const char* kExtraRel = "gen/000001/extra.bin";
+
+}  // namespace
+
+TEST_CASE("sync: a big file comes over several lanes at once, and arrives whole", "[mobile-link]") {
+  rig r(20 * 1024 * 1024);
+  auto rec = std::make_shared<lane_record>();
+  rec->lanes = 8;  // more than the copy asks for
+  rec->gate_rel = kExtraRel;
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  auto plan = mob::check_catalogue(remote, cfg);
+  REQUIRE(plan.outcome == mob::sync_outcome::copy_available);
+  std::uint64_t last = 0;
+  bool forward = true;
+  REQUIRE(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t done, std::uint64_t total) {
+    forward = forward && done >= last && done <= total;
+    last = done;
+  }, nullptr) == mob::sync_outcome::installed);  // installed: every file matched its hash
+  CHECK(rec->opened == cfg.lanes - 1);
+  CHECK(rec->overlapped);
+  CHECK(forward);
+  CHECK(last == plan.total_bytes);
+  const auto size = fs::file_size(r.catalogue_home / ".mediaviewer" / kExtraRel);
+  CHECK(rec->handed_bytes(kExtraRel) == size);  // nothing handed over twice
+
+  SECTION("one lane alone: no lanes are asked for, and one read brings the file") {
+    auto one = std::make_shared<lane_record>();
+    one->lanes = 8;
+    disk_remote alone(r.catalogue_home / ".mediaviewer", one);
+    auto single = r.sync_config();
+    single.catalogue_root = "c2c2c2c2c2c2c2c2";
+    single.library_dir = (r.dir.root / "phone-single").string();
+    single.lanes = 1;
+    auto p1 = mob::check_catalogue(alone, single);
+    REQUIRE(mob::copy_catalogue(alone, single, p1, nullptr, nullptr) == mob::sync_outcome::installed);
+    CHECK(one->opened == 0);
+    CHECK(one->handed[kExtraRel].front().first == 0);
+    CHECK(one->handed_bytes(kExtraRel) == size);
+  }
+}
+
+TEST_CASE("sync: a lane that drops mid-segment hands the rest of it to another", "[mobile-link]") {
+  rig r(20 * 1024 * 1024);
+  auto rec = std::make_shared<lane_record>();
+  rec->lanes = 3;
+  rec->gate_rel = kExtraRel;
+  rec->drop_lane = 2;
+  rec->drop_after = 512 * 1024;
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  auto plan = mob::check_catalogue(remote, cfg);
+  REQUIRE(mob::copy_catalogue(remote, cfg, plan, nullptr, nullptr) == mob::sync_outcome::installed);
+  CHECK(rec->dropped);
+  // What the dropped lane had stayed: the segment's rest came from another, nothing twice.
+  CHECK(rec->handed_bytes(kExtraRel) == fs::file_size(r.catalogue_home / ".mediaviewer" / kExtraRel));
+}
+
+TEST_CASE("sync: when every lane goes, the copy is unreachable, keeps its prefix, and the next run resumes", "[mobile-link]") {
+  rig r(20 * 1024 * 1024);
+  auto rec = std::make_shared<lane_record>();
+  rec->lanes = 3;
+  rec->gate_rel = kExtraRel;
+  rec->drop_all = true;
+  rec->drop_after = 768 * 1024;
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  auto plan = mob::check_catalogue(remote, cfg);
+  CHECK(mob::copy_catalogue(remote, cfg, plan, nullptr, nullptr) == mob::sync_outcome::unreachable);
+  CHECK(rec->opened == 3);
+  CHECK_FALSE(fs::exists(fs::path(cfg.library_dir) / "installed.json"));
+  const fs::path part = fs::path(cfg.library_dir) / "staging" / "1-1" / "extra.bin.part";
+  const std::string held = read_all(part);
+  const std::string whole = read_all(r.catalogue_home / ".mediaviewer" / kExtraRel);
+  REQUIRE(held.size() > 0);
+  CHECK(whole.compare(0, held.size(), held) == 0);
+
+  rec->drop_all = false;
+  rec->handed.clear();
+  rec->lanes = 3;
+  auto again = mob::check_catalogue(remote, cfg);
+  REQUIRE(mob::copy_catalogue(remote, cfg, again, nullptr, nullptr) == mob::sync_outcome::installed);
+  CHECK(rec->first_offset(kExtraRel) == held.size());
+}
+
+TEST_CASE("sync: a copy over lanes stopped part-way leaves a prefix, and resumes after it", "[mobile-link]") {
+  rig r(20 * 1024 * 1024);
+  auto rec = std::make_shared<lane_record>();
+  rec->lanes = 3;
+  rec->gate_rel = kExtraRel;
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  auto plan = mob::check_catalogue(remote, cfg);
+  mob::cancel_flag stop;
+  CHECK(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t done, std::uint64_t) {
+    if (done > 6 * 1024 * 1024) stop.stop.store(true);
+  }, &stop) == mob::sync_outcome::cancelled);
+  CHECK(rec->overlapped);
+  const fs::path source = r.catalogue_home / ".mediaviewer" / kExtraRel;
+  const fs::path part = fs::path(cfg.library_dir) / "staging" / "1-1" / "extra.bin.part";
+  REQUIRE(fs::exists(part));
+  const std::string held = read_all(part);
+  const std::string whole = read_all(source);
+  REQUIRE(held.size() > 0);
+  REQUIRE(held.size() < whole.size());
+  CHECK(whole.compare(0, held.size(), held) == 0);  // the start of the file, and only that
+
+  auto again = mob::check_catalogue(remote, cfg);
+  REQUIRE(again.outcome == mob::sync_outcome::copy_available);
+  CHECK(again.done_bytes >= held.size());
+  rec->handed.clear();
+  rec->lanes = 3;
+  REQUIRE(mob::copy_catalogue(remote, cfg, again, nullptr, nullptr) == mob::sync_outcome::installed);
+  CHECK(rec->first_offset(kExtraRel) == held.size());  // nothing on the phone asked for again
+  CHECK(rec->handed_bytes(kExtraRel) == whole.size() - held.size());
 }
 
 namespace {
@@ -2217,6 +2458,36 @@ bool connect_relayed(mob::link_session& s, mob::route_report& report) {
 
 }  // namespace
 
+TEST_CASE("link: a copy's lane is a session of its own on a direct route, none through the relay", "[mobile-link]") {
+  rig r;
+  r.pair_now();
+  {
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    CHECK(s.open_lane(nullptr) == nullptr);  // no live link: nothing to follow
+    REQUIRE(s.connect(rep));
+    auto lane = s.open_lane(nullptr);
+    REQUIRE(lane);
+    std::string got;
+    REQUIRE(lane->read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t> b) {
+      got.append(reinterpret_cast<const char*>(b.data()), b.size());
+      return true;
+    }, nullptr, true));
+    CHECK(got == std::string(70000, 'p'));
+    // Forget on the link ends its lanes too.
+    s.shut_down();
+    CHECK_FALSE(lane->read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX,
+                                 [](std::uint64_t, std::span<const std::uint8_t>) { return true; }, nullptr, true));
+  }
+  auto rendezvous = relay_for(r);
+  mob::link_session relayed(relayed_only(r, *rendezvous));
+  relayed.set_upgrade_policy(true, false);  // held on the relay
+  mob::route_report report;
+  REQUIRE(connect_relayed(relayed, report));
+  REQUIRE(report.relayed);
+  CHECK(relayed.open_lane(nullptr) == nullptr);
+}
+
 TEST_CASE("upgrade: the relay says what it sees of a connection", "[phone-upgrade]") {
   dw::relay::server::options ro;
   ro.key = kPhoneRelayKey;
@@ -2336,6 +2607,53 @@ TEST_CASE("upgrade: relayed and direct throughput, alternated", "[.phone-upgrade
     REQUIRE(report.upgraded);
     const double direct = read_all(moved);
     std::printf("{\"case\":\"phone_upgrade\",\"run\":%d,\"relay_MBps\":%.0f,\"direct_MBps\":%.0f}\n", run, via_relay, direct);
+  }
+}
+
+// The library copy's rate over a long, lossy TCP path (tcp_path.h: a CUBIC sender's model, the
+// tests having no root for dummynet), one JSON line per run:
+//   mv_mobile_link_tests "[.phone-copy-bench]"
+//     MV_COPY_BENCH_MB      the generation's size (default 24)
+//     MV_COPY_BENCH_RTT_MS  round trip (default 150)
+//     MV_COPY_BENCH_LOSS    per segment (default 0.001)
+//     MV_COPY_BENCH_MBIT    a bottleneck shared by every connection (default 0: none)
+//     MV_COPY_BENCH_RUNS    (default 2)
+TEST_CASE("sync: library copy throughput over an emulated long path", "[.phone-copy-bench]") {
+  const auto num = [](const char* name, double fallback) {
+    const char* v = std::getenv(name);
+    return v && *v ? std::atof(v) : fallback;
+  };
+  const auto mb = static_cast<std::size_t>(num("MV_COPY_BENCH_MB", 24));
+  dw::test::tcp_profile p;
+  p.rtt_ms = num("MV_COPY_BENCH_RTT_MS", 150);
+  p.loss = num("MV_COPY_BENCH_LOSS", 0.001);
+  p.mbit = num("MV_COPY_BENCH_MBIT", 0);
+  const int runs = static_cast<int>(num("MV_COPY_BENCH_RUNS", 2));
+  rig r(mb * 1024 * 1024);
+  r.pair_now();
+  auto bn = std::make_shared<dw::test::tcp_bottleneck>(p);
+  std::atomic<std::uint32_t> seed{1};
+  *r.path = [&](std::unique_ptr<dw::link> l) -> std::unique_ptr<dw::link> {
+    return std::make_unique<dw::test::tcp_path_link>(std::move(l), p, seed.fetch_add(1), bn);
+  };
+  for (int run = 0; run < runs; ++run) {
+    for (const int lanes : {1, 4}) {
+      auto cfg = r.sync_config();
+      cfg.library_dir = (r.dir.root / ("phone-" + std::to_string(run) + "-" + std::to_string(lanes))).string();
+      cfg.lanes = lanes;
+      mob::link_session s(r.config());
+      mob::route_report rep;
+      REQUIRE(s.connect(rep));
+      auto plan = mob::check_catalogue(s, cfg);
+      REQUIRE(plan.outcome == mob::sync_outcome::copy_available);
+      const auto t0 = std::chrono::steady_clock::now();
+      REQUIRE(mob::copy_catalogue(s, cfg, plan, nullptr, nullptr) == mob::sync_outcome::installed);
+      const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      std::printf("{\"case\":\"phone_copy\",\"run\":%d,\"lanes\":%d,\"rtt_ms\":%.0f,\"loss\":%.4f,\"mbit\":%.0f,\"MB\":%.1f,"
+                  "\"s\":%.1f,\"MBps\":%.2f}\n",
+                  run, lanes, p.rtt_ms, p.loss, p.mbit, plan.total_bytes / 1e6, secs, plan.total_bytes / 1e6 / secs);
+      std::fflush(stdout);
+    }
   }
 }
 

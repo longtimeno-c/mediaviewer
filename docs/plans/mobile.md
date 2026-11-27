@@ -964,6 +964,15 @@ the mobile-data reachability test, Keychain.
 
 **Built (2026-11-10):** copy, signature and manifest checks, swap, resume, the never-lower rule, Wi-Fi by default, `BGContinuedProcessingTask` for the first copy. Not proven: leaving the app during a copy (needs a device), and `BGProcessingTask` for automatic sync is not built.
 
+**Copy over lanes (2026-11-27):** over a long path one TCP connection's loss recovery caps the copy
+(CUBIC at 150 ms and 0.1 % loss: well under 1 MB/s, however fast the line), so a copy of 8 MB or more
+opens up to three more sessions to the service on the same direct route (`remote_file::open_lane`;
+none on a relayed or punched link) and fetches each big file as 2 MB segments, two reads per lane.
+Segments are written in order, so the `.part` stays a prefix of the file and a resume is unchanged;
+at most 24 MB waits in memory ahead of it. No protocol change: each lane is an ordinary session, and a
+service that says busy just leaves fewer. Bench: `mv_mobile_link_tests "[.phone-copy-bench]"`
+(`tests/tcp_path.h`, an emulated CUBIC path).
+
 Copy, verify, swap, resume, background task, first copy as a continued task on iOS 26, model copy,
 Wi-Fi by default.
 
