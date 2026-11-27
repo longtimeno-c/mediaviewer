@@ -40,6 +40,7 @@ struct FolderShelf: View {
         }
         .padding(.horizontal, Theme.inset)
       }
+      .dropsHold()
       .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
     }
     .padding(.top, 8)

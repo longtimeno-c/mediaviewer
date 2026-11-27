@@ -180,6 +180,55 @@ final class FolderChangeModelTests: XCTestCase {
     XCTAssertTrue(library.stack.last!.changeable, "Add and Select would appear after the push")
   }
 
+  /// Holding a tile starts Select with it chosen (as Photos does); the tap its lift brings does not
+  /// undo that, and taps after it choose as Select's do.
+  func testHoldingATileStartsSelectWithItChosen() async {
+    let (library, page) = await opened(Server())
+    library.startSelecting(holding: day.id, on: page)
+    XCTAssertTrue(page.selecting)
+    XCTAssertEqual(page.selected, [day.id])
+    library.tapped(day.id, on: page)  // the finger lifting
+    XCTAssertEqual(page.selected, [day.id], "The hold's own lift unchose it")
+    library.tapped(day2.id, on: page)
+    XCTAssertEqual(page.selected, [day.id, day2.id])
+    library.tapped(day.id, on: page)
+    XCTAssertEqual(page.selected, [day2.id])
+    // A hold while choosing changes nothing; the tap that follows chooses as any tap does.
+    library.startSelecting(holding: day.id, on: page)
+    XCTAssertEqual(page.selected, [day2.id])
+    library.tapped(day.id, on: page)
+    XCTAssertEqual(page.selected, [day.id, day2.id])
+  }
+
+  /// No lift is coming after VoiceOver's Select, nor after a hold that went on into a scroll: the
+  /// next tap on that tile unchooses it.
+  func testAHoldWithNoLiftLosesNoTap() async {
+    let (library, page) = await opened(Server())
+    library.startSelecting(holding: day.id, on: page, lifting: false)
+    XCTAssertEqual(page.selected, [day.id])
+    library.tapped(day.id, on: page)
+    XCTAssertTrue(page.selected.isEmpty, "VoiceOver's next tap was passed over")
+
+    library.setSelecting(false, on: page)
+    library.startSelecting(holding: day.id, on: page)
+    library.dropHold(on: page)  // the finger went on to scroll
+    library.tapped(day.id, on: page)
+    XCTAssertTrue(page.selected.isEmpty, "The tap after a scroll was passed over")
+  }
+
+  /// A page this phone may only view has no Select: a hold there chooses nothing.
+  func testHoldingATileOnAViewPageChoosesNothing() async {
+    let server = Server()
+    server.mayChange = false
+    let library = LibraryModel(store: Store(server: server), changes: Changes(server: server))
+    library.enter(trip)
+    let page = library.stack.last!
+    await page.loading?.value
+    library.startSelecting(holding: day.id, on: page)
+    XCTAssertFalse(page.selecting)
+    XCTAssertTrue(page.selected.isEmpty)
+  }
+
   func testChosenFollowsThePageOrder() async {
     let (library, page) = await opened(Server())
     library.setSelecting(true, on: page)
