@@ -324,6 +324,12 @@ A session above the link (`channel.h`); `transfer.h` just waits through rejoins.
   - **Break**: suspect after a failure or **3 s** silence (`kSuspectMs`); every bearer the peer is
     heard on races a **whole rejoin** (`channel::begin_rejoin`), winning only with the answer within
     **3 s**. **Reconnecting to …**. **20 s** (`kRejoinMs`) without a link ends the session.
+  - **Away**: silence is counted only while the reader thread reads. The receiver holds
+    `channel::away` while it waits on its verifier (room in the queue, or the last read-backs
+    after `done`: a 15 GB file on a hard disk takes minutes), so the sender's unread pings are not
+    taken for a dead link; its own pings still go out. Dropping it restarts the clock. Not yet
+    covered: a wait for room long enough to fill the sender's socket for `kSilenceMs` (its
+    `SO_SNDTIMEO`) still drops the link on the sender's side, which then has to rejoin.
   - **Make before break**: Bluetooth → Wi-Fi when the peer appears there; next move waits **10 s**
     (`kSwitchHoldMs`).
   - **Flapping**: three rejoins in **10 s** end it.

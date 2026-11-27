@@ -490,6 +490,82 @@ TEST_CASE("driftwire: pings keep a link alive but never stretch a deadline", "[d
   CHECK(m.type == sp::msg::offer);
 }
 
+namespace {
+
+// One transfer whose receiver's read-backs (the verifier threads' yields) are
+// held for `hold`, from the first, with the receiver's session limit without a
+// sign of life cut to `limit_ms`: a big file on a slow disk, made short.
+struct held_checks {
+  sp::transfer_result sent, got;
+  bool held = false;
+};
+held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& files, const fs::path& dest,
+                                      int limit_ms, std::chrono::milliseconds hold) {
+  auto [a, b] = channel_pair();
+  b->set_rejoin_ms_for_tests(limit_ms);
+  held_checks out;
+  std::mutex m;
+  std::optional<std::chrono::steady_clock::time_point> until;
+  std::thread receiver([&, &b = b] {
+    const auto reading = std::this_thread::get_id();
+    auto offer = sp::read_offer(*b, 10000);
+    if (!offer || !sp::send_accept(*b)) return;
+    sp::hooks h;
+    h.yield = [&] {
+      if (std::this_thread::get_id() == reading) return;  // the link reader's own yield
+      std::chrono::steady_clock::time_point end;
+      {
+        std::lock_guard lock(m);
+        if (!until) until = std::chrono::steady_clock::now() + hold;
+        end = *until;
+        out.held = true;
+      }
+      // The slow disk: elapsed time is the point here, so no event stands in
+      // for it. Only a hold past the limit matters; a longer one is the same.
+      std::this_thread::sleep_until(end);
+    };
+    out.got = sp::receive_files(*b, *offer, utf8(dest), h);
+  });
+  out.sent = sp::send_files(*a, files, {}, {});
+  receiver.join();
+  return out;
+}
+
+}  // namespace
+
+// Reading the files back takes as long as the receiver's disk needs (15 GB:
+// minutes on a hard disk), and the receiver reads nothing from the link while
+// it waits for that. The sender's pings wait unread; that is not a dead link,
+// and the receiver keeps the session through it. (A wait for room past the
+// sender's own write timeout, kSilenceMs, is not covered here.)
+TEST_CASE("driftwire: a receiver waiting on slow read-backs keeps the session", "[driftwire]") {
+  constexpr int kLimitMs = 2000;  // well above kPing2Ms: the sender's pings keep it alive otherwise
+  const auto hold = std::chrono::milliseconds(2 * kLimitMs);
+  scratch_dir s("driftwire_slow_checks");
+  const fs::path src = s / "src", dest = s / "dest";
+  fs::create_directories(dest);
+  std::vector<sp::outgoing_file> files;
+  auto add = [&](const std::string& name, std::size_t size, std::uint32_t seed) {
+    write_bytes(src / name, pattern(size, seed));
+    files.push_back({utf8(src / name), name, size, 0, {}});
+  };
+
+  SECTION("after the last file, waiting for its check") {
+    add("big.mov", 9 * 1024 * 1024, 1);
+  }
+  SECTION("mid-way, waiting for room among the files to check") {
+    for (std::uint32_t i = 0; i < 9; ++i) add("clip" + std::to_string(i) + ".mov", 5 * 1024 * 1024, i + 1);
+  }
+
+  const auto r = transfer_with_held_checks(files, dest, kLimitMs, hold);
+  CHECK(r.held);
+  CHECK(r.got.how == sp::outcome::delivered);
+  CHECK(r.sent.how == sp::outcome::delivered);
+  CHECK(r.got.done == files.size());
+  for (const auto& f : files) CHECK(read_bytes(dest / f.rel) == read_bytes(f.path));
+  CHECK_FALSE(any_temporary(dest));
+}
+
 TEST_CASE("driftwire: stage timers count the seal, the send, the receive and the open (#540)", "[driftwire]") {
   auto [a, b] = channel_pair();
   sp::stage_times tx, rx;

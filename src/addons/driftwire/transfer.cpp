@@ -1054,8 +1054,14 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         // its read-back is the check (as for every file).
         if (cur->resumed || cur->hash.finish() == sent) {
           // Flushed, read back and renamed on the verifier while the next
-          // file arrives; its file_done goes from there.
-          if (!checks.push(std::move(cur), sent)) {
+          // file arrives; its file_done goes from there. A wait for room
+          // there reads nothing, and is no sign of a dead link.
+          bool pushed = false;
+          {
+            channel::away waiting(ch);
+            pushed = checks.push(std::move(cur), sent);
+          }
+          if (!pushed) {
             return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
           }
         } else {
@@ -1083,8 +1089,12 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         skip_had();
         if ((cur && cur->open) || next != offer.files.size()) return end(outcome::failed, true, __LINE__);
         // The last files' checks finish before done: the sender's done means
-        // every file is in place or reported.
-        settle();
+        // every file is in place or reported. A big file's read-back takes
+        // as long as its disk needs; reading nothing meanwhile is not silence.
+        {
+          channel::away waiting(ch);
+          settle();
+        }
         if (checks.broken()) {
           ch.shutdown();
           res.how = cancelled(h) ? outcome::cancelled : outcome::failed;

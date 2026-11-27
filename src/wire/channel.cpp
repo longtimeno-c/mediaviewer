@@ -834,7 +834,15 @@ bool channel::link_up() const noexcept {
   if (down_.load()) return false;
   if (version_ < 2) return true;
   std::lock_guard lock(link_m_);
-  return up_ && now_ns() - last_heard_ns_.load() < std::int64_t{kSuspectMs} * 1000000;
+  return up_ && (away_.load() > 0 || now_ns() - last_heard_ns_.load() < std::int64_t{kSuspectMs} * 1000000);
+}
+
+channel::away::away(channel& ch) noexcept : ch_(ch) { ch_.away_.fetch_add(1); }
+
+channel::away::~away() {
+  // The clock starts again from here, not from the last byte read before.
+  ch_.last_heard_ns_.store(now_ns());
+  ch_.away_.fetch_sub(1);
 }
 
 // ---- sending ------------------------------------------------------------------------------
@@ -885,7 +893,8 @@ expected channel::write_frame2(msg type, std::uint64_t seq, std::span<const std:
 }
 
 bool channel::rejoin_expired() const noexcept {
-  return now_ns() - last_heard_ns_.load() >= std::int64_t{kRejoinMs} * 1000000;
+  if (away_.load() > 0) return false;  // unread is not silent (channel::away)
+  return now_ns() - last_heard_ns_.load() >= std::int64_t{rejoin_ms_.load()} * 1000000;
 }
 
 expected channel::send_v2(msg type, std::span<const std::uint8_t> body) {
@@ -1250,7 +1259,8 @@ void channel::ping_loop() {
         gen = gen_;
         up = up_;
       }
-      if (up && !cancelled_.load() && now_ns() - last_heard_ns_.load() >= std::int64_t{kSuspectMs} * 1000000 &&
+      if (up && !cancelled_.load() && away_.load() == 0 &&
+          now_ns() - last_heard_ns_.load() >= std::int64_t{kSuspectMs} * 1000000 &&
           suspect_gen_.exchange(gen) != gen) {
         notify(link_event::suspect);
       }
