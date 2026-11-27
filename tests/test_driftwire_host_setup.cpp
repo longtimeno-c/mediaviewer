@@ -17,11 +17,13 @@
 #include <cstdio>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -41,6 +43,7 @@
 #include "wire/link.h"
 #include "wire/net.h"
 #include "wire/pair_check.h"
+#include "wire/secrets.h"
 #include "wire/serve.h"
 #include "wire/serve_client.h"
 #include "wire/splice.h"
@@ -721,6 +724,66 @@ TEST_CASE("host setup: a DuckDNS name skipped, refused, mistyped, then kept; and
     REQUIRE(store);
     CHECK_FALSE(ddns::load_token(*store));
   }
+}
+
+// A secrets store whose read waits: the keeper's worker held where the host's
+// first state.json is written (the token not read yet).
+struct held_store final : mv::driftwire::secrets::store {
+  std::mutex m;
+  std::condition_variable cv;
+  int reads = 0;
+  bool open = false;
+  bool put(const std::string&, std::span<const std::uint8_t>) override { return false; }
+  std::optional<std::vector<std::uint8_t>> get(const std::string&) override {
+    std::unique_lock lock(m);
+    ++reads;
+    cv.notify_all();
+    cv.wait(lock, [this] { return open; });
+    return std::nullopt;
+  }
+  bool erase(const std::string&) override { return false; }
+  void wait_reads(int n) {
+    std::unique_lock lock(m);
+    cv.wait(lock, [&] { return reads >= n; });
+  }
+  void let_go() {
+    {
+      std::lock_guard lock(m);
+      open = true;
+    }
+    cv.notify_all();
+  }
+};
+
+TEST_CASE("host keepers: a status asked before the worker has looked names what is wanted, never \"none\"",
+          "[host-setup][host]") {
+  REQUIRE(sodium_init() >= 0);
+  // The router: not asked yet, not "nothing to open".
+  CHECK(cli::make_router_keeper()->status_line() == "router      not asked yet");
+
+  held_store store;
+  cli::ddns_keeper_config c;
+  c.fetch = [](const std::string&, int) { return ddns::fetch_answer{}; };
+  c.on_loopback = true;
+  auto k = cli::make_ddns_keeper(std::move(c));
+  cli::keeper_context ctx;
+  ctx.secrets = &store;
+  ctx.loopback_only = true;
+  ctx.ddns_subdomain = "home";
+  k->start(ctx);
+  store.wait_reads(1);  // the worker is reading the token: nothing built yet
+  CHECK(k->status_line() == "DuckDNS     home.duckdns.org, updating");
+  // A new name while it still works on the old one: the new one at once.
+  ctx.ddns_subdomain = "cabin";
+  k->ports_changed(ctx);
+  CHECK(k->status_line() == "DuckDNS     cabin.duckdns.org, updating");
+  store.let_go();
+  CHECK(eventually([&] { return contains(k->status_line(), "cabin.duckdns.org: no token kept"); }));
+  // The name taken away: none, and said so.
+  ctx.ddns_subdomain.clear();
+  k->ports_changed(ctx);
+  CHECK(contains(k->status_line(), "DuckDNS     none: "));
+  k->stop();
 }
 
 TEST_CASE("host setup: the DuckDNS keeper in the running host; host status shows it, never the token",
