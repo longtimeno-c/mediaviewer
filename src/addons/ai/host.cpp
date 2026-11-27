@@ -164,6 +164,29 @@ result<std::vector<std::uint8_t>> host::jpeg_shrink(std::span<const std::uint8_t
   return err(status::internal);
 }
 
+bool host::has_jpeg_face_crop() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, jpeg_face_crop) + sizeof(api_->jpeg_face_crop) &&
+         api_->jpeg_face_crop;
+}
+
+result<std::vector<std::uint8_t>> host::jpeg_face_crop(std::span<const std::uint8_t> jpeg, const std::array<float, 4>& box,
+                                                       std::uint32_t max_edge, std::uint32_t quality) const {
+  if (!has_jpeg_face_crop()) return err(status::unsupported_format);
+  std::vector<std::uint8_t> out(32u * 1024u);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    uint64_t n = 0;
+    const mv_status s = api_->jpeg_face_crop(api_->host, jpeg.data(), static_cast<uint64_t>(jpeg.size()), box.data(),
+                                             max_edge, quality, out.data(), static_cast<uint64_t>(out.size()), &n);
+    if (s == MV_OK) {
+      out.resize(static_cast<std::size_t>(n));
+      return out;
+    }
+    if (s != MV_ERR_INVALID_ARG || n <= out.size() || n > (4u << 20)) return err(to_status(s));
+    out.resize(static_cast<std::size_t>(n));
+  }
+  return err(status::internal);
+}
+
 bool host::has_thumbnail_make() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, thumbnail_make) + sizeof(api_->thumbnail_make) &&
          api_->thumbnail_make;

@@ -273,7 +273,11 @@ runs unchanged: `meta`, `roots`, `assets`, `asset_text`, `progress`, `frames`, `
   column. `path_key`, `key_parent` and the `in:` filter keep working untouched.
 - **Places.** Each asset's place label is resolved at publish time and stored, because a phone
   with no Places provider would otherwise match nothing for `place:` (`engine.cpp:6935`).
-- **People.** Names and asset links only (call 7).
+- **People.** Names and asset links only (call 7): no embedding and no face box. Each person's
+  round icon travels as a picture instead (`faces.db` `covers`, 2026-11-27): their cover face in
+  the desktop's cover order, cut by the host's `jpeg_face_crop` from the JPEG-512 the desktop
+  cuts its own cover from, at most 320 px. A catalogue without it (an older desktop) shows the
+  middle of the person's photo, as before.
 - **Labels.** `labels.f32` travels too, and the read-only reader now loads it (2026-11-10). Without the file every row passes, as before.
 - **What the reader needs beyond the tables (audit, 2026-11-10; confirmed in the code):**
   - The file must be named `index.db` in the reader's data folder (`engine.cpp:195`), so the phone copies `catalog.db` to that name.

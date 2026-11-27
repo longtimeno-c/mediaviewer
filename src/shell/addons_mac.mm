@@ -686,6 +686,7 @@ mv::addon::host_services ai_services() {
   svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
   svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
   svc.jpeg_shrink = &mv::addon::media::jpeg_shrink;     // the phone's catalogue
+  svc.jpeg_face_crop = &mv::addon::media::jpeg_face_crop;  // its People covers
   svc.thumbnail_make = &mv::addon::media::make_thumbnail_jpeg;
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.

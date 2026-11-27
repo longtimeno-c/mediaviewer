@@ -60,6 +60,11 @@ namespace media {
 // Bytes are decoded at a DCT scale and averaged; no I/O, any worker.
 [[nodiscard]] result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                                             std::uint32_t quality);
+// The phone's People covers: the face at `box` (x, y, w, h in 0..1 of the
+// picture) squared at 1.6 times its longer side, kept inside the picture, as
+// the desktop's covers are cut (AIChrome Thumbs.crop), at most `max_edge`.
+[[nodiscard]] result<std::vector<std::uint8_t>> jpeg_face_crop(std::span<const std::uint8_t> jpeg, std::array<float, 4> box,
+                                                               std::uint32_t max_edge, std::uint32_t quality);
 // A JPEG-512 made now and stored nowhere, for a caller that must not fill the
 // viewer's cache. `pts_ms` < 0: the file's own picture; an audio file with no
 // cover art is unsupported_format.

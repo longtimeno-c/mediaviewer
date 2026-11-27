@@ -6448,6 +6448,21 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
   b.roots = roots;
   b.thumbs = thumbs.get();
   if (people) b.faces_db = join(data_dir_, "faces.db");
+  if (people && host_.has_jpeg_face_crop()) {
+    // From the JPEG-512 the desktop cuts its own cover from (face_thumb): the
+    // viewer's, else one made now and stored nowhere. At most 320 px (a 104 pt
+    // People circle at 3x), never more than the tile holds.
+    b.face_cover = [this](const std::string& path, std::int64_t ms,
+                          const std::array<float, 4>& box) -> result<std::vector<std::uint8_t>> {
+      auto tile = host_.thumbnail_jpeg(path, ms);
+      if (!tile) {
+        if (stopping_ || phone_cancel_) return err(status::cancelled);
+        tile = host_.thumbnail_make(path, ms);
+      }
+      if (!tile) return err(tile.error());
+      return host_.jpeg_face_crop(*tile, box, 320, 85);
+    };
+  }
   b.place_labels = [this](std::span<const std::pair<double, double>> points) -> result<std::vector<std::string>> {
     std::vector<mv_addon_route_point> at;
     at.reserve(points.size());

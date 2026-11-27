@@ -198,12 +198,16 @@ public struct Person: Identifiable, Hashable, Sendable {
   public let itemCount: Int
   /// The item whose picture stands for this person.
   public let face: MediaItem
+  /// The desktop sent their own face, cut as its People covers are (`ImageLadder.face(for:)`);
+  /// false from an older desktop, which sends only `face`'s picture.
+  public let hasFace: Bool
 
-  public init(id: String, name: String, itemCount: Int, face: MediaItem) {
+  public init(id: String, name: String, itemCount: Int, face: MediaItem, hasFace: Bool = false) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.face = face
+    self.hasFace = hasFace
   }
 }
 

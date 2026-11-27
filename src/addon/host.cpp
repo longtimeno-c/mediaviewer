@@ -1370,6 +1370,24 @@ mv_status MV_CALL t_jpeg_shrink(void* host, const uint8_t* jpeg, uint64_t size, 
   });
 }
 
+mv_status MV_CALL t_jpeg_face_crop(void* host, const uint8_t* jpeg, uint64_t size, const float box[4], uint32_t max_edge,
+                                   uint32_t quality, uint8_t* out, uint64_t capacity, uint64_t* out_size) {
+  return guarded([&] {
+    if (!jpeg || size == 0 || !box || !out_size || max_edge < 8 || max_edge > 512 || quality < 1 || quality > 100) {
+      return MV_ERR_INVALID_ARG;
+    }
+    const auto& fn = self(host).services().jpeg_face_crop;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto made = fn(std::span<const std::uint8_t>(jpeg, static_cast<std::size_t>(size)), {box[0], box[1], box[2], box[3]},
+                   max_edge, quality);
+    if (!made) return to_mv(made.error());
+    *out_size = static_cast<uint64_t>(made->size());
+    if (!out || made->size() > capacity) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, made->data(), made->size());
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_addon_request(void* host, const char* addon_id, const char* method, const char* request_json,
                                   mv_addon_reply_fn reply, void* user) {
   return guarded([&] {
@@ -1653,6 +1671,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.catalogue_cancel = &t_catalogue_cancel;
   api_.catalogue_json = &t_catalogue_json;
   api_.ai_models_held = &t_ai_models_held;
+  if (svc_.jpeg_face_crop) api_.jpeg_face_crop = &t_jpeg_face_crop;  // the phone's People covers
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

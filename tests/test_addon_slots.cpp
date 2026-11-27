@@ -15,6 +15,7 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -745,6 +746,42 @@ TEST_CASE("the host table tells the AI pack when Settings wants its models held"
     REQUIRE(api->ai_models_held);
     CHECK(api->ai_models_held(api->host) == (hold ? 1u : 0u));
   }
+}
+
+// The phone's People covers (2026-11-27): the host cuts a face out for Local search's publisher.
+TEST_CASE("the host table's jpeg_face_crop passes the box through and asks again for room", "[addon][slots]") {
+  slot_registry r;
+  {
+    mv::addon::host_services none;
+    none.slots = &r;
+    mv::addon::host_table t(none);
+    CHECK(t.api()->jpeg_face_crop == nullptr);  // an older host's: the publisher sends no faces
+  }
+  mv::addon::host_services svc;
+  svc.slots = &r;
+  std::array<float, 4> seen{};
+  svc.jpeg_face_crop = [&](std::span<const std::uint8_t> jpeg, std::array<float, 4> box, std::uint32_t edge,
+                           std::uint32_t) -> mv::result<std::vector<std::uint8_t>> {
+    seen = box;
+    std::vector<std::uint8_t> out(jpeg.begin(), jpeg.end());
+    out.push_back(static_cast<std::uint8_t>(edge));
+    return out;
+  };
+  mv::addon::host_table t(svc);
+  const mv_host_api* api = t.api();
+  REQUIRE(api->struct_size >= offsetof(mv_host_api, jpeg_face_crop) + sizeof(api->jpeg_face_crop));
+  REQUIRE(api->jpeg_face_crop);
+  const std::uint8_t jpeg[] = {0xFF, 0xD8, 1};
+  const float box[4] = {0.7f, 0.05f, 0.2f, 0.25f};
+  std::uint8_t out[8] = {};
+  std::uint64_t n = 0;
+  CHECK(api->jpeg_face_crop(api->host, jpeg, sizeof jpeg, box, 64, 85, out, 2, &n) == MV_ERR_INVALID_ARG);
+  CHECK(n == 4);  // what it needs
+  REQUIRE(api->jpeg_face_crop(api->host, jpeg, sizeof jpeg, box, 64, 85, out, sizeof out, &n) == MV_OK);
+  CHECK(std::vector<std::uint8_t>(out, out + n) == std::vector<std::uint8_t>{0xFF, 0xD8, 1, 64});
+  CHECK(seen == std::array<float, 4>{0.7f, 0.05f, 0.2f, 0.25f});
+  CHECK(api->jpeg_face_crop(api->host, jpeg, sizeof jpeg, nullptr, 64, 85, out, sizeof out, &n) == MV_ERR_INVALID_ARG);
+  CHECK(api->jpeg_face_crop(api->host, jpeg, sizeof jpeg, box, 4, 85, out, sizeof out, &n) == MV_ERR_INVALID_ARG);
 }
 
 TEST_CASE("the host table's place_matches serves the AI pack the provider's paths", "[addon][slots][places]") {

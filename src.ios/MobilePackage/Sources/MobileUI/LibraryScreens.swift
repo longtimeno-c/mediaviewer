@@ -262,7 +262,7 @@ private struct PersonCell: View {
       Theme.surface
         .aspectRatio(1, contentMode: .fit)
         .overlay {
-          if let face = face ?? model.services.images.cachedImage(for: person.face.id) {
+          if let face = face ?? PersonIcon.cached(for: person, in: model.services.images) {
             Image(uiImage: face).resizable().scaledToFill()
           }
         }
@@ -276,7 +276,23 @@ private struct PersonCell: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(person.name), \(person.itemCount) photos and clips")
     .accessibilityAddTraits(.isButton)
-    .task { face = await model.services.images.thumbnail(for: person.face) }
+    .task { face = await PersonIcon.image(for: person, in: model.services.images) }
+  }
+}
+
+/// A person's round icon: their own face where the desktop sent one, as its People covers are;
+/// the middle of their photo from an older desktop, or when the face cannot be read.
+enum PersonIcon {
+  /// For first paint. Never their whole photo while their face may still come: the middle of it
+  /// can be someone else.
+  @MainActor
+  static func cached(for person: Person, in images: ImageLadder) -> UIImage? {
+    person.hasFace ? images.cachedFace(for: person) : images.cachedImage(for: person.face.id)
+  }
+
+  static func image(for person: Person, in images: ImageLadder) async -> UIImage? {
+    if person.hasFace, let face = await images.face(for: person) { return face }
+    return await images.thumbnail(for: person.face)
   }
 }
 

@@ -211,6 +211,10 @@ struct LayeredImages: ImageLadder {
     return await local.thumbnail(for: item)
   }
 
+  /// A person's face comes with the catalogue, so it paints offline.
+  func face(for person: Person) async -> UIImage? { await local.face(for: person) }
+  func cachedFace(for person: Person) -> UIImage? { local.cachedFace(for: person) }
+
   /// The phone's tile first, then each rung from the link. If the link fails, the tile stays on
   /// screen under the failure.
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error> {

@@ -1149,6 +1149,17 @@ typedef struct mv_host_api {
    * else that asks for work (Resume, Rescan, an export or import). Appended
    * after catalogue_json: the pack reads it only when `struct_size` covers it. */
   uint32_t(MV_CALL* ai_models_held)(void* host);
+  /* [any-thread, CPU only] A person's round cover cut from a JPEG, as the
+   * desktop's People covers are: `box` (x, y, w, h in 0..1 of the picture as
+   * shown) squared at 1.6 times its longer side, kept inside the picture,
+   * averaged down to at most `max_edge` (8..512) and encoded at `quality`
+   * 1..100. `*out_size` is always the bytes needed; MV_ERR_INVALID_ARG with it
+   * larger than `capacity`: call again. MV_ERR_CORRUPT: not a JPEG.
+   * Appended after ai_models_held: read only when `struct_size` covers it and
+   * the pointer is non-NULL. */
+  mv_status(MV_CALL* jpeg_face_crop)(void* host, const uint8_t* jpeg, uint64_t jpeg_size, const float box[4],
+                                     uint32_t max_edge, uint32_t quality, uint8_t* out, uint64_t capacity,
+                                     uint64_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
