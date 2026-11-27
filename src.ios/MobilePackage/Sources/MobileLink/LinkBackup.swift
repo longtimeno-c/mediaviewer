@@ -133,6 +133,42 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     }
   }
 
+  public func subfolders(of folder: BackupFolder) async throws -> [BackupFolder] {
+    guard let h = await openHandle() else { throw BackupState.unreachable }
+    return try await onQueue {
+      final class Box { var names: [String] = [] }
+      let box = Box()
+      let status = folder.id.withCString { id in
+        mv_backup_subfolders(h.raw, id, { ctx, name in
+          guard let ctx, let name else { return }
+          Unmanaged<Box>.fromOpaque(ctx).takeUnretainedValue().names.append(String(cString: name))
+        }, Unmanaged.passUnretained(box).toOpaque())
+      }
+      switch status {
+      case Int32(MV_LINK_OK.rawValue): return box.names.compactMap { folder.child(named: $0) }
+      case Int32(MV_LINK_NOT_FOUND.rawValue): return []  // chosen but not made yet: the first backup makes it
+      case Int32(MV_LINK_DENIED.rawValue): throw BackupState.folderNotAllowed
+      default: throw BackupState.unreachable
+      }
+    }
+  }
+
+  public func makeFolder(named name: String, in folder: BackupFolder) async throws -> BackupFolder {
+    guard let child = folder.child(named: name) else { throw BackupFolderRefused() }
+    guard let h = await openHandle() else { throw BackupState.unreachable }
+    return try await onQueue {
+      let status = folder.id.withCString { id in
+        child.name.withCString { n in mv_backup_make_folder(h.raw, id, n, { _, _ in }, nil) }
+      }
+      switch status {
+      case Int32(MV_LINK_OK.rawValue): return child
+      case Int32(MV_LINK_INVALID.rawValue): throw BackupFolderRefused()
+      case Int32(MV_LINK_DENIED.rawValue): throw BackupState.folderNotAllowed
+      default: throw BackupState.unreachable
+      }
+    }
+  }
+
   public func requestPhotosAccess() async -> Bool {
     let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
     change { $0.limitedAccess = status == .limited }
