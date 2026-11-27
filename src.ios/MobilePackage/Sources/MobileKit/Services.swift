@@ -15,6 +15,34 @@ public protocol LibraryStore: Sendable {
   /// Empty unless the Mac has named people; the People tab appears only when it is not.
   func people() async throws -> [Person]
   func details(for item: MediaItem) async throws -> MediaDetails
+  /// The server's folders whose drive is not connected now, for the top level to show beside its own
+  /// folders. Empty when none is, or the server can't be asked.
+  func offlineFolders() async -> [Folder]
+  /// A folder's tile: up to `count` pictures that stand for it, newest first, and what it holds when
+  /// that is known. Off the main thread, after what is on screen; never changes what the library or
+  /// search show. `.empty` when nothing can be had.
+  func preview(of folder: Folder, count: Int) async -> FolderPreview
+  /// The folder's files that are not photos or clips, by name. Empty for a catalogue's folders.
+  func otherFiles(in folder: Folder) async throws -> [OtherFile]
+  /// The whole file on the phone, under its own name so the phone's preview knows what it is.
+  /// `progress`: bytes done and in all, from any thread.
+  func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL
+}
+
+extension LibraryStore {
+  public func offlineFolders() async -> [Folder] { [] }
+  public func otherFiles(in folder: Folder) async throws -> [OtherFile] { [] }
+  public func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+    throw MediaFailure.originalGone
+  }
+}
+
+extension FolderPreview {
+  /// The first `count` of a folder's own list (newest first), for a store whose folder list has no
+  /// side effects (a catalogue's; not file mode's, which moves search to that folder).
+  public static func newest(of list: any MediaList, count: Int) -> FolderPreview {
+    FolderPreview(items: (0..<min(count, list.count)).map { list.item(at: $0) }, files: nil, folders: nil)
+  }
 }
 
 /// One step of the §10 ladder.
@@ -38,10 +66,14 @@ public protocol ImageLadder: Sendable {
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error>
   /// §8.2 net lane 2: the viewer's ±2.
   func prefetch(_ items: [MediaItem], fittingPixels: CGSize)
+  /// A clip's length when the item does not carry one (a folder's clip, before anything measured
+  /// it). nil when it cannot be had.
+  func length(for item: MediaItem) async -> TimeInterval?
 }
 
 public extension ImageLadder {
   func placeholder(for item: MediaItem) async -> UIImage? { nil }
+  func length(for item: MediaItem) async -> TimeInterval? { nil }
 }
 
 public enum SearchCapability: Hashable, Sendable {
@@ -88,6 +120,13 @@ public protocol ConnectionService: Sendable {
   func pair(code: String, confirmed: LibraryIdentity) -> AsyncThrowingStream<PairingEvent, Error>
   func retry() async
   func forget() async
+  /// The sample library's stand-in for a server whose mirror lost a drive (docs/plans/self-host-drives.md
+  /// §4; owner 2026-11-12: every phone feature demoable in SAMPLE). Sample mode only; a no-op otherwise.
+  func showSampleLostDrive(_ lost: Bool) async
+}
+
+public extension ConnectionService {
+  func showSampleLostDrive(_ lost: Bool) async {}
 }
 
 public protocol CatalogueSync: Sendable {
@@ -109,6 +148,9 @@ public enum ClipRoute {
   /// AVPlayer can have it; the asset's loader reads from the NAS.
   case stream(AVURLAsset)
   case tooBigToStream(neededMbps: Int, availableMbps: Int, fileBytes: Int64)
+  /// A clip the phone can't play that the server converts as it plays (docs/plans/phone-clip-convert.md):
+  /// played as `.stream`, and the first wait says it is the server converting.
+  case converted(AVURLAsset)
   /// MKV, WebM, AVI, TS, MPEG-2: moments as stills, and the file.
   case notPlayableHere(containerName: String, fileBytes: Int64)
   case unavailable(MediaFailure)
@@ -125,6 +167,8 @@ public protocol ClipService: Sendable {
 public protocol PhotoSaver: Sendable {
   /// Saves a copy to the phone's Photos library.
   func save(_ item: MediaItem) -> AsyncThrowingStream<TransferProgress, Error>
+  /// The original on the phone under its own name, for the share sheet: ends with `.finished`.
+  func shareable(_ item: MediaItem) -> AsyncThrowingStream<DownloadEvent, Error>
 }
 
 /// Everything the screens need, handed in at launch.
@@ -138,6 +182,18 @@ public struct Services: Sendable {
   public let saver: PhotoSaver
   /// Phone backup (1.1, §10b).
   public private(set) var backup: BackupService = NoBackup()
+  /// Changing the files in the server's folders (file mode, a device that may): none by default.
+  public var changes: FolderChanges = NoFolderChanges()
+
+  /// The VPN through your server (docs/plans/phone-vpn.md). `NoVPN` until the tunnel extension ships.
+  public private(set) var vpn: VPNService = NoVPN()
+
+  /// The same services with this VPN.
+  public func with(vpn: VPNService) -> Services {
+    var copy = self
+    copy.vpn = vpn
+    return copy
+  }
 
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,

@@ -6,8 +6,8 @@ the relay server and the local proxy, with the switch in the window, the setting
 `/tunnel`, and the system proxy (PAC, Use for all apps); slice 1's menu has the Tunnel row. **Slice 4
 built** (owner's ask 2026-11-12, [spike](driftwire-tls-spike.md)). **Slice 5 built** in shared code with
 the OS halves written (the Mac provider builds and embeds behind `-DMV_DRIFTWIRE_PACKET_TUNNEL=ON`;
-Windows' kill switch is WFP filters); owed: Apple's entitlement (Mac), Wintun's licence call and
-a way to run elevated (Windows; owner's call), Linux. What was
+Windows' kill switch is WFP filters); owed: activating it on a real Mac (v0.1.44 carries the
+entitlement), Windows' VPN service (owner's calls 2026-11-19, below), Linux. What was
 built is in [28 "The Tunnel"](../design/28-driftwire.md#the-tunnel-2026-11-12).
 
 ## Why
@@ -126,9 +126,11 @@ gates hold (nothing here touches the render path; the menu is chrome).
     bends "add-ons carry their own code": the extension must live in the app bundle, so it is a
     thin packet pump that does nothing unless the Driftwire add-on is installed and asks.
     Owner's call, logged in `12-decision-log.md` when made.
-  - **Windows:** Wintun (WireGuard's signed adapter driver; its prebuilt-binaries licence is
-    checked against `11-licensing.md` first), installed and its adapter created with one
-    administrator prompt; routes and DNS set on the adapter, removed on off, quit and next start.
+  - **Windows:** Wintun (WireGuard's signed adapter driver, under `LICENSE-WINTUN.md`), loaded
+    only by a Windows service the add-on installs with one administrator prompt (its pump and
+    `wintun.dll` copied into Program Files). The service owns the adapter, routes, DNS and the
+    kill switch's WFP filters and passes packets to the add-on over a named pipe only the
+    installing person can open; removing the add-on removes it (owner, 2026-11-19; 12).
   - **Linux:** `/dev/net/tun` with `CAP_NET_ADMIN` (a small helper granted by the package), once
     the Linux host reaches Driftwire.
   - **Safety:** routes exclude the relay's own address and the local network (so the tunnel

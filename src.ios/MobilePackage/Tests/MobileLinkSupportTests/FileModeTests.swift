@@ -162,6 +162,28 @@ final class FileFactCacheTests: XCTestCase {
     XCTAssertNil(again.facts(for: path.stamp(size: 10, mtime: 6)), "a file changed in place is read again")
   }
 
+  func testAClipKeepsItsLengthAcrossARestart() {
+    let file = dir.appendingPathComponent("facts.json")
+    let stamp = FilePath(root: "r", rel: "GX010001.MP4").stamp(size: 10, mtime: 5)
+    let first = FileFactCache(file: file)
+    first.set(.clip(seconds: 42.5), for: stamp)
+    first.save()
+    let again = FileFactCache(file: file)
+    again.load()
+    XCTAssertEqual(again.facts(for: stamp)?.seconds, 42.5)
+    XCTAssertEqual(again.facts(for: stamp)?.fields, [], "a clip gives search nothing")
+  }
+
+  func testACacheFromBeforeLengthsStillLoads() throws {
+    let file = dir.appendingPathComponent("facts.json")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data(#"{"k":{"fields":["Canon EOS R5"],"camera":"Canon EOS R5","lens":""}}"#.utf8).write(to: file)
+    let cache = FileFactCache(file: file)
+    cache.load()
+    XCTAssertEqual(cache.facts(for: "k"), FileFacts(fields: ["Canon EOS R5"], camera: "Canon EOS R5", lens: ""))
+    XCTAssertNil(cache.facts(for: "k")?.seconds)
+  }
+
   func testARefusedWriteStaysToBeWritten() {
     let file = dir.appendingPathComponent("facts.json")
     let cache = FileFactCache(file: file)

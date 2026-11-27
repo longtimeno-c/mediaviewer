@@ -15,6 +15,8 @@
 #include <sodium.h>
 
 #include "wire/net.h"
+#include "io/content_hash.h"
+#include "io/file_port.h"
 #include "wire/serve_wire.h"
 #include "wire/splice.h"
 
@@ -28,9 +30,15 @@ namespace {
 
 constexpr int kConnectEachMs = 2500;  // a dead address, at most
 constexpr int kStallMs = 15000;       // a read that has stopped moving
+constexpr int kConvertStallMs = 60000;  // a converted segment's first bytes: behind the server's queue
 // The relay starts this long after the direct routes (Driftwire's own race
 // delay), so a working direct path always wins and costs the relay nothing.
 constexpr int kRelayDelayMs = 1500;
+// A read's window: what the service may send before the phone's credit comes back. A viewer or a
+// seek keeps it small, so a seek's bytes are never far behind; a whole-file pull takes the most
+// the service allows, since a window covers at most one round trip (1 MB is ~30 MB/s at 20 ms).
+constexpr std::uint32_t kReadWindow = serve::kMaxStreamCredit / 8;
+constexpr std::uint32_t kBulkReadWindow = serve::kMaxStreamCredit;
 
 serve::client::options options_for(const service_config& c) {
   serve::client::options o;
@@ -40,7 +48,9 @@ serve::client::options options_for(const service_config& c) {
   o.id = c.device_id;
   o.name = c.device_name;
   // Backup (1.1) as well: a service from before it leaves `write` out of its caps.
-  o.ops = serve::kAllOps | serve::kWriteOp;
+  // Changing the shared folders (docs/design/28 "Changing files"): asked for always; a
+  // service older than them, or a "view" device, leaves them out or refuses each request.
+  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp | serve::kChangeOps;
   if (c.upgrade) o.ops |= serve::kUpgradeOp;  // granted only on a relayed link
   return o;
 }
@@ -270,30 +280,6 @@ status status_of(serve::end_code code) {
 
 }  // namespace
 
-bool split_host_port(std::string_view text, std::string& host, std::uint16_t& port) {
-  if (text.empty() || text.size() > 512) return false;
-  std::string_view h, p;
-  if (text.front() == '[') {
-    const auto close = text.find(']');
-    if (close == std::string_view::npos || close + 2 >= text.size() || text[close + 1] != ':') return false;
-    h = text.substr(1, close - 1);
-    p = text.substr(close + 2);
-  } else {
-    const auto colon = text.rfind(':');
-    if (colon == std::string_view::npos || text.find(':') != colon) return false;  // a bare IPv6 needs its brackets
-    h = text.substr(0, colon);
-    p = text.substr(colon + 1);
-  }
-  if (h.empty() || h.size() > 255) return false;
-  if (p.empty() || p.size() > 5) return false;
-  unsigned v = 0;
-  const auto [stop, why] = std::from_chars(p.data(), p.data() + p.size(), v);
-  if (why != std::errc{} || stop != p.data() + p.size() || v == 0 || v > 65535) return false;
-  host.assign(h);
-  port = static_cast<std::uint16_t>(v);
-  return true;
-}
-
 expected pair_device(const service_config& c, std::string_view code, route_report& report, const cancel_flag* cancel,
                      int timeout_ms) {
   const auto targets = targets_of(c, false);
@@ -305,6 +291,7 @@ expected pair_device(const service_config& c, std::string_view code, route_repor
   auto opts_with_code = opts;
   opts_with_code.pair_code = code_copy;
   opts_with_code.device_name = name;
+  opts_with_code.device_kind = c.device_kind;
   auto done = race<std::shared_ptr<serve::client>>(
       targets, timeout_ms, cancel, report.failures, report,
       [opts_with_code](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {
@@ -402,6 +389,12 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     }
     live_ = std::move(*c);
     last_report_ = report;
+    // The service's word on where it is now: the next race, and the host's saved copy, use it.
+    // Its key was pinned by this handshake, so these lead nowhere but here.
+    const auto& caps = live_->caps();
+    if (!caps.local.empty()) config_.local = caps.local;
+    if (!caps.public_name.empty()) config_.public_name = caps.public_name;
+    if (!caps.relay.empty()) config_.relay = caps.relay;
   }
   if (report.relayed && config_.upgrade && (live_caps_ops() & serve::kUpgradeOp) != 0) start_upgrades();
   return {};
@@ -635,6 +628,27 @@ int link_session::grant(std::int64_t& expires_unix, bool& scoped) const {
   return 1;
 }
 
+int link_session::storage(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().storage;
+  return 1;
+}
+
+int link_session::role(std::string& word) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed()) return -1;
+  word = live_->caps().role;
+  return 1;
+}
+
+void link_session::addresses(std::string& local, std::string& public_name, std::string& relay) const {
+  std::lock_guard lock(m_);
+  local = config_.local;
+  public_name = config_.public_name;
+  relay = config_.relay;
+}
+
 bool link_session::connected() const {
   std::lock_guard lock(m_);
   return live_ && !live_->closed();
@@ -734,7 +748,7 @@ expected link_session::read_range(const std::string& root, const std::string& re
   auto c = client(cancel);
   if (!c) return err(c.error());
   if (cancel && cancel->stopped()) return err(status::cancelled);
-  auto stream = (*c)->read_range(root, rel, at, length, serve::kMaxStreamCredit / 8, bulk);
+  auto stream = (*c)->read_range(root, rel, at, length, bulk ? kBulkReadWindow : kReadWindow, bulk);
   if (!stream) {
     dropped(*c);
     return err(stream.error());
@@ -771,6 +785,69 @@ expected link_session::read_range(const std::string& root, const std::string& re
   }
 }
 
+result<bool> link_session::can_convert() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return ((*c)->caps().ops & serve::kConvertOp) != 0;
+}
+
+result<serve::convert_plan> link_session::convert_plan(const std::string& root, const std::string& rel,
+                                                       const cancel_flag* cancel) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  auto p = (*c)->convert_plan_of(root, rel);
+  if (!p && p.error() == status::io) dropped(*c);
+  return p;
+}
+
+expected link_session::convert_read(const std::string& root, const std::string& rel, std::uint32_t segment,
+                                    const byte_sink& sink, const cancel_flag* cancel) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  if (cancel && cancel->stopped()) return err(status::cancelled);
+  auto stream = (*c)->convert_segment(root, rel, segment, serve::kMaxStreamCredit / 8);
+  if (!stream) {
+    if (stream.error() != status::unsupported_format) dropped(*c);
+    return err(stream.error());
+  }
+  auto last_data = clock::now();
+  bool any = false;
+  for (;;) {
+    if (cancel && cancel->stopped()) {
+      (*stream)->cancel();
+      return err(status::cancelled);
+    }
+    auto chunk = (*stream)->next(250);
+    if (!chunk) {
+      if (chunk.error() == status::timeout) {
+        if (clock::now() - last_data > std::chrono::milliseconds(any ? kStallMs : kConvertStallMs)) {
+          (*stream)->cancel();
+          return err(status::io);  // the server's encoder, not the link: the link stays
+        }
+        continue;
+      }
+      dropped(*c);
+      return err(status::io);
+    }
+    if (!*chunk) {
+      const auto code = (*stream)->code();
+      if (code == serve::end_code::ok) return {};
+      if (code == serve::end_code::unsupported) return err(status::unsupported_format);
+      return err(status_of(code));
+    }
+    any = true;
+    last_data = clock::now();
+    if (!sink((*chunk)->offset, (*chunk)->bytes)) {
+      (*stream)->cancel();
+      return err(status::cancelled);
+    }
+  }
+}
+
 result<bool> link_session::can_write() {
   auto c = client(nullptr);
   if (!c) return err(c.error());
@@ -789,6 +866,157 @@ result<serve::client::write_done> link_session::write(const std::string& root, c
   if (!c) return err(c.error());
   const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
   auto r = (*c)->write(root, rel, size, hash_hex, at, read, progress, stop, why, meta);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<bool> link_session::changes_files() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return (*c)->changes_files();
+}
+
+result<serve::client::change_done> link_session::add(const std::string& root, const std::string& rel,
+                                                    std::uint64_t size, const std::string& hash_hex,
+                                                    std::uint64_t at, const serve::client::read_fn& read,
+                                                    const std::function<void(std::uint64_t)>& progress,
+                                                    const cancel_flag* cancel, serve::client::change_refused* why) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
+  auto r = (*c)->add(root, rel, size, hash_hex, at, read, progress, stop, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::add_file(const std::string& root, const std::string& rel,
+                                                          const std::string& local_path,
+                                                          const std::function<void(std::uint64_t, std::uint64_t)>& progress,
+                                                          const cancel_flag* cancel, serve::client::change_refused* why) {
+  // The phone's own file not there or unreadable is invalid_arg: never "not on the server", and
+  // never a lost link (which would cut browsing and backup on the same link).
+  io::file_reader in;
+  if (auto o = in.open(local_path, io::read_mode::sequential); !o) return err(status::invalid_arg);
+  const std::uint64_t size = in.size();
+  // The hash the service checks what reached its disk against (BLAKE3, as serve::backup::hash_file),
+  // read here so a stop ends a big file's hashing too.
+  std::string hashed;
+  {
+    io::hasher h;
+    std::vector<std::uint8_t> buf(1u << 20);
+    for (std::uint64_t at = 0; at < size;) {
+      if (cancel && cancel->stopped()) return err(status::cancelled);
+      auto got = in.read_at(at, std::span<std::uint8_t>(buf.data(), static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), size - at))));
+      if (!got || *got == 0) return err(status::invalid_arg);  // shorter than it said, or unreadable
+      h.update(std::span<const std::uint8_t>(buf.data(), *got));
+      at += *got;
+    }
+    hashed = h.finish().hex();
+  }
+  // A read of the phone's file that fails (or comes up short of its size) is remembered here: the
+  // client reports it as io, which is not the link's fault.
+  bool local_failed = false;
+  const serve::client::read_fn read = [&in, &local_failed, size](std::uint64_t at,
+                                                                  std::span<std::uint8_t> into) -> result<std::size_t> {
+    auto got = in.read_at(at, into);
+    if (!got || (*got == 0 && at < size)) {
+      local_failed = true;
+      return err(status::io);
+    }
+    return got;
+  };
+  serve::client::change_refused refused;
+  std::uint64_t at = 0;
+  bool reconnected = false;
+  bool resent = false;
+  int busy_waits = 0;
+  result<serve::client::change_done> done = err(status::io);
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
+  for (int attempt = 0; attempt < 12; ++attempt) {
+    refused = {};
+    // On the live client directly (not add()), so a local read error does not drop the link.
+    stream_slot slot(*this, cancel);
+    if (!slot.held()) return err(status::cancelled);
+    auto c = client(cancel);
+    if (!c) return err(c.error());
+    done = (*c)->add(root, rel, size, hashed, at, read,
+                     [&](std::uint64_t sent) {
+                       if (progress) progress(sent, size);
+                     },
+                     stop, &refused);
+    if (done) break;
+    if (local_failed) return err(status::invalid_arg);
+    if (refused.why == serve::client::change_why::offset) {
+      at = refused.have;
+      continue;
+    }
+    if (refused.why == serve::client::change_why::hash && !resent) {
+      resent = true;  // once; a second is the server's disk, said as such
+      at = 0;
+      continue;
+    }
+    // "busy": the service still holds the stream a dropped link left on that name, until it
+    // notices it is gone. Asked again after a short wait (a second or two in all).
+    if (refused.why == serve::client::change_why::busy && reconnected && busy_waits < 6) {
+      ++busy_waits;
+      const auto until = clock::now() + std::chrono::milliseconds(100 * busy_waits);
+      while (clock::now() < until) {
+        if (cancel && cancel->stopped()) return err(status::cancelled);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      continue;
+    }
+    // The link dropped mid-file (or was closed under it, which ends the stream as cancelled though
+    // nobody asked): once more on a new one, from where the service's copy ends. add() has already
+    // A closed client is gone from live_ already.
+    const bool stopped = cancel && cancel->stopped();
+    const bool lost = done.error() == status::io || done.error() == status::timeout ||
+                      (done.error() == status::cancelled && !stopped);
+    if (done.error() == status::io || done.error() == status::timeout) dropped(*c);
+    if (lost && !reconnected) {
+      reconnected = true;
+      continue;
+    }
+    break;
+  }
+  if (why) *why = refused;
+  // A link that stayed lost is unreachable, never a cancel nobody asked for.
+  if (!done && done.error() == status::cancelled && !(cancel && cancel->stopped())) return err(status::io);
+  return done;
+}
+
+result<serve::client::change_done> link_session::make_folder(const std::string& root, const std::string& rel,
+                                                            serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->make_folder(root, rel, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::move(const std::string& root, const std::string& rel,
+                                                     const std::string& to_root, const std::string& to_rel,
+                                                     serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->move(root, rel, to_root, to_rel, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::remove(const std::string& root, const std::string& rel,
+                                                       serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->remove(root, rel, why);
   if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
   return r;
 }
@@ -823,7 +1051,7 @@ expected link_session::read_meta(const std::string& root, const std::string& rel
   if (!slot.held()) return err(status::cancelled);
   auto c = client(cancel);
   if (!c) return err(c.error());
-  auto stream = (*c)->read_range(root, rel, 0, UINT64_MAX, serve::kMaxStreamCredit / 8, true, true);
+  auto stream = (*c)->read_range(root, rel, 0, UINT64_MAX, kBulkReadWindow, true, true);
   if (!stream) {
     dropped(*c);
     return err(stream.error());

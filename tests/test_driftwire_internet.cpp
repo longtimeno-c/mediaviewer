@@ -7,10 +7,21 @@
 #include "driftwire_fixture.h"
 
 #include "addons/driftwire/handover.h"
+#include "addons/driftwire/host_ports.h"
 #include "addons/driftwire/invite.h"
 #include "addons/driftwire/mapping.h"
 
+#include <deque>
+#include <initializer_list>
+
+#include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/host_cmd.h"
+#include "addons/driftwire/cli/host_keepers.h"
+#include "addons/driftwire/cli/host_setup.h"
+#include "wire/serve.h"
+
 namespace mp = mv::driftwire::mapping;
+namespace hp = mv::driftwire::host_ports;
 
 namespace {
 
@@ -875,4 +886,464 @@ TEST_CASE("driftwire internet: failed rounds back off 1, 2, 5, 10, then 30 s", "
   CHECK(sp::backoff_ms(4) == 10000);
   CHECK(sp::backoff_ms(5) == 30000);
   CHECK(sp::backoff_ms(1000) == 30000);
+}
+
+// ---- the self-host's router keeper (docs/plans/self-hosted.md §5, slice 4) ------------------------
+
+namespace {
+
+hp::options host_on_loopback(std::uint16_t gateway_port, std::uint16_t ssdp_port = 9) {
+  hp::options o;
+  o.router = on_loopback(gateway_port, ssdp_port);
+  o.router.timeout_ms = 400;
+  return o;
+}
+
+bool deletes_pcp(std::span<const std::uint8_t> req) {
+  return req.size() >= 8 && req[4] == 0 && req[5] == 0 && req[6] == 0 && req[7] == 0;
+}
+
+// No line a log may carry names an address (rule 6).
+void no_addresses(const std::vector<std::string>& lines) {
+  for (const auto& l : lines) {
+    INFO(l);
+    CHECK(l.find("127.0.0.1") == std::string::npos);
+    CHECK(l.find("81.2.69") == std::string::npos);
+    CHECK(l.find("100.64") == std::string::npos);
+    CHECK(l.find("192.168") == std::string::npos);
+    CHECK(l.find("2a00:") == std::string::npos);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("host ports: outside addresses are told apart", "[driftwire][host-ports]") {
+  CHECK(hp::classify(addr("81.2.69.160")) == hp::outside_kind::public_address);
+  CHECK(hp::classify(addr("100.64.0.1")) == hp::outside_kind::carrier_nat);
+  CHECK(hp::classify(addr("100.127.255.254")) == hp::outside_kind::carrier_nat);
+  CHECK(hp::classify(addr("100.128.0.1")) == hp::outside_kind::public_address);
+  CHECK(hp::classify(addr("192.168.0.1")) == hp::outside_kind::double_nat);
+  CHECK(hp::classify(addr("10.1.2.3")) == hp::outside_kind::double_nat);
+  CHECK(hp::classify(addr("192.0.0.2")) == hp::outside_kind::carrier_nat);  // DS-Lite
+  CHECK(hp::classify(addr("192.0.0.9")) == hp::outside_kind::double_nat);
+  CHECK(hp::classify(addr("0.0.0.0")) == hp::outside_kind::unknown);       // a WAN that is down
+  CHECK(hp::classify(addr("2a00:1450:4009:81f::200e")) == hp::outside_kind::public_address);
+  CHECK(hp::classify(addr("fd00::1")) == hp::outside_kind::not_public);
+}
+
+TEST_CASE("host ports: the service and relay ports are mapped, renewed, and removed on stop", "[driftwire][host-ports]") {
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0}, deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (deletes_pcp(req)) {
+      ++deletes;
+    } else if (req.size() >= 60) {
+      ++maps;
+    }
+    return pcp_answer(req, outside, 0);
+  });
+  auto o = host_on_loopback(router.sock->port());
+  o.lease_s = 2;  // renewed every second
+  o.local_v6 = addr("2a00:1450:4009:81f::200e");
+  {
+    hp::keeper k({{.internal_port = 7878, .what = "service"}, {.internal_port = 8443, .what = "relay"}}, std::move(o));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 2);
+    for (const auto& p : r.ports) {
+      CHECK(p.v4 == hp::port_state::mapped);
+      CHECK(p.how == mp::method::pcp);
+      CHECK(p.external_port == p.wanted.internal_port);
+      CHECK_FALSE(p.v6);  // PCP answered: no UPnP search for a pinhole (#499)
+      no_addresses(p.why);
+    }
+    CHECK(r.router_found);
+    CHECK(r.kind == hp::outside_kind::public_address);
+    REQUIRE(r.outside);
+    CHECK(*r.outside == outside);
+    CHECK(hp::advice(r).empty());
+    CHECK(maps.load() == 2);
+    CHECK(eventually([&] { return maps.load() >= 4; }, 10));
+    CHECK(deletes.load() == 0);
+  }
+  CHECK(deletes.load() == 2);
+}
+
+TEST_CASE("host ports: SMB, NetBIOS and RDP are never forwarded, and no router is asked for them",
+          "[driftwire][host-ports][host-users]") {
+  for (const std::uint16_t p : std::initializer_list<std::uint16_t>{137, 138, 139, 445, 3389}) {
+    INFO(p);
+    CHECK_FALSE(hp::forwardable(p));
+  }
+  CHECK(hp::forwardable(7878));
+  CHECK(hp::forwardable(443));
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (req.size() >= 60 && !deletes_pcp(req)) ++maps;
+    return pcp_answer(req, outside, 0);
+  });
+  auto o = host_on_loopback(router.sock->port());
+  {
+    // Whoever asks, and however: inside, outside, or as the fallback.
+    hp::keeper k({{.internal_port = 445, .what = "share"},
+                  {.internal_port = 139, .what = "netbios"},
+                  {.internal_port = 3389, .what = "rdp"},
+                  {.internal_port = 8445, .external_port = 445, .what = "outside 445"},
+                  {.internal_port = 9000, .external_port = 9000, .fallback_external = 137, .what = "fallback 137"},
+                  {.internal_port = 7878, .what = "service"}},
+                 std::move(o));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 6);
+    for (std::size_t i = 0; i < 5; ++i) {
+      INFO(i);
+      CHECK(r.ports[i].v4 == hp::port_state::refused);
+      REQUIRE(r.ports[i].why.size() == 1);
+      CHECK(r.ports[i].why[0] == hp::kNeverForwarded);
+      CHECK_FALSE(r.ports[i].v6);
+    }
+    CHECK(r.ports[5].v4 == hp::port_state::mapped);
+    CHECK(maps.load() == 1);  // the service's alone
+    // Never advised to forward one by hand either.
+    for (const auto& line : hp::advice(r)) {
+      INFO(line);
+      CHECK(line.find("445") == std::string::npos);
+      CHECK(line.find("139") == std::string::npos);
+      CHECK(line.find("3389") == std::string::npos);
+    }
+  }
+}
+
+TEST_CASE("host ports: UPnP maps the port and an IPv6 pinhole, and removes both; the ledger goes", "[driftwire][host-ports]") {
+  upnp_router upnp;
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  scratch_dir dir("host_ports_ledger");
+  const std::string ledger = (dir / "router.ledger").string();
+  auto o = host_on_loopback((*quiet)->port(), upnp.ssdp->port());
+  o.ledger = ledger;
+  o.local_v6 = addr("2a00:1450:4009:81f::200e");
+  {
+    hp::keeper k({{.internal_port = 7878, .what = "service"}}, std::move(o));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 1);
+    CHECK(r.ports[0].v4 == hp::port_state::mapped);
+    CHECK(r.ports[0].how == mp::method::upnp);
+    CHECK(r.ports[0].external_port == 7878);
+    CHECK(r.ports[0].v6 == hp::port_state::mapped);
+    CHECK(r.kind == hp::outside_kind::public_address);
+    CHECK(std::filesystem::exists(ledger));  // a crash now: the next start removes them
+    const auto listed = mp::parse_ledger([&] {
+      std::ifstream f(ledger, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }());
+    REQUIRE(listed);
+    CHECK(listed->second.size() == 2);  // the forward and the pinhole
+  }
+  CHECK_FALSE(std::filesystem::exists(ledger));
+  const auto seen = upnp.seen();
+  auto count = [&](const char* op) {
+    return std::count_if(seen.begin(), seen.end(), [&](const std::string& s) { return s.find(op) != std::string::npos; });
+  };
+  CHECK(count("#AddPortMapping") == 1);
+  CHECK(count("#AddPinhole") == 1);
+  CHECK(count("#DeletePortMapping") == 1);
+  CHECK(count("#DeletePinhole") == 1);
+}
+
+TEST_CASE("host ports: the relay's 443 that someone else forwards is left alone and its own port asked instead",
+          "[driftwire][host-ports]") {
+  upnp_router upnp;
+  upnp.igd2 = false;
+  upnp.existing_443 = "192.168.1.50";  // the person's own web server
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  hp::keeper k({{.internal_port = 8443, .external_port = 443, .fallback_external = 8443, .v6 = false, .what = "relay"}},
+               host_on_loopback((*quiet)->port(), upnp.ssdp->port()));
+  const auto r = k.status();
+  REQUIRE(r.ports.size() == 1);
+  CHECK(r.ports[0].v4 == hp::port_state::mapped);
+  CHECK(r.ports[0].external_port == 8443);
+  const auto seen = upnp.seen();
+  // One AddPortMapping (for 8443): 443 was looked up and never asked for.
+  CHECK(std::count_if(seen.begin(), seen.end(), [](const std::string& s) { return s.find("#AddPortMapping") != std::string::npos; }) == 1);
+}
+
+TEST_CASE("host ports: carrier-grade NAT is named, and no forward is offered as the fix", "[driftwire][host-ports]") {
+  SECTION("NAT-PMP says the address") {
+    const auto cgnat = addr("100.64.12.34");
+    udp_router router([&](std::span<const std::uint8_t> req) { return nat_pmp_answer(req, cgnat); });
+    hp::keeper k({{.internal_port = 7878, .what = "service"}}, host_on_loopback(router.sock->port()));
+    const auto r = k.status();
+    CHECK(r.ports[0].v4 == hp::port_state::refused);
+    CHECK(r.kind == hp::outside_kind::carrier_nat);
+    const auto a = hp::advice(r);
+    REQUIRE_FALSE(a.empty());
+    CHECK(a[0].find("carrier-grade NAT") != std::string::npos);
+    CHECK(std::any_of(a.begin(), a.end(), [](const std::string& l) { return l.find("rented server") != std::string::npos; }));
+    CHECK(std::none_of(a.begin(), a.end(), [](const std::string& l) { return l.find("Forward") != std::string::npos; }));
+    no_addresses(a);
+    no_addresses(r.ports[0].why);
+  }
+  SECTION("PCP's answer says it") {
+    const auto cgnat = addr("100.64.12.34");
+    std::atomic<int> deletes{0};
+    udp_router router([&](std::span<const std::uint8_t> req) {
+      if (deletes_pcp(req)) ++deletes;
+      return pcp_answer(req, cgnat, 0);
+    });
+    {
+      hp::keeper k({{.internal_port = 7878, .what = "service"}}, host_on_loopback(router.sock->port()));
+      CHECK(k.status().kind == hp::outside_kind::carrier_nat);
+      CHECK(k.status().ports[0].v4 == hp::port_state::refused);
+      CHECK(deletes.load() == 1);  // the mapping a non-public address got is not kept
+    }
+    CHECK(deletes.load() == 1);  // nothing held, nothing more to remove
+  }
+}
+
+TEST_CASE("host ports: double NAT is named, with the port to forward", "[driftwire][host-ports]") {
+  const auto inner = addr("192.168.0.2");
+  udp_router router([&](std::span<const std::uint8_t> req) { return nat_pmp_answer(req, inner); });
+  hp::keeper k({{.internal_port = 7878, .what = "service"}}, host_on_loopback(router.sock->port()));
+  const auto r = k.status();
+  CHECK(r.kind == hp::outside_kind::double_nat);
+  CHECK(r.ports[0].v4 == hp::port_state::refused);
+  const auto a = hp::advice(r);
+  REQUIRE(a.size() == 2);
+  CHECK(a[0].find("double NAT") != std::string::npos);
+  CHECK(a[1] == "Forward TCP port 7878 on your router to this computer (the service).");
+  no_addresses(a);
+}
+
+TEST_CASE("host ports: a router that offers nothing gets the one port to forward by hand", "[driftwire][host-ports]") {
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  hp::keeper k({{.internal_port = 7878, .what = "service"},
+                {.internal_port = 8443, .external_port = 443, .fallback_external = 8443, .what = "relay"}},
+               host_on_loopback((*quiet)->port()));
+  const auto r = k.status();
+  REQUIRE(r.ports.size() == 2);
+  CHECK(r.ports[0].v4 == hp::port_state::not_offered);
+  CHECK(r.ports[1].v4 == hp::port_state::not_offered);
+  CHECK(r.kind == hp::outside_kind::unknown);
+  CHECK_FALSE(r.outside);
+  const auto a = hp::advice(r);
+  REQUIRE(a.size() == 3);
+  CHECK(a[0].find("did not answer") != std::string::npos);
+  CHECK(a[1] == "Forward TCP port 7878 on your router to this computer (the service).");
+  CHECK(a[2] == "Forward TCP port 8443 on your router to this computer (the relay); outside port 443 instead if "
+                "nothing else uses it.");
+  no_addresses(a);
+}
+
+TEST_CASE("host ports: a new outside address is told at once", "[driftwire][host-ports]") {
+  std::mutex m;
+  auto outside = addr("81.2.69.160");
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    std::lock_guard lock(m);
+    return nat_pmp_answer(req, outside);
+  });
+  std::mutex seen_m;
+  std::vector<sp::net::address> told;
+  auto o = host_on_loopback(router.sock->port());
+  o.check_every_ms = 100;
+  o.on_outside_changed = [&](const sp::net::address& a) {
+    std::lock_guard lock(seen_m);
+    told.push_back(a);
+  };
+  hp::keeper k({{.internal_port = 7878, .what = "service"}}, std::move(o));
+  CHECK(k.status().ports[0].v4 == hp::port_state::mapped);
+  CHECK(k.status().ports[0].external_port == 40001);  // the stand-in's choice, kept (no fallback)
+  std::this_thread::sleep_for(std::chrono::milliseconds(350));
+  {
+    std::lock_guard lock(seen_m);
+    CHECK(told.empty());  // the same address: nothing to tell
+  }
+  {
+    std::lock_guard lock(m);
+    outside = addr("81.2.69.161");
+  }
+  CHECK(eventually([&] {
+    std::lock_guard lock(seen_m);
+    return told.size() == 1 && told[0] == addr("81.2.69.161");
+  }, 5));
+  CHECK(*k.status().outside == addr("81.2.69.161"));
+  {
+    std::lock_guard lock(m);
+    outside = addr("100.64.0.9");  // the provider moved the home behind its NAT
+  }
+  CHECK(eventually([&] { return k.status().kind == hp::outside_kind::carrier_nat; }, 5));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::lock_guard lock(seen_m);
+  CHECK(told.size() == 1);  // carrier NAT's address is never told (a name must not point there)
+}
+
+// ---- the router keeper in the running host (docs/plans/self-hosted.md §5, slice 5) ---------------
+
+namespace {
+
+namespace cli = mv::driftwire::cli;
+
+std::string state_of(const cli::host_layout& l) {
+  std::ifstream f(fs::path(l.state), std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// A host folder sharing one folder, serve.json on port 0 (the test build).
+cli::host_layout host_sharing(const fs::path& root, std::uint16_t port = 0) {
+  fs::create_directories(root / "Photos");
+  const cli::host_layout l = cli::host_layout_of(utf8(root / "data"));
+  REQUIRE(cli::make_host_folders(l));
+  mv::driftwire::serve::config c;
+  c.port = port;
+  c.name = "Test PC";
+  mv::driftwire::serve::root_config r;
+  r.id = "a1a1a1a1a1a1a1a1";
+  r.label = "Photos";
+  r.path = utf8(root / "Photos");
+  c.roots.push_back(r);
+  write_text(fs::path(l.serve_config), mv::driftwire::serve::config_json(c));
+  return l;
+}
+
+cli::host_service_options host_on(const cli::host_layout& l, std::uint16_t router_port) {
+  cli::host_service_options o;
+  o.where = l;
+  o.loopback_only = true;
+  o.any_port = true;
+  o.config_every_ms = 100;
+  o.roots_every_ms = 100000;
+  o.retry_ms = 200;
+  o.power = false;
+  o.present = [](const mv::driftwire::serve::root_config&) { return true; };
+  o.locate = [](const mv::driftwire::serve::root_config& r) -> std::optional<std::string> { return r.path; };
+  o.keepers.router = [router_port] {
+    cli::router_keeper_config c;
+    c.ports = host_on_loopback(router_port);
+    c.on_loopback = true;
+    return cli::make_router_keeper(std::move(c));
+  };
+  return o;
+}
+
+}  // namespace
+
+TEST_CASE("host ports in the running host: the service's port, the relay's with the VPN on, gone on stop",
+          "[driftwire][host-setup][host-ports]") {
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0}, deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (deletes_pcp(req)) {
+      ++deletes;
+    } else if (req.size() >= 60) {
+      ++maps;
+    }
+    return pcp_answer(req, outside, 0);
+  });
+  scratch_dir s("host_router_keeper");
+  const cli::host_layout l = host_sharing(s.root());
+  std::string why;
+  auto host = cli::host_service::start(host_on(l, router.sock->port()), why);
+  REQUIRE(host);
+  REQUIRE(eventually([&] {
+    const std::string st = state_of(l);
+    return st.find("router      service ") != std::string::npos && st.find("open (PCP)") != std::string::npos &&
+           st.find("\"service_outside_port\":" + std::to_string(host->snapshot().service_port)) != std::string::npos;
+  }, 10));
+  CHECK(state_of(l).find("relay ") == std::string::npos);  // VPN off: the relay's port stays closed
+  CHECK(state_of(l).find("81.2.69") == std::string::npos);  // no address in the status (rule 6)
+
+  // The VPN on (another terminal's `host vpn on`): the relay's port asked for too.
+  cli::host_settings on;
+  on.vpn = true;
+  on.look = false;  // the plain relay's port (the look's mapping: wanted_ports' test)
+  write_text(fs::path(l.settings), cli::host_settings_json(on));
+  REQUIRE(eventually([&] {
+    const std::string st = state_of(l);
+    return st.find("\"relay_outside_port\":") != std::string::npos && st.find(", relay ") != std::string::npos;
+  }, 10));
+  // `host status` shows the router's line.
+  {
+    std::string out;
+    {
+      const cli::print_capture cap(out);
+      const auto lock = mv::driftwire::net::try_lock_instance(l.lock);  // as the supervisor holds it
+      cli::args a;
+      a.cmd = cli::command::host;
+      a.host = cli::host_action::status;
+      a.data = utf8(s / "data");
+      CHECK(cli::run_host(a, true, "0.0.0") == 0);
+    }
+    CHECK(out.find("router      service ") != std::string::npos);
+    CHECK(out.find("VPN         on") != std::string::npos);
+  }
+  const int held = deletes.load();
+  host->stop();
+  CHECK(deletes.load() >= held + 2);  // both forwards removed on stop
+  CHECK(maps.load() >= 3);
+}
+
+TEST_CASE("host ports in the running host: a router silent at the start is asked again", "[driftwire][host-setup][host-ports]") {
+  // A start at login before the network is up: the router answers nothing, then it does.
+  const auto outside = addr("81.2.69.160");
+  std::atomic<bool> answering{false};
+  std::atomic<int> deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) -> std::vector<std::uint8_t> {
+    if (!answering.load()) return {};
+    if (deletes_pcp(req)) ++deletes;
+    return pcp_answer(req, outside, 0);
+  });
+  scratch_dir s("host_router_retry");
+  const cli::host_layout l = host_sharing(s.root());
+  auto o = host_on(l, router.sock->port());
+  o.keepers.router = [port = router.sock->port()] {
+    cli::router_keeper_config c;
+    c.ports = host_on_loopback(port);
+    c.on_loopback = true;
+    c.retry_ms = {300};
+    return cli::make_router_keeper(std::move(c));
+  };
+  std::string why;
+  auto host = cli::host_service::start(o, why);
+  REQUIRE(host);
+  REQUIRE(eventually([&] { return state_of(l).find(" not open") != std::string::npos; }, 10));
+  answering.store(true);
+  REQUIRE(eventually([&] { return state_of(l).find("open (PCP)") != std::string::npos; }, 10));
+  host->stop();
+  CHECK(deletes.load() >= 1);
+}
+
+TEST_CASE("host setup: the router step behind carrier NAT says so, and what would help", "[driftwire][host-setup]") {
+  const auto cgnat = addr("100.64.12.34");
+  udp_router router([&](std::span<const std::uint8_t> req) { return nat_pmp_answer(req, cgnat); });
+  scratch_dir s("host_setup_cgnat");
+  const cli::host_layout l = host_sharing(s.root(), 7878);  // setup asks for serve.json's port
+  cli::setup_world w;
+  w.loopback = true;
+  w.any_port = true;
+  w.router = host_on_loopback(router.sock->port());
+  // No DuckDNS question: the test build has no stand-in for it here.
+  std::deque<std::string> answers = {"", "",      // no other folder, no backup folder
+                                     "n",         // no phone now
+                                     "",          // the VPN: off
+                                     "n"};        // not at login
+  std::string said;
+  cli::setup_io io;
+  io.ask = [&](const std::string& prompt, bool) -> std::optional<std::string> {
+    said += prompt;
+    if (answers.empty()) return std::nullopt;
+    std::string a = answers.front();
+    answers.pop_front();
+    return a;
+  };
+  io.say = [&](const std::string& t) { said += t; };
+  io.colour = false;
+  CHECK(cli::host_setup(l, io, w) == 0);
+  CHECK(answers.empty());
+  INFO(said);
+  CHECK(said.find("carrier-grade NAT") != std::string::npos);
+  CHECK(said.find("rented server") != std::string::npos);
+  CHECK(said.find("Phones still reach this computer at home.") != std::string::npos);
+  CHECK(said.find("100.64") == std::string::npos);
+  CHECK_FALSE(fs::exists(fs::path(l.folder) / "setup-router.ledger"));  // the probe's forwards are gone
 }

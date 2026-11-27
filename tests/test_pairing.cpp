@@ -119,6 +119,10 @@ TEST_CASE("clips by extension: the gallery's play badge", "[io][pairing]") {
   REQUIRE(is_video_name("a.b.WebM"));
   REQUIRE(is_video_name("C0001.m4v"));
   REQUIRE(is_video_name("00001.ts"));
+  REQUIRE(is_video_name("00000.MTS"));
+  REQUIRE(is_video_name("00000.m2ts"));
+  REQUIRE(is_video_name("MOV001.MPG"));
+  REQUIRE(is_video_name("holiday.mpeg"));
   REQUIRE_FALSE(is_video_name("IMG_0001.HEIC"));
   REQUIRE_FALSE(is_video_name("DSC_0001.NEF"));
   REQUIRE_FALSE(is_video_name("mov"));

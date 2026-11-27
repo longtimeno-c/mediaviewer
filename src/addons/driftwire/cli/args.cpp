@@ -1,6 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/cli/args.h"
+#include "addons/driftwire/cli/host_control.h"
+
+#include <cstdlib>
 
 #include <string_view>
 
@@ -54,7 +57,31 @@ std::string help_text() {
          "                               serve status shows its identity and passphrase, serve passphrase\n"
          "                               set|reset changes or resets the owner's passphrase (here only);\n"
          "                               add, pair-code --for 24h|7d|... make a timed phone, serve grant\n"
-         "                               NAME-OR-KEY --for D|--forever changes one\n"
+         "                               NAME-OR-KEY --for D|--forever|--role view|change changes one\n"
+         "  driftwire host               host the service and a relay on this computer, from\n"
+         "         [--data DIR]          its own folder (DIR/host), until stopped: what starts at\n"
+         "                               login; host share PATH [--label L] [--backup] gives phones\n"
+         "                               a folder (--backup: they may back up into it; --limit GB\n"
+         "                               caps it, none (the default) leaves only 1 GB free; given\n"
+         "                               for a folder shared already, it changes that), host unshare\n"
+         "                               LABEL takes one back, host status shows it, host\n"
+         "                               start-at-login on|off and host stay-awake on|off change\n"
+         "                               how it runs (no administrator needed); host setup walks\n"
+         "                               through it all (a DuckDNS name, a folder, the router, a\n"
+         "                               phone, the VPN), host name duckdns|none sets the name (the\n"
+         "                               token is typed), host name domain NAME|none your own domain\n"
+         "                               for the VPN (a CNAME to the DuckDNS name), host pair shows a phone's pairing QR, host\n"
+         "                               vpn on [--tls-port N|off]|off makes it the laptop's VPN exit;\n"
+         "                               host users [add NAME [--role view|change|admin] [--folders\n"
+         "                               L1,L2] | role NAME ROLE | password NAME | remove NAME | apply]\n"
+         "                               keeps who may open its folders from other computers at home\n"
+         "                               (the admin passphrase and passwords are typed; an administrator\n"
+         "                               approves each change to this computer's file sharing)\n"
+         "                               host drives lists the drives, host drives choices DRIVE...\n"
+         "                               shows Separate, Mirror, Span, Stripe and Parity for them, host\n"
+         "                               drives combine CHOICE DRIVE... --label L erases and combines\n"
+         "                               them (each name typed; an administrator once), host drives\n"
+         "                               replace SET DRIVE puts a new drive in a mirror\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -83,6 +110,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   std::vector<std::string> words;  // after the command
   std::string first_word;          // a word that is not a command, for the error
   bool want_to = false, want_once = false;
+  bool want_label = false, want_backup = false, want_limit = false;
+  bool want_users_opts = false;  // --folders, --input-stdin (host users only)
+  bool want_role = false;        // --role: host users, or a device's role (serve grant)
+  bool want_drives_flag = false;  // --json, --confirm-stdin: host drives only
 
   for (std::size_t i = 0; i < argv.size(); ++i) {
     const std::string_view s = argv[i];
@@ -129,6 +160,56 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.passphrase_stdin = true;
       } else if (t.name == "--no-passphrase" && flag) {
         a.no_passphrase = true;
+      } else if (t.name == "--label") {
+        if (!value(a.label, "a label")) return out;
+        want_label = true;
+      } else if (t.name == "--tls-port") {
+        std::string v;
+        if (!value(v, "a port")) return out;
+        if (v == "off") {
+          a.tls_off = true;
+          continue;
+        }
+        char* end = nullptr;
+        const long p = std::strtol(v.c_str(), &end, 10);
+        if (v.empty() || *end != '\0' || p < 1 || p > 65535) {
+          out.error = "--tls-port takes a port, 1 to 65535, or off";
+          return out;
+        }
+        a.tls_port = static_cast<std::uint16_t>(p);
+      } else if (t.name == "--json" && flag) {  // host drives (host_drives.h)
+        a.json = true;
+        want_drives_flag = true;
+      } else if (t.name == "--confirm-stdin" && flag) {
+        a.confirm_stdin = true;
+        want_drives_flag = true;
+      } else if (t.name == "--backup" && flag) {
+        a.backup = true;
+        want_backup = true;
+      } else if (t.name == "--limit") {
+        if (!value(a.limit, "GB or none")) return out;
+        if (a.limit != "none") {
+          char* end = nullptr;
+          const double gb = std::strtod(a.limit.c_str(), &end);
+          if (!end || *end != '\0' || !(gb > 0) || gb >= 1e6) {
+            out.error = "--limit takes GB (like 500) or none";
+            return out;
+          }
+        }
+        want_limit = true;
+      } else if (t.name == "--role") {  // ---- host users (self-host-users-smb.md) ----
+        if (!value(a.role, "a role (view, change or admin)")) return out;
+        want_role = true;
+      } else if (t.name == "--folders") {
+        if (!value(a.folders, "folder labels (Photos,Videos) or all")) return out;
+        want_users_opts = true;
+      } else if (t.name == "--input-stdin" && flag) {
+        a.input_stdin = true;
+        want_users_opts = true;
+      } else if (t.name == "--watch" && flag) {
+        a.watch = true;
+      } else if (t.name == "--helper" || t.name == "--convert-helper") {
+        if (!value(a.convert_helper, "a program")) return out;
       } else if (t.name == "--save-to") {
         if (!value(a.save_to, "a folder")) return out;
       } else if (t.name == "--name") {
@@ -145,6 +226,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         if (!value(a.test_data, "a folder")) return out;
       } else if (test_hooks && t.name == "--test-events" && flag) {
         a.test_events = true;
+      } else if (test_hooks && t.name == "--test-quick" && flag) {
+        a.test_quick = true;
       } else {
         out.error = "unknown option " + std::string(s.substr(0, s.find('=')));
         return out;
@@ -165,6 +248,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.cmd = command::update;
       } else if (s == "serve") {
         a.cmd = command::serve;
+      } else if (s == "host") {
+        a.cmd = command::host;
       } else if (s == "help") {
         help = true;
       } else {
@@ -251,8 +336,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         const bool timed = a.serve == serve_action::add || a.serve == serve_action::pair_code || a.serve == serve_action::grant;
         if ((!a.for_duration.empty() || a.forever) && !timed) {
           out.error = "--for and --forever go with serve add, pair-code or grant";
-        } else if (a.serve == serve_action::grant && a.for_duration.empty() == !a.forever) {
+        } else if (a.serve == serve_action::grant && !a.for_duration.empty() && a.forever) {
           out.error = "serve grant takes --for DURATION or --forever, one of them";
+        } else if (a.serve == serve_action::grant && a.for_duration.empty() && !a.forever && !want_role) {
+          out.error = "serve grant takes --for DURATION, --forever or --role view|change";
+        } else if (want_role && (a.serve != serve_action::grant || (a.role != "view" && a.role != "change"))) {
+          out.error = "--role goes with serve grant (view or change) or host users";
         } else if (a.forever && a.serve != serve_action::grant) {
           out.error = "--forever goes with serve grant";
         }
@@ -265,12 +354,128 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
           out.error = "--passphrase-stdin goes with serve init or serve passphrase, --no-passphrase with serve init alone";
         }
       }
+      if (out.error.empty() && !a.convert_helper.empty() && a.serve != serve_action::run) {
+        out.error = "--convert-helper goes with serve (running it)";
+      }
       return out;
+    }
+    case command::host: {
+      const auto on_off = [&](host_action act) {
+        if (words.size() == 2 && (words[1] == "on" || words[1] == "off")) {
+          a.host = act;
+          a.on = words[1] == "on";
+          return true;
+        }
+        return false;
+      };
+      const std::string what = words.empty() ? std::string() : words.front();
+      if (words.empty()) {
+        a.host = host_action::run;
+      } else if (what == "child" && words.size() == 1) {
+        a.host = host_action::child;
+      } else if (what == "share" && words.size() == 2) {
+        a.host = host_action::share;
+        a.host_path = words[1];
+      } else if (what == "unshare" && words.size() == 2 && !want_label) {
+        a.host = host_action::unshare;
+        a.label = words[1];
+      } else if (what == "status" && words.size() == 1) {
+        a.host = host_action::status;
+      } else if (what == "start-at-login" && on_off(host_action::start_at_login)) {
+      } else if (what == "stay-awake" && on_off(host_action::stay_awake)) {
+      } else if (what == "vpn" && on_off(host_action::vpn)) {
+      } else if (what == "convert" && on_off(host_action::convert)) {
+      } else if (what == "setup" && words.size() == 1) {
+        a.host = host_action::setup;
+      } else if (what == "pair" && words.size() == 1) {
+        a.host = host_action::pair;
+      } else if (what == "users") {
+        // ---- host users (self-host-users-smb.md): host_users.cpp checks the words. ----
+        a.host = host_action::users;
+        a.host_words.assign(words.begin() + 1, words.end());
+      } else if (what == "smb-apply" && words.size() <= 2) {
+        a.host = host_action::smb_apply;
+        a.host_words.assign(words.begin() + 1, words.end());
+      } else if (what == "drives") {
+        // host drives …: its own words, read by parse_drives_words (host_drives.h).
+        a.host = host_action::drives;
+        a.paths.assign(words.begin() + 1, words.end());
+      } else if (what == "name" && words.size() == 2 && (words[1] == "duckdns" || words[1] == "none")) {
+        // Only the provider: the subdomain and the token are typed or pasted, never arguments.
+        a.host = host_action::name;
+        a.on = words[1] == "duckdns";
+      } else if (what == "name" && words.size() == 3 && words[1] == "domain") {
+        // The person's own domain for the VPN (not a secret): NAME, or none.
+        a.host = host_action::name;
+        a.host_words.assign(words.begin() + 1, words.end());
+      } else if (parse_host_control(words, a)) {
+        // pause, resume, quit: the tray's control (host_control.h)
+      } else {
+        out.error = "host takes setup, share PATH [--label L] [--backup [--limit GB|none]], unshare LABEL, status, pair, "
+                    "name duckdns|none, name domain NAME|none, vpn on [--tls-port N|off]|off, convert on [--helper PATH]|off, "
+                    "start-at-login on|off, stay-awake on|off, "
+                    "users …, drives …, pause, resume or quit";
+        return out;
+      }
+      if (a.watch && a.host != host_action::status) {
+        out.error = "--watch goes with host status";
+        return out;
+      }
+      if (!a.convert_helper.empty() && !(a.host == host_action::convert && a.on)) {
+        out.error = "--helper goes with host convert on";
+        return out;
+      }
+      if ((a.tls_port != 0 || a.tls_off) && !(a.host == host_action::vpn && a.on)) {
+        out.error = "--tls-port goes with host vpn on";
+        return out;
+      }
+      if (want_drives_flag && a.host != host_action::drives) {
+        out.error = "--json and --confirm-stdin go with host drives";
+        return out;
+      }
+      if (want_label && a.host == host_action::drives && !want_backup) break;  // the combined drive's name
+      if ((want_label || want_backup) && a.host != host_action::share) {
+        out.error = "--label and --backup go with host share";
+        return out;
+      }
+      if (want_limit && !(a.host == host_action::share && a.backup)) {
+        out.error = "--limit goes with host share --backup";
+        return out;
+      }
+      if ((want_users_opts || want_role) && a.host != host_action::users) {
+        out.error = "--role, --folders and --input-stdin go with host users";
+        return out;
+      }
+      break;
     }
     case command::session:
     case command::help:
     case command::version:
       break;
+  }
+  if (!a.convert_helper.empty() && !(a.cmd == command::host || (a.cmd == command::serve && a.serve == serve_action::run))) {
+    out.error = "--convert-helper goes with serve (running it)";
+    return out;
+  }
+  if ((a.tls_port != 0 || a.tls_off) && a.cmd != command::host) {
+    out.error = "--tls-port goes with host vpn on";
+    return out;
+  }
+  if ((want_label || want_backup) && a.cmd != command::host) {
+    out.error = "--label and --backup go with host share";
+    return out;
+  }
+  if (want_limit && a.cmd != command::host) {
+    out.error = "--limit goes with host share --backup";
+    return out;
+  }
+  if ((want_users_opts || (want_role && a.cmd != command::serve)) && a.cmd != command::host) {
+    out.error = "--role, --folders and --input-stdin go with host users";
+    return out;
+  }
+  if (want_drives_flag && a.cmd != command::host) {
+    out.error = "--json and --confirm-stdin go with host drives";
+    return out;
   }
   if (want_to && a.cmd != command::send) {
     out.error = "--to goes with send (driftwire send PATH... --to NAME)";

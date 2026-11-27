@@ -268,6 +268,14 @@ Root: HKCU; Subkey: "Software\Classes\.ts\OpenWithProgids"; ValueType: string; V
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ts"; ValueData: "MediaViewer.Video"
 Root: HKCU; Subkey: "Software\Classes\.m4v\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".m4v"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.mts\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mts"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.m2ts\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".m2ts"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.mpg\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mpg"; ValueData: "MediaViewer.Video"
+Root: HKCU; Subkey: "Software\Classes\.mpeg\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Video"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mpeg"; ValueData: "MediaViewer.Video"
 ; Audio (docs/plans/audio-and-documents.md §3): "Open with" only. No
 ; Capabilities\FileAssociations line, so MediaViewer is not even a candidate
 ; for these in Default apps — it is never made their default (owner, 2026-10-03).

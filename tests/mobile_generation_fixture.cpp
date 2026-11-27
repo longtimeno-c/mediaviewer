@@ -171,7 +171,8 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
                      "(1, '" + p + "/" + first + "', 7, 100, 11, 1, 0, 1000000, 'Cam A', '" + place + "'),"
                      "(2, '" + p + "/trip/b.jpg', 7, 200, 22, 1, 0, 2000000, 'Cam A', 'Ortisei, South Tyrol, Italy'),"
                      "(3, '" + p + "/trip/day1/c.mov', 7, 300, 33, 2, 9000, 1500000, 'Cam B', NULL),"
-                     "(4, '" + p + "/trip/day1/d.pdf', 7, 400, 44, 4, 0, NULL, NULL, NULL);")) {
+                     "(4, '" + p + "/trip/day1/d.pdf', 7, 400, 44, 4, 0, NULL, NULL, NULL),"
+                     "(6, '" + p + "/trip/papers/e.pdf', 7, 50, 55, 3, 0, NULL, NULL, NULL);")) {
       return 2;
     }
     // What the clip sounds like, under the Mac's CLAP key: a phone with the sound tower hears it.

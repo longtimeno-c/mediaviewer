@@ -183,7 +183,7 @@ result<std::unique_ptr<client>> client::open(std::shared_ptr<link> l, const opti
   };
   message m;
   if (!o.pair_code.empty()) {
-    (void)(*ch)->send(msg::serve_pair, pair_json(o.pair_code, o.device_name));
+    (void)(*ch)->send(msg::serve_pair, pair_json(o.pair_code, o.device_name, o.device_kind));
     if (auto r = (*ch)->receive(m, kAnswerMs); !r) return err(r.error());
     if (m.type == msg::cancel) {
       refused(m);
@@ -381,6 +381,59 @@ result<std::vector<root_info>> client::roots(end_code* code) {
   return *parsed;
 }
 
+result<convert_plan> client::convert_plan_of(const std::string& root, const std::string& rel, std::string* why) {
+  if ((st_->caps.ops & kConvertOp) == 0) return err(status::unsupported_format);
+  open_request r;
+  r.kind = op::convert;
+  r.root = root;
+  r.rel = rel;
+  r.segment = -1;
+  auto slot = st_->open_slot(r);
+  if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  auto done = finish(st_, slot, r.id, nullptr);
+  st_->remove(r.id);
+  if (!done) return err(done.error());
+  if (*done == end_code::unsupported) {
+    if (why) {
+      const auto doc = json::parse(slot->end_json, 2);
+      const std::string* w = doc ? doc->str("why") : nullptr;
+      *why = w ? *w : std::string();
+    }
+    return err(status::unsupported_format);
+  }
+  if (*done == end_code::not_found) return err(status::not_found);
+  if (*done != end_code::ok) return err(*done == end_code::error ? status::io : status::permission_denied);
+  auto parsed = parse_convert_plan(slot->end_json);
+  if (!parsed) return err(status::corrupt);
+  return *parsed;
+}
+
+result<std::unique_ptr<client::read_stream>> client::convert_segment(const std::string& root, const std::string& rel,
+                                                                     std::uint32_t k, std::uint32_t window) {
+  if ((st_->caps.ops & kConvertOp) == 0) return err(status::unsupported_format);
+  open_request r;
+  r.kind = op::convert;
+  r.root = root;
+  r.rel = rel;
+  r.segment = k;
+  r.credit = std::min(window, kMaxStreamCredit);
+  auto slot = st_->open_slot(r);
+  slot->window = r.credit;
+  if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
+    st_->remove(r.id);
+    return err(s.error());
+  }
+  std::unique_ptr<read_stream> rs(new read_stream());
+  rs->st_ = std::make_shared<read_stream::state>();
+  rs->st_->c = st_;
+  rs->st_->slot = std::move(slot);
+  rs->st_->id = r.id;
+  return rs;
+}
+
 result<stat_info> client::stat(const std::string& root, const std::string& rel, end_code* code, bool meta) {
   if (meta && (st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
@@ -538,6 +591,151 @@ result<client::write_done> client::write(const std::string& root, const std::str
     default:
       return err(status::invalid_arg);
   }
+}
+
+client::change_why client::change_why_of(std::string_view w) noexcept {
+  if (w == kWhyNotAllowed) return change_why::not_allowed;
+  if (w == kWhyPath) return change_why::path;
+  if (w == kWhyExists) return change_why::exists;
+  if (w == kWhyBusy) return change_why::busy;
+  if (w == kWhyName) return change_why::name;
+  if (w == kWhyLimit) return change_why::limit;
+  if (w == kWhyFull) return change_why::full;
+  if (w == kWhyOffline) return change_why::offline;
+  if (w == kWhyHash) return change_why::hash;
+  if (w == kWhyOffset) return change_why::offset;
+  return change_why::failed;
+}
+
+bool client::changes_files() const noexcept { return (st_->caps.ops & kChangeOps) == kChangeOps; }
+
+namespace {
+
+// A stream_end's refusal as a status, `why` filled from its JSON.
+status refusal_status(end_code code, std::string_view json_text, client::change_refused* why) {
+  client::change_refused out;
+  const auto doc = json::parse(json_text, 4);
+  if (const std::string* w = doc ? doc->str("why") : nullptr) out.word = *w;
+  if (const auto have = doc ? doc->integer("have") : std::nullopt; have && *have >= 0) {
+    out.have = static_cast<std::uint64_t>(*have);
+  }
+  status e = status::io;
+  switch (code) {
+    case end_code::refused:
+      out.why = out.word.empty() ? client::change_why::not_allowed : client::change_why_of(out.word);
+      e = status::permission_denied;
+      break;
+    case end_code::not_found:
+      out.why = out.word == kWhyOffline ? client::change_why::offline : client::change_why::not_found;
+      e = status::not_found;
+      break;
+    case end_code::unsupported:
+      out.why = client::change_why::unsupported;
+      e = status::unsupported_format;
+      break;
+    default:
+      out.why = out.word == kWhyHash ? client::change_why::hash : client::change_why::failed;
+      e = out.why == client::change_why::hash ? status::corrupt : status::io;
+      break;
+  }
+  if (why) *why = std::move(out);
+  return e;
+}
+
+}  // namespace
+
+result<client::change_done> client::add(const std::string& root, const std::string& rel, std::uint64_t size,
+                                        const std::string& hash_hex, std::uint64_t at, const read_fn& read,
+                                        const std::function<void(std::uint64_t)>& progress,
+                                        const std::atomic<bool>* cancel, change_refused* why) {
+  if (why) *why = {};
+  if (!changes_files() || (st_->caps.ops & kWriteOp) == 0) {
+    if (why) why->why = change_why::unsupported;
+    return err(status::unsupported_format);
+  }
+  write_refused refused;
+  auto done = write(root, rel, size, hash_hex, at, read, progress, cancel, &refused);
+  if (done) return change_done{done->name, done->existing};
+  if (why) {
+    why->word = refused.why;
+    why->have = refused.have;
+    switch (done.error()) {
+      case status::permission_denied:
+        why->why = refused.why.empty() ? change_why::not_allowed : change_why_of(refused.why);
+        break;
+      case status::not_found: why->why = refused.why == kWhyOffline ? change_why::offline : change_why::not_found; break;
+      case status::corrupt: why->why = change_why::hash; break;
+      case status::unsupported_format: why->why = change_why::unsupported; break;
+      case status::cancelled: why->why = change_why::none; break;
+      default: why->why = change_why::failed; break;
+    }
+  }
+  return err(done.error());
+}
+
+// One change request: sent, then its stream_end awaited for as long as the link lives.
+result<client::change_done> client::change(open_request& r, std::uint32_t needs, change_refused* why) {
+  if (why) *why = {};
+  if ((st_->caps.ops & needs) == 0) {
+    if (why) why->why = change_why::unsupported;
+    return err(status::unsupported_format);
+  }
+  auto slot = st_->open_slot(r);
+  struct removed {
+    const std::shared_ptr<state>& st;
+    std::uint32_t id;
+    ~removed() { st->remove(id); }
+  } on_exit{st_, r.id};
+  if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
+    if (why) why->why = change_why::failed;
+    return err(s.error());
+  }
+  std::unique_lock lock(slot->m);
+  while (!slot->ended) {
+    if (st_->closing.load() || st_->ch->closed()) {
+      if (why) why->why = change_why::failed;
+      return err(status::io);
+    }
+    slot->cv.wait_for(lock, std::chrono::milliseconds(200));
+  }
+  const end_code code = *slot->ended;
+  const std::string text = slot->end_json;
+  lock.unlock();
+  if (code != end_code::ok) return err(refusal_status(code, text, why));
+  const auto doc = json::parse(text, 4);
+  const std::string* where = doc ? doc->str(r.kind == op::remove ? "trash" : "name") : nullptr;
+  if (!where) {
+    if (why) why->why = change_why::failed;
+    return err(status::corrupt);
+  }
+  return change_done{*where, doc->boolean("existing").value_or(false)};
+}
+
+result<client::change_done> client::make_folder(const std::string& root, const std::string& rel, change_refused* why) {
+  open_request r;
+  r.kind = op::mkdir;
+  r.root = root;
+  r.rel = rel;
+  return change(r, kMkdirOp, why);
+}
+
+result<client::change_done> client::move(const std::string& root, const std::string& rel, const std::string& to_root,
+                                         const std::string& to_rel, change_refused* why) {
+  open_request r;
+  r.kind = op::move;
+  r.root = root;
+  r.rel = rel;
+  r.to_root = to_root;
+  r.to_rel = to_rel;
+  return change(r, kMoveOp, why);
+}
+
+result<client::change_done> client::remove(const std::string& root, const std::string& rel, change_refused* why) {
+  open_request r;
+  r.kind = op::remove;
+  r.root = root;
+  r.rel = rel;
+  return change(r, kDeleteOp, why);
 }
 
 result<std::string> client::admin(const std::string& request_json, end_code* code, std::string* refusal) {

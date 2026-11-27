@@ -420,6 +420,7 @@ std::optional<mapped> mapper::try_pcp(std::uint16_t internal_port, std::uint16_t
     notes_.emplace_back("PCP: the router refused (result " + std::to_string(got->result) + ")");
     return std::nullopt;
   }
+  last_outside_ = got->external;
   if (!net::is_public(got->external)) {
     behind_nat_ = true;
     notes_.emplace_back("PCP: the router's outside address is not public (another NAT beyond it)");
@@ -443,6 +444,7 @@ std::optional<mapped> mapper::try_nat_pmp(std::uint16_t internal_port, std::uint
     notes_.emplace_back("NAT-PMP: no answer");
     return std::nullopt;
   }
+  last_outside_ = outside;
   std::vector<std::uint8_t> req = {0, 2, 0, 0};
   put16(req, internal_port);
   put16(req, external_port);
@@ -519,6 +521,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
     notes_.emplace_back("UPnP: the router did not say its outside address");
     return std::nullopt;
   }
+  last_outside_ = outside;
   if (!net::is_public(*outside)) {
     behind_nat_ = true;
     notes_.emplace_back("UPnP: the router's outside address is not public (another NAT beyond it)");
@@ -623,7 +626,10 @@ std::optional<net::address> mapper::outside_v4() {
     outside = parse_nat_pmp_address(r);
     return outside.has_value();
   });
-  if (outside) return outside;
+  if (outside) {
+    last_outside_ = outside;
+    return outside;
+  }
   if (cancelled()) return std::nullopt;
   const auto dev = find_upnp();
   if (!dev) return std::nullopt;
@@ -631,6 +637,7 @@ std::optional<net::address> mapper::outside_v4() {
   const auto text = ip && ip->status == 200 ? xml_value(ip->body, "NewExternalIPAddress") : std::nullopt;
   outside = text ? net::parse_address(*text) : std::nullopt;
   if (outside && outside->v6) outside.reset();
+  if (outside) last_outside_ = outside;
   return outside;
 }
 

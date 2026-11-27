@@ -106,7 +106,7 @@ public struct BackupSnapshot: Hashable, Sendable {
   public var allowsSleep: Bool
   /// Only the photos the person chose are covered (limited Photos access).
   public var limitedAccess: Bool
-  /// The sample library's "Sample NAS on this iPhone".
+  /// The sample library's "Sample server on this iPhone".
   public var isSample: Bool
   public var failures: [BackupFailureRow]
   public var space: BackupSpace?

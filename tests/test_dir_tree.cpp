@@ -90,6 +90,57 @@ TEST_CASE("summarize_dir: own media is the cover", "[dir_tree]") {
   CHECK(s.value().subdir_count == 1);
   REQUIRE(s.value().has_cover);
   CHECK(s.value().cover.name_utf8 == "a.png");
+  REQUIRE(s.value().covers.size() == 2);
+  CHECK(s.value().covers[0].name_utf8 == "a.png");
+  CHECK(s.value().covers[1].name_utf8 == "b.jpg");
+}
+
+TEST_CASE("summarize_dir: three covers spread across a long folder", "[dir_tree]") {
+  temp_tree t;
+  for (int i = 0; i < 9; ++i) t.file(("IMG_" + std::to_string(100 + i) + ".jpg").c_str());
+
+  auto s = summarize_dir(t.str());
+  REQUIRE(s);
+  CHECK(s.value().media_count == 9);
+  REQUIRE(s.value().covers.size() == mv::io::kFolderCovers);
+  CHECK(s.value().covers[0].name_utf8 == "IMG_100.jpg");
+  CHECK(s.value().covers[1].name_utf8 == "IMG_103.jpg");
+  CHECK(s.value().covers[2].name_utf8 == "IMG_106.jpg");
+  CHECK(s.value().cover.name_utf8 == "IMG_100.jpg");
+}
+
+TEST_CASE("summarize_dir: a folder of folders takes one cover from each child", "[dir_tree]") {
+  temp_tree t;
+  t.file("01/a1.jpg");
+  t.file("01/a2.jpg");
+  t.dir("02");
+  t.file("03/c.jpg");
+  t.file("04/d.jpg");
+  t.file("05/e.jpg");
+
+  auto s = summarize_dir(t.str());
+  REQUIRE(s);
+  CHECK(s.value().photos_inside);
+  CHECK_FALSE(s.value().search_incomplete);
+  REQUIRE(s.value().covers.size() == 3);
+  CHECK(s.value().covers[0].name_utf8 == "a1.jpg");
+  CHECK(s.value().covers[1].name_utf8 == "c.jpg");
+  CHECK(s.value().covers[2].name_utf8 == "d.jpg");
+}
+
+TEST_CASE("summarize_dir: a spent budget keeps the covers already found", "[dir_tree]") {
+  temp_tree t;
+  t.file("a/x.jpg");
+  for (int i = 0; i < 6; ++i) t.dir(("b" + std::to_string(i)).c_str());
+  t.file("c/y.jpg");
+
+  auto s = summarize_dir(t.str(), 3, /*max_visits=*/3);
+  REQUIRE(s);
+  CHECK(s.value().has_cover);
+  CHECK(s.value().photos_inside);
+  CHECK_FALSE(s.value().search_incomplete);
+  REQUIRE(s.value().covers.size() == 1);
+  CHECK(s.value().covers[0].name_utf8 == "x.jpg");
 }
 
 TEST_CASE("summarize_dir: a year folder borrows a cover from its months", "[dir_tree]") {

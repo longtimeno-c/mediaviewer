@@ -5,8 +5,8 @@
 // identity, settings and a data folder of its own.
 //
 // The steps, each with its way out: the arguments (2 on a usage error);
-// --help, --version, `devices`, `update` and `serve` (the NAS service,
-// serve_cmd.h), which need no terminal; then a terminal
+// --help, --version, `devices`, `update`, `serve` (the NAS service,
+// serve_cmd.h) and `host` (host_cmd.h), which need no terminal; then a terminal
 // on both ends (2 without one: it asks before anything is sent or saved),
 // the files to send, one session per user (2 when another terminal has it),
 // and the session itself, whose exit code is the program's.
@@ -28,6 +28,7 @@
 #include "addons/driftwire/cli/args.h"
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
+#include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/cli/paths_arg.h"
 #include "addons/driftwire/cli/serve_cmd.h"
 #include "addons/driftwire/cli/session.h"
@@ -198,6 +199,13 @@ int main(int argc, char** argv) {
   // devices already paired (docs/design/28 "The NAS service").
   if (a.cmd == cli::command::serve) return cli::run_serve(a, false, MV_DRIFTWIRE_CLI_VERSION);
 #endif
+  // `driftwire host` (cli/host_cmd.h): this computer as the phones' server and
+  // the laptop's relay; like serve, it needs no terminal.
+#if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+  if (a.cmd == cli::command::host) return cli::run_host(a, true, MV_DRIFTWIRE_CLI_VERSION);
+#else
+  if (a.cmd == cli::command::host) return cli::run_host(a, false, MV_DRIFTWIRE_CLI_VERSION);
+#endif
 #if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   if (a.cmd == cli::command::update) return run_update();
 #else
@@ -285,9 +293,26 @@ int main(int argc, char** argv) {
 #else
   // Its own identity and remembered devices, never the app's (secrets.h).
   eo.make_secrets = [] { return dw::secrets::os_store(dw::secrets::kCliService); };
-  // The Tunnel's system proxy (sysproxy.h), as the add-on's.
-  eo.make_sysproxy = [] { return dw::sysproxy::os_port(); };
 #endif
+  // /vpn: the VPN add-on's engine (docs/plans/vpn-addon.md), its settings in
+  // vpn.json beside driftwire.json, where the Tunnel's were until 2026-11-19.
+  {
+    dw::vpn::service::options vo;
+    if (!data.empty()) {
+      vo.prefs_path = data + "/" + std::string(dw::vpn::kPrefsFile);
+      vo.data_dir = data;
+    }
+#if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+    // Its key in the program's own store, never the app's; the system proxy as the add-on's.
+    vo.make_secrets = [] { return dw::secrets::os_store(dw::secrets::kCliService); };
+    vo.make_sysproxy = [] { return dw::sysproxy::os_port(); };
+    if (!data.empty()) {
+      auto store = dw::secrets::os_store(dw::secrets::kCliService);
+      (void)dw::vpn::adopt_driftwire(data, data, vo.prefs_path, store.get(), store.get());
+    }
+#endif
+    so.vpn = std::move(vo);
+  }
 
   const char* term_env = std::getenv("TERM");  // NOLINT(concurrency-mt-unsafe): read at start
   const bool dumb = term_env && std::string(term_env) == "dumb";
@@ -321,6 +346,9 @@ int main(int argc, char** argv) {
   so.mouse = co.sequences && !plain;  // clicks while there is something to click (session.h)
   so.version = MV_DRIFTWIRE_CLI_VERSION;
   so.data_dir = data;
+#if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+  so.test_hooks = true;
+#endif
   if (!a.name.empty()) so.name_note = "this run";
   so.paths = paths;
   // Is a newer driftwire out? Only for a copy an installer put here (a build

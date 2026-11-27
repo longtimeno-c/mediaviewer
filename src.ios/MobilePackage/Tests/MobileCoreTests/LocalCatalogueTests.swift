@@ -172,4 +172,23 @@ final class LocalCatalogueTests: XCTestCase {
     XCTAssertEqual(mv_mobile_search_state(new.raw), MV_MOBILE_SEARCH_OFF)
     withExtendedLifetime(before) {}
   }
+
+  /// Owner, 2026-11-14: search "doesn't seem to be updating". A search overtaken while the first
+  /// open was in flight must stop there, and never stop the newer one that overtook it.
+  func testASearchOvertakenWhileTheCatalogueOpensLeavesTheNewerOneAnswering() async throws {
+    let (location, _, _) = try library()
+    LocalCatalogue.beforeOpen = { _ in Thread.sleep(forTimeInterval: 0.4) }
+    let catalogue = LocalCatalogue(location: location)
+    let search = catalogue.search
+    let older = Task { try await search.search("is:photo", filters: SearchFilters()) }
+    try await Task.sleep(for: .milliseconds(100))  // the older one waits for the open
+    let newer = Task { try await search.search("is:photo", filters: SearchFilters()) }
+    older.cancel()
+    let hits = try await newer.value
+    XCTAssertFalse(hits.isEmpty, "the newer search answers")
+    do {
+      _ = try await older.value
+      XCTFail("the overtaken search answered")
+    } catch is CancellationError {}
+  }
 }

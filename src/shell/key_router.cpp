@@ -107,6 +107,8 @@ bool blocked_in_tool(command_id id, bool pending) noexcept {
     case command_id::folder_up:
     case command_id::folder_prev:
     case command_id::folder_next:
+    case command_id::folder_back:
+    case command_id::folder_forward:
     case command_id::next_page:
     case command_id::prev_page:
       return pending;

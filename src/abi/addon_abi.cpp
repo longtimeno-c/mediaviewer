@@ -24,8 +24,7 @@
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
-#include "abi/phone_source.h"
-#include "phone/app.h"
+#include "addon/catalogue_port.h"
 #include "addon/host.h"
 #include "addon/index_locations.h"
 #include "addon/manifest.h"
@@ -172,6 +171,7 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
   out.shutter_den = f.shutter_den;
   out.shutter_us = f.shutter_us;
   put(out.label_utf8, sizeof(out.label_utf8), f.label);
+  out.duration_ms = f.duration_ms;  // a clip's length from its header (the phone's catalogue)
   return true;
 }
 
@@ -243,7 +243,8 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
     MV_REQUIRE(path_utf8, "path required");
     std::string lower(path_utf8);
     for (char& c : lower) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts"}) {
+    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts",
+                            ".mpg", ".mpeg"}) {
       const std::size_t n = std::strlen(ext);
       if (lower.size() >= n && lower.compare(lower.size() - n, n, ext) == 0) return status::unsupported_format;
     }
@@ -743,7 +744,7 @@ MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
     // first; a walk in flight stops at its next row, and none is inside the
     // pack when its library goes.
     if (std::string_view(id) == "ai") {
-      mv::phone::set_app_source({});  // nothing calls into the pack's phone entries from here
+      mv::addon::catalogue::set_provider({});  // nothing calls into the pack's phone entries from here
       mv::addon::retract_index_locations();
       mv::addon::wait_index_locations_idle();
     }
@@ -763,6 +764,8 @@ MV_API mv_status MV_CALL mv_addon_quit(void) {
     // #398: no index walk starts now; one in flight stops at its next row.
     // Not waited on: the pack is abandoned, never unmapped.
     mv::addon::retract_index_locations();
+    // Phone access's link no longer calls the pack (host table catalogue_*).
+    mv::addon::catalogue::set_provider({});
     for (auto& [id, entry] : all) {
       // The entry's session stays retained: a pack left running still posts.
       const bool ai_family = id == "ai" || id.rfind("ai-", 0) == 0;
@@ -789,6 +792,9 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data) {
     MV_REQUIRE(id, "id is required");
     auto s = open_store();
     if (!s) return s.error();
+    // keep_data 2: a reinstall (removed to install again at once): kept, and
+    // nothing it set up outside the app is undone (a host keeps running).
+    if (keep_data != 2) mv::addon::tell_removed(*s, id, keep_data != 0);
     if (keep_data == 0) mv::addon::forget_outside_data(*s, id);
     auto removed = s->remove(id, keep_data != 0);
     return removed ? status::ok : removed.error();
@@ -914,8 +920,9 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       mv::addon::publish_ai_eyes(mv::addon::ai_eyes(ai));  // edit-adjust slice 6
       mv::addon::publish_ai_faces(mv::addon::ai_faces(ai));  // edit-refresh S10: Restore faces
       mv::addon::publish_ai_person_faces(mv::addon::ai_person_faces(ai));  // Faces donors (2026-11-07)
-      // Phone access's catalogue (docs/plans/phone-in-the-app.md): the writer only.
-      if (!reader) mv::phone::set_app_source(mv::abi::ai_catalogue_source(ai));
+      // The phone's catalogue for the Phone access add-on (host table catalogue_*,
+      // docs/plans/phone-access-addon.md §2): the writer only.
+      if (!reader) mv::addon::catalogue::set_provider(mv::addon::catalogue::from_ai(ai));
     }
   }
   const void* iface = it->second.addon->query(interface_id);

@@ -198,6 +198,14 @@ struct render_done {
 [[nodiscard]] expected animation(std::string_view src_path, const std::string& out_path,
                                  const request& req, const control& ctl);
 
+// The encoder rules Path 2 and the phone's conversion share (clip_encode.cpp).
+// An encoder's software pixel formats, in its own order.
+[[nodiscard]] std::vector<AVPixelFormat> encoder_formats(const AVCodec* enc);
+// NV12 (or P010 for ten bits) where offered.
+[[nodiscard]] AVPixelFormat pick_format(const std::vector<AVPixelFormat>& fmts, bool ten_bit);
+// docs/design/11: hardware or hybrid only, never x264 / x265 (`allow_software`: tests).
+[[nodiscard]] bool licence_ok(const AVCodec* enc, bool allow_software) noexcept;
+
 // run() with the encoder list replaced (tests: a software encoder on Linux).
 [[nodiscard]] result<outcome> run_with_encoders(const request& req, const control& ctl,
                                                 std::vector<std::string> encoders,

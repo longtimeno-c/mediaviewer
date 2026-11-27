@@ -35,31 +35,37 @@ if(NOT DEFINED MV_BLAKE3_TARGET)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/wire.cmake")
+# The VPN add-on (docs/plans/vpn-addon.md): the driftwire program's /vpn links its engine.
+include("${CMAKE_CURRENT_LIST_DIR}/vpn.cmake")
 
 
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/power_win.cpp ${_S}/sysproxy_win.cpp)
+  set(_driftwire_port ${_S}/power_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
-  set(_driftwire_vpn ${_S}/vpn_win.cpp)
 elseif(IOS)
   # No module on iOS: mv_wire carries the file port and BLAKE3 hashing
   # (cmake/wire.cmake), the engine the empty Bluetooth port (no bearer yet).
-  set(_driftwire_port ${_S}/power_ios.cpp ${_S}/bt_none.cpp ${_S}/sysproxy_none.cpp)
+  set(_driftwire_port ${_S}/power_ios.cpp ${_S}/bt_none.cpp)
   set(_driftwire_bt "")
-  set(_driftwire_vpn ${_S}/vpn_none.cpp)
 elseif(APPLE)
-  set(_driftwire_port ${_S}/power_mac.cpp ${_S}/sysproxy_mac.cpp)
+  set(_driftwire_port ${_S}/power_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
-  set(_driftwire_vpn ${_S}/vpn_mac.mm)
 else()
   # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
   # are loaded at run time, so there is nothing to build against; no
   # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
-  set(_driftwire_port ${_S}/power_linux.cpp ${_S}/sysproxy_none.cpp)
+  set(_driftwire_port ${_S}/power_linux.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
-  set(_driftwire_vpn ${_S}/vpn_none.cpp)
+endif()
+
+# A real certificate for the relay's web-site look (acme.h, docs/plans/vpn-stealth.md):
+# BoringSSL, as tls_boringssl.cpp (cmake/wire.cmake decides MV_DRIFTWIRE_TLS).
+if(MV_DRIFTWIRE_TLS)
+  set(_driftwire_acme ${_S}/acme.cpp)
+else()
+  set(_driftwire_acme ${_S}/acme_none.cpp)
 endif()
 
 add_library(mv_driftwire_engine STATIC
@@ -68,6 +74,9 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
+  ${_S}/ddns.cpp ${_S}/ddns.h
+  ${_S}/acme.h ${_driftwire_acme}
+  ${_S}/host_ports.cpp ${_S}/host_ports.h
   ${_S}/race.h
   ${_S}/internet.cpp ${_S}/internet.h
   ${_S}/bencode.cpp ${_S}/bencode.h
@@ -79,10 +88,6 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/handover.cpp ${_S}/handover.h
   ${_S}/relay.cpp ${_S}/relay.h
   ${_S}/presence_keys.cpp ${_S}/presence_keys.h
-  ${_S}/tunnel.cpp ${_S}/tunnel.h
-  ${_S}/sysproxy.h ${_S}/sysproxy_record.cpp
-  ${_S}/netstack.cpp ${_S}/netstack.h
-  ${_S}/vpn.cpp ${_S}/vpn.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
@@ -95,13 +100,15 @@ target_link_libraries(mv_driftwire_engine PUBLIC mv_project_options mv_wire ${MV
   Threads::Threads)
 set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+if(MV_DRIFTWIRE_TLS)
+  target_link_libraries(mv_driftwire_engine PRIVATE OpenSSL::Crypto)  # acme.cpp
+endif()
 if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
   # PowerCreateRequest is kernel32's (#530), linked by default.
-  # wininet: the Tunnel's system proxy, this user's setting (sysproxy_win.cpp).
-  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 dnsapi wininet)
+  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32 dnsapi)
 elseif(IOS)
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework Security")
 elseif(APPLE)
@@ -112,6 +119,10 @@ else()
   # dlopen: libsecret (secrets_linux.cpp), libsystemd (power_linux.cpp).
   target_link_libraries(mv_driftwire_engine PUBLIC ${CMAKE_DL_LIBS})
 endif()
+
+# The phone's VPN (docs/plans/phone-vpn.md): its C ABI over mv_vpn_engine (cmake/vpn.cmake), for the iPhone's
+# packet tunnel extension; built everywhere the engine is, so its tests run on each OS.
+include("${CMAKE_CURRENT_LIST_DIR}/mobile-vpn.cmake")
 
 # iOS links the engine statically: no add-on module, relay or command line.
 if(IOS)
@@ -127,8 +138,6 @@ endif()
 add_library(mv_driftwire MODULE
   ${_S}/addon_entry.cpp
   ${_driftwire_bt}
-  # Slice 5: the OS's virtual interface (vpn.h), the add-on's alone.
-  ${_driftwire_vpn}
   # The file port and BLAKE3 hashing, compiled in: the add-on links nothing
   # of the core (as Places carries io/mapped_file).
   ${MV_SOURCE_ROOT}/src/io/file_port.cpp
@@ -139,15 +148,12 @@ target_link_libraries(mv_driftwire PRIVATE mv_driftwire_engine)
 if(WIN32)
   # C++/WinRT for the Bluetooth bearer (Windows.Devices.Bluetooth,
   # windowsapp.lib). Its projection throws; bt_win.cpp catches every call.
-  # iphlpapi: the VPN's address, routes and DNS on the Wintun adapter (slice 5, vpn_win.cpp).
-  # fwpuclnt: the VPN's kill switch (WFP filters, vpn_win.cpp).
-  target_link_libraries(mv_driftwire PRIVATE windowsapp ole32 iphlpapi fwpuclnt)
+  target_link_libraries(mv_driftwire PRIVATE windowsapp ole32)
   set_source_files_properties(${_S}/bt_win.cpp PROPERTIES COMPILE_OPTIONS "/bigobj")
 elseif(APPLE)
-  # NetworkExtension, SystemExtensions: the VPN (slice 5, vpn_mac.mm).
   target_link_libraries(mv_driftwire PRIVATE "-framework Foundation" "-framework CoreBluetooth"
-    "-framework NetworkExtension" "-framework SystemExtensions" "-framework Security")
-  set_source_files_properties(${_S}/bt_mac.mm ${_S}/vpn_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    "-framework Security")
+  set_source_files_properties(${_S}/bt_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 target_compile_definitions(mv_driftwire PRIVATE MV_DRIFTWIRE_VERSION="${MV_DRIFTWIRE_VERSION}")
 set_target_properties(mv_driftwire PROPERTIES
@@ -197,28 +203,57 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_ddns.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_acme.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_serve.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_pairing.cpp"
+    # The Phone access add-on (docs/plans/phone-access-addon.md): its card, its QR, the module.
+    "${MV_SOURCE_ROOT}/tests/test_phone_addon.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_qr.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_bundled.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_phone_self_host.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_host_tray.cpp"
     "${MV_SOURCE_ROOT}/tests/test_phone_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"
-    "${MV_SOURCE_ROOT}/tests/test_driftwire_vpn.cpp"
+    # The VPN add-on (docs/plans/vpn-addon.md): the proxy, the stack, the service, the module.
+    "${MV_SOURCE_ROOT}/tests/test_vpn.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_vpn_addon.cpp"
+    # The phone's VPN ABI (docs/plans/phone-vpn.md S1/S2), against a relay on loopback.
+    "${MV_SOURCE_ROOT}/tests/test_phone_vpn.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_nas_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_host.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_host_setup.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_host_users.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_host_drives.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_drive_copy.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_drive_copier.cpp"
+    # The phone's own reading of a pairing QR, for the host's (pure: sodium, json, pair_check).
+    "${MV_SOURCE_ROOT}/src/mobile/link_payload.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
-  # test_phone_pairing.cpp: the desk is the app's now (src/phone, cmake/phone.cmake).
-  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone)
+  # test_phone_*.cpp: the Phone access add-on's (src/addons/phone, cmake/phone.cmake).
+  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core mv_phone mv_vpn_engine mv_mobile_vpn
+    mv_mobile_vpn_code)
+  if(MV_DRIFTWIRE_TLS)
+    target_link_libraries(${target} PRIVATE OpenSSL::Crypto)  # test_driftwire_acme.cpp's stand-in CA
+    target_compile_definitions(${target} PRIVATE MV_DRIFTWIRE_TLS=1)
+  endif()
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
     MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json"
+    MV_PHONE_ACCESS_MODULE_PATH="$<TARGET_FILE:mv_phone_access>"
+    MV_PHONE_ACCESS_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/phone/manifest.json"
+    MV_VPN_MODULE_PATH="$<TARGET_FILE:mv_vpn>"
+    MV_VPN_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/vpn/manifest.json"
     # The command line, run by its tests: the program (it refuses a pipe) and
     # the test build (two of them talk in the end-to-end test).
     MV_DRIFTWIRE_CLI_PATH="$<TARGET_FILE:mv_driftwire_cli>"
     MV_DRIFTWIRE_CLI_TEST_PATH="$<TARGET_FILE:mv_driftwire_cli_test>")
-  add_dependencies(${target} mv_driftwire mv_driftwire_relay mv_driftwire_cli mv_driftwire_cli_test)
+  add_dependencies(${target} mv_driftwire mv_phone_access mv_vpn mv_driftwire_relay mv_driftwire_cli mv_driftwire_cli_test)
 endfunction()
 
 # ---- the driftwire command line (docs/design/28 "From a terminal") ----------
@@ -265,12 +300,18 @@ endif()
 set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
-  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp ${_C}/serve_tty_win.cpp)
+  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp ${_C}/serve_tty_win.cpp
+                          ${_C}/autostart_win.cpp ${_C}/host_proc_win.cpp ${_C}/volume_win.cpp
+                          ${_S}/host_smb_win.cpp ${_C}/elevate_win.cpp ${_C}/drives_win.cpp)
 elseif(APPLE)
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm ${_C}/serve_tty_posix.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm ${_C}/serve_tty_posix.cpp
+                          ${_C}/autostart_mac.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp
+                          ${_S}/host_smb_mac.cpp ${_C}/elevate_mac.cpp ${_C}/drives_mac.mm)
   set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp ${_C}/serve_tty_posix.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp ${_C}/serve_tty_posix.cpp
+                          ${_C}/autostart_linux.cpp ${_C}/host_proc_posix.cpp ${_C}/volume_posix.cpp
+                          ${_S}/host_smb_none.cpp ${_C}/elevate_none.cpp ${_C}/drives_linux.cpp)
 endif()
 # Where `driftwire` asks whether a newer version is out, and whose installers
 # `driftwire update` runs (cli/update.h): the site release.yml deploys.
@@ -289,11 +330,20 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/host.cpp ${_C}/host.h
   ${_C}/session.cpp ${_C}/session.h
   ${_C}/serve_cmd.cpp ${_C}/serve_cmd.h
+  ${_C}/host_cmd.cpp ${_C}/host_cmd.h ${_C}/host_keepers.cpp ${_C}/host_keepers.h
+  ${_C}/convert_run.cpp ${_C}/convert_run.h
+  ${_C}/host_setup.cpp ${_C}/host_setup.h ${_C}/qr.cpp ${_C}/qr.h
+  ${_S}/host_smb.cpp ${_S}/host_smb.h ${_C}/host_users.cpp ${_C}/host_users.h ${_C}/elevate.h
+  ${_C}/host_control.cpp ${_C}/host_control.h ${_C}/host_usage.cpp ${_C}/host_usage.h
+  ${_C}/autostart.cpp ${_C}/autostart.h ${_C}/host_proc.h ${_C}/volume.h
+  ${_C}/drives.cpp ${_C}/drives.h ${_C}/host_drives.cpp ${_C}/host_drives.h
+  ${_C}/drive_copy.cpp ${_C}/drive_copy.h ${_C}/drive_copier.cpp ${_C}/drive_copier.h
+  ${_C}/host_copy.cpp ${_C}/host_copy.h
   ${_C}/update.cpp ${_C}/update.h
   ${_C}/nas_update.cpp ${_C}/nas_update.h
   ${_C}/term.h ${_C}/data_dir.h ${_C}/serve_tty.h ${_driftwire_cli_port}
 )
-target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
+target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine mv_vpn_engine ftxui::dom ftxui::screen)
 # The NAS package's update key (docs/plans/nas-setup.md §6): 64 hex digits of
 # the Ed25519 public key that signs <site>/nas/latest.json. Empty (the default,
 # every build of one's own): `driftwire serve` never updates itself.
@@ -302,10 +352,16 @@ target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="
                                                          MV_NAS_UPDATE_KEY="${MV_NAS_UPDATE_KEY}")
 if(WIN32)
   # winhttp: the update check (update_net_win.cpp), Windows' own DLL.
-  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp)
+  # netapi32: the LAN share's accounts and shares (host_smb_win.cpp, the elevated step only).
+  # shell32: ShellExecuteEx "runas" for `host drives` (drives_win.cpp).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp netapi32 advapi32 shell32)
 elseif(APPLE)
   # Foundation: NSURLSession for the update check (update_net_mac.mm).
-  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation")
+  # OpenDirectory, SystemConfiguration: the LAN share's accounts and this Mac's
+  # Bonjour name (host_smb_mac.cpp). Security: the authorization dialog (elevate_mac.cpp).
+  # CoreFoundation: also diskutil's property lists (drives_mac.mm).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation" "-framework OpenDirectory"
+                        "-framework SystemConfiguration" "-framework Security" "-framework CoreFoundation")
 endif()
 
 if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")
@@ -316,6 +372,11 @@ if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")
   endif()
 endif()
 
+if(WIN32)
+  set(_driftwire_child_process ${MV_SOURCE_ROOT}/src/io/child_process_win.cpp)
+else()
+  set(_driftwire_child_process ${MV_SOURCE_ROOT}/src/io/child_process_posix.cpp)
+endif()
 function(_mv_driftwire_cli_program target)
   add_executable(${target}
     ${_C}/main.cpp
@@ -323,6 +384,8 @@ function(_mv_driftwire_cli_program target)
     # The file port and BLAKE3 hashing, compiled in (as the module does).
     ${MV_SOURCE_ROOT}/src/io/file_port.cpp
     ${MV_SOURCE_ROOT}/src/io/content_hash.cpp
+    # `host drives` runs diskutil / PowerShell and reads what they print.
+    ${_driftwire_child_process}
     ${_driftwire_io})
   target_link_libraries(${target} PRIVATE mv_driftwire_cli_core)
   target_compile_definitions(${target} PRIVATE MV_DRIFTWIRE_CLI_VERSION="${MV_DRIFTWIRE_CLI_VERSION}")

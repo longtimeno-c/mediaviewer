@@ -8,11 +8,18 @@
 // nothing here touches the network beyond 127.0.0.1.
 #include <sodium.h>
 
+#include <condition_variable>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+
 #include "driftwire_fixture.h"
 
+#include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/noise.h"
 #include "wire/serve.h"
+#include "wire/serve_backup.h"
 #include "wire/serve_client.h"
 #include "io/content_hash.h"
 
@@ -20,6 +27,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace serve = mv::driftwire::serve;
@@ -47,6 +55,7 @@ constexpr int kSlowSeconds = 15;
 const std::string kRootA = "a1a1a1a1a1a1a1a1";
 const std::string kRootB = "b2b2b2b2b2b2b2b2";
 const std::string kRootC = "c3c3c3c3c3c3c3c3";  // a backup folder (phone backup, 1.1)
+const std::string kRootD = "d4d4d4d4d4d4d4d4";  // the real Catalogue (a folder's .mediaviewer)
 
 using key32 = std::array<std::uint8_t, 32>;
 
@@ -77,6 +86,12 @@ struct service_fixture {
   fs::path other = dir.root() / "other";
   fs::path outside = dir.root() / "outside";
   fs::path backup = dir.root() / "backup";
+  fs::path catalogue = dir.root() / "shared" / ".mediaviewer";
+  bool copy_moves = false;  // options::copy_moves
+  std::function<void()> during_copy;                       // options::during_copy
+  std::vector<serve::root_config> extra_roots;             // more named folders
+  std::function<std::int64_t()> now_unix;                  // options::now_unix
+  std::function<std::chrono::steady_clock::time_point()> now_steady;
   std::uint64_t backup_limit = 64ull << 20;
   std::uint64_t backup_reserve = 0;
   std::atomic<std::uint64_t> free_bytes{1ull << 40};
@@ -91,6 +106,8 @@ struct service_fixture {
   int max_pending = 16;
   int max_sessions = 8;
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
+  std::function<std::string()> storage;  // options::storage (the host's drives keeper)
+  std::shared_ptr<serve::convert::service> converter;  // options::converter
 
   explicit service_fixture(int per_minute = 10000, int pending_per_source = 2, int pending_all = 16, int sessions = 8,
                            std::function<std::unique_ptr<sp::net::listener>()> listener_maker = {})
@@ -103,6 +120,7 @@ struct service_fixture {
     fs::create_directories(other);
     fs::create_directories(outside);
     fs::create_directories(backup);
+    fs::create_directories(catalogue);
     REQUIRE(sp::secrets::owner_only_folder(utf8(data / "secrets")));
     store = sp::secrets::file_store(utf8(data / "secrets"));
     REQUIRE(store);
@@ -141,6 +159,12 @@ struct service_fixture {
     b.limit = backup_limit;
     b.reserve = backup_reserve;
     o.cfg.roots.push_back(b);
+    o.cfg.roots.push_back({kRootD, "Catalogue", utf8(catalogue)});
+    o.copy_moves = copy_moves;
+    o.during_copy = during_copy;
+    o.now_unix = now_unix;
+    o.now_steady = now_steady;
+    for (const auto& r : extra_roots) o.cfg.roots.push_back(r);
     o.free_bytes = [this](const std::string&) { return free_bytes.load(); };
     o.may_write = may_write;
     o.store = store.get();
@@ -151,6 +175,8 @@ struct service_fixture {
     o.max_pending = max_pending;
     o.max_sessions = max_sessions;
     o.make_listener = make_listener;
+    o.storage = storage;
+    o.converter = converter;
     auto started = serve::server::start(o);
     REQUIRE(started);
     srv = std::move(*started);
@@ -169,7 +195,7 @@ struct service_fixture {
     o.service_key = identity_public;
     o.id = "aaaaaaaaaaaaaaaa";
     o.name = "Phone";
-    o.ops = serve::kAllOps | serve::kWriteOp;
+    o.ops = serve::kAllOps | serve::kWriteOp | serve::kChangeOps;
     return o;
   }
 
@@ -247,12 +273,12 @@ TEST_CASE("serve: a paired client lists, range-reads and seeks in a large file",
   fs::resize_file(big, big_size);
 
   auto c = s.open_client();
-  CHECK(c->caps().ops == (serve::kAllOps | serve::kWriteOp));
+  CHECK(c->caps().ops == (serve::kAllOps | serve::kWriteOp | serve::kChangeOps));
   CHECK(c->caps().chunk <= serve::kInteractiveChunk);
 
   auto roots = c->roots();
   REQUIRE(roots);
-  REQUIRE(roots->size() == 3);
+  REQUIRE(roots->size() == 4);
   CHECK(roots->at(0).id == kRootA);
   CHECK(roots->at(0).label == "Photos");
 
@@ -736,6 +762,64 @@ TEST_CASE("serve: a path outside the named folders is refused", "[driftwire-serv
   auto ok = c->read_range(kRootA, "ok.txt", 0, 100);
   REQUIRE(ok);
   CHECK(read_all(**ok) == "inside");
+}
+
+TEST_CASE("serve: a named folder whose drive is gone is listed offline, and comes back", "[driftwire-serve]") {
+  service_fixture s;
+  write_file(s.other / "a.txt", "on the drive");
+  auto c = s.open_client();
+  const auto offline = [&](const std::string& id) {
+    auto roots = c->roots();
+    REQUIRE(roots);
+    for (const auto& r : *roots) {
+      if (r.id == id) return r.offline;
+    }
+    FAIL("no such root");
+    return false;
+  };
+  CHECK_FALSE(offline(kRootA));
+  CHECK_FALSE(offline(kRootB));
+
+  // The drive unplugged: its folder is not there. The session goes on.
+  const fs::path away = s.dir.root() / "unplugged";
+  fs::rename(s.other, away);
+  CHECK(offline(kRootB));
+  CHECK_FALSE(offline(kRootA));
+  serve::end_code code = serve::end_code::ok;
+  CHECK_FALSE(c->list(kRootB, "", &code));
+  CHECK(code == serve::end_code::not_found);
+  code = serve::end_code::ok;
+  CHECK_FALSE(c->stat(kRootB, "a.txt", &code));
+  CHECK(code == serve::end_code::not_found);
+  auto gone = c->read_range(kRootB, "a.txt", 0, 100);
+  REQUIRE(gone);
+  CHECK(read_all(**gone).empty());
+  CHECK((*gone)->code() == serve::end_code::not_found);
+  CHECK_FALSE(c->closed());
+
+  // Plugged back in: the same session reads it again.
+  fs::rename(away, s.other);
+  CHECK_FALSE(offline(kRootB));
+  auto back = c->read_range(kRootB, "a.txt", 0, 100);
+  REQUIRE(back);
+  CHECK(read_all(**back) == "on the drive");
+}
+
+TEST_CASE("serve: the roots list says offline only when it is", "[driftwire-serve]") {
+  std::vector<serve::root_info> roots(2);
+  roots[0].id = "a1a1a1a1a1a1a1a1";
+  roots[0].label = "Photos";
+  roots[1].id = "b2b2b2b2b2b2b2b2";
+  roots[1].label = "Drive";
+  roots[1].offline = true;
+  const std::string text = serve::roots_json(roots);
+  // A root that is there reads exactly as before, for an older phone.
+  CHECK(text.find("\"offline\"") == text.rfind("\"offline\""));
+  auto back = serve::parse_roots(text);
+  REQUIRE(back);
+  REQUIRE(back->size() == 2);
+  CHECK_FALSE((*back)[0].offline);
+  CHECK((*back)[1].offline);
 }
 
 #if !defined(_WIN32)
@@ -1329,15 +1413,65 @@ TEST_CASE("serve backup: the storage limit and the free-space reserve refuse a w
   CHECK(space->room == 600 * 1024 - 512 * 1024);
 }
 
-TEST_CASE("serve backup: only a backup folder, and only a device that may write", "[driftwire-serve]") {
+TEST_CASE("serve backup: a folder with no limit takes more than any limit, and the reserve still refuses", "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.backup_limit = serve::kNoLimit;
+  s.backup_reserve = 512 * 1024;
+  s.free_bytes = 8 * 1024 * 1024;
+  s.start(10000);
+  auto c = s.open_client();
+
+  auto space = c->stat(kRootC, "");
+  REQUIRE(space);
+  CHECK(serve::no_limit(space->limit));
+  CHECK(space->room == 8 * 1024 * 1024 - 512 * 1024);  // only the reserve bounds it
+
+  serve::client::write_refused why;
+  for (int i = 0; i < 3; ++i) {  // 6 MB, past what a 1 MB limit would have taken
+    const std::string clip = marker(20 + i, 2 * 1024 * 1024);
+    REQUIRE(c->write(kRootC, "clip" + std::to_string(i) + ".mov", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why));
+  }
+  // The volume itself nearly full: refused for the reserve, never for a limit.
+  s.free_bytes = 1024 * 1024;
+  const std::string more = marker(30, 600 * 1024);
+  auto done = c->write(kRootC, "more.mov", more.size(), hash_of(more), 0, reader_of(more), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyFull);
+  CHECK_FALSE(fs::exists(s.backup / "more.mov"));
+
+  // Kept as none in serve.json, and none to a reader of it.
+  serve::config cfg;
+  cfg.port = 4000;
+  serve::root_config r{kRootC, "Phone backup", "/volume1/backup"};
+  r.backup = true;
+  r.limit = serve::kNoLimit;
+  r.reserve = 1ull << 30;
+  cfg.roots = {r};
+  auto back = serve::parse_config(serve::config_json(cfg));
+  REQUIRE(back);
+  CHECK(serve::no_limit(back->roots[0].limit));
+}
+
+TEST_CASE("serve backup: only a device that may write, and the meta folder only in a backup folder", "[driftwire-serve]") {
   service_fixture s;
   auto c = s.open_client();
   serve::client::write_refused why;
   const std::string photo = marker(5, 1000);
+  // Since kChangeOps a "change" device adds to every folder it sees, not only backup folders.
   auto done = c->write(kRootA, "IMG.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE(done);
+  CHECK(slurp(s.library / "IMG.jpg") == photo);
+  // Never the Catalogue, and the backup meta folder only under a backup folder.
+  done = c->write(kRootD, "IMG.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
   REQUIRE_FALSE(done);
   CHECK(why.why == serve::kWhyNotAllowed);
-  CHECK_FALSE(fs::exists(s.library / "IMG.jpg"));
+  CHECK_FALSE(fs::exists(s.catalogue / "IMG.jpg"));
+  const std::string me_id = serve::device_folder_id(public_of(s.device));
+  done = c->write(kRootA, me_id + "/ledger.json", 2, hash_of("{}"), 0, reader_of(std::string("{}")), {}, nullptr, &why, true);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyNotAllowed);
+  CHECK_FALSE(fs::exists(s.library / serve::kBackupMetaFolder));
   // Outside the folder: refused before any file is looked at.
   done = c->write(kRootC, "../escape.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
   REQUIRE_FALSE(done);
@@ -1373,6 +1507,11 @@ TEST_CASE("serve backup: only a backup folder, and only a device that may write"
   REQUIRE_FALSE(done);
   CHECK(why.why == serve::kWhyNotAllowed);
   CHECK_FALSE(c->list(kRootC, "", nullptr, true));  // nor its ledgers
+  // Nor an ordinary folder.
+  done = c->write(kRootA, "other.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why);
+  REQUIRE_FALSE(done);
+  CHECK(why.why == serve::kWhyNotAllowed);
+  CHECK_FALSE(fs::exists(s.library / "other.jpg"));
 }
 
 TEST_CASE("serve backup: a device's ledger copy is the one file replaced, and only its own", "[driftwire-serve]") {
@@ -1516,4 +1655,1432 @@ TEST_CASE("serve backup: two phones placing one name at once keep both files", "
     CHECK(slurp(s.backup / ra->name) == one);
     CHECK(slurp(s.backup / rb->name) == two);
   }
+}
+
+TEST_CASE("serve: every session hears the server's drives' health in its caps", "[driftwire-serve][host-drives]") {
+  service_fixture s;
+  CHECK(s.open_client()->caps().storage.empty());  // no drives keeper: nothing said
+  s.srv.reset();
+  std::string word = "degraded";
+  std::mutex m;
+  s.storage = [&] {
+    std::lock_guard g(m);
+    return word;
+  };
+  s.start(10000);
+  CHECK(s.open_client()->caps().storage == "degraded");
+  {
+    std::lock_guard g(m);
+    word.clear();  // healthy again
+  }
+  CHECK(s.open_client()->caps().storage.empty());
+  {
+    std::lock_guard g(m);
+    word = "not a word";  // never sent
+  }
+  CHECK(s.open_client()->caps().storage.empty());
+}
+
+TEST_CASE("serve: the devices with a session up now (the tray names them)", "[driftwire-serve][host-tray]") {
+  // docs/plans/self-hosted.md "Tray": the host's menu names the phones connected.
+  service_fixture s;
+  CHECK(s.srv->connected_devices().empty());
+  auto c = s.open_client();
+  REQUIRE(c->roots());
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), s.device.data());
+  REQUIRE(eventually([&] { return s.srv->connected_devices().size() == 1; }));
+  CHECK(s.srv->connected_devices().front() == pub);
+  // Its file bytes, counted per device, with how and since when.
+  write_file(s.library / "u.bin", marker(0, 50000));
+  auto r = c->read_range(kRootA, "u.bin", 0, 50000);
+  REQUIRE(r);
+  CHECK(read_all(**r).size() == 50000);
+  auto u = s.srv->usage();
+  REQUIRE(u.size() == 1);
+  CHECK(u[0].device == pub);
+  CHECK(u[0].read == 50000);
+  CHECK(u[0].written == 0);
+  CHECK(u[0].connected);
+  CHECK(u[0].since_unix > 0);
+  CHECK(u[0].via != serve::server::usage_via::relay);
+  c->close();
+  CHECK(eventually([&] { return s.srv->connected_devices().empty(); }));
+  // Ended, its bytes stay counted (once the session is reaped).
+  CHECK(eventually([&] {
+    const auto after = s.srv->usage();
+    return after.size() == 1 && after[0].read == 50000 && !after[0].connected;
+  }));
+}
+
+// ---- convert (docs/plans/phone-clip-convert.md) ------------------------------------------------
+
+namespace {
+
+namespace cv = serve::convert;
+
+// A runner that converts nothing: the plan is 40 s in 4 s segments; a segment is its number and
+// the source's first bytes. `gate`, when set, holds every run until opened.
+struct fake_runner {
+  std::atomic<int> plans{0}, segments{0};
+  std::mutex m;
+  std::condition_variable c;
+  bool held = false;
+  std::vector<std::uint32_t> order;  // segments, in the order they ran
+  bool not_a_clip = false;
+  std::atomic<bool> fail{false};
+
+  void hold() {
+    std::lock_guard g(m);
+    held = true;
+  }
+  void open() {
+    {
+      std::lock_guard g(m);
+      held = false;
+    }
+    c.notify_all();
+  }
+  void wait_open() {
+    std::unique_lock g(m);
+    c.wait(g, [&] { return !held; });
+  }
+
+  cv::runner make() {
+    cv::runner r;
+    r.plan = [this](const std::string& src, std::uint32_t seg_ms, const std::string& out) {
+      wait_open();
+      ++plans;
+      if (not_a_clip) return cv::ran::not_a_clip;
+      serve::convert_plan p{40000, seg_ms, (40000 + seg_ms - 1) / seg_ms, 1280, 720};
+      std::ofstream(fs::path(std::u8string(reinterpret_cast<const char8_t*>(out.data()), out.size())), std::ios::binary)
+          << serve::convert_plan_json(p);
+      (void)src;
+      return cv::ran::ok;
+    };
+    r.segment = [this](const std::string& src, std::uint32_t k, std::uint32_t, const std::string& out) {
+      wait_open();
+      ++segments;
+      {
+        std::lock_guard g(m);
+        order.push_back(k);
+      }
+      if (fail) return cv::ran::failed;
+      std::ifstream in(fs::path(std::u8string(reinterpret_cast<const char8_t*>(src.data()), src.size())), std::ios::binary);
+      std::string head(8, '\0');
+      in.read(head.data(), 8);
+      head.resize(static_cast<std::size_t>(in.gcount()));
+      std::ofstream(fs::path(std::u8string(reinterpret_cast<const char8_t*>(out.data()), out.size())), std::ios::binary)
+          << "SEG" << k << ":" << head;
+      return cv::ran::ok;
+    };
+    return r;
+  }
+};
+
+struct waited_plan {
+  std::mutex m;
+  std::condition_variable c;
+  std::optional<std::pair<cv::outcome, serve::convert_plan>> got;
+  cv::service::plan_cb cb() {
+    return [this](cv::outcome o, const serve::convert_plan& p) {
+      std::lock_guard g(m);
+      got = {o, p};
+      c.notify_all();
+    };
+  }
+  std::pair<cv::outcome, serve::convert_plan> wait() {
+    std::unique_lock g(m);
+    REQUIRE(c.wait_for(g, std::chrono::seconds(kSlowSeconds), [&] { return got.has_value(); }));
+    return *got;
+  }
+};
+
+struct waited_segment {
+  std::mutex m;
+  std::condition_variable c;
+  std::optional<std::pair<cv::outcome, std::string>> got;
+  cv::service::segment_cb cb() {
+    return [this](cv::outcome o, const std::string& f) {
+      std::lock_guard g(m);
+      got = {o, f};
+      c.notify_all();
+    };
+  }
+  std::pair<cv::outcome, std::string> wait() {
+    std::unique_lock g(m);
+    REQUIRE(c.wait_for(g, std::chrono::seconds(kSlowSeconds), [&] { return got.has_value(); }));
+    return *got;
+  }
+};
+
+std::string file_text(const std::string& path) {
+  std::ifstream f(fs::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// Until the service has nothing running or queued (bounded).
+void settle(cv::service& s, fake_runner& r, int segments) {
+  for (int i = 0; i < kSlowSeconds * 100 && (r.segments.load() < segments || s.now().busy); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+}  // namespace
+
+TEST_CASE("serve convert: the request and the plan on the wire", "[driftwire-serve][convert]") {
+  serve::open_request r;
+  r.id = 7;
+  r.kind = serve::op::convert;
+  r.root = kRootA;
+  r.rel = "clips/a.avi";
+  r.segment = 3;
+  r.credit = 65536;
+  bool unknown = true;
+  auto back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK_FALSE(unknown);
+  CHECK(back->kind == serve::op::convert);
+  CHECK(back->segment == 3);
+  CHECK(back->rel == "clips/a.avi");
+  r.segment = -1;
+  back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK(back->segment == -1);
+
+  auto raw = [](std::string_view json) {
+    std::vector<std::uint8_t> b{1, 0, 0, 0};
+    b.insert(b.end(), json.begin(), json.end());
+    return b;
+  };
+  CHECK_FALSE(serve::parse_open(raw(R"({"op":"convert","root":"a1a1a1a1a1a1a1a1","rel":"a.avi"})"), unknown));  // no seg
+  CHECK_FALSE(serve::parse_open(raw(R"({"op":"convert","root":"a1a1a1a1a1a1a1a1","rel":"a.avi","seg":-2})"), unknown));
+  CHECK_FALSE(serve::parse_open(raw(R"({"op":"convert","root":"a1a1a1a1a1a1a1a1","seg":0})"), unknown));  // no file
+  CHECK(serve::parse_op("convert") == serve::op::convert);
+  CHECK(serve::op_bit(serve::op::convert) == serve::kConvertOp);
+  CHECK((serve::kAllOps & serve::kConvertOp) == 0);  // never granted with the reads
+
+  serve::convert_plan p{10001, 4000, 3, 1920, 1080};
+  const auto parsed = serve::parse_convert_plan(serve::convert_plan_json(p));
+  REQUIRE(parsed);
+  CHECK(parsed->duration_ms == 10001);
+  CHECK(parsed->segments == 3);
+  CHECK(parsed->width == 1920);
+  CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":10001,"segment_ms":4000,"segments":4,"width":1,"height":1})"));
+  CHECK(serve::parse_convert_plan(R"({"duration_ms":8100,"segment_ms":4000,"segments":2,"width":1,"height":1})"));  // a 100 ms tail joined
+  CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":8100,"segment_ms":4000,"segments":1,"width":1,"height":1})"));
+  CHECK_FALSE(serve::parse_convert_plan(R"({"duration_ms":0,"segment_ms":4000,"segments":0,"width":1,"height":1})"));
+  CHECK_FALSE(serve::parse_convert_plan("[]"));
+}
+
+TEST_CASE("serve convert: a segment is made once, kept, and the next ones are made ahead", "[driftwire-serve][convert]") {
+  scratch_dir dir{"serve_convert_cache"};
+  write_file(dir.root() / "clip.avi", "RIFFclipbytes");
+  fake_runner run;
+  cv::service::options o;
+  o.cache_dir = utf8(dir.root() / "cache");
+  o.run = run.make();
+  auto svc = cv::service::start(o);
+  cv::source src{utf8(dir.root() / "clip.avi"), kRootA, "clip.avi", 13, 1000};
+
+  waited_plan p1;
+  svc->plan(src, p1.cb());
+  const auto [po, plan] = p1.wait();
+  REQUIRE(po == cv::outcome::ok);
+  CHECK(plan.segments == 10);
+  waited_plan p2;
+  svc->plan(src, p2.cb());
+  CHECK(p2.wait().first == cv::outcome::ok);
+  CHECK(run.plans == 1);  // the second from the cache
+
+  // Segment 0 alone (a poster): nothing made ahead.
+  waited_segment s0;
+  svc->segment(src, 0, s0.cb());
+  const auto [so, file] = s0.wait();
+  REQUIRE(so == cv::outcome::ok);
+  CHECK(file_text(file) == "SEG0:RIFFclip");
+  settle(*svc, run, 1);
+  CHECK(run.segments == 1);
+  // Segment 1 (playing): 2 and 3 follow by themselves, and are then hits.
+  waited_segment s1;
+  svc->segment(src, 1, s1.cb());
+  CHECK(s1.wait().first == cv::outcome::ok);
+  settle(*svc, run, 4);
+  CHECK(run.segments == 4);
+  waited_segment s3;
+  svc->segment(src, 3, s3.cb());
+  CHECK(s3.wait().first == cv::outcome::ok);
+  settle(*svc, run, 6);  // 3 asked: 4 and 5 ahead
+  CHECK(run.segments == 6);
+  CHECK(svc->now().hits >= 2);
+  // Nothing beside the original, and nothing named after it in the cache.
+  CHECK(fs::exists(dir.root() / "clip.avi"));
+  int beside = 0;
+  for (const auto& e : fs::directory_iterator(dir.root())) beside += e.is_regular_file() ? 1 : 0;
+  CHECK(beside == 1);
+  for (const auto& e : fs::recursive_directory_iterator(dir.root() / "cache")) {
+    CHECK(utf8(e.path().filename()).find("clip") == std::string::npos);
+  }
+
+  // The file changed (another mtime): converted again.
+  cv::source changed = src;
+  changed.mtime = 2000;
+  CHECK(cv::cache_key(changed) != cv::cache_key(src));
+  const int before = run.segments;
+  waited_segment s0b;
+  svc->segment(changed, 0, s0b.cb());
+  CHECK(s0b.wait().first == cv::outcome::ok);
+  CHECK(run.segments == before + 1);
+}
+
+TEST_CASE("serve convert: what a phone asks goes first, and a seek drops what was queued ahead", "[driftwire-serve][convert]") {
+  scratch_dir dir{"serve_convert_order"};
+  write_file(dir.root() / "a.mkv", "matroska");
+  write_file(dir.root() / "b.mkv", "matroskb");
+  fake_runner run;
+  cv::service::options o;
+  o.cache_dir = utf8(dir.root() / "cache");
+  o.run = run.make();
+  o.ahead = 2;
+  auto svc = cv::service::start(o);
+  cv::source src{utf8(dir.root() / "a.mkv"), kRootA, "a.mkv", 8, 1};
+  waited_plan p;
+  svc->plan(src, p.cb());
+  REQUIRE(p.wait().first == cv::outcome::ok);  // 10 segments
+
+  run.hold();
+  waited_segment s1, s6;
+  svc->segment(src, 1, s1.cb());  // runs (held); 2 and 3 queued ahead
+  for (int i = 0; i < 1000 && !svc->now().busy; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  svc->segment(src, 6, s6.cb());  // a seek: asked; 2 and 3 dropped, 7 and 8 ahead
+  run.open();
+  CHECK(s1.wait().first == cv::outcome::ok);
+  CHECK(s6.wait().first == cv::outcome::ok);
+  settle(*svc, run, 4);
+  {
+    std::lock_guard g(run.m);
+    REQUIRE(run.order.size() == 4);
+    CHECK(run.order == std::vector<std::uint32_t>{1, 6, 7, 8});
+  }
+
+  // Another clip: what was ahead for the first goes.
+  cv::source other{utf8(dir.root() / "b.mkv"), kRootA, "b.mkv", 8, 1};
+  waited_plan p2;
+  svc->plan(other, p2.cb());
+  REQUIRE(p2.wait().first == cv::outcome::ok);
+  run.hold();
+  waited_segment a2, b5;
+  svc->segment(src, 2, a2.cb());  // runs (held); 3 and 4 of a ahead
+  for (int i = 0; i < 1000 && !svc->now().busy; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  svc->segment(other, 5, b5.cb());
+  run.open();
+  CHECK(a2.wait().first == cv::outcome::ok);
+  CHECK(b5.wait().first == cv::outcome::ok);
+  settle(*svc, run, 8);
+  std::lock_guard g(run.m);
+  REQUIRE(run.order.size() == 8);
+  CHECK(std::vector<std::uint32_t>(run.order.begin() + 4, run.order.end()) == std::vector<std::uint32_t>{2, 5, 6, 7});
+}
+
+TEST_CASE("serve convert: the cache keeps to its bound, failures are not kept, purge empties it", "[driftwire-serve][convert]") {
+  scratch_dir dir{"serve_convert_bound"};
+  write_file(dir.root() / "a.mpg", "mpegbytes");
+  write_file(dir.root() / "b.mpg", "otherbyt");
+  fake_runner run;
+  cv::service::options o;
+  o.cache_dir = utf8(dir.root() / "cache");
+  o.run = run.make();
+  o.ahead = 0;
+  o.max_bytes = 200;  // plans (~80 B each) and a few 13-byte segments
+  auto svc = cv::service::start(o);
+  cv::source a{utf8(dir.root() / "a.mpg"), kRootA, "a.mpg", 9, 1};
+  for (std::uint32_t k = 0; k < 3; ++k) {
+    for (int file = 0; file < 4; ++file) {
+      cv::source s = a;
+      s.mtime = file;  // four sources' worth of segments
+      waited_segment w;
+      svc->segment(s, k, w.cb());
+      REQUIRE(w.wait().first == cv::outcome::ok);
+    }
+  }
+  CHECK(svc->now().cached_bytes <= 200);
+
+  run.fail = true;
+  cv::source b{utf8(dir.root() / "b.mpg"), kRootA, "b.mpg", 8, 1};
+  waited_segment bad;
+  svc->segment(b, 0, bad.cb());
+  CHECK(bad.wait().first == cv::outcome::failed);
+  run.fail = false;
+  waited_segment again;
+  svc->segment(b, 0, again.cb());
+  CHECK(again.wait().first == cv::outcome::ok);  // tried again, not remembered
+
+  run.not_a_clip = true;
+  cv::source c = b;
+  c.rel = "c.mpg";
+  waited_plan np;
+  svc->plan(c, np.cb());
+  CHECK(np.wait().first == cv::outcome::not_a_clip);
+  const int plans = run.plans;
+  waited_plan np2;
+  svc->plan(c, np2.cb());
+  CHECK(np2.wait().first == cv::outcome::not_a_clip);
+  CHECK(run.plans == plans);  // remembered: not run again
+
+  svc->purge();
+  CHECK(svc->now().cached_bytes == 0);
+  CHECK(fs::is_empty(dir.root() / "cache"));
+}
+
+TEST_CASE("serve convert: the op is offered only with a converter, and streams a segment", "[driftwire-serve][convert]") {
+  service_fixture s;
+  write_file(s.library / "clips" / "old.avi", "RIFFavidata");
+  fs::create_directories(s.library / "clips" / "folder.avi");
+  write_file(s.outside / "secret.avi", "nope");
+
+  // No converter: not in the caps, and the client never asks.
+  {
+    auto opts = s.client_options();
+    opts.ops |= serve::kConvertOp;
+    auto c = serve::client::open(s.connect(), opts);
+    REQUIRE(c);
+    CHECK(((*c)->caps().ops & serve::kConvertOp) == 0);
+    CHECK((*c)->convert_plan_of(kRootA, "clips/old.avi").error() == mv::status::unsupported_format);
+  }
+
+  fake_runner run;
+  scratch_dir cache{"serve_convert_server_cache"};
+  cv::service::options o;
+  o.cache_dir = utf8(cache.root());
+  o.run = run.make();
+  s.srv->set_converter(cv::service::start(o));
+
+  // A phone from before `convert` does not list it, and is not given it.
+  CHECK((s.open_client()->caps().ops & serve::kConvertOp) == 0);
+
+  auto opts = s.client_options();
+  opts.ops |= serve::kConvertOp;
+  auto c = serve::client::open(s.connect(), opts);
+  REQUIRE(c);
+  REQUIRE(((*c)->caps().ops & serve::kConvertOp) != 0);
+  auto plan = (*c)->convert_plan_of(kRootA, "clips/old.avi");
+  REQUIRE(plan);
+  CHECK(plan->segments == 10);
+  CHECK(plan->width == 1280);
+  auto seg = (*c)->convert_segment(kRootA, "clips/old.avi", 1, 4096);
+  REQUIRE(seg);
+  CHECK(read_all(**seg) == "SEG1:RIFFavid");
+  CHECK((*seg)->code() == serve::end_code::ok);
+
+  // Outside the folders, a folder, and a link out are refused, never converted.
+  const int before = run.segments;
+  CHECK_FALSE((*c)->convert_plan_of(kRootA, "../outside/secret.avi"));
+  CHECK((*c)->convert_plan_of(kRootA, "clips/folder.avi").error() == mv::status::permission_denied);
+#if !defined(_WIN32)
+  fs::create_symlink(s.outside / "secret.avi", s.library / "clips" / "link.avi");
+  CHECK_FALSE((*c)->convert_plan_of(kRootA, "clips/link.avi"));
+#endif
+  CHECK((*c)->convert_plan_of(kRootA, "clips/missing.avi").error() == mv::status::not_found);
+
+  // Turned off since the caps: said so.
+  s.srv->set_converter(nullptr);
+  std::string why;
+  CHECK((*c)->convert_plan_of(kRootA, "clips/old.avi", &why).error() == mv::status::unsupported_format);
+  CHECK(why == serve::kWhyConvertOff);
+  CHECK(run.segments >= before);
+}
+
+TEST_CASE("serve convert: a stream cancelled while it converts ends, and the session goes on", "[driftwire-serve][convert]") {
+  service_fixture s;
+  write_file(s.library / "b.webm", "webmwebm");
+  fake_runner run;
+  scratch_dir cache{"serve_convert_cancel_cache"};
+  cv::service::options o;
+  o.cache_dir = utf8(cache.root());
+  o.run = run.make();
+  o.ahead = 0;
+  s.srv->set_converter(cv::service::start(o));
+  auto opts = s.client_options();
+  opts.ops |= serve::kConvertOp;
+  auto c = serve::client::open(s.connect(), opts);
+  REQUIRE(c);
+  REQUIRE((*c)->convert_plan_of(kRootA, "b.webm"));
+  run.hold();
+  auto seg = (*c)->convert_segment(kRootA, "b.webm", 0);
+  REQUIRE(seg);
+  (*seg)->cancel();
+  run.open();
+  // The session still answers, and the segment was kept for the next ask.
+  auto again = (*c)->convert_segment(kRootA, "b.webm", 0);
+  REQUIRE(again);
+  CHECK(read_all(**again) == "SEG0:webmwebm");
+  CHECK((*c)->stat(kRootA, "b.webm"));
+}
+
+// docs/plans/phone-clip-convert.md, measured: the real clip helper behind the real service over
+// loopback. MV_CONVERT_BENCH_HELPER is MediaViewerClipJob, MV_CONVERT_BENCH_DIR a folder of clips.
+// Per clip: the first frame cold (plan, then segment 0), a seek to the middle cold, and segment 0
+// again from the cache. Hidden: it needs a hardware encoder and the files.
+#include "addons/driftwire/cli/convert_run.h"
+TEST_CASE("serve convert: first frame and seek times with the real helper", "[.convert-bench]") {
+  const char* helper = std::getenv("MV_CONVERT_BENCH_HELPER");
+  const char* clips = std::getenv("MV_CONVERT_BENCH_DIR");
+  if (!helper || !clips) SKIP("set MV_CONVERT_BENCH_HELPER and MV_CONVERT_BENCH_DIR");
+  service_fixture s;
+  for (const auto& e : fs::directory_iterator(clips)) {
+    if (e.is_regular_file()) fs::copy_file(e.path(), s.library / e.path().filename());
+  }
+  scratch_dir cache{"serve_convert_bench_cache"};
+  auto conv = mv::driftwire::cli::start_converter(helper, utf8(cache.root()));
+  REQUIRE(conv);
+  s.srv->set_converter(conv);
+  auto opts = s.client_options();
+  opts.ops |= serve::kConvertOp;
+  auto c = serve::client::open(s.connect(), opts);
+  REQUIRE(c);
+  using ms = std::chrono::duration<double, std::milli>;
+  for (const auto& e : fs::directory_iterator(s.library)) {
+    if (!e.is_regular_file()) continue;
+    const std::string name = utf8(e.path().filename());
+    const auto t0 = std::chrono::steady_clock::now();
+    auto plan = (*c)->convert_plan_of(kRootA, name);
+    if (!plan) continue;
+    const auto t1 = std::chrono::steady_clock::now();
+    auto seg0 = (*c)->convert_segment(kRootA, name, 0);
+    REQUIRE(seg0);
+    const auto bytes0 = read_all(**seg0).size();
+    const auto t2 = std::chrono::steady_clock::now();
+    const std::uint32_t mid = plan->segments / 2;
+    auto segm = (*c)->convert_segment(kRootA, name, mid);
+    REQUIRE(segm);
+    (void)read_all(**segm);
+    const auto t3 = std::chrono::steady_clock::now();
+    auto again = (*c)->convert_segment(kRootA, name, 0);
+    REQUIRE(again);
+    (void)read_all(**again);
+    const auto t4 = std::chrono::steady_clock::now();
+    std::printf("{\"case\":\"convert_bench\",\"file\":\"%s\",\"plan_ms\":%.0f,\"first_frame_ms\":%.0f,\"seek_ms\":%.0f,"
+                "\"cached_ms\":%.0f,\"seg0_bytes\":%zu,\"segments\":%u}\n",
+                name.c_str(), ms(t1 - t0).count(), ms(t2 - t0).count(), ms(t3 - t2).count(), ms(t4 - t3).count(),
+                bytes0, plan->segments);
+  }
+}
+
+namespace {
+
+// Bench only: the client's writes (its credit, its requests) reach the service
+// `rtt_ms` late, so a stream's window has a round trip to cover, as on Wi-Fi.
+class late_link final : public sp::link {
+ public:
+  late_link(std::shared_ptr<sp::link> inner, int rtt_ms) : inner_(std::move(inner)), rtt_(rtt_ms) {
+    thread_ = std::thread([this] { run(); });
+  }
+  ~late_link() override {
+    {
+      std::lock_guard l(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+  }
+  mv::expected write_all(std::span<const std::uint8_t> bytes) override {
+    std::lock_guard l(m_);
+    q_.push_back({std::chrono::steady_clock::now() + std::chrono::milliseconds(rtt_), {bytes.begin(), bytes.end()}});
+    cv_.notify_all();
+    return {};
+  }
+  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  sp::transport via() const noexcept override { return inner_->via(); }
+
+ private:
+  struct item {
+    std::chrono::steady_clock::time_point due;
+    std::vector<std::uint8_t> bytes;
+  };
+  void run() {
+    std::unique_lock l(m_);
+    for (;;) {
+      cv_.wait(l, [&] { return stop_ || !q_.empty(); });
+      if (stop_) return;
+      const auto due = q_.front().due;
+      if (cv_.wait_until(l, due, [&] { return stop_; })) return;
+      item it = std::move(q_.front());
+      q_.pop_front();
+      l.unlock();
+      (void)inner_->write_all(it.bytes);
+      l.lock();
+    }
+  }
+  std::shared_ptr<sp::link> inner_;
+  int rtt_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  std::deque<item> q_;
+  bool stop_ = false;
+  std::thread thread_;
+};
+
+}  // namespace
+
+TEST_CASE("serve bench: a whole-file read's speed by window and round trip", "[.serve-bench]") {
+  service_fixture s;
+  const std::uint64_t size = 256ull << 20;
+  {
+    std::ofstream f(s.library / "clip.mov", std::ios::binary);
+    std::vector<char> block(1 << 20, 7);
+    for (std::uint64_t i = 0; i < size; i += block.size()) f.write(block.data(), static_cast<std::streamsize>(block.size()));
+  }
+  for (const int rtt : {0, 5, 20, 50}) {
+    for (const std::uint32_t window : {serve::kMaxStreamCredit / 8, serve::kMaxStreamCredit}) {
+      auto c = serve::client::open(std::make_shared<late_link>(s.connect(), rtt), s.client_options());
+      REQUIRE(c);
+      const auto t0 = std::chrono::steady_clock::now();
+      auto r = (*c)->read_range(kRootA, "clip.mov", 0, UINT64_MAX, window, true);
+      REQUIRE(r);
+      std::uint64_t got = 0;
+      for (;;) {
+        auto n = (*r)->next(10000);
+        REQUIRE(n);
+        if (!*n) break;
+        got += (*n)->bytes.size();
+      }
+      const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      CHECK(got == size);
+      std::printf("rtt %3d ms  window %5u KB  %7.1f MB/s\n", rtt, window / 1024, size / 1e6 / sec);
+      (*c)->close();
+    }
+  }
+}
+
+TEST_CASE("serve: caps carry the service's addresses, each checked on its own", "[driftwire-serve]") {
+  // A service from before addresses: none, and nothing else changes.
+  const auto old = serve::parse_caps(serve::caps_json(1, serve::kAllOps));
+  REQUIRE(old);
+  CHECK(old->local.empty());
+  CHECK(old->public_name.empty());
+  CHECK(old->relay.empty());
+  const auto c = serve::parse_caps(serve::caps_json(
+      1, serve::kAllOps,
+      R"("addresses":{"local":"192.168.1.20:7878","public":"home.duckdns.org:7878","relay":"[2001:db8::1]:7879"})"));
+  REQUIRE(c);
+  CHECK(c->local == "192.168.1.20:7878");
+  CHECK(c->public_name == "home.duckdns.org:7878");
+  CHECK(c->relay == "[2001:db8::1]:7879");
+  // One that is not an address is dropped; the others stay, and the caps still parse.
+  const auto odd = serve::parse_caps(serve::caps_json(
+      1, serve::kAllOps, R"("addresses":{"local":"no port","public":"home.duckdns.org:7878","relay":5})"));
+  REQUIRE(odd);
+  CHECK(odd->local.empty());
+  CHECK(odd->public_name == "home.duckdns.org:7878");
+  CHECK(odd->relay.empty());
+  const auto too_long = serve::parse_caps(serve::caps_json(
+      1, serve::kAllOps, R"("addresses":{"public":")" + std::string(300, 'a') + R"(:1"})"));
+  REQUIRE(too_long);
+  CHECK(too_long->public_name.empty());
+}
+
+TEST_CASE("serve: serve.json keeps the addresses, and one from before has none", "[driftwire-serve]") {
+  serve::config c;
+  c.port = 7878;
+  c.roots = {{"0123456789abcdef", "Photos", "/photos"}};
+  c.local = "192.168.1.20:7878";
+  c.public_name = "home.duckdns.org:7878";
+  const auto back = serve::parse_config(serve::config_json(c));
+  REQUIRE(back);
+  CHECK(back->local == c.local);
+  CHECK(back->public_name == c.public_name);
+  const auto before = serve::parse_config(R"({"port":1,"roots":[{"id":"0123456789abcdef","label":"a","path":"/a"}]})");
+  REQUIRE(before);
+  CHECK(before->local.empty());
+  CHECK(before->public_name.empty());
+  CHECK(serve::config_json(before.value()).find("public") == std::string::npos);
+}
+
+// ---- changing the shared folders (serve_wire.h "changing", kChangeOps) --------------------
+
+namespace {
+
+using why_t = serve::client::change_why;
+
+// A device on the grants list (a limited one): `backup` off is role "view".
+void grant_device(service_fixture& s, const key32& private_key, bool backup,
+                  std::optional<std::vector<std::string>> roots = std::nullopt) {
+  std::vector<mv::driftwire::serve::grants::grant> list;
+  REQUIRE(mv::driftwire::serve::grants::load(*s.store, list));
+  mv::driftwire::serve::grants::grant g;
+  g.name = "Limited";
+  g.key = public_of(private_key);
+  g.backup = backup;
+  g.roots = std::move(roots);
+  g.created = 1;
+  list.push_back(g);
+  REQUIRE(mv::driftwire::serve::grants::save(*s.store, list));
+}
+
+std::unique_ptr<serve::client> open_as(service_fixture& s, const key32& private_key) {
+  auto c = serve::client::open(s.connect(), s.client_options(private_key));
+  REQUIRE(c);
+  return std::move(*c);
+}
+
+const serve::root_info* root_of(const std::vector<serve::root_info>& roots, const std::string& id) {
+  const auto it = std::find_if(roots.begin(), roots.end(), [&](const serve::root_info& r) { return r.id == id; });
+  return it == roots.end() ? nullptr : &*it;
+}
+
+bool listed(serve::client& c, const std::string& root, const std::string& rel, const std::string& name) {
+  auto l = c.list(root, rel);
+  REQUIRE(l);
+  return std::any_of(l->begin(), l->end(), [&](const serve::list_entry& e) { return e.name == name; });
+}
+
+int leftovers_under(const fs::path& root) {
+  int n = 0;
+  for (const auto& e : fs::recursive_directory_iterator(root)) {
+    const std::string name = e.path().filename().string();
+    if (name.ends_with(".mvpart") || name.ends_with(".mvmove")) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST_CASE("serve change: a change device makes folders, adds, moves and deletes in a shared folder",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  auto c = s.open_client();
+  CHECK(c->caps().role == "change");
+  CHECK((c->caps().ops & serve::kChangeOps) == serve::kChangeOps);
+  CHECK(c->changes_files());
+  auto roots = c->roots();
+  REQUIRE(roots);
+  CHECK(root_of(*roots, kRootA)->writable);
+  CHECK_FALSE(root_of(*roots, kRootA)->backup);
+  CHECK(root_of(*roots, kRootC)->writable);
+  CHECK_FALSE(root_of(*roots, kRootD)->writable);  // the Catalogue never
+
+  serve::client::change_refused why;
+  auto made = c->make_folder(kRootA, "Trips/2026", &why);
+  REQUIRE(made);
+  CHECK(made->rel == "Trips/2026");
+  CHECK_FALSE(made->existing);
+  CHECK(fs::is_directory(s.library / "Trips" / "2026"));
+  made = c->make_folder(kRootA, "Trips/2026", &why);
+  REQUIRE(made);
+  CHECK(made->existing);
+
+  // Add: into any writable folder, never replacing.
+  const std::string one = marker(1, 70000), two = marker(2, 70000);
+  auto added = c->add(kRootA, "Trips/2026/a.jpg", one.size(), hash_of(one), 0, reader_of(one), {}, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/2026/a.jpg");
+  added = c->add(kRootA, "Trips/2026/a.jpg", two.size(), hash_of(two), 0, reader_of(two), {}, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/2026/a (2).jpg");
+  CHECK(slurp(s.library / "Trips" / "2026" / "a.jpg") == one);
+  // A file where a folder is asked for is not replaced either.
+  CHECK_FALSE(c->make_folder(kRootA, "Trips/2026/a.jpg", &why));
+  CHECK(why.why == why_t::exists);
+
+  // Rename within the folder.
+  auto moved = c->move(kRootA, "Trips/2026/a.jpg", kRootA, "Trips/2026/beach.jpg", &why);
+  REQUIRE(moved);
+  CHECK(moved->rel == "Trips/2026/beach.jpg");
+  CHECK_FALSE(fs::exists(s.library / "Trips" / "2026" / "a.jpg"));
+  CHECK(slurp(s.library / "Trips" / "2026" / "beach.jpg") == one);
+  // A taken name is refused, and both files stay as they were.
+  auto taken = c->move(kRootA, "Trips/2026/beach.jpg", kRootA, "Trips/2026/a (2).jpg", &why);
+  REQUIRE_FALSE(taken);
+  CHECK(taken.error() == mv::status::permission_denied);
+  CHECK(why.why == why_t::exists);
+  CHECK(why.word == serve::kWhyExists);
+  CHECK(slurp(s.library / "Trips" / "2026" / "beach.jpg") == one);
+  CHECK(slurp(s.library / "Trips" / "2026" / "a (2).jpg") == two);
+  // A folder, into folders that are not there yet.
+  moved = c->move(kRootA, "Trips/2026", kRootA, "Archive/Old/2026", &why);
+  REQUIRE(moved);
+  CHECK(slurp(s.library / "Archive" / "Old" / "2026" / "beach.jpg") == one);
+  CHECK_FALSE(fs::exists(s.library / "Trips" / "2026"));
+  // Gone from where it was: not found.
+  CHECK_FALSE(c->move(kRootA, "Trips/2026", kRootA, "Elsewhere", &why));
+  CHECK(why.why == why_t::not_found);
+
+  // Delete: into the folder's own trash, whole, and no listing shows it.
+  auto gone = c->remove(kRootA, "Archive/Old/2026/a (2).jpg", &why);
+  REQUIRE(gone);
+  CHECK(gone->rel.size() > 11);
+  CHECK(gone->rel.substr(10) == "/Archive/Old/2026/a (2).jpg");  // "YYYY-MM-DD/" and where it was
+  CHECK_FALSE(fs::exists(s.library / "Archive" / "Old" / "2026" / "a (2).jpg"));
+  const fs::path trash = s.library / serve::kTrashFolder;
+  CHECK(slurp(trash / fs::path(gone->rel)) == two);
+  CHECK_FALSE(listed(*c, kRootA, "Archive/Old/2026", "a (2).jpg"));
+  CHECK_FALSE(listed(*c, kRootA, "", serve::kTrashFolder));
+  CHECK_FALSE(c->stat(kRootA, std::string(serve::kTrashFolder)));  // nor reachable by name
+  // The same name deleted again the same day is numbered, never put over the first.
+  added = c->add(kRootA, "Archive/Old/2026/a (2).jpg", one.size(), hash_of(one), 0, reader_of(one), {}, nullptr, &why);
+  REQUIRE(added);
+  auto again = c->remove(kRootA, "Archive/Old/2026/a (2).jpg", &why);
+  REQUIRE(again);
+  CHECK(again->rel != gone->rel);
+  CHECK(slurp(trash / fs::path(gone->rel)) == two);
+  CHECK(slurp(trash / fs::path(again->rel)) == one);
+  // A folder goes whole.
+  gone = c->remove(kRootA, "Archive", &why);
+  REQUIRE(gone);
+  CHECK_FALSE(fs::exists(s.library / "Archive"));
+  CHECK(slurp(trash / fs::path(gone->rel) / "Old" / "2026" / "beach.jpg") == one);
+  CHECK_FALSE(listed(*c, kRootA, "", "Archive"));
+  CHECK(leftovers_under(s.library) == 0);
+}
+
+TEST_CASE("serve change: a view device and a scoped grant are refused outside what they may change",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  write_file(s.library / "keep.jpg", "keep");
+  write_file(s.backup / "b.jpg", "backup");
+  serve::client::change_refused why;
+  {
+    const key32 viewer = random_key();
+    grant_device(s, viewer, false);
+    auto c = open_as(s, viewer);
+    CHECK(c->caps().role == "view");
+    CHECK(c->changes_files());  // the service has them; the role says this device may not
+    auto roots = c->roots();
+    REQUIRE(roots);
+    CHECK(std::none_of(roots->begin(), roots->end(), [](const serve::root_info& r) { return r.writable; }));
+    CHECK_FALSE(c->make_folder(kRootA, "New", &why));
+    CHECK(why.why == why_t::not_allowed);
+    CHECK(why.word == serve::kWhyNotAllowed);
+    auto moved = c->move(kRootA, "keep.jpg", kRootA, "moved.jpg", &why);
+    REQUIRE_FALSE(moved);
+    CHECK(moved.error() == mv::status::permission_denied);
+    CHECK(why.why == why_t::not_allowed);
+    CHECK_FALSE(c->remove(kRootA, "keep.jpg", &why));
+    CHECK(why.why == why_t::not_allowed);
+    const std::string photo = marker(9, 1000);
+    CHECK_FALSE(c->add(kRootA, "x.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why));
+    CHECK(why.why == why_t::not_allowed);
+    CHECK(fs::exists(s.library / "keep.jpg"));
+    CHECK_FALSE(fs::exists(s.library / "New"));
+    CHECK_FALSE(fs::exists(s.library / "x.jpg"));
+    CHECK_FALSE(fs::exists(s.library / serve::kTrashFolder));
+  }
+  {
+    // "change", but only Photos: the backup folder is neither source nor destination.
+    const key32 scoped = random_key();
+    grant_device(s, scoped, true, std::vector<std::string>{kRootA});
+    auto c = open_as(s, scoped);
+    CHECK(c->caps().role == "change");
+    auto roots = c->roots();
+    REQUIRE(roots);
+    CHECK(root_of(*roots, kRootA)->writable);
+    CHECK(root_of(*roots, kRootC) == nullptr);
+    CHECK_FALSE(c->move(kRootA, "keep.jpg", kRootC, "keep.jpg", &why));
+    CHECK(why.why == why_t::not_allowed);
+    CHECK_FALSE(c->move(kRootC, "b.jpg", kRootA, "b.jpg", &why));
+    CHECK(why.why == why_t::not_allowed);
+    CHECK_FALSE(c->remove(kRootC, "b.jpg", &why));
+    CHECK(why.why == why_t::not_allowed);
+    CHECK_FALSE(c->make_folder(kRootC, "New", &why));
+    CHECK(why.why == why_t::not_allowed);
+    // The Catalogue it may read is never changed.
+    CHECK_FALSE(c->make_folder(kRootD, "New", &why));
+    CHECK(why.why == why_t::not_allowed);
+    CHECK(fs::exists(s.library / "keep.jpg"));
+    CHECK(slurp(s.backup / "b.jpg") == "backup");
+    CHECK_FALSE(fs::exists(s.backup / "keep.jpg"));
+    // Inside its folder it may.
+    REQUIRE(c->move(kRootA, "keep.jpg", kRootA, "kept.jpg", &why));
+    CHECK(fs::exists(s.library / "kept.jpg"));
+  }
+}
+
+// A path that came from Windows: "...\\.mediaviewer". Missed, the Catalogue was an ordinary
+// folder a change device could empty (CI's first Windows run of this file).
+TEST_CASE("serve change: a Catalogue named with a backslash is still the Catalogue", "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  const std::string id = "f6f6f6f6f6f6f6f6";
+  // One odd folder name on POSIX, a folder inside "other" on Windows: the same bytes either way.
+  fs::path folder = s.dir.root() / "other";
+  folder += std::string("\\") + serve::kCatalogueFolder;
+  const std::string path = utf8(folder);
+  write_file(folder / "catalogue.db", "db");
+  s.extra_roots.push_back({id, "Catalogue", path});
+  s.start(10000);
+  auto c = s.open_client();
+  auto roots = c->roots();
+  REQUIRE(roots);
+  REQUIRE(root_of(*roots, id));
+  CHECK_FALSE(root_of(*roots, id)->writable);
+  serve::client::change_refused why;
+  CHECK_FALSE(c->remove(id, "catalogue.db", &why));
+  CHECK(why.why == serve::client::change_why::not_allowed);
+  CHECK_FALSE(c->make_folder(id, "New", &why));
+  CHECK(slurp(folder / "catalogue.db") == "db");
+}
+
+TEST_CASE("serve change: the folder itself, hidden names, escapes and the Catalogue are refused",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  write_file(s.library / "a.jpg", "a");
+  write_file(s.library / "Album" / "b.jpg", "b");
+  write_file(s.catalogue / "catalogue.db", "db");
+  write_file(s.outside / "secret.txt", "secret");
+  write_file(s.backup / serve::kBackupMetaFolder / "x" / "ledger.json", "{}");
+  auto c = s.open_client();
+  serve::client::change_refused why;
+  const auto refused_path = [&](mv::result<serve::client::change_done> r) {
+    REQUIRE_FALSE(r);
+    CHECK(r.error() == mv::status::permission_denied);
+    CHECK(why.why == why_t::path);
+  };
+  // The folder itself.
+  refused_path(c->remove(kRootA, "", &why));
+  refused_path(c->move(kRootA, "", kRootC, "all", &why));
+  refused_path(c->move(kRootA, "a.jpg", kRootC, "", &why));
+  refused_path(c->make_folder(kRootA, "", &why));
+  // Hidden and meta names: the trash, the backup meta folder, a part file.
+  refused_path(c->remove(kRootA, serve::kTrashFolder, &why));
+  refused_path(c->make_folder(kRootA, ".hidden", &why));
+  refused_path(c->move(kRootA, "a.jpg", kRootA, ".a.jpg", &why));
+  refused_path(c->remove(kRootC, std::string(serve::kBackupMetaFolder) + "/x/ledger.json", &why));
+  refused_path(c->move(kRootC, serve::kBackupMetaFolder, kRootA, "meta", &why));
+  refused_path(c->remove(kRootA, ".a.jpg.0123456789abcdef.mvpart", &why));
+  // Escapes.
+  refused_path(c->remove(kRootA, "../outside/secret.txt", &why));
+  refused_path(c->move(kRootA, "a.jpg", kRootA, "../outside/a.jpg", &why));
+  refused_path(c->move(kRootA, "../outside/secret.txt", kRootA, "s.txt", &why));
+  refused_path(c->make_folder(kRootA, "/tmp/x", &why));
+  refused_path(c->move(kRootA, "Album/./b.jpg", kRootA, "b.jpg", &why));
+  // A folder into itself.
+  refused_path(c->move(kRootA, "Album", kRootA, "Album/Inner", &why));
+  refused_path(c->move(kRootA, "Album", kRootA, "Album", &why));
+  // A name too long to keep.
+  CHECK_FALSE(c->make_folder(kRootA, std::string(serve::kMaxWriteName + 1, 'n'), &why));
+  CHECK(why.why == why_t::name);
+  // The Catalogue, and a folder that is not one of this service's.
+  CHECK_FALSE(c->remove(kRootD, "catalogue.db", &why));
+  CHECK(why.why == why_t::not_allowed);
+  CHECK_FALSE(c->move(kRootA, "a.jpg", kRootD, "a.jpg", &why));
+  CHECK(why.why == why_t::not_allowed);
+  CHECK_FALSE(c->move(kRootD, "catalogue.db", kRootA, "c.db", &why));
+  CHECK(why.why == why_t::not_allowed);
+  CHECK_FALSE(c->remove("e5e5e5e5e5e5e5e5", "a.jpg", &why));
+  CHECK(why.why == why_t::not_allowed);
+#if !defined(_WIN32)
+  // A link inside the folder is never followed out of it, as source or destination.
+  fs::create_directory_symlink(s.outside, s.library / "out");
+  refused_path(c->remove(kRootA, "out/secret.txt", &why));
+  refused_path(c->move(kRootA, "out/secret.txt", kRootA, "s.txt", &why));
+  refused_path(c->move(kRootA, "a.jpg", kRootA, "out/a.jpg", &why));
+  refused_path(c->make_folder(kRootA, "out/new", &why));
+  CHECK_FALSE(fs::exists(s.outside / "a.jpg"));
+  CHECK_FALSE(fs::exists(s.outside / "new"));
+#endif
+  CHECK(slurp(s.outside / "secret.txt") == "secret");
+  CHECK(slurp(s.library / "a.jpg") == "a");
+  CHECK(slurp(s.library / "Album" / "b.jpg") == "b");
+  CHECK(slurp(s.catalogue / "catalogue.db") == "db");
+  CHECK(fs::exists(s.backup / serve::kBackupMetaFolder / "x" / "ledger.json"));
+  CHECK_FALSE(fs::exists(s.library / serve::kTrashFolder));
+}
+
+TEST_CASE("serve change: a move between folders, renamed or copied, never leaves a half file",
+          "[driftwire-serve][serve-change]") {
+  for (const bool copy : {false, true}) {
+    CAPTURE(copy);
+    service_fixture s;
+    s.srv.reset();
+    s.copy_moves = copy;  // as across volumes
+    s.backup_limit = 1024 * 1024;
+    s.start(10000);
+    const std::string big = marker(4, 600 * 1024);
+    write_file(s.library / "clip.mov", big);
+    write_file(s.library / "Album" / "one.jpg", marker(5, 3000));
+    write_file(s.library / "Album" / "Deeper" / "two.jpg", marker(6, 5000));
+    auto c = s.open_client();
+    serve::client::change_refused why;
+
+    auto moved = c->move(kRootA, "clip.mov", kRootC, "Moved/clip.mov", &why);
+    REQUIRE(moved);
+    CHECK(slurp(s.backup / "Moved" / "clip.mov") == big);
+    CHECK_FALSE(fs::exists(s.library / "clip.mov"));
+    // It counts against the backup folder's limit now: another as big is past it, and stays.
+    write_file(s.library / "clip2.mov", big);
+    CHECK_FALSE(c->move(kRootA, "clip2.mov", kRootC, "clip2.mov", &why));
+    CHECK(why.why == why_t::limit);
+    CHECK(slurp(s.library / "clip2.mov") == big);
+    CHECK_FALSE(fs::exists(s.backup / "clip2.mov"));
+
+    // A folder with folders in it.
+    moved = c->move(kRootA, "Album", kRootC, "Album", &why);
+    REQUIRE(moved);
+    CHECK(slurp(s.backup / "Album" / "one.jpg") == marker(5, 3000));
+    CHECK(slurp(s.backup / "Album" / "Deeper" / "two.jpg") == marker(6, 5000));
+    CHECK_FALSE(fs::exists(s.library / "Album"));
+    // Back, onto a name that is taken: refused, and nothing on either side changes.
+    write_file(s.library / "Album" / "mine.jpg", "mine");
+    CHECK_FALSE(c->move(kRootC, "Album", kRootA, "Album", &why));
+    CHECK(why.why == why_t::exists);
+    CHECK(slurp(s.library / "Album" / "mine.jpg") == "mine");
+    CHECK_FALSE(fs::exists(s.library / "Album" / "one.jpg"));
+    CHECK(fs::exists(s.backup / "Album" / "Deeper" / "two.jpg"));
+    CHECK(leftovers_under(s.library) == 0);
+    CHECK(leftovers_under(s.backup) == 0);
+  }
+}
+
+TEST_CASE("serve change: two devices moving one file at once never both get it", "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;  // a copy takes long enough for the second to meet the first
+  s.start(10000);
+  const std::string big = marker(8, 24 * 1024 * 1024);
+  write_file(s.library / "big.mov", big);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second"));
+  auto c1 = s.open_client();
+  auto c2 = open_as(s, second);
+  serve::client::change_refused w1, w2;
+  mv::result<serve::client::change_done> r1 = mv::err(mv::status::io), r2 = mv::err(mv::status::io);
+  std::thread t1([&] { r1 = c1->move(kRootA, "big.mov", kRootC, "one.mov", &w1); });
+  std::thread t2([&] { r2 = c2->move(kRootA, "big.mov", kRootC, "two.mov", &w2); });
+  t1.join();
+  t2.join();
+  CHECK(static_cast<int>(r1.has_value()) + static_cast<int>(r2.has_value()) == 1);
+  const auto& lost = r1 ? w2 : w1;
+  CHECK((lost.why == why_t::busy || lost.why == why_t::not_found));
+  CHECK(slurp(s.backup / (r1 ? "one.mov" : "two.mov")) == big);
+  CHECK_FALSE(fs::exists(s.backup / (r1 ? "two.mov" : "one.mov")));
+  CHECK_FALSE(fs::exists(s.library / "big.mov"));
+  CHECK(leftovers_under(s.backup) == 0);
+}
+
+TEST_CASE("serve change: old clients and old services keep what they had", "[driftwire-serve][serve-change]") {
+  // On the wire: the names, the move's destination, and what an old service's answers say.
+  serve::open_request r;
+  r.id = 7;
+  r.kind = serve::op::move;
+  r.root = kRootA;
+  r.rel = "a.jpg";
+  r.to_root = kRootC;
+  r.to_rel = "b/a.jpg";
+  bool unknown = true;
+  auto back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK_FALSE(unknown);
+  CHECK(back->kind == serve::op::move);
+  CHECK(back->to_root == kRootC);
+  CHECK(back->to_rel == "b/a.jpg");
+  CHECK(std::string(serve::op_name(serve::op::remove)) == "delete");
+  CHECK(serve::parse_op("delete") == serve::op::remove);
+  const std::string no_to = R"({"op":"move","root":"a1a1a1a1a1a1a1a1","rel":"a.jpg"})";
+  std::vector<std::uint8_t> frame = {1, 0, 0, 0};
+  frame.insert(frame.end(), no_to.begin(), no_to.end());
+  CHECK_FALSE(serve::parse_open(frame, unknown));
+  // A service from before: no change op in its caps, and `writable` only on a backup folder.
+  auto old_caps = serve::parse_caps(R"({"v":1,"ops":["roots","list","stat","read_range","write"],"chunk":65536,"bulk_chunk":65536})");
+  REQUIRE(old_caps);
+  CHECK((old_caps->ops & serve::kChangeOps) == 0);
+  auto old_roots = serve::parse_roots(
+      R"({"roots":[{"id":"a1a1a1a1a1a1a1a1","label":"Photos"},{"id":"c3c3c3c3c3c3c3c3","label":"B","backup":true,"writable":true}]})");
+  REQUIRE(old_roots);
+  CHECK_FALSE((*old_roots)[0].writable);
+  CHECK((*old_roots)[1].writable);
+  // And this service's roots, read the way a reader from before reads them: the same shape.
+  std::vector<serve::root_info> mine = {{kRootA, "Photos", false, true}, {kRootC, "B", true, true}};
+  const std::string text = serve::roots_json(mine);
+  CHECK(text.find(R"("label":"Photos","writable":true)") != std::string::npos);
+  CHECK(text.find(R"("backup":true,"writable":true)") != std::string::npos);
+
+  // A client from before (a phone that backs up): no change op is agreed, and backup works.
+  service_fixture s;
+  write_file(s.library / "a.jpg", "a");
+  auto o = s.client_options();
+  o.ops = serve::kAllOps | serve::kWriteOp;
+  auto old_client = serve::client::open(s.connect(), o);
+  REQUIRE(old_client);
+  auto& c = **old_client;
+  CHECK((c.caps().ops & serve::kChangeOps) == 0);
+  CHECK_FALSE(c.changes_files());
+  serve::client::change_refused why;
+  auto refused = c.remove(kRootA, "a.jpg", &why);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error() == mv::status::unsupported_format);
+  CHECK(why.why == why_t::unsupported);
+  CHECK(fs::exists(s.library / "a.jpg"));
+  // Asked anyway, on the wire, the service answers that stream unsupported and goes on.
+  sp::channel::options co;
+  co.access_key = s.access;
+  co.static_key = s.device;
+  auto raw = sp::channel::open_library(s.connect(), "aaaaaaaaaaaaaaaa", "Old", co);
+  REQUIRE(raw);
+  REQUIRE((*raw)->send(sp::msg::serve_hello, std::string_view(R"({"v":1,"min":1,"ops":["list","write"]})")));
+  sp::message m;
+  REQUIRE((*raw)->receive(m, 3000));
+  REQUIRE(m.type == sp::msg::serve_caps);
+  const std::string del = R"({"op":"delete","root":"a1a1a1a1a1a1a1a1","rel":"a.jpg"})";
+  std::vector<std::uint8_t> ask = {2, 0, 0, 0};
+  ask.insert(ask.end(), del.begin(), del.end());
+  REQUIRE((*raw)->send(sp::msg::stream_open, ask));
+  REQUIRE((*raw)->receive(m, 3000));
+  REQUIRE(m.type == sp::msg::stream_end);
+  auto e = serve::parse_end(m.body);
+  REQUIRE(e);
+  CHECK(e->code == serve::end_code::unsupported);
+  CHECK(fs::exists(s.library / "a.jpg"));
+  const std::string photo = marker(3, 5000);
+  serve::client::write_refused wr;
+  auto done = c.write(kRootC, "IMG.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &wr);
+  REQUIRE(done);
+  CHECK(slurp(s.backup / "IMG.jpg") == photo);
+}
+
+// ---- changing the shared folders: what a review of the first cut found --------------------
+
+namespace {
+
+std::string utc_day() {
+  using namespace std::chrono;
+  const year_month_day d{floor<days>(system_clock::now())};
+  char buf[16];
+  std::snprintf(buf, sizeof buf, "%04d-%02u-%02u", static_cast<int>(d.year()), static_cast<unsigned>(d.month()),
+                static_cast<unsigned>(d.day()));
+  return buf;
+}
+
+#if !defined(_WIN32)
+// The tests run as a person, whom a folder's mode binds (root is bound by nothing).
+bool modes_bind() { return ::geteuid() != 0; }
+#endif
+
+}  // namespace
+
+TEST_CASE("serve change: a folder never goes into itself, by a case variant or through a nested folder",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  const std::string kRootE = "e5e5e5e5e5e5e5e5";
+  s.extra_roots.push_back({kRootE, "Inner", utf8(s.library / "Outer" / "Inner")});
+  write_file(s.library / "Outer" / "Inner" / "in.jpg", "inner");
+  write_file(s.library / "Trip" / "x.jpg", "x");
+  s.start(10000);
+  auto c = s.open_client();
+  serve::client::change_refused why;
+  if (fs::exists(s.library / "TRIP")) {  // a volume that folds case (APFS, NTFS by default)
+    CHECK_FALSE(c->move(kRootA, "Trip", kRootA, "trip/Trip", &why));
+    CHECK(why.why == why_t::path);
+    CHECK_FALSE(c->move(kRootA, "Trip", kRootA, "TRIP/New/Trip", &why));
+    CHECK(why.why == why_t::path);
+    CHECK_FALSE(fs::exists(s.library / "Trip" / "New"));
+    CHECK(slurp(s.library / "Trip" / "x.jpg") == "x");
+    CHECK(leftovers_under(s.library) == 0);
+  }
+  // A folder that holds another named folder is neither moved nor trashed: it would carry it off.
+  CHECK_FALSE(c->move(kRootA, "Outer", kRootA, "Moved", &why));
+  CHECK(why.why == why_t::path);
+  CHECK_FALSE(c->move(kRootA, "Outer", kRootC, "Outer", &why));
+  CHECK(why.why == why_t::path);
+  CHECK_FALSE(c->remove(kRootA, "Outer", &why));
+  CHECK(why.why == why_t::path);
+  // Nor into that nested folder, which is inside it.
+  CHECK_FALSE(c->move(kRootA, "Outer", kRootE, "sub", &why));
+  CHECK(why.why == why_t::path);
+  CHECK(slurp(s.library / "Outer" / "Inner" / "in.jpg") == "inner");
+  CHECK_FALSE(fs::exists(s.library / serve::kTrashFolder));
+  // A file out of it is an ordinary move.
+  REQUIRE(c->move(kRootE, "in.jpg", kRootA, "in.jpg", &why));
+}
+
+#if !defined(_WIN32)
+TEST_CASE("serve change: a rename the disk refuses is an error, never a copy", "[driftwire-serve][serve-change]") {
+  if (!modes_bind()) return;
+  service_fixture s;
+  write_file(s.library / "Locked" / "a.jpg", "a");
+  fs::permissions(s.library / "Locked", fs::perms::owner_read | fs::perms::owner_exec);
+  struct unlock {
+    fs::path p;
+    ~unlock() { fs::permissions(p, fs::perms::owner_all); }
+  } restore{s.library / "Locked"};
+  auto c = s.open_client();
+  serve::client::change_refused why;
+  auto moved = c->move(kRootA, "Locked/a.jpg", kRootA, "a.jpg", &why);
+  REQUIRE_FALSE(moved);
+  CHECK(why.why == why_t::failed);
+  moved = c->move(kRootA, "Locked/a.jpg", kRootC, "a.jpg", &why);  // another folder, the same disk
+  REQUIRE_FALSE(moved);
+  CHECK(why.why == why_t::failed);
+  CHECK(slurp(s.library / "Locked" / "a.jpg") == "a");
+  CHECK_FALSE(fs::exists(s.library / "a.jpg"));
+  CHECK_FALSE(fs::exists(s.backup / "a.jpg"));
+  CHECK(leftovers_under(s.backup) == 0);
+}
+
+TEST_CASE("serve change: a copy that fails half way leaves the source whole and nothing behind",
+          "[driftwire-serve][serve-change]") {
+  if (!modes_bind()) return;
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;
+  s.start(10000);
+  write_file(s.library / "Album" / "1.jpg", "one");
+  write_file(s.library / "Album" / "2.jpg", "two");
+  write_file(s.library / "Album" / "3.jpg", "three");
+  fs::permissions(s.library / "Album" / "2.jpg", fs::perms::none);
+  struct unlock {
+    fs::path p;
+    ~unlock() { fs::permissions(p, fs::perms::owner_read | fs::perms::owner_write); }
+  } restore{s.library / "Album" / "2.jpg"};
+  auto c = s.open_client();
+  serve::client::change_refused why;
+  REQUIRE_FALSE(c->move(kRootA, "Album", kRootC, "Album", &why));
+  CHECK(why.why == why_t::failed);
+  CHECK(slurp(s.library / "Album" / "1.jpg") == "one");
+  CHECK(slurp(s.library / "Album" / "3.jpg") == "three");
+  CHECK(fs::exists(s.library / "Album" / "2.jpg"));
+  CHECK_FALSE(fs::exists(s.backup / "Album"));
+  CHECK(leftovers_under(s.backup) == 0);
+}
+#endif
+
+TEST_CASE("serve change: a device revoked during a long copy stops it, and keeps nothing of it",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;
+  const key32 second = random_key();
+  int files = 0;
+  s.during_copy = [&] {
+    if (++files == 2) {
+      s.unpair(second);
+      s.srv->recheck_devices();
+    }
+  };
+  s.start(10000);
+  REQUIRE(s.pair(second, "Second"));
+  for (int i = 0; i < 4; ++i) write_file(s.library / "Album" / ("p" + std::to_string(i) + ".jpg"), marker(i, 40000));
+  auto c = open_as(s, second);
+  serve::client::change_refused why;
+  REQUIRE_FALSE(c->move(kRootA, "Album", kRootC, "Album", &why));
+  CHECK((why.why == why_t::not_allowed || why.why == why_t::failed));  // refused, or its session cut first
+  CHECK(eventually([&] { return !fs::exists(s.backup / "Album") && leftovers_under(s.backup) == 0; }));
+  for (int i = 0; i < 4; ++i) CHECK(slurp(s.library / "Album" / ("p" + std::to_string(i) + ".jpg")) == marker(i, 40000));
+  CHECK(files == 2);  // no file after the revoke was copied
+}
+
+TEST_CASE("serve change: a backup folder's count follows what a delete and a move do", "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;
+  int files = 0;
+  s.during_copy = [&] {
+    // Both of Kept's files change once its first (whichever it is) was copied: that one stays
+    // where it was; the second is copied as it is now, and goes. (The 1st call is out.jpg's.)
+    if (++files == 3) {
+      write_file(s.backup / "Kept" / "a.jpg", marker(9, 4000));
+      write_file(s.backup / "Kept" / "b.jpg", marker(10, 4000));
+    }
+  };
+  write_file(s.backup / "gone.jpg", marker(1, 10000));
+  write_file(s.backup / "out.jpg", marker(2, 20000));
+  write_file(s.backup / "Kept" / "a.jpg", marker(3, 4000));
+  write_file(s.backup / "Kept" / "b.jpg", marker(4, 4000));
+  s.start(10000);
+  auto c = s.open_client();
+  auto used = [&] {
+    auto st = c->stat(kRootC, "");
+    REQUIRE(st);
+    return st->used;
+  };
+  const std::uint64_t before = used();
+  serve::client::change_refused why;
+  // Trashed: still on that disk, in that folder, so it still counts until the owner empties it.
+  REQUIRE(c->remove(kRootC, "gone.jpg", &why));
+  CHECK(used() == before);
+  REQUIRE(c->move(kRootC, "out.jpg", kRootA, "out.jpg", &why));
+  CHECK(used() == before - 20000);
+  // Only what was removed is taken off: the file that changed stays, and counts.
+  REQUIRE(c->move(kRootC, "Kept", kRootA, "Kept", &why));
+  CHECK(fs::exists(s.backup / "Kept" / "a.jpg") != fs::exists(s.backup / "Kept" / "b.jpg"));
+  CHECK(used() == before - 20000 - 4000);
+
+  // A folder written to before it was a backup folder is counted from its disk, once.
+  serve::backup::book book;
+  book.free_bytes = [](const std::string&) { return std::uint64_t{1} << 40; };
+  serve::root_config plain{kRootA, "Photos", utf8(s.other)};
+  write_file(s.other / "x.bin", marker(5, 5000));
+  REQUIRE(book.reserve(plain, 5000) == serve::backup::book::verdict::ok);
+  book.wrote(plain.id, 5000);
+  plain.backup = true;
+  plain.limit = 1 << 20;
+  serve::stat_info info;
+  book.space(plain, info);
+  CHECK(info.used == 5000);
+}
+
+TEST_CASE("serve change: trash names run out, a grant runs out, the disk runs out", "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  std::atomic<std::int64_t> unix_now{std::time(nullptr)};
+  std::atomic<std::int64_t> steady_ms{0};
+  const auto t0 = std::chrono::steady_clock::now();
+  s.now_unix = [&] { return unix_now.load(); };
+  s.now_steady = [&] { return t0 + std::chrono::milliseconds(steady_ms.load()); };
+  s.start(10000);
+  serve::client::change_refused why;
+  {
+    // Every numbered trash name for the day taken: refused, and the file stays.
+    write_file(s.library / "a.jpg", "a");
+    const std::string day = utc_day();
+    for (int n = 1; n <= serve::backup::kMaxNumbered; ++n) {
+      write_file(s.library / serve::kTrashFolder / day / serve::backup::numbered("a.jpg", n), "old");
+    }
+    auto c = s.open_client();
+    auto gone = c->remove(kRootA, "a.jpg", &why);
+    if (utc_day() == day) {
+      REQUIRE_FALSE(gone);
+      CHECK(why.why == why_t::exists);
+      CHECK(slurp(s.library / "a.jpg") == "a");
+    }
+  }
+  {
+    // A grant whose time is up changes nothing, though its session is still up.
+    write_file(s.library / "b.jpg", "b");
+    const key32 guest = random_key();
+    std::vector<mv::driftwire::serve::grants::grant> list;
+    REQUIRE(mv::driftwire::serve::grants::load(*s.store, list));
+    mv::driftwire::serve::grants::grant g;
+    g.name = "Guest";
+    g.key = public_of(guest);
+    g.expires = unix_now.load() + 100;
+    g.created = 1;
+    list.push_back(g);
+    REQUIRE(mv::driftwire::serve::grants::save(*s.store, list));
+    auto c = open_as(s, guest);
+    CHECK(c->caps().role == "change");
+    unix_now += 200;
+    steady_ms += 2000;  // past the second a device's access is kept
+    CHECK_FALSE(c->remove(kRootA, "b.jpg", &why));
+    CHECK((why.why == why_t::not_allowed || why.why == why_t::failed));
+    CHECK(slurp(s.library / "b.jpg") == "b");
+  }
+  {
+    // An ordinary folder keeps its reserve free: a write or a copy that would eat it is refused;
+    // a rename on the same disk needs no room.
+    s.free_bytes = serve::kDefaultReserve + 1000;
+    write_file(s.backup / "c.jpg", marker(6, 5000));
+    auto c = s.open_client();
+    const std::string photo = marker(7, 5000);
+    CHECK_FALSE(c->add(kRootA, "new.jpg", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why));
+    CHECK(why.why == why_t::full);
+    CHECK_FALSE(fs::exists(s.library / "new.jpg"));
+    REQUIRE(c->move(kRootC, "c.jpg", kRootA, "c.jpg", &why));
+    CHECK(fs::exists(s.library / "c.jpg"));
+  }
+}
+
+TEST_CASE("serve change: the disk running out refuses a copy into an ordinary folder", "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;
+  s.start(10000);
+  s.free_bytes = serve::kDefaultReserve + 1000;
+  write_file(s.backup / "c.jpg", marker(6, 5000));
+  auto c = s.open_client();
+  serve::client::change_refused why;
+  CHECK_FALSE(c->move(kRootC, "c.jpg", kRootA, "c.jpg", &why));
+  CHECK(why.why == why_t::full);
+  CHECK(fs::exists(s.backup / "c.jpg"));
+  CHECK_FALSE(fs::exists(s.library / "c.jpg"));
+}
+
+TEST_CASE("serve change: a folder with a write still open in it is busy, and a copy leaves part files",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second"));
+  auto writer = s.open_client();
+  auto mover = open_as(s, second);
+  const std::string clip = marker(3, 6 * 1024 * 1024);
+  serve::client::change_refused moved_why, removed_why, why;
+  bool asked = false;
+  auto added = writer->add(kRootA, "P/clip.mov", clip.size(), hash_of(clip), 0, reader_of(clip),
+                           [&](std::uint64_t n) {
+                             if (asked || n < 1024 * 1024) return;
+                             asked = true;
+                             (void)mover->move(kRootA, "P", kRootC, "P", &moved_why);
+                             (void)mover->remove(kRootA, "P", &removed_why);
+                           },
+                           nullptr, &why);
+  REQUIRE(asked);
+  CHECK(moved_why.why == why_t::busy);
+  CHECK(removed_why.why == why_t::busy);
+  REQUIRE(added);
+  CHECK(slurp(s.library / "P" / "clip.mov") == clip);
+  // Another device's unfinished copy is not carried by a move's copy.
+  write_file(s.library / "P" / ".x.jpg.0123456789abcdef.mvpart", "half");
+  REQUIRE(mover->move(kRootA, "P", kRootC, "P", &why));
+  CHECK(slurp(s.backup / "P" / "clip.mov") == clip);
+  CHECK(leftovers_under(s.backup) == 0);
+  CHECK(fs::exists(s.library / "P" / ".x.jpg.0123456789abcdef.mvpart"));
+}
+
+TEST_CASE("serve change: the file port says which folder is which, and when a file changed", "[driftwire-serve][serve-change]") {
+  scratch_dir dir{"serve_identity"};
+  write_file(dir.root() / "A" / "f.bin", "x");
+  const auto a = mv::io::identify_entry(utf8(dir.root() / "A"));
+  REQUIRE(a);
+  CHECK(a->known());
+  const auto f = mv::io::identify_entry(utf8(dir.root() / "A" / "f.bin"));
+  REQUIRE(f);
+  CHECK_FALSE(f.value() == a.value());
+  CHECK(f->volume == a->volume);
+  CHECK(mv::io::sync_directory(utf8(dir.root() / "A")));
+#if !defined(_WIN32)
+  fs::create_directory_symlink(dir.root() / "A", dir.root() / "L");
+  const auto l = mv::io::identify_entry(utf8(dir.root() / "L"));
+  REQUIRE_FALSE(l);
+  CHECK(l.error() == mv::status::permission_denied);
+#endif
+  // stat_beneath's mtime_ns is the file's own (a rewrite within the second at the same size differs).
+  const auto st = mv::io::stat_beneath(utf8(dir.root()), "A/f.bin");
+  REQUIRE(st);
+  CHECK(st->mtime_ns != 0);
+  CHECK(st->mtime_ns / 1000000000 == st->mtime_unix);
+}
+
+TEST_CASE("serve change: a device made view-only during a long copy stops it at the next file",
+          "[driftwire-serve][serve-change]") {
+  service_fixture s;
+  s.srv.reset();
+  s.copy_moves = true;
+  const key32 limited = random_key();
+  int files = 0;
+  s.during_copy = [&] {
+    if (++files != 2) return;
+    // Its role turned to "view" on the card: still paired, the session goes on.
+    std::vector<mv::driftwire::serve::grants::grant> list;
+    REQUIRE(mv::driftwire::serve::grants::load(*s.store, list));
+    for (auto& g : list) g.backup = false;
+    REQUIRE(mv::driftwire::serve::grants::save(*s.store, list));
+    s.srv->recheck_devices();
+  };
+  s.start(10000);
+  grant_device(s, limited, true, std::vector<std::string>{kRootA, kRootC});  // a grant always limits something
+  for (int i = 0; i < 4; ++i) write_file(s.library / "Album" / ("p" + std::to_string(i) + ".jpg"), marker(i, 40000));
+  auto c = open_as(s, limited);
+  serve::client::change_refused why;
+  REQUIRE_FALSE(c->move(kRootA, "Album", kRootC, "Album", &why));
+  CHECK(why.why == why_t::not_allowed);
+  CHECK_FALSE(c->closed());
+  CHECK(files == 2);
+  CHECK_FALSE(fs::exists(s.backup / "Album"));
+  CHECK(leftovers_under(s.backup) == 0);
+  for (int i = 0; i < 4; ++i) CHECK(slurp(s.library / "Album" / ("p" + std::to_string(i) + ".jpg")) == marker(i, 40000));
 }

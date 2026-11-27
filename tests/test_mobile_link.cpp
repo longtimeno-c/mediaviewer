@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <algorithm>
 #include <filesystem>
 #include <map>
@@ -27,6 +28,7 @@
 #include "wire/serve.h"
 #include "wire/splice.h"
 #include "addons/driftwire/transfer.h"
+#include "io/content_hash.h"
 #include "mobile/files.h"
 #include "mobile/link.h"
 #include "mobile/link_generation.h"
@@ -167,6 +169,50 @@ struct publisher {
   }
 };
 
+// The service's side of each connection, counting what it sends: how far a read's window lets it
+// run ahead of the phone.
+class counting_link final : public dw::link {
+ public:
+  counting_link(std::unique_ptr<dw::link> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
+      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  mv::expected write_all(std::span<const std::uint8_t> bytes) override {
+    *sent_ += bytes.size();
+    return inner_->write_all(bytes);
+  }
+  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  dw::transport via() const noexcept override { return inner_->via(); }
+
+ private:
+  std::unique_ptr<dw::link> inner_;
+  std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+};
+
+class counting_listener final : public dw::net::listener {
+ public:
+  counting_listener(std::unique_ptr<dw::net::listener> inner, std::shared_ptr<std::atomic<std::uint64_t>> sent)
+      : inner_(std::move(inner)), sent_(std::move(sent)) {}
+  std::uint16_t port() const noexcept override { return inner_->port(); }
+  mv::result<std::unique_ptr<dw::link>> accept(int timeout_ms) override { return wrap(inner_->accept(timeout_ms)); }
+  mv::result<std::unique_ptr<dw::link>> accept_from(int timeout_ms, dw::net::address& from) override {
+    return wrap(inner_->accept_from(timeout_ms, from));
+  }
+  mv::result<std::unique_ptr<dw::link>> accept_endpoint(int timeout_ms, dw::net::address& from, std::uint16_t& peer_port) override {
+    return wrap(inner_->accept_endpoint(timeout_ms, from, peer_port));
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+
+ private:
+  mv::result<std::unique_ptr<dw::link>> wrap(mv::result<std::unique_ptr<dw::link>> l) {
+    if (!l) return l;
+    return std::unique_ptr<dw::link>(std::make_unique<counting_link>(std::move(*l), sent_));
+  }
+  std::unique_ptr<dw::net::listener> inner_;
+  std::shared_ptr<std::atomic<std::uint64_t>> sent_;
+};
+
 struct rig {
   scratch dir;
   fs::path data = dir.root / "data", photos = dir.root / "photos", catalogue_home = dir.root / "nas";
@@ -177,6 +223,7 @@ struct rig {
   std::uint16_t port = 0;
   std::string payload;
   std::atomic<std::int64_t> fake_now{0};  // the service's unix seconds (0: the clock)
+  std::shared_ptr<std::atomic<std::uint64_t>> served = std::make_shared<std::atomic<std::uint64_t>>(0);  // bytes the service sent
 
   std::string photos_label = "Photos";
   std::string relay_address;  // the person's own relay, for start(): the service waits there
@@ -216,7 +263,11 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.cfg.relay = relay_address;
-    o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.make_listener = [sent = served]() -> std::unique_ptr<dw::net::listener> {
+      auto l = dw::net::listen_internet(0, true, 32);
+      REQUIRE(l);
+      return std::make_unique<counting_listener>(std::move(*l), sent);
+    };
     o.now_unix = [this] {
       const auto t = fake_now.load();
       return t != 0 ? t : static_cast<std::int64_t>(std::time(nullptr));
@@ -468,7 +519,7 @@ TEST_CASE("link race: a dead local address loses to the named public route", "[m
 }
 
 TEST_CASE("sync: copy, hash check, install, resume, signatures and generations", "[mobile-link]") {
-  rig r(6 * 1024 * 1024);  // bigger than the stream window, so a drop can land mid-file
+  rig r(16 * 1024 * 1024);  // bigger than a whole-file pull's 8 MB window, so a drop can land mid-file
   r.pair_now();
   mob::link_session s(r.config());
   mob::route_report rep;
@@ -677,9 +728,32 @@ TEST_CASE("the C ABI reads an original, and says when no service folder matches 
     CHECK(fs::exists(fs::path(cfg.library_dir) / "gen" / installed->dir / "catalog.db"));
     mv_link_close(l);
   }
-  SECTION("a folder labelled something else is said to be missing, not gone") {
+  SECTION("a catalogue folder's place on the service, for its other files") {
     rig r(300000, "Pictures");
     auto* l = open_synced(r);
+    char root[64], rel[256];
+    REQUIRE(mv_files_folder_place(l, "/root-uuid/2024", root, sizeof root, rel, sizeof rel) == MV_LINK_OK);
+    CHECK(std::string(root) == "a1a1a1a1a1a1a1a1");
+    CHECK(std::string(rel) == "2024");
+    REQUIRE(mv_files_folder_place(l, "/root-uuid", root, sizeof root, rel, sizeof rel) == MV_LINK_OK);
+    CHECK(std::string(rel).empty());
+    CHECK(mv_files_folder_place(l, "/other-uuid/2024", root, sizeof root, rel, sizeof rel) == MV_LINK_NOT_FOUND);
+    CHECK(mv_files_folder_place(l, "/root-uuid/../x", root, sizeof root, rel, sizeof rel) == MV_LINK_INVALID);
+    CHECK(mv_files_folder_place(l, "/root-uuid/2024", root, 4, rel, sizeof rel) == MV_LINK_INVALID);
+    mv_link_close(l);
+  }
+  SECTION("a folder labelled something else that holds the file is found by its path") {
+    rig r(300000, "Pictures");
+    auto* l = open_synced(r);
+    CHECK(mv_asset_folder_check(l, 1) == MV_LINK_OK);
+    CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_OK);
+    CHECK(got == std::string(70000, 'p'));
+    mv_link_close(l);
+  }
+  SECTION("a file in no folder the service shares is said to be missing, not gone") {
+    rig r(300000, "Pictures");
+    auto* l = open_synced(r);
+    fs::remove(r.photos / "2024" / "pic.bin");
     CHECK(mv_asset_folder_check(l, 1) == MV_LINK_NO_FOLDER);
     CHECK(mv_file_read(l, 1, 0, UINT64_MAX, 0, nullptr, collect, &got) == MV_LINK_NO_FOLDER);
     CHECK(got.empty());
@@ -721,6 +795,29 @@ TEST_CASE("link: a live link is kept on connect, and a reconnect lets reads fini
   }
 }
 
+TEST_CASE("link: a whole-file pull lets the service run further ahead than a viewer's read", "[mobile-link]") {
+  // A download's speed is its window over the round trip: with 1 MB, Wi-Fi's 20 ms caps it near
+  // 30 MB/s. Held on its first chunk, a bulk read must let the service send well past 1 MB.
+  rig r(24 * 1024 * 1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  const std::uint64_t before = r.served->load();
+  std::uint64_t ahead = 0;
+  auto done = s.read_range("c2c2c2c2c2c2c2c2", "gen/000001/extra.bin", 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+    // No credit goes back while this chunk is held: what arrives is what the opening window allowed.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (r.served->load() - before < 4u * 1024 * 1024 && std::chrono::steady_clock::now() < until) {
+      std::this_thread::yield();
+    }
+    ahead = r.served->load() - before;
+    return false;
+  }, nullptr, true);
+  CHECK_FALSE(done);  // stopped by the sink
+  CHECK(ahead >= 4u * 1024 * 1024);
+}
+
 TEST_CASE("link: readers after a drop share one new connection", "[mobile-link]") {
   rig r;
   r.pair_now();
@@ -746,20 +843,22 @@ TEST_CASE("link: Forget cuts reads on a swapped-out client and wakes readers wai
   mob::route_report rep;
   REQUIRE(s.connect(rep));
   const std::string file = "gen/000001/extra.bin";
-  std::atomic<int> finished{0}, started{0};
+  std::atomic<int> finished{0}, started{0}, whole{0};
   std::vector<std::thread> readers;
   // 40 slow reads: 31 hold every stream the client allows, the rest wait for one.
   for (int i = 0; i < 40; ++i) {
     readers.emplace_back([&] {
       bool counted = false;
-      (void)s.read_range("c2c2c2c2c2c2c2c2", file, 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
+      const auto read = s.read_range("c2c2c2c2c2c2c2c2", file, 0, UINT64_MAX, [&](std::uint64_t, std::span<const std::uint8_t>) {
         if (!counted) {
           counted = true;
           ++started;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));  // a whole file takes many seconds
+        // 24 chunks of 256 KB: a whole file takes 3.6 s, far past the Forget below.
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
         return true;
       }, nullptr, false);
+      if (read) ++whole;
       ++finished;
     });
   }
@@ -767,11 +866,12 @@ TEST_CASE("link: Forget cuts reads on a swapped-out client and wakes readers wai
   CHECK(started.load() == 31);  // never more than 31 at once
   mob::route_report again;
   REQUIRE(s.reconnect(again));  // the 31 now run on a client that is no longer the live one
-  const auto t0 = std::chrono::steady_clock::now();
   s.shut_down();
   for (auto& t : readers) t.join();
   CHECK(finished.load() == 40);
-  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+  // Cut, not run to the end: no reader got its whole file. (This was a 3 s wall-clock
+  // bound, which a loaded macOS runner missed at 3.26 s.)
+  CHECK(whole.load() == 0);
   CHECK_FALSE(s.connect(again));  // and nothing connects again
 }
 
@@ -1284,6 +1384,15 @@ TEST_CASE("sample: a static folder installs through the same sync, and serves or
     CHECK(installed->generation == 1);
     CHECK(installed->catalogue_root == kSampleCatalogueRoot);
     CHECK(mv_sync_check(l, &check) == MV_LINK_UP_TO_DATE);
+    // The sample's one offline folder, for the phone's "Not connected" (self-hosted.md §6).
+    std::vector<std::pair<std::string, std::string>> offline;
+    REQUIRE(mv_files_offline_roots(l, [](void* ctx, const char* id, const char* label, int32_t is_offline) {
+              CHECK(is_offline == 1);
+              static_cast<std::vector<std::pair<std::string, std::string>>*>(ctx)->emplace_back(id, label);
+            }, &offline) == MV_LINK_OK);
+    REQUIRE(offline.size() == 1);
+    CHECK(offline[0].first == mob::sample::kOfflineRootID);
+    CHECK(offline[0].second == "Travel drive");
     mv_catalogue_info info{};
     REQUIRE(mv_catalogue_read(l, &info) == MV_LINK_OK);
     CHECK(info.present == 1);
@@ -2282,6 +2391,7 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   write_file(r.photos / "Trip" / "notes.txt", "no");
   write_file(r.photos / "Trip" / ".hidden.jpg", "no");
   write_file(r.photos / "Trip" / "song.mp3", "no");
+  write_file(r.photos / "Trip" / "IMG_0001.JPG.xmp", "no");
   fs::create_directories(r.photos / "Trip" / "Day 2");
   r.pair_now();
   const auto cfg = r.sync_config();
@@ -2299,7 +2409,8 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   CHECK(info.present == 0);  // nothing installed
 
   std::vector<std::pair<std::string, std::string>> roots;
-  REQUIRE(mv_files_roots(l, [](void* ctx, const char* id, const char* label) {
+  REQUIRE(mv_files_roots(l, [](void* ctx, const char* id, const char* label, int32_t offline) {
+            CHECK(offline == 0);
             static_cast<std::vector<std::pair<std::string, std::string>>*>(ctx)->emplace_back(id, label);
           }, &roots) == MV_LINK_OK);
   REQUIRE(roots.size() == 1);  // the catalogue's own folder is not one to browse
@@ -2318,10 +2429,13 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   };
   REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "Trip", collect_entries, &entries) == MV_LINK_OK);
   std::sort(entries.begin(), entries.end(), [](const seen& a, const seen& b) { return a.name < b.name; });
-  REQUIRE(entries.size() == 3);
+  // Other files come as kind 3; hidden names and a sidecar do not come at all.
+  REQUIRE(entries.size() == 5);
   CHECK((entries[0].name == "Day 2" && entries[0].dir == 1 && entries[0].kind == -1));
   CHECK((entries[1].name == "IMG_0001.JPG" && entries[1].size == 5000 && entries[1].kind == 0));
   CHECK((entries[2].name == "clip.MOV" && entries[2].kind == 2));
+  CHECK((entries[3].name == "notes.txt" && entries[3].kind == 3));
+  CHECK((entries[4].name == "song.mp3" && entries[4].kind == 3));
 
   entries.clear();
   REQUIRE(mv_files_list(l, "a1a1a1a1a1a1a1a1", "", collect_entries, &entries) == MV_LINK_OK);
@@ -2337,6 +2451,91 @@ TEST_CASE("file mode through the C ABI: the named folders, a folder's media, a f
   CHECK(got == std::string(50, 'j'));
   CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "Trip/gone.jpg", 0, 10, 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
   CHECK(mv_files_read(l, "a1a1a1a1a1a1a1a1", "", 0, 10, 0, nullptr, collect, &got) == MV_LINK_INVALID);
+
+  // The folder's drive unplugged (docs/plans/self-hosted.md §6): the service marks it offline, and
+  // both lists name it so, the catalogue's folder still left out of the first.
+  struct row {
+    std::string id, label;
+    int32_t offline;
+  };
+  const mv_root_fn collect_rows = [](void* ctx, const char* id, const char* label, int32_t offline) {
+    static_cast<std::vector<row>*>(ctx)->push_back({id, label, offline});
+  };
+  std::vector<row> rows;
+  REQUIRE(mv_files_offline_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  CHECK(rows.empty());
+  const fs::path away = r.dir.root / "photos-away";
+  fs::rename(r.photos, away);
+  REQUIRE(mv_files_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  REQUIRE(rows.size() == 1);
+  CHECK((rows[0].id == "a1a1a1a1a1a1a1a1" && rows[0].label == "Photos" && rows[0].offline == 1));
+  rows.clear();
+  REQUIRE(mv_files_offline_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  REQUIRE(rows.size() == 1);
+  CHECK((rows[0].label == "Photos" && rows[0].offline == 1));
+  // Back: online again, and the folder reads as before.
+  fs::rename(away, r.photos);
+  rows.clear();
+  REQUIRE(mv_files_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].offline == 0);
+  rows.clear();
+  REQUIRE(mv_files_offline_roots(l, collect_rows, &rows) == MV_LINK_OK);
+  CHECK(rows.empty());
+  entries.clear();
+  CHECK(mv_files_list(l, "a1a1a1a1a1a1a1a1", "Trip", collect_entries, &entries) == MV_LINK_OK);
+  mv_link_close(l);
+}
+
+TEST_CASE("file mode through the C ABI: a clip the phone can't play, converted by the service",
+          "[mobile-link][mobile-files][convert]") {
+  rig r(300000, "Photos", false);
+  write_file(r.photos / "Old" / "tape.avi", "RIFFtapebytes");
+  r.pair_now();
+  mv_mobile_link* l = open_link((r.dir.root / "thumbs").string(), r.sync_config(), r.config());
+  REQUIRE(l);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  // No converter: said so, and nothing is asked.
+  int32_t can = 1;
+  REQUIRE(mv_link_can_convert(l, &can) == MV_LINK_OK);
+  CHECK(can == 0);
+  mv_convert_plan plan{};
+  CHECK(mv_files_convert_plan(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", &plan) == MV_LINK_UNSUPPORTED);
+
+  // A converter (a stand-in for the helper), and a new session hears of it.
+  namespace cv = serve::convert;
+  cv::service::options o;
+  o.cache_dir = (r.dir.root / "convert-cache").string();
+  o.ahead = 0;
+  o.run.plan = [](const std::string&, std::uint32_t seg, const std::string& out) {
+    std::ofstream(out, std::ios::binary) << serve::convert_plan_json({9000, seg, 3, 640, 360});
+    return cv::ran::ok;
+  };
+  o.run.segment = [](const std::string&, std::uint32_t k, std::uint32_t, const std::string& out) {
+    std::ofstream(out, std::ios::binary) << std::string(200000, static_cast<char>('a' + k));
+    return cv::ran::ok;
+  };
+  r.srv->set_converter(cv::service::start(o));
+  mv_link_close(l);
+  l = open_link((r.dir.root / "thumbs").string(), r.sync_config(), r.config());
+  REQUIRE(l);
+  REQUIRE(mv_link_connect(l, nullptr, &report) == MV_LINK_OK);
+  REQUIRE(mv_link_can_convert(l, &can) == MV_LINK_OK);
+  CHECK(can == 1);
+  REQUIRE(mv_files_convert_plan(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", &plan) == MV_LINK_OK);
+  CHECK(plan.segments == 3);
+  CHECK(plan.duration_ms == 9000);
+  CHECK(plan.width == 640);
+  std::string got;
+  const mv_sink_fn collect = [](void* ctx, uint64_t, const uint8_t* data, size_t size) -> int32_t {
+    static_cast<std::string*>(ctx)->append(reinterpret_cast<const char*>(data), size);
+    return 1;
+  };
+  REQUIRE(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "Old/tape.avi", 2, nullptr, collect, &got) == MV_LINK_OK);
+  CHECK(got == std::string(200000, 'c'));
+  CHECK(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "Old/gone.avi", 0, nullptr, collect, &got) == MV_LINK_NOT_FOUND);
+  CHECK(mv_files_convert_read(l, "a1a1a1a1a1a1a1a1", "../x.avi", 0, nullptr, collect, &got) == MV_LINK_INVALID);
   mv_link_close(l);
 }
 
@@ -2346,15 +2545,23 @@ TEST_CASE("file mode: what a folder shows, by the D5 table", "[mobile-files]") {
   CHECK(mob::files::kind_of("a.heic") == kind::photo);
   CHECK(mob::files::kind_of("a.CR3") == kind::raw);
   CHECK(mob::files::kind_of("a.mov") == kind::clip);
-  CHECK(mob::files::kind_of("a.mp3") == kind::none);
-  CHECK(mob::files::kind_of("a.pdf") == kind::none);
-  CHECK(mob::files::kind_of("README") == kind::none);
-  const std::vector<dw::serve::list_entry> listing{
-      {"b.jpg", 1, 2, false}, {".mediaviewer", 0, 0, true}, {"Sub", 0, 0, true}, {"x.txt", 1, 1, false}, {".a.jpg", 1, 1, false}};
+  CHECK(mob::files::kind_of("a.mp3") == kind::other);
+  CHECK(mob::files::kind_of("a.pdf") == kind::other);
+  CHECK(mob::files::kind_of("README") == kind::other);
+  CHECK(mob::files::kind_of("a.CR3.xmp") == kind::none);
+  CHECK(mob::files::kind_of("GX010001.LRV") == kind::none);
+  CHECK(mob::files::kind_of("thumbs.db") == kind::none);
+  CHECK(mob::files::kind_of("C0001M01.XML") == kind::none);
+  CHECK(mob::files::kind_of("DJI_0001.SRT") == kind::none);
+  CHECK(mob::files::kind_of("settings.xml") == kind::other);
+  const std::vector<dw::serve::list_entry> listing{{"b.jpg", 1, 2, false},     {".mediaviewer", 0, 0, true},
+                                                   {"Sub", 0, 0, true},        {"x.txt", 1, 1, false},
+                                                   {".a.jpg", 1, 1, false},    {"b.jpg.xmp", 1, 1, false}};
   const auto out = mob::files::shown(listing);
-  REQUIRE(out.size() == 2);
+  REQUIRE(out.size() == 3);
   CHECK((out[0].name == "b.jpg" && out[0].k == kind::photo && !out[0].dir));
   CHECK((out[1].name == "Sub" && out[1].dir));
+  CHECK((out[2].name == "x.txt" && out[2].k == kind::other && !out[2].dir));
 }
 
 TEST_CASE("file mode: the fields are the desktop's, in its why-order", "[mobile-files]") {
@@ -2498,4 +2705,75 @@ TEST_CASE("file mode is never a guess: a folder that did not answer is unreachab
     nas.files["c2/current.json"] = "not signed";
     CHECK(mob::check_catalogue(nas, cfg).outcome == mob::sync_outcome::rejected);
   }
+}
+
+TEST_CASE("link: where a catalogue folder may be when no service folder has its share's name", "[mobile-link]") {
+  namespace mf = mv::mobile::files;
+  const std::vector<mf::served_root> roots{{"a", "FamilyNas"}, {"b", "Media"}};
+  const auto got = mf::places_for("photo", "Media/1.Hill Photos", roots);
+  REQUIRE(got.size() >= 3);
+  // A folder named in the share's path comes first: "Media" holds "1.Hill Photos".
+  CHECK(got[0] == mf::place{"b", "1.Hill Photos"});
+  // Then each folder as the share itself, deeper in it, or holding it.
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", "Media/1.Hill Photos"}) != got.end());
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", "photo/Media/1.Hill Photos"}) != got.end());
+  CHECK(std::find(got.begin(), got.end(), mf::place{"a", ""}) != got.end());
+  // The share's own label stays first when there is one.
+  const std::vector<mf::served_root> named{{"x", "Other"}, {"y", "photo"}};
+  CHECK(mf::places_for("photo", "Media", named)[0] == mf::place{"y", "Media"});
+  // No duplicates.
+  const auto top = mf::places_for("photo", "", roots);
+  for (std::size_t i = 0; i < top.size(); ++i) {
+    for (std::size_t j = i + 1; j < top.size(); ++j) CHECK_FALSE(top[i] == top[j]);
+  }
+}
+
+TEST_CASE("link: change ops pass through to the service, never replacing", "[mobile-link]") {
+  rig r(1024);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  auto changes = s.changes_files();
+  REQUIRE(changes);
+  CHECK(*changes);  // asked for kChangeOps, and this service has them
+
+  const std::string root = "a1a1a1a1a1a1a1a1";
+  serve::client::change_refused why;
+  auto made = s.make_folder(root, "Trips/2026", &why);
+  REQUIRE(made);
+  CHECK(fs::is_directory(r.photos / "Trips" / "2026"));
+
+  const std::string bytes(5000, 'x');
+  const std::string hash =
+      mv::io::hash_bytes(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()))
+          .hex();
+  const serve::client::read_fn read = [&bytes](std::uint64_t at, std::span<std::uint8_t> into) -> mv::result<std::size_t> {
+    if (at >= bytes.size()) return std::size_t{0};
+    const std::size_t n = std::min<std::size_t>(into.size(), bytes.size() - static_cast<std::size_t>(at));
+    std::memcpy(into.data(), bytes.data() + at, n);
+    return n;
+  };
+  auto added = s.add(root, "Trips/2026/a.jpg", bytes.size(), hash, 0, read, {}, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/2026/a.jpg");
+  CHECK(fs::file_size(r.photos / "Trips" / "2026" / "a.jpg") == bytes.size());
+
+  // A taken destination is refused, typed, and nothing is replaced.
+  REQUIRE(s.make_folder(root, "Other", &why));
+  auto other = s.add(root, "Other/a.jpg", bytes.size(), hash, 0, read, {}, nullptr, &why);
+  REQUIRE(other);
+  auto clash = s.move(root, "Trips/2026/a.jpg", root, "Other/a.jpg", &why);
+  CHECK_FALSE(clash);
+  CHECK(why.why == serve::client::change_why::exists);
+
+  auto moved = s.move(root, "Trips/2026/a.jpg", root, "Other/b.jpg", &why);
+  REQUIRE(moved);
+  CHECK(moved->rel == "Other/b.jpg");
+  CHECK(fs::exists(r.photos / "Other" / "b.jpg"));
+  CHECK_FALSE(fs::exists(r.photos / "Trips" / "2026" / "a.jpg"));
+
+  auto gone = s.remove(root, "Other/b.jpg", &why);
+  REQUIRE(gone);
+  CHECK_FALSE(fs::exists(r.photos / "Other" / "b.jpg"));  // in the server's trash, not listed
 }

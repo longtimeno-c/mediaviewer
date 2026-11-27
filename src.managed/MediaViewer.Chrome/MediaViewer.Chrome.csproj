@@ -59,6 +59,7 @@
   <ItemGroup>
     <!-- The type-in field (a WinUI TextBox fail-fasts in this host), shared with the add-ons. -->
     <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
+    <Compile Include="..\Shared\KeyUpLetters.cs" Link="Shared\KeyUpLetters.cs" />
     <Compile Include="..\Shared\ByteSize.cs" Link="Shared\ByteSize.cs" />
     <Compile Include="..\Shared\RestartWords.cs" Link="Shared\RestartWords.cs" />
     <Compile Include="..\Shared\AddonListWords.cs" Link="Shared\AddonListWords.cs" />
@@ -69,9 +70,10 @@
     <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
     <Compile Include="..\Shared\GlowMath.cs" Link="Shared\GlowMath.cs" />
     <Compile Include="..\Shared\ProgressWords.cs" Link="Shared\ProgressWords.cs" />
-    <!-- Settings -> Phone access (IslandHost.Phone.cs): the pairing QR and the card's words. -->
-    <Compile Include="..\Shared\QrCode.cs" Link="Shared\QrCode.cs" />
-    <Compile Include="..\Shared\PhoneWords.cs" Link="Shared\PhoneWords.cs" />
+    <!-- docs/design/16 "Drag and drop into folders": a drop's question and words. -->
+    <Compile Include="..\Shared\DropWords.cs" Link="Shared\DropWords.cs" />
+    <Compile Include="..\Shared\SpringLatch.cs" Link="Shared\SpringLatch.cs" />
+    <Compile Include="..\Shared\ScreenTreePatch.cs" Link="Shared\ScreenTreePatch.cs" />
   </ItemGroup>
 
   <ItemGroup>

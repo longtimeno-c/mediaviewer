@@ -395,29 +395,70 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
 
-### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-in-the-app.md`)
+### Phone access (plans: `docs/plans/mobile.md`, `docs/plans/phone-access-addon.md`)
 
-Part of the app since 2026-11-12, with or without Local search: Settings → Phone access on both hosts
-(`PhoneAccessView.swift` in MediaViewerChrome, `IslandHost.Phone.cs` in MediaViewer.Chrome; words in
-`src.managed/Shared/PhoneWords.cs`, the Windows QR in `Shared/QrCode.cs`). The work is `src/phone`
-(`link.*` the state machine, `desk.*` claim/codes/devices/nearby, `app.*` the one link per process) over
-`src/wire` (Driftwire's protocol) and `src/catalogue` (keys, `library.json`, current.json, delivery);
-hosts reach it through `mv_phone_*` (ABI 0.41) and the Mac bridge `mv_chrome_phone_*`. Local search,
-when loaded, is a catalogue source (its `phone_publish` / `phone_json`). Only the first window's process
-runs it. Keys are in the OS store under "MediaViewer Phone access" (Credential Manager sealed with DPAPI
-on Windows, the Keychain on the Mac), copied once from "MediaViewer Local search" and "MediaViewer Driftwire".
+An add-on since 2026-11-14 (`phone-access`, `src/addons/phone`, built as `build/addons/phone-access/
+libmv_phone_access.dylib` / `mv_phone_access.dll`; packed by `tools/package/addon-pack.py --addon phone-access`).
+Not installed by default: Settings → Add-ons → Phone access offers it (Mac `PhoneAccess.swift`, Windows
+`IslandHost.PhoneAccess.cs`) and, once loaded, draws its card, which is the add-on's own view tree
+(`screens.*`, its QR `qr.*` as a surface). The work is `link.*` (the state machine), `desk.*`
+(claim/codes/devices/nearby), `service.*` (the one link per process; the first window's process holds
+`instance.lock` in the feature's folder) and `self_host.*` (this computer as the server), over `src/wire`
+(Driftwire's protocol) and `src/catalogue`. Local search's catalogue reaches it through the host table's
+`catalogue_*` rows. Keys stay in the OS store under "MediaViewer Phone access"; the library's folder stays
+where the app kept it (`~/Library/Application Support/MediaViewer/Phone Access`,
+`%LocalAppData%\MediaViewer\phone-access`), so a library set up before the add-on keeps its id.
+`MV_PHONE_ACCESS_DIR` points the add-on at another folder (the tests use it).
 
-Tests, always filtered by tag: `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
+**This computer** (Set up the service…, [self-hosted.md](plans/self-hosted.md) §16) needs the
+`driftwire` program installed (`brew install longtimeno-c/tap/driftwire`, or `install.ps1`); the add-on finds
+it and runs its `host` commands. To try the card against a local build, put `build/bin/driftwire` on one of
+the places it looks (`~/.local/bin/driftwire`); remove the login entry afterwards with
+`driftwire host start-at-login off`. A local build cannot load its own unsigned add-on in the app; sideload it
+as the AI pack's recipe does (a build with `MV_ADDON_DEV_PUBLIC_KEY`).
+
+Tests, always filtered by tag: `mv_import_tests "[phone-addon]"` (the card's trees against the core's
+vocabulary, the secure field, the catalogue rows, the manifest, the module through a signed store in a
+folder of the test's own), `mv_import_tests "[phone-qr]"` (the encoder against the matrices the C# encoder
+had, read by a phone scanner), `mv_import_tests "[phone-self-host]"` (the setup against the test build of
+`driftwire host` on loopback, the VPN switch included), `mv_import_tests "[phone-pairing]"` (loopback, including a library set up,
 claimed, paired and revoked with no Local search), `mv_import_tests "[phone-pairing-bonjour]"` (this
-machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the app's link over
-a Local search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`),
-and `dotnet test src.managed/MediaViewer.Chrome.Tests` (QR, words against the Swift). To try it without a
-Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the card that
-machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
+machine's mDNSResponder), `mv_ai_tests "[phone-chain]"`, `mv_ai_tests "[phone-link]"` (the link over a Local
+search engine as its source), `swift test` in `src.swift/MediaViewerChrome` (`PhoneAccessTests`). To try it
+without a Synology, run `driftwire serve` on this computer with a `serve.json` naming a folder, and give the
+card that machine's address. Windows advertises the nearby service with `wire/advert_win.cpp` (DnsServiceRegister).
 
-Not done: either card seen running (the Windows one is compiled only; the Mac one built, not driven), the
-phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
+Not done: the add-on's card seen running in the app on either host (the Windows chrome is compiled only;
+the Mac app built, the card drawn only through the core's registry in `[phone-addon]`), the add-on published
+on a release channel, the phone's file mode for a library with no catalogue (step 5 of the plan), a Bonjour advert on Linux, and any
 run against a real Synology or phone.
+
+### Another computer's folders (plan: `docs/plans/desktop-client.md`, #686)
+
+Another desktop pairs with a self-hosted computer or a Synology from its code (the phone's code, no
+password) and sees its folders pinned at the top of the folder tree, read-only. The core is `src/remote`
+(`key.*` the `remote:` keys, `cache.*` originals by content identity, `library.*` servers, pairing,
+listings, tiles and fetches) over the phone's own link (`src/mobile/link.*`, shared through the
+`mv_mobile_route` OBJECT library in `cmake/remote.cmake`, so `libmv_mobile_link.a` keeps its contents for
+the iOS project). The Mac host is `main_mac.mm` (File → Connect to a Server…, `mv_chrome_remote_*`) with the
+rows in `FolderTreeView.swift`; Windows is the core's session (`abi/abi.cpp`, `abi/remote_abi.cpp`,
+`mv_remote_*`, ABI 0.44) with the rows in `IslandHost.Remote.cs`. Servers are in `servers.json`
+(Mac `~/Library/Application Support/MediaViewer/Remote Folders`, Windows `%LocalAppData%\MediaViewer\remote`);
+their keys in the OS store ("MediaViewer Driftwire", `remote_<id>`); the cache in
+`~/Library/Caches/MediaViewer/Remote` / `%LocalAppData%\MediaViewer\remote-cache`.
+
+To try it on one Mac: run `driftwire host` (or `driftwire serve` with a `serve.json`) with a folder shared,
+take the code from `driftwire host pair` or the Phone access card, and paste it in File → Connect to a Server….
+A dev build launched with `MV_DEV_REMOTE_DIR=<folder>` keeps its servers, cache and keys there instead of
+the installed app's list and the Keychain (as `MV_DEV_THUMBS_DIR` does for thumbnails). Changing files
+(plan §6) needs the role: `driftwire serve grant <device key> --role change`, then restart the service.
+
+```bash
+build/bin/mv_tests "[desktop-client]"          # loopback: pairing, listing, tiles, fetches, unreachable / offline / revoked
+build/bin/mv_tests "[.desktop-client-perf]"    # remote first pixel, full resolution, arrow-to-next over loopback
+```
+
+`MV_REMOTE_BENCH_JSON=path` writes the timings. They are also in `"[.perf-bench]"`.
 
 ### iPhone and iPad interface (`src.ios/`, plan: `docs/plans/mobile.md`)
 
@@ -427,6 +468,26 @@ them. `MediaViewer` is the real one and links no stand-in data (`App/MediaViewer
 `MediaViewerFixtures` runs the screens on generated pictures and a generated clip; its
 `MobileFixtures` package does not compile outside Debug, so it cannot reach a release. Backup
 (release 1.1) is compiled only with the Swift condition `MV_BACKUP`, which no build sets.
+
+Clips: AVPlayer opens MP4/MOV/M4V directly. Transport streams (`.mts`, `.m2ts`, `.m2t`, `.ts`) with
+H.264 video play as HLS from a loopback server in the app (`MobileLink/TsStreams.swift`, parser and
+segmenter in `MobileLinkSupport/MpegTs.swift`); iOS opens none of them as files. MPEG-2 video, HEVC in
+TS, LPCM sound, MKV, WebM, AVI and MPG play when the server converts them (`docs/plans/phone-clip-convert.md`:
+the service lists `convert`, and `MobileLink/ConvertedClips.swift` serves its 4 s segments through the same
+loopback server); a server without it leaves them "can't play here", with the download. Folders show as
+tiles with pictures from inside (`MobileUI/FolderTiles.swift`, `LibraryStore.preview`); each
+folder is a page on a `NavigationStack` (`LibraryModel.stack` of `FolderPage`s, `LibraryScreens.swift`).
+Its tests: `MobileUITests/FolderNavigationTests` (the model) and `UITests/FolderNavigationTests` (the
+fixtures app several folders deep and back), with the hitch figures in
+`ScrollHitchTests/testFolderNavigationHitches`. The fixture state `library.slowLink` lists each folder a second late, to see a slow connection. Changing files (Add, New Folder, Move, Rename, Delete; file mode, a "change" device):
+`MobileUI/LibraryChanges.swift` and `FolderEditing.swift` over `FolderChanges` (`MobileLink/LinkChanges.swift`,
+`mv_files_add`/`_mkdir`/`_move`/`_delete`); the fixture state `library.change` runs it over an in-memory
+server, and `UITests/FolderChangeTests` walks it; in the real app the sample library's demo of it is
+`UITests/SampleChangesTests` (`TEST_RUNNER_MV_SAMPLE_CHANGES=1`; it opens SAMPLE from the release
+when the app has none). The link's side: `mv_mobile_link_tests "change:*"`. A folder walk timed with
+no test attached (XCUITest's own work at each animation's end weighs on any transition it watches):
+`tools/ios/folder-walk.sh <src.ios> <Simulator UDID> <DerivedData> <label> <runs>` prints late frames
+per folder change from the fixtures app's `-fixtureWalk`.
 
 The real app's version, build number, bundle id and signing are in `src.ios/Config/MediaViewer.xcconfig`;
 `DEVELOPMENT_TEAM` is empty there. Put your own in `src.ios/Config/Signing.local.xcconfig` (git
@@ -458,6 +519,16 @@ stops it. The code lasts 15 minutes and works once. With `DEMO_FILE_MODE=1` the 
 `library.json`, so the phone opens the library in file mode (`docs/plans/phone-in-the-app.md` §4);
 `mv_publish_test_library photos nas work 2` in that folder then publishes a catalogue with the same
 key, which the phone takes on its next sync. File mode's core tests: `mv_mobile_link_tests "[mobile-files]"`.
+
+The demo's `photos/Tapes` holds an AVI (MPEG-4 Part 2, MP3), an MKV (VP9, Opus) and an MPG (MPEG-2,
+MP2) that the phone can't play itself. With the desktop build's `bin/MediaViewerClipJob` there, the
+service converts them on this Mac's hardware encoder as the phone plays them (`DEMO_CONVERT=0` leaves
+them as downloads). The conversion's own timings, with the real helper behind the real service:
+
+```bash
+MV_CONVERT_BENCH_HELPER=$PWD/build/bin/MediaViewerClipJob MV_CONVERT_BENCH_DIR=<folder of clips> \
+  build/bin/mv_import_tests "[.convert-bench]"
+```
 
 The fixtures app:
 
@@ -524,6 +595,80 @@ cmake --build build-cli && ctest --test-dir build-cli --output-on-failure
 ```
 
 Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
+
+#### Hosting from this computer (`driftwire host`, plan: `docs/plans/self-hosted.md`)
+
+The service and a relay in one process on your own PC or Mac (slice 2; [docs/design/28](design/28-driftwire.md#on-your-own-computer-driftwire-host)).
+Its folder is `<data dir>/host`; `--data DIR` uses `DIR/host` instead.
+
+```sh
+build/bin/driftwire host setup                               # the guided run: DuckDNS, a folder, the router, a phone's QR, the VPN
+build/bin/driftwire host share ~/Pictures --label Photos     # what phones see; --backup lets them back up into it
+build/bin/driftwire host                                     # runs until Ctrl-C: the service on 7878, the relay on 47614
+build/bin/driftwire host status                              # from another terminal
+build/bin/driftwire host start-at-login on                   # LaunchAgent / systemd --user / Scheduled Task, no admin
+build/bin/driftwire host stay-awake off                      # a laptop: let it sleep
+build/bin/driftwire host name duckdns                        # asks for the subdomain and the token (never arguments)
+build/bin/driftwire host pair                                # a phone's pairing QR (needs a window ~100 columns wide)
+build/bin/driftwire host vpn on                              # prints the relay line for the laptop's Relay (your own server)
+build/bin/mv_import_tests "[host]"                           # loopback only; the supervisor case spawns mv_driftwire_cli_test
+build/bin/mv_import_tests "[host-setup]"                     # setup, pairing redeemed, DuckDNS and router keepers, the VPN through the relay
+build/bin/driftwire host pause                               # Hosting off (the server menu's toggle); resume, quit (start at login stays)
+build/bin/driftwire host status --watch                      # usage today, phones connected, again on each change; Ctrl-C ends it
+build/bin/mv_import_tests "[host-tray]"                      # the server menu, its numbers, the registry entry, the watcher, pause/quit on loopback
+```
+
+**Phone route bench** (the phone's reads from a host on this computer, VPN off and on alternated; one JSON
+line per measurement, loopback, so run base and new alternated as the performance suite says):
+
+```sh
+MV_HOST_BENCH_MB=256 MV_HOST_BENCH_ROUNDS=4 build/bin/mv_import_tests "[.phone-host-bench]"
+```
+
+It reads a 256 MB file whole (8 MB window bulk, and 1 MB) and 200 ranges of 256 KB at random offsets,
+from a session opened after each switch, and prints ms to the first byte, MB/s and p50/p95.
+
+**VPN host bench** (a host's relay with the VPN on and the shipped forwarding, a laptop's Tunnel proxy with
+its line, curl to a public URL through it and directly, alternated; this one reaches the internet):
+
+```sh
+MV_VPN_BENCH_ROUNDS=5 build/bin/mv_import_tests "[.vpn-host-bench]"     # MV_VPN_BENCH_URL to fetch another
+build/bin/mv_import_tests "[nas-vpn]"                                     # the NAS as a VPN host, the code, Connect
+```
+
+While a host runs, MediaViewer shows its own server menu-bar item / notification-area icon
+(plan "Tray"); the app must be running (the host's start at login also turns on the app's own
+login item, hidden). A soak or harness run of the Mac app never starts the watcher.
+
+Try the guided run without the internet or a router with the test build:
+`printf '%s\n' ~/Pictures "" "" "" "" n n n | build/bin/mv_driftwire_cli_test host setup --test-data /tmp/hs --test-loopback`
+(it never reaches duckdns.org or asks a router, and refuses start at login).
+
+#### Users and the LAN share (`driftwire host users`, plan: `docs/plans/self-host-users-smb.md`)
+
+```bash
+build/bin/driftwire host users                               # the list: names and roles (no sign-in)
+build/bin/driftwire host users add anna --role view          # asks the admin passphrase, then anna's password (echo off)
+build/bin/driftwire host users role anna change --folders all
+build/bin/driftwire host users password anna
+build/bin/driftwire host users remove anna
+build/bin/driftwire host users apply                         # a user still waiting for an administrator
+build/bin/mv_import_tests "[host-users]"                     # stand-in OS port; loopback only
+```
+
+Each change ends in one elevated step (`driftwire host smb-apply`, never typed): sudo at a terminal
+or the authorization dialog from the app on macOS, UAC on Windows. It makes sharing-only accounts
+and SMB3-encrypted shares with no guest access, and never changes an account or share it did not
+make. Linux says it is not offered yet (Samba later). The ports (`host_smb_mac.cpp`,
+`host_smb_win.cpp`) have never been run against a real OS: the tests use a recording stand-in and
+never make an account or a share. The Windows C++ only compiles in CI. `host_ports` refuses to
+forward 137–139, 445 and 3389, a test proves it, and `host status` shows the share's addresses and
+the users.
+
+`start-at-login on` from a build of your own points the entry at that build; turn it off before
+deleting the build (`host start-at-login off`). The test build refuses it. The running host asks the
+router for its ports and keeps a DuckDNS name updated; neither has been run against a real router or
+duckdns.org yet (the tests use stand-ins).
 
 ### The phone's library and search (`src/mobile`, `MobileCore`; plan: `docs/plans/mobile.md` M5, M6)
 
@@ -727,7 +872,7 @@ Files added to or removed from the open folder show up without a restart.
 
 A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
-| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
+| `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS/MTS/MPG) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Show in Explorer** (Mac: **Show in Finder**, or **Open in Photos** while a Photos library item is current; `?` and Settings use the same words) |
 | Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac); pinned folders first (#617: right-click a welcome-card row to pin or unpin). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`). With OneDrive set up, a **OneDrive** row leads the card, above Recent folders, as iCloud Photos does on the Mac: it opens OneDrive's Pictures folder (OneDrive itself if there is none) |
@@ -963,7 +1108,7 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    folder's PDFs and DOCX files are read for their words (#354); the status lines then carry
    `"docs":[done,total,locked,failed]`. The pack stages PDFium beside `mv_ai` from its pinned
    download (`cmake/ai.cmake`); set `MV_ORT_ARCHIVE_DIR` to a folder holding
-   `pdfium-<platform>-8066.tgz` (and ORT's archive) to configure offline.
+   `pdfium-<platform>-8066.tgz` (and `microsoft.ml.onnxruntime.1.30.0.nupkg`) to configure offline.
 5. Quit's cost with a pack loaded: `ai-bench --addons <folder> --query dog --quit-after 1`
    quits the way both hosts do (the pack gets half a second to stop, then the exit skips static
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
@@ -1474,14 +1619,14 @@ build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --forward-ports 80,
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --tls-port 443 --tls-cert fullchain.pem --tls-key privkey.pem --decoy-dir site/
 # Slice 5 (the VPN): DNS to this resolver; UDP ports beyond 53 only if listed
 build/bin/mv-driftwire-relay --port 47614 --key-file key.txt --dns 9.9.9.9 --forward-udp-ports 53
-xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/driftwire/mac_tunnel/*.swift
+xcrun swiftc -typecheck -target arm64-apple-macos14.0 -module-name DriftwireTunnel src/addons/vpn/mac_tunnel/*.swift
 # The VPN's provider built and embedded. It runs only from a Developer ID release with both
 # provisioning profiles (RELEASING.md, "the Driftwire VPN's provisioning profiles"):
 cmake -S . -B build -DMV_DRIFTWIRE_PACKET_TUNNEL=ON && cmake --build build --target mediaviewer_app
 python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID Application: …" \
   --team-id <TEAM> --app-profile <app>.provisionprofile --tunnel-profile <tunnel>.provisionprofile \
   --skip-notarize --allow-no-updater      # then copy to /Applications and approve the extension once
-# With Driftwire's Tunnel on (window, settings or /tunnel on), through its proxy:
+# With the VPN add-on's Tunnel on (Settings → Add-ons → VPN, its menu-bar row, or /vpn on), through its proxy:
 curl -p -x http://127.0.0.1:<port> https://example.com/      # or HTTPS_PROXY=http://127.0.0.1:<port>, ALL_PROXY=socks5h://127.0.0.1:<port>
 python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \
@@ -1536,7 +1681,8 @@ python tools/perf/make-charts.py                 # redraw from the committed rep
 
 The published charts are Windows numbers. The macOS lab has `pacing`, `first-pixel`,
 `browse` and `video`; `pan`, `av-sync` and `compare` are Windows-only harnesses, so a Mac
-run draws the charts it has and names the rest as skipped. Inputs are the RAW/HEIC samples
+run draws the charts it has and names the rest as skipped. The README's Mac numbers are a run with
+`--out docs/perf/mac --only pacing,first-pixel,browse,video,bench`. Inputs are the RAW/HEIC samples
 (`tools/testmedia/fetch-raw.ps1`, `fetch-heif.ps1`) and the video corpus
 (`tools/testmedia/generate.sh`); a stage whose inputs are missing is skipped, never faked.
 Soaks open windows and need a visible display and a quiet machine. On macOS a measuring

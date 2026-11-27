@@ -14,8 +14,13 @@
 // - while an add-on keeps the process, a menu-bar item: its label, the
 //   add-on's own rows (keep_menu: lines, checkmark toggles, buttons, a Send
 //   Files… open panel; docs/plans/driftwire-menu-and-tunnel.md), Open
-//   <screen>, Open MediaViewer, Quit MediaViewer. main_mac.mm hides the
-//   viewer rather than quitting while the list is not empty.
+//   <screen> (a settings-place screen: Settings at its add-on's page, the
+//   VPN's, docs/plans/vpn-addon.md), Open MediaViewer, Quit MediaViewer;
+//   one item per kept entry. main_mac.mm hides the
+//   viewer rather than quitting while the list is not empty. While
+//   `driftwire host` runs the list also holds the app's own entry ("shell",
+//   docs/plans/self-hosted.md "Tray"): the host's status, phones, drives,
+//   Pause / Resume hosting and Quit hosting, and Open Phone access settings.
 //
 // Nothing here runs until the registry has a notice, an ask or a keep: with
 // Driftwire's toggles off the notification centre is never touched.
@@ -25,7 +30,7 @@ import MVChromeBridge
 @preconcurrency import UserNotifications
 
 @MainActor
-final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
+final class AddonNotices: NSObject, UNUserNotificationCenterDelegate, NSMenuDelegate {
   static let shared = AddonNotices()
 
   private struct Notice: Equatable {
@@ -34,12 +39,21 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     var key: String { "\(addon)/\(id)" }
   }
   private struct MenuRow: Equatable { var kind, id, label: String; var value: Bool }
-  private struct Keep: Equatable { var addon, screen, title, label: String; var menu: [MenuRow] }
+  /// `shell`: the app's own entry, not an add-on's (docs/plans/self-hosted.md
+  /// "Tray": the host's rows while `driftwire host` runs); its Open row opens
+  /// Settings at Phone access.
+  private struct Keep: Equatable { var addon, screen, title, label: String; var menu: [MenuRow]; var shell: Bool }
 
   private var shown: [String: Notice] = [:]
   private var asked = 0
   private var keeps: [Keep] = []
-  private var statusItem: NSStatusItem?
+  private var wantsLogin = false
+  private var statusItems: [String: NSStatusItem] = [:]  // addon -> its item
+  private var drawn: [String: Keep] = [:]               // addon -> what its item shows
+  // A menu open on screen is never swapped under the pointer (its items'
+  // targets would go): its entry is redrawn once it closes.
+  private var openMenu: String?
+  private var redrawAfterClose = false
   private var categories: Set<String> = []
   private var centerReady = false
 
@@ -73,11 +87,15 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
                        value: r["value"] as? Bool ?? false)
       }
       return Keep(addon: a, screen: s, title: $0["title"] as? String ?? s, label: $0["label"] as? String ?? "",
-                  menu: rows)
+                  menu: rows, shell: $0["shell"] as? Bool ?? false)
     }
-    if k != keeps {
+    // "Tray": the login item can be wanted with the keep list unchanged (the host's start at login).
+    let login = doc["login"] as? Bool ?? false
+    if k != keeps || login != wantsLogin {
+      let redraw = k != keeps
       keeps = k
-      syncStatusItem()
+      wantsLogin = login
+      if redraw { syncStatusItem() }
       mv_chrome_background_changed()
     }
     // #510: what each add-on said it is doing (busy_post), for Restart now and
@@ -184,40 +202,88 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
 
   // MARK: the menu-bar item
 
+  /// One menu-bar item per kept entry (docs/plans/self-hosted.md "Tray": the
+  /// host's server menu is its own item, as Driftwire's is), in the list's
+  /// order, each with its own menu: its label, its rows, Open <title>, Open
+  /// MediaViewer, Quit MediaViewer. Only an entry whose fields changed is
+  /// rebuilt; one that went is removed.
   private func syncStatusItem() {
-    guard let keep = keeps.first else {
-      if let item = statusItem { NSStatusBar.system.removeStatusItem(item) }
-      statusItem = nil
-      return
+    let wanted = Set(keeps.map(\.addon))
+    for (addon, item) in statusItems where !wanted.contains(addon) {
+      NSStatusBar.system.removeStatusItem(item)
+      statusItems[addon] = nil
+      drawn[addon] = nil
+      handlers[addon] = nil
     }
-    let item = statusItem ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    statusItem = item
-    if let button = item.button {
-      let image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: keep.label)
-      image?.isTemplate = true
-      button.image = image
-      button.toolTip = keep.label
-    }
-    handlers.removeAll()
-    let menu = NSMenu()
-    let head = NSMenuItem(title: keep.label, action: nil, keyEquivalent: "")
-    head.isEnabled = false
-    menu.addItem(head)
-    menu.addItem(.separator())
-    for k in keeps where !k.menu.isEmpty {
-      for row in k.menu { menu.addItem(menuItem(row, of: k)) }
-      menu.addItem(.separator())
-    }
-    for k in keeps {
-      menu.addItem(entry("Open \(k.title)") {
+    for k in keeps where drawn[k.addon] != k {
+      if k.addon == openMenu {
+        redrawAfterClose = true
+        continue
+      }
+      let item = statusItems[k.addon] ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+      statusItems[k.addon] = item
+      drawn[k.addon] = k
+      if let button = item.button {
+        let image = NSImage(systemSymbolName: Self.symbol(k), accessibilityDescription: k.label)
+        image?.isTemplate = true
+        button.image = image
+        button.toolTip = k.label
+      }
+      handlers[k.addon] = []
+      let menu = NSMenu()
+      menu.delegate = self
+      menu.identifier = NSUserInterfaceItemIdentifier(k.addon)
+      if !k.label.isEmpty {
+        let head = NSMenuItem(title: k.label, action: nil, keyEquivalent: "")
+        head.isEnabled = false
+        menu.addItem(head)
+        menu.addItem(.separator())
+      }
+      if !k.menu.isEmpty {
+        for row in k.menu { menu.addItem(menuItem(row, of: k)) }
+        menu.addItem(.separator())
+      }
+      menu.addItem(entry("Open \(k.title)", of: k.addon) {
+        if let page = Self.settingsPage(k, SlotStore.shared.settingsScreens) {
+          page.withCString { mv_chrome_open_addon_settings($0) }
+          return
+        }
         mv_chrome_background_window_shown()
         SlotStore.shared.openScreen(addon: k.addon, screen: k.screen)
       })
+      menu.addItem(entry("Open MediaViewer", of: k.addon) { mv_chrome_background_show_viewer() })
+      menu.addItem(.separator())
+      menu.addItem(entry("Quit MediaViewer", of: k.addon) { mv_chrome_background_quit() })
+      item.menu = menu
     }
-    menu.addItem(entry("Open MediaViewer") { mv_chrome_background_show_viewer() })
-    menu.addItem(.separator())
-    menu.addItem(entry("Quit MediaViewer") { mv_chrome_background_quit() })
-    item.menu = menu
+  }
+
+  /// Driftwire's waves; the VPN's shield (docs/plans/vpn-addon.md, as its
+  /// "tunnel" icon); the host's server menu, a server.
+  private static func symbol(_ k: Keep) -> String {
+    if k.shell { return "server.rack" }
+    return k.addon == "vpn" ? "lock.shield" : "dot.radiowaves.left.and.right"
+  }
+
+  /// The add-on whose Settings page Open shows, or nil for a window: the host's
+  /// entry is Phone access's page, a settings-place screen its add-on's
+  /// (docs/plans/vpn-addon.md), not a window of its own.
+  private static func settingsPage(_ k: Keep, _ settingsScreens: [String: String]) -> String? {
+    if k.shell { return PhoneAccessStore.addonID }
+    return settingsScreens[k.addon] == k.screen ? k.addon : nil
+  }
+
+  func menuWillOpen(_ menu: NSMenu) { openMenu = menu.identifier?.rawValue }
+
+  func menuDidClose(_ menu: NSMenu) {
+    guard openMenu == menu.identifier?.rawValue else { return }
+    openMenu = nil
+    // After the pick's own action has run (it is sent once the menu has closed).
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.redrawAfterClose, self.openMenu == nil else { return }
+      self.redrawAfterClose = false
+      self.syncStatusItem()
+    }
   }
 
   /// One of the add-on's rows. A toggle sends its new value, a files row the
@@ -227,13 +293,13 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     case "separator":
       return .separator()
     case "toggle":
-      let item = entry(row.label) { Self.menuAction(k.addon, row.id, row.value ? "false" : "true") }
+      let item = entry(row.label, of: k.addon) { Self.menuAction(k.addon, row.id, row.value ? "false" : "true") }
       item.state = row.value ? .on : .off
       return item
     case "button":
-      return entry(row.label) { Self.menuAction(k.addon, row.id, nil) }
+      return entry(row.label, of: k.addon) { Self.menuAction(k.addon, row.id, nil) }
     case "files":
-      return entry(row.label) { Self.chooseFiles(k.addon, row.id) }
+      return entry(row.label, of: k.addon) { Self.chooseFiles(k.addon, row.id) }
     default:  // "text": what is happening now
       let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
       item.isEnabled = false
@@ -272,11 +338,11 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     init(_ run: @escaping () -> Void) { self.run = run }
     @objc func fire(_ sender: Any?) { run() }
   }
-  private var handlers: [Handler] = []
+  private var handlers: [String: [Handler]] = [:]  // per item: its menu's targets
 
-  private func entry(_ title: String, _ run: @escaping @MainActor () -> Void) -> NSMenuItem {
+  private func entry(_ title: String, of addon: String, _ run: @escaping @MainActor () -> Void) -> NSMenuItem {
     let h = Handler { MainActor.assumeIsolated { run() } }
-    handlers.append(h)
+    handlers[addon, default: []].append(h)
     let item = NSMenuItem(title: title, action: #selector(Handler.fire(_:)), keyEquivalent: "")
     item.target = h
     return item

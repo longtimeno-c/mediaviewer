@@ -123,15 +123,28 @@ For a real library, a person needs MediaViewer on a Mac with its Local search an
 
 ## Version 1.1 page (phone backup; written 2026-11-12, not entered in App Store Connect yet)
 
-Enter when 1.1 goes to review, after the owner says to upload it. Everything not listed here stays as for 1.0.
+Enter when 1.1 goes to review, after the owner says to upload it. Everything not listed here stays as for 1.0,
+except the words for the person's server (self-hosting, `docs/plans/self-hosted.md` §8, 2026-11-14): the app
+now says "your server" where it means the service (a Synology NAS or the person's own computer), so in 1.0's promotional text and description every
+"your NAS" / "your own NAS" / "the NAS" becomes "your server" / "your own server" / "your server", and:
+
+- WHAT YOU NEED: "• A Synology NAS running the MediaViewer service." becomes "• A Synology NAS, or your
+  own computer that stays on, running the MediaViewer service."; "only on the NAS's own
+  network" becomes "only on the server's own network".
+- BROWSE AND VIEW: "folder by folder as it is on the NAS" becomes "folder by folder as it is on your server".
+- YOURS, ON YOUR OWN HARDWARE: "Your computer can be off: the NAS serves the phone on its own." becomes
+  "Your computer can be off when the server is a NAS: it serves the phone on its own."
+- The App Review notes are `review-notes.md` as it is now.
+- The name and subtitle (**MediaViewer for NAS**, "Search your NAS photo library") stay until the owner
+  decides otherwise: renaming a live app is their call.
 
 **Promotional text** (161 of 170)
 
-> Type what you remember and the photo, or the moment in the clip, comes back from your own NAS. And now your iPhone's photos back up to it while the app is open.
+> Type what you remember and the photo, or the moment in the clip, comes back from your own server. And now your iPhone's photos back up to it while the app is open.
 
 **Description**: as 1.0, with these changes.
 
-Under WHAT YOU NEED, after the Synology line, add:
+Under WHAT YOU NEED, after the server line, add:
 
 ```text
 • For phone backup: a backup folder set up for phones in MediaViewer on your computer.
@@ -140,13 +153,13 @@ Under WHAT YOU NEED, after the Synology line, add:
 After BROWSE AND VIEW, add a section:
 
 ```text
-BACK UP THIS PHONE TO YOUR NAS
-• Your photos and videos, newest first, copied to the folder you choose on your NAS whenever the app is open on Wi-Fi
+BACK UP THIS PHONE TO YOUR SERVER
+• Your photos and videos, newest first, copied to the folder you choose on your server whenever the app is open on Wi-Fi
 • Originals as shot: the photo or video, a Live Photo's video, RAW files; iCloud originals are downloaded one at a time
 • Hidden photos and the extra frames of a burst are left out
 • Filed by the date each was taken: year and month, year, year/month/day, or one folder
-• Each file is checked on the NAS before it counts as backed up, and nothing on the NAS is ever replaced or deleted
-• A storage limit set on your computer keeps backups from filling the NAS
+• Each file is checked on the server before it counts as backed up, and nothing on the server is ever replaced or deleted
+• A storage limit set on your computer keeps backups from filling the server
 • Never over mobile data unless you ask, and never deletes anything from Photos
 • The photos land where MediaViewer on your computer indexes them, so they come back in search
 ```
@@ -154,32 +167,32 @@ BACK UP THIS PHONE TO YOUR NAS
 Under YOURS, ON YOUR OWN HARDWARE, replace "• The app never writes to your NAS." with:
 
 ```text
-• The app writes to your NAS only to back up this phone, only into the backup folder, and never replaces or deletes a file there.
+• The app writes to your server only to back up this phone, only into the backup folder, and never replaces or deletes a file there.
 ```
 
 **What's New in This Version**
 
 ```text
-Back up this phone to your NAS. Choose a backup folder in Settings, and your photos and videos are copied to it, newest first, whenever the app is open on Wi-Fi (hidden photos and the extra frames of bursts are left out). Every file is checked on the NAS before it counts, nothing there is ever replaced or deleted, and a storage limit set on your computer keeps the NAS from filling. Try it with the sample library: it backs up to a folder on this iPhone, and nothing leaves the phone.
+Back up this phone to your server. Choose a backup folder in Settings, and your photos and videos are copied to it, newest first, whenever the app is open on Wi-Fi (hidden photos and the extra frames of bursts are left out). Every file is checked on the server before it counts, nothing there is ever replaced or deleted, and a storage limit set on your computer keeps the server from filling. Try it with the sample library: it backs up to a folder on this iPhone, and nothing leaves the phone.
 ```
 
-**App Review notes**: the 1.0 notes, with this added after "Things to try:"'s last item:
+**App Review notes**: the 1.0 notes, with this added after "Things to try:"'s last item (or `review-notes.md`, which has it and the server words):
 
 ```text
-- Backup (new in 1.1): Settings tab, "Back up this phone". With the sample library, the backup folder is "Sample NAS on this iPhone": a folder inside MediaViewer on this iPhone, labelled as such, standing in for the NAS. Tap "Folder", choose "Sample NAS on this iPhone", tap "Done". iOS asks for Photos access: allow all or some photos. The app copies the newest photos into that folder and shows "N of M backed up · K to go"; it stops at the sample folder's 250 MB limit and says so, which shows the storage-limit state. Nothing is uploaded anywhere: the copies stay on this iPhone, inside the app. "Forget the sample library" in Settings removes them. With a real library the folder is on the person's own NAS, and only that NAS receives the photos.
+- Backup (new in 1.1): Settings tab, "Back up this phone". With the sample library, the backup folder is "Sample server on this iPhone": a folder inside MediaViewer on this iPhone, labelled as such, standing in for the server. Tap "Folder", choose "Sample server on this iPhone", tap "Done". iOS asks for Photos access: allow all or some photos. The app copies the newest photos into that folder and shows "N of M backed up · K to go"; it stops at the sample folder's 250 MB limit and says so, which shows the storage-limit state. Nothing is uploaded anywhere: the copies stay on this iPhone, inside the app. "Forget the sample library" in Settings removes them. With a real library the folder is on the person's own server, and only that server receives the photos.
 ```
 
-**App Privacy**: unchanged, "Data Not Collected". Backup sends the person's photos only to their own NAS, a
-server they own and run; no data goes to the developer or any third party. Apple counts as collected only
+**App Privacy**: unchanged, "Data Not Collected". Backup sends the person's photos only to their own server, a
+NAS or computer they own and run; no data goes to the developer or any third party. Apple counts as collected only
 data the developer or a third party can access, so the answer stays No. Update the privacy page before
 submission.
 
 **Before submitting 1.1**
 
 - The NAS service must be a 1.1 build (it lists `write` in its capabilities); an older one makes the
-  Backup screen say "The MediaViewer service on your Synology needs updating before it can take backups."
+  Backup screen say "The MediaViewer service on your server needs updating before it can take backups."
 - The privacy page's "never writes to your NAS" and "Photos add-only" lines change: the app reads Photos
-  (with permission) to back them up to the person's own NAS, and writes there only into the backup folder.
+  (with permission) to back them up to the person's own server, and writes there only into the backup folder.
 
 ## App Information
 

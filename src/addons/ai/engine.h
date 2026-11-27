@@ -325,6 +325,13 @@ struct engine_options {
   // loaded machine a background thread can wait a minute for a core, and a
   // test asserts what the engine does, not how the OS ranks it (issue #154).
   bool background_threads = true;
+  // A description no pass answers (the "nothing found" gate held every row
+  // back) is answered with every picture ranked by how much closer it is to
+  // the words than to the generic prompts ("a photo."), best first, never #412's newest-first list. The phone's search
+  // turns it on (owner, 2026-11-14): the gate holds back one-word subjects
+  // ("dog") that rank correctly, and there "dog" must show the dogs. Filters
+  // alone ("is:video in:2024") still list newest first.
+  bool rank_when_unanswered = false;
   // Settings → Local search attaches the pack so folders and settings can
   // be managed without opening ONNX sessions, downloading weights, or
   // starting indexing threads. First search or set_setting "start" loads
@@ -625,6 +632,10 @@ class engine {
   // #403: the text in a batch of photos, read by the OS, one cue row each;
   // a clip goes to process_text_moments.
   void process_text(std::vector<work_item>& items);
+  // One photo's text from pixels already decoded (at kTextEdge), committed
+  // under `spec`: process_text's read, and the picture pass's when it reads
+  // a photo still owed its text (one read of the file for both passes).
+  void read_photo_text(const work_item& w, const rgb_frame& img, text_reader& reader, const std::string& spec);
   // The text on the moments a clip's picture pass kept: each decoded again,
   // read, one cue row at its pts_ms (the same text as the moment before is
   // not stored twice). Committed every few moments under `spec`, so a stop
@@ -871,6 +882,10 @@ class engine {
     refine_params params;
     std::uint32_t dim = 0;
     std::uint64_t serial = 0;
+    // The faces judged, and the person each is in after the moves (0 nobody;
+    // a look first: after the moves it would make): find_duplicates' input.
+    refine_snapshot snap;
+    std::vector<std::int64_t> where;
   };
   // person 0: everyone (no focus).
   [[nodiscard]] result<refine_run> refine_person_run(std::int64_t person, bool dry);
@@ -941,8 +956,10 @@ class engine {
       std::int64_t to_unix = std::numeric_limits<std::int64_t>::max()) const;
   // The picture tower's rows for a description (find_text), the query and the
   // matrix read as one pair (answer_gen_). `gate` false: no "nothing found".
+  // `closest`: no rule at all, every allowed row, for group() to rank by its
+  // margin over the generic prompts (engine_options::rank_when_unanswered).
   std::vector<vector_store::hit> picture_hits(const std::string& text, const std::function<bool(std::int64_t)>& allow,
-                                              bool gate, std::uint32_t precision);
+                                              bool gate, std::uint32_t precision, bool closest = false);
   // Merges one model's hits into the result rows (one row per asset, its best
   // moment first). `text`: rank by margin over the generic prompts and apply
   // the "nothing found" rule; else rank by score.

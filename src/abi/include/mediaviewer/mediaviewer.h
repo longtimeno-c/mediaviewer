@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 42 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: docs/plans/driftwire-menu-and-tunnel.md kept menu rows (host table keep_menu, mv_slots_menu_action, MV_SLOT_EVENT_MENU); 0.41: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md); 0.42: Local search settings without model load (mv_ai_hold_models) */
+#define MV_ABI_VERSION_MINOR 46 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive); 0.34: #612 Settings -> Storage (mv_storage_report_json, mv_thumb_cache_clear / _sweep / _set_cap); 0.35: Enhance in the Video Editor (mv_slots_editor_item, contribution API 11 editor_items; host table frames_keep / sound_keep); 0.36: the Video Editor's look (mv_clip_look, mv_clip_request.look); 0.37: its sound in playback (mv_video_set_sound_look); 0.38: the Places world map (mv_slots_open_list_json, host table open_list, MV_SLOT_EVENT_RESIZE); 0.39: docs/plans/edit-refresh.md S5 docked Edit screens (mv_slots_screen_command, contribution API 13 place "edit"), host table still_faces / still_extend; 0.40: docs/plans/driftwire-menu-and-tunnel.md kept menu rows (host table keep_menu, mv_slots_menu_action, MV_SLOT_EVENT_MENU); 0.41: Phone access in the app (mv_phone_*, docs/plans/phone-in-the-app.md); 0.42: folder tiles show three covers (mv_folder_summary.cover_count, mv_folder_summary_cover_thumb_path_at); 0.43: Phone access as an add-on (mv_phone_* removed, docs/plans/phone-access-addon.md); 0.44: another computer's folders (mv_remote_*, docs/plans/desktop-client.md); 0.45: changing them where the server allows it (mv_remote_can_write, _add, _make_folder, _move, _remove, _fetch); 0.46: Local search settings without model load (mv_ai_hold_models) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -386,7 +386,8 @@ typedef struct mv_folder_summary {
   uint32_t subdir_count;   /* direct child folders */
   uint32_t flags;          /* bit 0 loaded, bit 1 has cover, bit 2 photos in a
                             * descendant, bit 3 bounded walk stopped early */
-  uint32_t reserved;
+  uint32_t cover_count;    /* 0.42: cover thumbs ready, 0..3, the big one first;
+                            * was reserved (0), so an older core reads as one */
 } mv_folder_summary;
 
 /* [any-thread][no-block] Last summary for this tile; zeros until loaded. */
@@ -395,6 +396,13 @@ MV_API mv_status MV_CALL mv_folder_summary_at(mv_session_t session, uint32_t ind
 MV_API mv_status MV_CALL mv_folder_summary_cover_thumb_path(mv_session_t session, uint32_t index,
                                                             char* utf8, uint32_t cap,
                                                             uint32_t* out_bytes);
+/* [any-thread][no-block] 0.42. Cover `slot` < cover_count: the tile shows one big
+ * photo and two small ones, spread across the folder (io/dir.h). The big one is
+ * published first; FOLDER_SUMMARY fires again when the small ones are in. */
+MV_API mv_status MV_CALL mv_folder_summary_cover_thumb_path_at(mv_session_t session,
+                                                               uint32_t index, uint32_t slot,
+                                                               char* utf8, uint32_t cap,
+                                                               uint32_t* out_bytes);
 
 /* [any-thread][no-block] Counts and a cover on a pool thread. Completion
  * FOLDER_SUMMARY, payload = index. A no-op if already loaded or out of range. */
@@ -462,31 +470,84 @@ MV_API mv_status MV_CALL mv_thumb_cache_clear(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_sweep(mv_session_t session);
 MV_API mv_status MV_CALL mv_thumb_cache_set_cap(uint64_t cap_bytes);
 
-/* 0.41 (docs/plans/phone-in-the-app.md, owner 2026-11-12). Settings -> Phone
- * access, part of the app: the NAS folder, the service on the NAS, the code a
- * phone scans, the paired phones, the nearby copy. Works with no add-on; Local
- * search, when loaded, provides the catalogue.
+/* 0.41 added mv_phone_request / _state_json / _resume / _stop (Phone access in
+ * the app, docs/plans/phone-in-the-app.md); 0.43 removed them: Phone access is
+ * an add-on (docs/plans/phone-access-addon.md), reached through mv_slots_* like
+ * every add-on's screen, and Local search's catalogue reaches it through the
+ * host table's catalogue_* rows. */
+
+/* docs/plans/self-hosted.md "Tray": mv_host_tray_start, in the first window's
+ * process at launch, watches `driftwire host` on this computer: while it runs
+ * its server menu is a kept entry of mv_slots_notices_json ("shell": true; its
+ * Open row opens Settings → Phone access; its own icon) and the process is kept
+ * in the background as an add-on's keep would; "login" says whether the app's
+ * login item is wanted. mv_host_tray_stop at quit, before the add-ons unload;
+ * it never waits on a `host` verb in flight. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_host_tray_start(void);
+MV_API mv_status MV_CALL mv_host_tray_stop(void);
+
+/* 0.44 (docs/plans/desktop-client.md, #686). Another computer's folders: a
+ * self-hosted computer or a Synology running driftwire, paired from its code
+ * (no password) and pinned in the folder tree, read-only.
  *
- * mv_phone_request: one UTF-8 JSON request {"do":"folder","path":...},
- * {"do":"publish"}, {"do":"claim","local":...,"public":...}, {"do":"pair"},
- * {"do":"revoke","key":...} and the rest (phone/link.h), queued for the
- * feature's own thread. MV_ERR_INVALID_ARG for one that does not parse.
+ * A remote folder is a key, "remote:<server>/<root>/<rel>/", and its files
+ * "remote:<server>/<root>/<rel>". mv_list_subdirectories and mv_folder_open
+ * take a folder key as they take a path: the listing comes from the server
+ * (no stat), each item's thumbnail is its tile, and opening one shows its tile
+ * first, then its original once fetched into the cache (%LocalAppData%\
+ * MediaViewer\remote-cache). A server that does not answer lists the folder as
+ * it was last listed here.
  *
- * mv_phone_state_json: the card's state, one JSON object (phone/link.h
- * state_json); buffer rules as mv_storage_report_json.
- *
- * mv_phone_resume: at launch. In the first window's process (flags 0) a
- * library set up before carries on with no card open (the revoke queue, the
- * nearby copy). A later window's process passes MV_PHONE_SECONDARY: it runs
- * none of it (two would race on the NAS), mv_phone_request answers
- * MV_ERR_UNSUPPORTED_FORMAT and the state is {"secondary":true}.
- * mv_phone_stop: at quit, before the add-ons unload; never waits on the NAS.
- * Process-wide. [any-thread][no-block] */
-MV_API mv_status MV_CALL mv_phone_request(const char* request_json);
-MV_API mv_status MV_CALL mv_phone_state_json(char* utf8, uint32_t cap, uint32_t* out_bytes);
-#define MV_PHONE_SECONDARY 1u
-MV_API mv_status MV_CALL mv_phone_resume(uint32_t flags);
-MV_API mv_status MV_CALL mv_phone_stop(void);
+ * mv_remote_servers_json: [{"name","key","state","role"}], state one of unknown,
+ * online, unreachable, access_ended, wrong_service, too_old; role what the
+ * server lets this desktop do ("view", "change", "admin"; "" until it has
+ * answered this run, or from a service older than roles); never blocks.
+ * mv_remote_generation bumps when that changes.
+ * mv_remote_preview_json: what a pasted code says before it is used:
+ * {"name","fingerprint"} (compare it with the other computer's card), or
+ * {"error":"words to show"}; never blocks.
+ * mv_remote_pair_start: pairs on a worker; mv_remote_pair_state_json polls
+ * {"busy":bool,"ok":bool,"words":"...","key":"remote:<id>/","seq":n} for the
+ * notice: `key` the server the last pairing that worked added, `seq` how many
+ * have worked this run (0: none), so a host pins each one once (2026-11-18).
+ * mv_remote_forget: forgets a server here (keys, cache) on a worker; the
+ * server's owner removes this computer there.
+ * Buffer rules as mv_storage_report_json. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_remote_servers_json(char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_generation(uint64_t* out_generation);
+MV_API mv_status MV_CALL mv_remote_preview_json(const char* code_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_pair_start(const char* code_utf8);
+MV_API mv_status MV_CALL mv_remote_pair_state_json(char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_forget(const char* server_key_utf8);
+
+/* 0.45: changing another computer's folders (docs/plans/desktop-client.md §6) where its
+ * server lets this computer "change" files and marks that folder writable.
+ * mv_remote_can_write / mv_remote_write_problem: whether it may at a key now, and why not in
+ * words a command shows ("" when it may). [any-thread][no-block]
+ * The rest BLOCK (a worker): mv_remote_exists (one stat), mv_remote_make_folder (a new folder
+ * `name` in `parent_key`; an existing one is MV_ERR_PERMISSION_DENIED), mv_remote_add (a local
+ * file up as `name`; the server never replaces, it names it "name (2).ext"; resumes by itself
+ * after a dropped link), mv_remote_move (within one server, a rename when `to_parent_key` is
+ * its own folder; `out_taken` 1 when the name is someone else's, nothing replaced),
+ * mv_remote_remove (into that folder's trash on the server), mv_remote_fetch (the original
+ * here, whole: its local path). `progress` gets the bytes so far; a non-zero return stops
+ * the call (MV_ERR_CANCELLED). The out key / path: what fits, NUL-ended, with `out_bytes` the
+ * whole size -- and MV_OK even when the buffer is short, since the change was made: never call
+ * one of these again to size a buffer (it would upload or move a second time). */
+typedef int32_t(MV_CALL* mv_remote_progress_fn)(uint64_t bytes, void* user);
+MV_API mv_status MV_CALL mv_remote_can_write(const char* key_utf8, uint8_t* out_can);
+MV_API mv_status MV_CALL mv_remote_write_problem(const char* key_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_exists(const char* key_utf8, uint8_t* out_exists);
+MV_API mv_status MV_CALL mv_remote_make_folder(const char* parent_key_utf8, const char* name_utf8, char* out_key,
+                                               uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_add(const char* parent_key_utf8, const char* local_path_utf8, const char* name_utf8,
+                                       mv_remote_progress_fn progress, void* user, char* out_key, uint32_t cap,
+                                       uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_move(const char* key_utf8, const char* to_parent_key_utf8, const char* name_utf8,
+                                        uint8_t* out_taken, char* out_key, uint32_t cap, uint32_t* out_bytes);
+MV_API mv_status MV_CALL mv_remote_remove(const char* key_utf8);
+MV_API mv_status MV_CALL mv_remote_fetch(const char* key_utf8, mv_remote_progress_fn progress, void* user,
+                                         char* out_path, uint32_t cap, uint32_t* out_bytes);
 
 /* 0.19. Kinds the folder listing leaves out (Settings, "Show audio files" /
  * "Show documents"): MV_FOLDER_HIDE_AUDIO (MP3, M4A, M4P) and

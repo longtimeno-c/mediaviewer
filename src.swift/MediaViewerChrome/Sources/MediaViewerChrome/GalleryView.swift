@@ -118,9 +118,7 @@ struct GalleryView: View {
       let cell = store.galleryCellSize
       let columns = max(1, Int((geo.size.width - 2 * inset + spacing) / (cell + spacing)))
       let mixed = !store.folders.isEmpty && !store.names.isEmpty
-      let foldersOnly = !store.folders.isEmpty && store.names.isEmpty
-      // The layout (strip or big tiles) follows the folder, not the filter,
-      // so typing never flips it; the filter picks the tiles inside it.
+      let hasFolders = !store.folders.isEmpty
       // Clamped to the listing on screen: the filter's indices are one render
       // behind when the listing is swapped (a result list opening in place of
       // the folder has no folders), and a stale index traps in folders[index].
@@ -129,10 +127,11 @@ struct GalleryView: View {
       let shownItems = search.items.map { $0.filter { $0 < store.names.count } } ?? store.itemIndices
       let shownFolders = search.folders.map { $0.filter { $0 < store.folders.count } } ?? store.folderIndices
       let filteredEmpty = search.items != nil && shownItems.isEmpty && shownFolders.isEmpty
-      // Issue #413: one share icon for the grid's selection; issue #444: it
-      // opens the share menu (Driftwire, then the system's targets).
-      let shareShown = !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty)
-      let photosHeader = mixed && !shownItems.isEmpty
+      let here = store.currentDir ?? ""
+      // The grid's columns are fixed and centred: a section header lines up
+      // with the first column, not the window's edge.
+      let gridWidth = CGFloat(columns) * cell + CGFloat(columns - 1) * spacing
+      let headerLead = max(0, (geo.size.width - 2 * inset - gridWidth) / 2)
       VStack(spacing: 0) {
         // Fades in and out over the grid (docs/design/20 "Craft rules": nothing
         // pops); the grid takes its new place at once, as on Windows.
@@ -145,7 +144,7 @@ struct GalleryView: View {
           }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: search.isOpen)
-        if (mixed || foldersOnly), let query = store.folderQuery {
+        if hasFolders, let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
             .font(MVTheme.font(13))
             .fontWeight(.medium)
@@ -154,88 +153,104 @@ struct GalleryView: View {
             .padding(.horizontal, inset)
             .padding(.top, MVTheme.space(8))
         }
-        if mixed && !shownFolders.isEmpty {
-          FolderStrip(cell: 44, shown: shownFolders)
-            .padding(.horizontal, inset)
-            .padding(.vertical, MVTheme.space(8))
-        }
-        // The photos' row, right over them (Windows' photosRow): the section's
-        // name in a mixed folder, and Share. The count of a range is said once,
-        // by Share ("Share 12"), not again beside it.
-        if shareShown || photosHeader {
-          HStack(spacing: MVTheme.space(8)) {
-            if photosHeader {
-              Text("Photos and videos  \(shownItems.count)")
-                .font(MVTheme.font(12))
-                .fontWeight(.semibold)
-                .foregroundStyle(MVTheme.body)
-                .monospacedDigit()
-                .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            if shareShown {
-              // A control has a surface at rest; the bar's flat style adds its
-              // hover and press washes over it.
-              GalleryShareButton()
-                .background(RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(MVTheme.surface2))
-            }
-          }
-          .padding(.horizontal, inset)
-          .padding(.top, MVTheme.space(8))
-        }
         ScrollViewReader { proxy in
           ScrollView {
+            // docs/design/16 "Folder navigation": folders first, then the photos,
+            // in one grid (Finder). Each is its own section, so the photos start
+            // on a row of their own -- the host's arrow arithmetic (galleryMoveRows)
+            // treats the tiles as a block of rows above them.
             LazyVGrid(
               columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: columns),
               spacing: spacing
             ) {
-              if foldersOnly {
-                ForEach(shownFolders, id: \.self) { index in
-                  // A stale row of a list that just shrank: see FolderStrip.
-                  if store.folders.indices.contains(index) {
-                    FolderTile(
-                      index: index, path: store.folders[index], size: cell,
-                      isCursor: index == store.folderCursor,
-                      card: store.card(for: store.folders[index])
-                    )
-                    .id("folder-\(index)")
-                    .onTapGesture { store.openFolder(at: index) }
+              if hasFolders {
+                Section {
+                  ForEach(shownFolders, id: \.self) { index in
+                    // A stale row of a list that just shrank: skip it, never index past the end.
+                    if store.folders.indices.contains(index) {
+                      let path = store.folders[index]
+                      FolderTile(
+                        index: index, path: path, size: cell,
+                        isCursor: index == store.folderCursor,
+                        card: store.card(for: path)
+                      )
+                      .id("folder-\(index)")
+                      .onTapGesture {
+                        switch TileClick.of(clickCount: NSApp.currentEvent?.clickCount ?? 1) {
+                        case .select: store.selectFolder(at: index)
+                        case .open: store.openFolder(at: index)
+                        }
+                      }
+                      // Drop into it; rest on it with a drag and it opens.
+                      .folderDropTarget(path, name: store.folderName(path)) {
+                        if let i = store.folders.firstIndex(of: path) { store.openFolder(at: i) }
+                      }
+                      .onAppear {
+                        store.folderTileAppeared(index)
+                        GalleryScroll.shared.visible.appear(-(index + 1))
+                      }
+                      .onDisappear {
+                        store.folderTileDisappeared(index)
+                        GalleryScroll.shared.visible.disappear(-(index + 1))
+                      }
+                    }
                   }
                 }
               }
               if !store.names.isEmpty {
-                ForEach(shownItems, id: \.self) { index in
-                  if store.names.indices.contains(index) {
-                    GalleryCell(
-                      index: index, name: store.names[index], size: cell,
-                      onFolders: store.folderCursor >= 0,
-                      highlight: store.highlight(at: index),
-                      isMarked: store.markedNames.contains(store.names[index]),
-                      isClip: store.isClip(at: index),
-                      thumbKey: store.thumbKey(at: index), slot: store.slot(at: index),
-                      slotBadges: tileFlags.badges,
-                      why: search.why[index]
-                    )
-                    .id(index)
-                    .onTapGesture {
-                      // Issue #413: Shift-click selects every image from the
-                      // selected cell to this one and the grid stays; a plain
-                      // click opens this one.
-                      if NSEvent.modifierFlags.contains(.shift) {
-                        store.extendRange(to: index, shown: shownItems)
-                      } else {
-                        store.selectAndCloseGallery(index)
+                Section {
+                  ForEach(shownItems, id: \.self) { index in
+                    if store.names.indices.contains(index) {
+                      GalleryCell(
+                        index: index, name: store.names[index], size: cell,
+                        onFolders: store.folderCursor >= 0,
+                        highlight: store.highlight(at: index),
+                        isMarked: store.markedNames.contains(store.names[index]),
+                        isClip: store.isClip(at: index),
+                        thumbKey: store.thumbKey(at: index), slot: store.slot(at: index),
+                        slotBadges: tileFlags.badges,
+                        why: search.why[index]
+                      )
+                      .id(index)
+                      .onTapGesture {
+                        // Issue #413: Shift-click selects every image from the
+                        // selected cell to this one and the grid stays; a plain
+                        // click opens this one.
+                        if NSEvent.modifierFlags.contains(.shift) {
+                          store.extendRange(to: index, shown: shownItems)
+                        } else {
+                          store.selectAndCloseGallery(index)
+                        }
                       }
+                      // Drag out the original (the range or the marks, when this
+                      // cell is in them). Started by GalleryDrag's event monitor:
+                      // the grid's scroll view keeps a SwiftUI drag from reaching
+                      // the cell (#413). Right-click: the add-ons' entries, then
+                      // Share (TileMenu, #444), picked up the same way.
+                      .onHover { inside in
+                        GalleryDrag.shared.hover(index, inside: inside)
+                        TileMenu.shared.hover(index, inside: inside, gallery: true)
+                      }
+                      .onAppear { GalleryScroll.shared.visible.appear(index) }
+                      .onDisappear { GalleryScroll.shared.visible.disappear(index) }
                     }
-                    // Drag out the original (the range or the marks, when this
-                    // cell is in them). Started by GalleryDrag's event monitor:
-                    // the grid's scroll view keeps a SwiftUI drag from reaching
-                    // the cell (#413). Right-click: the add-ons' entries, then
-                    // Share (TileMenu, #444), picked up the same way.
-                    .onHover { inside in
-                      GalleryDrag.shared.hover(index, inside: inside)
-                      TileMenu.shared.hover(index, inside: inside, gallery: true)
+                  }
+                } header: {
+                  // The photos' row, right over them (Windows' photosRow): the
+                  // section's name in a mixed folder. Share is the command bar's
+                  // one button (BarShareButton), not a second one over the grid.
+                  if mixed && !shownItems.isEmpty {
+                    HStack(spacing: MVTheme.space(8)) {
+                      Text("Photos and videos  \(shownItems.count)")
+                        .font(MVTheme.font(12))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(MVTheme.body)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                      Spacer(minLength: 0)
                     }
+                    .padding(.top, MVTheme.space(8))
+                    .padding(.leading, headerLead)
                   }
                 }
               }
@@ -259,70 +274,62 @@ struct GalleryView: View {
             FollowSelection(proxy: proxy, anchor: nil, onFolders: store.folderCursor >= 0)
           }
           .onChange(of: store.folderCursor) { _, cursor in
-            if foldersOnly && cursor >= 0 {
-              proxy.scrollTo("folder-\(cursor)", anchor: .center)
-            } else if cursor < 0, store.currentIndex >= 0 {
+            if cursor >= 0 {
+              proxy.scrollTo("folder-\(cursor)")
+            } else if store.currentIndex >= 0 {
               proxy.scrollTo(store.currentIndex)
             }
           }
+          // Another folder on screen: Back / Forward put the grid where that
+          // folder had it; any other way in starts at the top, on what the host
+          // selected. One jump, unanimated, before the cells draw.
+          .onChange(of: store.listingGeneration) { _, _ in
+            let scroll = GalleryScroll.shared
+            let dir = store.currentDir ?? ""
+            guard dir != scroll.dir else { return }
+            scroll.memory.remember(scroll.dir, top: scroll.visible.top)
+            scroll.dir = dir
+            if store.arrivedByHistory, let top = scroll.memory.top(for: dir) {
+              proxy.scrollTo(top < 0 ? AnyHashable("folder-\(-(top + 1))") : AnyHashable(top), anchor: .top)
+            } else if store.folderCursor >= 0 {
+              proxy.scrollTo("folder-\(store.folderCursor)")
+            } else if store.currentIndex > 0 {
+              proxy.scrollTo(store.currentIndex)
+            } else {
+              proxy.scrollTo(store.folders.isEmpty ? AnyHashable(0) : AnyHashable("folder-0"), anchor: .top)
+            }
+          }
           .onAppear {
-            if foldersOnly && store.folderCursor >= 0 {
+            GalleryScroll.shared.dir = store.currentDir ?? ""
+            if store.folderCursor >= 0 {
               proxy.scrollTo("folder-\(store.folderCursor)", anchor: .center)
             }
           }
         }
       }
+      // The grid is the folder on screen: what is dropped on it goes there.
+      .folderDropTarget(here, name: store.crumbs.last?.name ?? "", radius: MVTheme.radius(10), inset: -6)
+      .overlay(alignment: .bottom) { DropLabel() }
       .onAppear { mv_chrome_set_gallery_columns(Int32(columns)) }
       .onChange(of: columns) { _, new in mv_chrome_set_gallery_columns(Int32(new)) }
     }
   }
 }
 
-/// One row of folders above the photos. Big tiles stay for a folder that holds
-/// only folders; a mixed folder keeps the pictures in the grid and the folders
-/// in this strip.
-private struct FolderStrip: View {
-  @ObservedObject private var store = FolderStore.shared
-  let cell: CGFloat
-  /// The folder indices file search shows (all of them when off).
-  let shown: [Int]
-
-  var body: some View {
-    ScrollViewReader { proxy in
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: MVTheme.space(8)) {
-          ForEach(shown, id: \.self) { index in
-            // SwiftUI can re-run a row of the old list after the list shrank
-            // (a search or a person swapping the folder out): skip it, never
-            // index past the end.
-            if store.folders.indices.contains(index) {
-              FolderChip(
-                index: index, path: store.folders[index],
-                isCursor: index == store.folderCursor,
-                card: store.card(for: store.folders[index])
-              )
-              .id("chip-\(index)")
-              .onTapGesture { store.openFolder(at: index) }
-            }
-          }
-        }
-      }
-      .onChange(of: store.folderCursor) { _, cursor in
-        guard cursor >= 0 else { return }
-        proxy.scrollTo("chip-\(cursor)", anchor: .center)
-      }
-      .onAppear {
-        if store.folderCursor >= 0 {
-          proxy.scrollTo("chip-\(store.folderCursor)", anchor: .center)
-        }
-      }
-    }
-    .frame(height: cell + 36)
-  }
+/// Where the grid is scrolled, per folder (FolderNavModel.swift). Not
+/// published: cells write it as they come and go, and only a change of folder
+/// reads it.
+@MainActor
+final class GalleryScroll {
+  static let shared = GalleryScroll()
+  var memory = ScrollMemory()
+  var visible = VisibleCells()
+  var dir = ""
 }
 
-/// A child folder: its first photo as a cover (from the folder itself or, for a
-/// year of month folders, the first month that has one), name, and a count.
+/// A child folder: up to three photos as a cover, one big and two small (from
+/// the folder itself, spread across it, or for a year of month folders one from
+/// each of the first months that have one), name, and a count.
 private struct FolderTile: View {
   let index: Int
   let path: String
@@ -337,9 +344,7 @@ private struct FolderTile: View {
         .frame(width: size, height: size)
         .overlay {
           if let cover = card.cover {
-            Image(decorative: cover, scale: 1)
-              .resizable()
-              .aspectRatio(contentMode: .fill)
+            FolderMosaic(big: cover, smalls: card.smallCovers.compactMap { $0 }, size: size)
           } else {
             ZStack {
               Rectangle().fill(.quaternary)
@@ -379,59 +384,50 @@ private struct FolderTile: View {
       }
       .frame(width: size)
     }
+    .contextMenu { FolderShareMenu(path: path) }
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
 }
 
-/// A folder in the mixed-folder strip: a small cover, the name, and whether
-/// photos were found further down.
-private struct FolderChip: View {
-  let index: Int
-  let path: String
-  let isCursor: Bool
-  @ObservedObject var card: FolderCard
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+/// A folder tile's photos: one fills it; two split it in halves; three put the
+/// big one over two thirds and stack the small ones beside it, split by a
+/// hairline of the gallery behind (WinUI's LayoutFolderMosaic, the same gap).
+private struct FolderMosaic: View {
+  let big: CGImage
+  let smalls: [CGImage]
+  let size: CGFloat
+  private static let gap: CGFloat = 2
 
-  // One surface (docs/design/20 "Craft rules"): the chip's own fill at rest,
-  // and the keyboard's chip takes the accent ring alone, as a photo tile does
-  // (no accent fill under it too). The cover pads 4 on three sides, so the
-  // chip's corner is the cover's plus 4; the words keep 10 from its end.
   var body: some View {
-    HStack(spacing: MVTheme.space(8)) {
-      Color.clear
-        .frame(width: 36, height: 36)
-        .overlay {
-          if let cover = card.cover {
-            Image(decorative: cover, scale: 1).resizable().aspectRatio(contentMode: .fill)
-          } else {
-            Image(systemName: "folder.fill").foregroundStyle(MVTheme.body)
-          }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
-      VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-        Text(FolderStore.shared.folderName(path))
-          .font(MVTheme.font(12))
-          .foregroundStyle(MVTheme.title)
-          .lineLimit(1)
-        if card.loaded {
-          Text(card.status)
-            .font(MVTheme.font(11))
-            .foregroundStyle(MVTheme.body)
-            .lineLimit(1)
+    let gap = Self.gap
+    switch smalls.count {
+    case 0:
+      cell(big, width: size, height: size)
+    case 1:
+      let half = (size - gap) / 2
+      HStack(spacing: gap) {
+        cell(big, width: half, height: size)
+        cell(smalls[0], width: half, height: size)
+      }
+    default:
+      let side = (size - gap) / 3
+      let row = (size - gap) / 2
+      HStack(spacing: gap) {
+        cell(big, width: size - gap - side, height: size)
+        VStack(spacing: gap) {
+          cell(smalls[0], width: side, height: row)
+          cell(smalls[1], width: side, height: row)
         }
       }
-      .frame(width: 120, alignment: .leading)
     }
-    .padding(.leading, MVTheme.space(4))
-    .padding(.vertical, MVTheme.space(4))
-    .padding(.trailing, MVTheme.space(10))
-    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface2))
-    .overlay(
-      RoundedRectangle(cornerRadius: MVTheme.radius(8))
-        .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
-    )
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isCursor)
-    .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
+  }
+
+  private func cell(_ image: CGImage, width: CGFloat, height: CGFloat) -> some View {
+    Image(decorative: image, scale: 1)
+      .resizable()
+      .aspectRatio(contentMode: .fill)
+      .frame(width: width, height: height)
+      .clipped()
   }
 }
 

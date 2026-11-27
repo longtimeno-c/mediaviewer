@@ -272,8 +272,6 @@ public static partial class IslandHost
             // reader holds a text model: neither may compete with this window's
             // first pixel, nor cost a window that never searches.
             _addonsElsewhere = true;
-            // Phone access is the first window's (phone/app.h): two would race on the NAS.
-            PhoneNative.Resume(primary: false);
             // Issue #402: the add-ons that fill screens and slots load in every
             // window, this one too, on a worker. They are found by manifest, so
             // this hashes Places' files, never the AI pack's.
@@ -281,9 +279,9 @@ public static partial class IslandHost
             _ = Task.Run(() => StartSlotAddons(guestSession, guest: true));
             return;
         }
-        // Phone access (docs/plans/phone-in-the-app.md): this window's process runs
-        // it; a library set up before carries on with no card open.
-        PhoneNative.Resume(primary: true);
+        // "Tray": the server menu while `driftwire host` runs, the first window's alone
+        // (docs/plans/self-hosted.md "Tray"; Phone access itself is an add-on now).
+        HostTrayNative.Start();
         MediaViewerSession session = _folderSession;
         _ = Task.Run(() =>
         {
@@ -914,7 +912,8 @@ public static partial class IslandHost
     {
         if (slot == ImportSlot) RefreshAddonRow();
         else if (slot == DriftwireSlot) RefreshDriftwireOffer();  // #410
-        else if (slot == PlacesChannel || slot == EnhanceSlot || IsSlotChannel(slot)) RefreshSlotSettings();
+        else if (slot == PlacesChannel || slot == EnhanceSlot || slot == PhoneAccessSlot || IsSlotChannel(slot))
+            RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 

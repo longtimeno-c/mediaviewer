@@ -15,6 +15,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 using Windows.Graphics;
 
+using MediaViewer.Shared;
 namespace MediaViewer.Chrome;
 
 /// <summary>
@@ -41,7 +42,6 @@ public static partial class IslandHost
     private static StackPanel? _galleryStack;
     private static TextBlock? _photosHeader;
     private static Grid? _photosRow;
-    private static Button? _galleryShare;  // #413
     private static TextBlock? _galleryEmpty;
     private static TextBlock? _folderFindLabel;
     private static ItemsRepeater? _folderChipRepeater;
@@ -49,6 +49,8 @@ public static partial class IslandHost
     private static FrameworkElement? _barPathRow;
     private static ScrollViewer? _barPathScroller;
     private static Button? _barUpButton;
+    private static Button? _barBackButton;
+    private static Button? _barForwardButton;
     private static Button? _barRootButton;
     private static TextBlock? _barPathCurrent;
     private static double _barNameNatural;
@@ -69,6 +71,8 @@ public static partial class IslandHost
     private static readonly ObservableCollection<FolderCardVm> Folders = new();
     private static int _folderCursor = -1;
     private static bool _canGoUp;
+    private static bool _canGoBack;
+    private static bool _canGoForward;
     private static string? _folderQuery;
     private static readonly List<(string Name, string Path)> Crumbs = new();
 
@@ -168,7 +172,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < 32) return unchecked((int)0x80070057);
             ChromeBrowseArgs args = Marshal.PtrToStructure<ChromeBrowseArgs>(arg);
             _folderCursor = args.FolderCursor;
-            _canGoUp = args.CanGoUp != 0;
+            // Bit 0 Up, bit 1 Back, bit 2 Forward (main.cpp push_browse_state).
+            (_canGoUp, _canGoBack, _canGoForward) = DropWords.Moves(args.CanGoUp);
             _folderQuery = args.QueryBytes < 0
                 ? null
                 : (args.QueryBytes == 0 || args.QueryUtf8 == 0
@@ -295,6 +300,7 @@ public static partial class IslandHost
         {
             _galleryVisible = true;
             RenderEditBarButton();
+            UpdateBarShareButton();
             UpdateGalleryCount();
             _dispatcher?.DispatcherQueue.TryEnqueue(RealiseGallery);
         },
@@ -303,6 +309,7 @@ public static partial class IslandHost
             _galleryVisible = false;
             ClearGalleryRange();  // #413: the range belongs to the grid
             RenderEditBarButton();
+            UpdateBarShareButton();  // a folder tile is no longer under the cursor
             GallerySearchHidden();
             ReleaseRepeater(ref _galleryRepeater);
             ReleaseRepeater(ref _folderRepeater);
@@ -549,24 +556,17 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderFindLabel);
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
-        // Issue #413: the photos' header, and one share icon for the grid's
-        // selection. Issue #444: it opens the share menu (Driftwire, then
-        // Windows Share), the one share command's. The Mac's row over its grid
-        // (GalleryView): the count of a range is said once, by Share. 12 DIP
-        // over the first row of tiles, never touching it; collapsed when empty.
+        // The photos' header in a mixed folder, 12 DIP over the first row of
+        // tiles, never touching it; collapsed when empty. Share is the command
+        // bar's one button beside Home (docs/design/16 "Share"), not a second
+        // one over the grid.
         var photosRow = new Grid
         {
-            ColumnSpacing = Space(8),
             Margin = Pad(0, 0, 0, 12),
             Visibility = Visibility.Collapsed,
         };
-        photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         photosRow.Children.Add(_photosHeader);
         _photosRow = photosRow;
-        _galleryShare = BuildGalleryShareButton();
-        Grid.SetColumn(_galleryShare, 1);
-        photosRow.Children.Add(_galleryShare);
         _galleryStack.Children.Add(photosRow);
         _galleryStack.Children.Add(_galleryRepeater);
         _galleryStack.Children.Add(_galleryEmpty);
@@ -615,7 +615,10 @@ public static partial class IslandHost
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        WireFileDrop(root);
+        // The grid is the folder on screen: what is dropped on it goes there
+        // (with nothing open, a drop opens it, as on the canvas).
+        WireFolderDrop(root, () => Crumbs.Count > 0 ? Crumbs[^1].Path : "",
+                       () => Crumbs.Count > 0 ? Crumbs[^1].Name : "");
         root.Children.Add(BuildGallerySearchBar());
         Grid.SetRow(_galleryScroll, 1);
         root.Children.Add(_galleryScroll);
@@ -625,7 +628,7 @@ public static partial class IslandHost
         return root;
     }
 
-    // On the tiles' edge (no 2 DIP near-tangent) and centred on Share beside it.
+    // On the tiles' edge (no 2 DIP near-tangent).
     private static TextBlock SectionLabel(string text)
     {
         var t = new TextBlock
@@ -643,12 +646,11 @@ public static partial class IslandHost
         return t;
     }
 
-    // The photos' row shows while its header or Share does.
+    // The photos' row shows while its header does.
     private static void SyncPhotosRow()
     {
         if (_photosRow is null) return;
-        bool any = _photosHeader?.Visibility == Visibility.Visible || _galleryShare?.Visibility == Visibility.Visible;
-        _photosRow.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
+        _photosRow.Visibility = _photosHeader?.Visibility ?? Visibility.Collapsed;
     }
 
     // The folder trail, in the command bar just left of `?` (Mac PathBar in
@@ -659,6 +661,18 @@ public static partial class IslandHost
     {
         _barUpButton = PathIconButton("\uE74A", () => Send(Command.FolderUp));
         AutomationProperties.SetName(_barUpButton, "Up one folder");
+        // docs/design/16 "Folder navigation": Explorer's Back / Forward, beside Up.
+        _barBackButton = PathIconButton("\uE72B", () => Send(Command.FolderBack));
+        AutomationProperties.SetName(_barBackButton, "Back");
+        _barForwardButton = PathIconButton("\uE72A", () => Send(Command.FolderForward));
+        AutomationProperties.SetName(_barForwardButton, "Forward");
+        var moves = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _barBackButton, _barForwardButton, _barUpButton },
+        };
         _barRootButton = PathIconButton("\uE80F", () => Send(Command.OpenCrumb, 0));
         AutomationProperties.SetName(_barRootButton, "Return to browsing root");
         // Issue #444: Share beside Home, in Home's column so the trail's
@@ -713,7 +727,7 @@ public static partial class IslandHost
         };
         for (int i = 0; i < 7; ++i)
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 0 });
-        Put(row, _barUpButton, 0);
+        Put(row, moves, 0);
         Put(row, rootAndShare, 1);
         Put(row, scroller, 2);
         Put(row, _barPathCurrent, 3);
@@ -860,6 +874,10 @@ public static partial class IslandHost
         {
             ToolTipService.SetToolTip(_barUpButton, "Open the enclosing folder" + KeyNote(Command.FolderUp));
         }
+        if (_barBackButton is not null)
+            ToolTipService.SetToolTip(_barBackButton, "Back to the folder before" + KeyNote(Command.FolderBack));
+        if (_barForwardButton is not null)
+            ToolTipService.SetToolTip(_barForwardButton, "Forward" + KeyNote(Command.FolderForward));
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
         // docs/design/25 §7: while the pack is attached it is the local-scope provider.
@@ -879,6 +897,8 @@ public static partial class IslandHost
         if (trail is null || up is null || root is null || current is null || row is null) return;
         // TextButton's FlattenButton dims a disabled button.
         up.IsEnabled = _canGoUp;
+        if (_barBackButton is not null) _barBackButton.IsEnabled = _canGoBack;
+        if (_barForwardButton is not null) _barForwardButton.IsEnabled = _canGoForward;
         row.Visibility = Crumbs.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         root.IsEnabled = Crumbs.Count > 1;
         ToolTipService.SetToolTip(root, Crumbs.Count > 0 ? "Return to browsing root: " + Crumbs[0].Path : "No folder open");
@@ -942,6 +962,10 @@ public static partial class IslandHost
                 // The Mac's crumb: .truncationMode(.middle) inside 120.
                 if (crumb.Content is TextBlock label) SetMiddleTrimmed(label, piece.Name, 120 - 8);
                 ToolTipService.SetToolTip(crumb, Crumbs[index].Path);
+                // Drop files on a segment: they go into that folder.
+                string crumbPath = Crumbs[index].Path;
+                string crumbName = piece.Name;
+                WireFolderDrop(crumb, () => crumbPath, () => crumbName);
                 trail.Children.Add(crumb);
             }
         }
@@ -1024,6 +1048,7 @@ public static partial class IslandHost
         for (int i = 0; i < Folders.Count; ++i) Folders[i].Cursor = i == _folderCursor;
         for (int i = 0; i < Items.Count; ++i)
             Items[i].GalleryCurrent = Items[i].Selected && _folderCursor < 0;
+        UpdateBarShareButton();  // the outlined folder tile is something to share
     }
 
     private static void FolderScrollTo(int index)
@@ -1094,7 +1119,61 @@ public static partial class IslandHost
         card.Loaded = (summary.Flags & MvFolderSummary.FlagLoaded) != 0;
         card.CoverPath = (summary.Flags & MvFolderSummary.FlagHasCover) != 0
             ? _folderSession!.FolderSummaryCoverThumb(index) : "";
+        // ABI 0.42: the tile's small photos. An older core leaves CoverCount 0,
+        // which reads as the one cover above.
+        uint covers = Math.Min(summary.CoverCount, 3u);
+        if (covers <= 1 || card.CoverPath.Length == 0)
+        {
+            card.CoverPaths = card.CoverPath.Length == 0 ? [] : [card.CoverPath];
+        }
+        else
+        {
+            var paths = new string[covers];
+            for (uint slot = 0; slot < covers; ++slot)
+                paths[slot] = _folderSession!.FolderSummaryCoverThumb(index, slot);
+            card.CoverPaths = paths;
+        }
         return card;
+    }
+
+    // The hairline between a folder tile's photos: the gallery shows through.
+    private const double FolderMosaicGap = 2;
+
+    /// <summary>
+    /// A folder tile's mosaic for <paramref name="count"/> photos (children:
+    /// big, small, small): one fills the tile; two split it in halves; three
+    /// put the big one over two thirds and stack the small ones beside it.
+    /// Only a change of count re-lays it, so the big photo never moves when
+    /// the small ones arrive after it.
+    /// </summary>
+    private static void LayoutFolderMosaic(Grid mosaic, int count)
+    {
+        int shape = Math.Clamp(count, 1, 3);
+        if (mosaic.Tag is int laid && laid == shape) return;
+        mosaic.Tag = shape;
+        mosaic.ColumnDefinitions.Clear();
+        mosaic.RowDefinitions.Clear();
+        if (shape >= 2)
+        {
+            mosaic.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(shape == 3 ? 2 : 1, GridUnitType.Star) });
+            mosaic.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        if (shape == 3)
+        {
+            mosaic.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            mosaic.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        }
+        var big = (FrameworkElement)mosaic.Children[0];
+        var first = (FrameworkElement)mosaic.Children[1];
+        var second = (FrameworkElement)mosaic.Children[2];
+        Grid.SetColumn(big, 0);
+        Grid.SetRow(big, 0);
+        Grid.SetRowSpan(big, shape == 3 ? 2 : 1);
+        Grid.SetColumn(first, 1);
+        Grid.SetRow(first, 0);
+        Grid.SetRowSpan(first, 1);
+        Grid.SetColumn(second, 1);
+        Grid.SetRow(second, 1);
     }
 
     // A clip's gallery or filmstrip tile: a play glyph in a dark disc over the
@@ -1245,12 +1324,23 @@ public static partial class IslandHost
         public UIElement GetElement(ElementFactoryGetArgs args)
         {
             var vm = (FolderCardVm)args.Data;
-            var cover = new Image
+            // One big photo and two small ones (the album look), split by a
+            // hairline of the gallery behind. Two photos halve the tile; one
+            // fills it, as before. The images fill their cells and are clipped
+            // to them, so a portrait and a landscape sit side by side.
+            var cover = new Image { Stretch = Stretch.UniformToFill };
+            var small1 = new Image { Stretch = Stretch.UniformToFill };
+            var small2 = new Image { Stretch = Stretch.UniformToFill };
+            var mosaic = new Grid
             {
                 Width = GalleryTile,
                 Height = GalleryTile,
-                Stretch = Stretch.UniformToFill,
+                ColumnSpacing = FolderMosaicGap,
+                RowSpacing = FolderMosaicGap,
             };
+            mosaic.Children.Add(cover);
+            mosaic.Children.Add(small1);
+            mosaic.Children.Add(small2);
             var placeholder = new Grid
             {
                 Width = GalleryTile,
@@ -1267,7 +1357,7 @@ public static partial class IslandHost
             });
             var box = new Grid { Width = GalleryTile, Height = GalleryTile };
             box.Children.Add(placeholder);
-            box.Children.Add(cover);
+            box.Children.Add(mosaic);
 
             // The Mac's .ultraThinMaterial Capsule: the theme's surface, a
             // little see-through, and its text colour, not a fixed black.
@@ -1326,7 +1416,28 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetCover() => ShowTileImage(cover, vm.CoverPath, GalleryDecodeWidth, placeholder);
+            void SetCover()
+            {
+                string[] paths = vm.CoverPaths;
+                LayoutFolderMosaic(mosaic, paths.Length);
+                string big = paths.Length > 0 ? paths[0] : vm.CoverPath;
+                // The big photo is already up when the small ones arrive: keep
+                // its source rather than decode it again (no blink).
+                if (cover.Tag as string != big || big.Length == 0)
+                {
+                    cover.Tag = big;
+                    ShowTileImage(cover, big, GalleryDecodeWidth, placeholder);
+                }
+                ShowSmall(small1, paths.Length > 1 ? paths[1] : "");
+                ShowSmall(small2, paths.Length > 2 ? paths[2] : "");
+            }
+            static void ShowSmall(Image image, string path)
+            {
+                image.Visibility = path.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+                if (image.Tag as string == path) return;
+                image.Tag = path;
+                ShowTileImage(image, path, GalleryDecodeWidth);
+            }
             void SetCount()
             {
                 count.Visibility = vm.Loaded ? Visibility.Visible : Visibility.Collapsed;
@@ -1337,7 +1448,8 @@ public static partial class IslandHost
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
-                if (e.PropertyName is nameof(FolderCardVm.CoverPath) or null) SetCover();
+                if (e.PropertyName is nameof(FolderCardVm.CoverPath) or nameof(FolderCardVm.CoverPaths) or null)
+                    SetCover();
                 if (e.PropertyName is nameof(FolderCardVm.Loaded) or nameof(FolderCardVm.MediaCount)
                     or nameof(FolderCardVm.SubfolderCount) or nameof(FolderCardVm.PhotosInside)
                     or nameof(FolderCardVm.SearchStopped) or nameof(FolderCardVm.Status) or null)
@@ -1345,7 +1457,12 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) ShowLayer(outline, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
-            border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            // One click selects the tile, two open it (Finder, Explorer).
+            border.Tapped += (_, _) => Send(Command.FolderCursor, vm.Index);
+            border.DoubleTapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            // Drop files on it; rest on it with a drag and it opens.
+            WireFolderDrop(border, () => vm.Path, () => vm.Name, () => Send(Command.OpenSubfolder, vm.Index));
+            AttachFolderContextMenu(border, vm);
             if (!vm.Requested)
             {
                 vm.Requested = true;
@@ -1444,7 +1561,10 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) ShowLayer(ring, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
-            border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            border.Tapped += (_, _) => Send(Command.FolderCursor, vm.Index);
+            border.DoubleTapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
+            WireFolderDrop(border, () => vm.Path, () => vm.Name, () => Send(Command.OpenSubfolder, vm.Index));
+            AttachFolderContextMenu(border, vm);
             if (!vm.Requested)
             {
                 vm.Requested = true;
@@ -1521,6 +1641,18 @@ internal sealed class FolderCardVm : INotifyPropertyChanged
         get => _coverPath;
         set { if (_coverPath == value) return; _coverPath = value; Changed(nameof(CoverPath)); }
     }
+    // The big tile's photos, the big one first (0..3); the chip shows CoverPath alone.
+    public string[] CoverPaths
+    {
+        get => _coverPaths;
+        set
+        {
+            if (_coverPaths.AsSpan().SequenceEqual(value)) return;
+            _coverPaths = value;
+            Changed(nameof(CoverPaths));
+        }
+    }
+    private string[] _coverPaths = [];
     public string Status
     {
         get

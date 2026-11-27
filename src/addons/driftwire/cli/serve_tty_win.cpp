@@ -19,6 +19,16 @@ bool serve_stdin_is_terminal() {
   return ::GetConsoleMode(::GetStdHandle(STD_INPUT_HANDLE), &mode) != 0;
 }
 
+bool serve_is_privileged() {
+  HANDLE token = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  TOKEN_ELEVATION e{};
+  DWORD got = 0;
+  const bool elevated = ::GetTokenInformation(token, TokenElevation, &e, sizeof e, &got) != 0 && e.TokenIsElevated != 0;
+  ::CloseHandle(token);
+  return elevated;
+}
+
 serve_echo_off::serve_echo_off(bool hide) {
   DWORD mode = 0;
   HANDLE in = ::GetStdHandle(STD_INPUT_HANDLE);

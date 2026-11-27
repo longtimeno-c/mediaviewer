@@ -11,8 +11,21 @@ namespace {
 std::mutex g_m;
 std::unordered_set<std::string> g_paths;
 std::string g_prefix;  // with a trailing separator
+std::string g_remote_prefix;  // the remote folder's cache (docs/plans/desktop-client.md)
+std::function<bool(std::string_view)> g_remote_writable;  // under g_m
 
 constexpr std::string_view kPhotosKey = "photos:";
+constexpr std::string_view kRemoteKey = "remote:";
+
+bool under(std::string_view path, const std::string& prefix) {
+  return !prefix.empty() && path.size() > prefix.size() && path.substr(0, prefix.size()) == prefix;
+}
+
+std::string with_separator(std::string_view dir) {
+  std::string out(dir);
+  if (!out.empty() && out.back() != '/' && out.back() != '\\') out.push_back('/');
+  return out;
+}
 
 bool inside_photos_library(std::string_view path) {
   constexpr std::string_view kBundle = ".photoslibrary";
@@ -38,11 +51,45 @@ bool write_protected(std::string_view path) {
   if (inside_photos_library(path)) return true;
   // A Photos library item itself (docs/design/26): no file, and never a write.
   if (path.size() > kPhotosKey.size() && path.substr(0, kPhotosKey.size()) == kPhotosKey) return true;
+  // Another computer's file (a remote folder): read-only first (owner, 2026-11-14).
+  if (is_remote(path)) return true;
   std::lock_guard lock(g_m);
-  if (!g_prefix.empty() && path.size() > g_prefix.size() && path.substr(0, g_prefix.size()) == g_prefix) {
-    return true;
-  }
+  if (under(path, g_prefix)) return true;
   return g_paths.count(std::string(path)) != 0;
+}
+
+bool is_remote(std::string_view path) {
+  if (path.size() > kRemoteKey.size() && path.substr(0, kRemoteKey.size()) == kRemoteKey) return true;
+  std::lock_guard lock(g_m);
+  return under(path, g_remote_prefix);
+}
+
+const char* write_protected_notice(std::string_view path) {
+  return is_remote(path) ? kRemoteWriteProtectedNotice : kWriteProtectedNotice;
+}
+
+bool change_allowed(std::string_view path, file_change op) {
+  (void)op;  // the same rule for each of the five: the service checks each request again
+  if (path.empty()) return false;
+  if (!write_protected(path)) return true;
+  // Only a remote key itself: never its cached original (a file here that stands for it).
+  if (path.size() <= kRemoteKey.size() || path.substr(0, kRemoteKey.size()) != kRemoteKey) return false;
+  std::function<bool(std::string_view)> check;
+  {
+    std::lock_guard lock(g_m);
+    check = g_remote_writable;
+  }
+  return check && check(path);
+}
+
+void set_remote_writable(std::function<bool(std::string_view)> check) {
+  std::lock_guard lock(g_m);
+  g_remote_writable = std::move(check);
+}
+
+void set_remote_cache_prefix(std::string_view dir) {
+  std::lock_guard lock(g_m);
+  g_remote_prefix = with_separator(dir);
 }
 
 bool any_write_protected(std::span<const std::string> paths) {
@@ -60,8 +107,7 @@ void set_read_only_paths(std::span<const std::string> paths) {
 
 void set_read_only_prefix(std::string_view dir) {
   std::lock_guard lock(g_m);
-  g_prefix.assign(dir);
-  if (!g_prefix.empty() && g_prefix.back() != '/' && g_prefix.back() != '\\') g_prefix.push_back('/');
+  g_prefix = with_separator(dir);
 }
 
 }  // namespace mv::shell

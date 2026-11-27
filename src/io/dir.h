@@ -3,6 +3,7 @@
 // Portable directory listing and watch. Windows impl is dir_win.cpp (D9).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,14 @@ struct subdir_entry {
 // if that holds no media walks down at most `max_depth` levels / `max_visits`
 // directories for a cover, so a folder tile over a NAS never turns into a
 // crawl. Runs on a worker (rule 1); never call it from the UI or render thread.
+//
+// A tile shows up to kFolderCovers photos: one big, two small. From the folder's
+// own listing they are spread across it (first, middle, last third) so a burst
+// does not fill the tile with one shot three times; a folder of folders takes
+// the first photo of each of its first child folders that has one, within the
+// same depth / visit budget. The walk never opens a directory just for the 2nd
+// or 3rd cover once the budget is spent.
+inline constexpr std::size_t kFolderCovers = 3;
 struct folder_summary {
   std::uint32_t media_count = 0;    // media files directly in the folder
   std::uint32_t subdir_count = 0;   // direct child folders
@@ -66,6 +75,8 @@ struct folder_summary {
   // means "not fully looked", not "folders only".
   bool search_incomplete = false;
   dir_entry cover;                  // first media file, here or in a descendant
+  // `cover` first, then up to kFolderCovers - 1 more; empty when !has_cover.
+  std::vector<dir_entry> covers;
 };
 [[nodiscard]] result<folder_summary> summarize_dir(std::string_view utf8_dir, int max_depth = 3,
                                                    int max_visits = 48);

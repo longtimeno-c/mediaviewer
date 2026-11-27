@@ -77,6 +77,12 @@ are in the **Clip tools** flyout (`Ctrl+S` on a clip).
   `progress`, `encoder`, `output`, `written`, then `done` or `error`. A crash in a driver's
   encoder ends the helper, not the viewer, and cancelling is a kill after a grace period.
   Stream-copy jobs stay in process.
+- **The helper also converts for phones** (`clip_convert.h`, docs/plans/phone-clip-convert.md):
+  `--convert-check [OUT]`, `--convert-plan SRC SEG_MS OUT`, `--convert-segment SRC K SEG_MS OUT`,
+  run by the self-hosted server, one job per run at background priority. Segment k is source time
+  [k·SEG_MS, (k+1)·SEG_MS) as MPEG-TS, H.264 on a hardware encoder (no B-frames, long side ≤ 1920)
+  and AAC from the OS's encoder, timestamps on the source's timeline plus 10 s so segments from
+  separate runs play one after another; a tail under 250 ms joins the segment before it.
 - **One queue, one worker** (`clip_jobs.h`): FIFO, every job cancellable while queued or running.
   One worker because a keyframe trim is disk-bound and a re-encode owns the GPU encoder. The
   decode pool is not used, so an export never delays a photo decode. Submit, cancel, retry and

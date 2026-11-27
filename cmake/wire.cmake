@@ -101,13 +101,16 @@ add_library(mv_wire STATIC
   ${_W}/secrets.h ${_W}/secrets_file.cpp
   ${_W}/known.cpp ${_W}/known.h
   ${_W}/serve_wire.cpp ${_W}/serve_wire.h
+  ${_W}/serve_convert.cpp ${_W}/serve_convert.h
   ${_W}/owner_pass.cpp ${_W}/owner_pass.h
   ${_W}/grants.cpp ${_W}/grants.h
+  ${_W}/share_users.cpp ${_W}/share_users.h
   ${_W}/serve.cpp ${_W}/serve.h
   ${_W}/serve_backup.cpp ${_W}/serve_backup.h
   ${_W}/serve_client.cpp ${_W}/serve_client.h
   ${_W}/pair_check.cpp ${_W}/pair_check.h
   ${_W}/splice.cpp ${_W}/splice.h
+  ${_W}/relay_field.cpp ${_W}/relay_field.h
   ${_W}/tls.h ${_W}/tls_common.cpp ${_driftwire_tls}
   ${_W}/advert.h
   ${_wire_port}

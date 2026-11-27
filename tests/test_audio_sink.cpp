@@ -345,6 +345,8 @@ TEST_CASE("an endpoint that never opens is retried with backoff, not rebuilt", "
   // A device appears: the next retry opens it and the endpoint is master again.
   sink->fail_open.store(false);
   REQUIRE(wait_until([&] { return sink->opens.load() == 1; }));
+  // The pump reports the endpoint as master after open() returns, the reason last.
+  REQUIRE(wait_until([&] { return clock.stats().fallback == clock_fallback_reason::none; }));
   stats = clock.stats();
   CHECK(stats.audio_master);
   CHECK(stats.fallback == clock_fallback_reason::none);
@@ -441,6 +443,8 @@ TEST_CASE("a seek whose reopen fails reports one device loss", "[clock]") {
   // The device comes back: the next retry opens it.
   sink->fail_open.store(false);
   REQUIRE(wait_until([&] { return sink->opens.load() == 2; }));
+  // The pump reports the endpoint as master after open() returns, the reason last.
+  REQUIRE(wait_until([&] { return clock.stats().fallback == clock_fallback_reason::none; }));
   stats = clock.stats();
   CHECK(stats.audio_master);
   CHECK(stats.fallback == clock_fallback_reason::none);

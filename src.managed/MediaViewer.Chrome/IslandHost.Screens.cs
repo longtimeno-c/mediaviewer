@@ -70,6 +70,11 @@ public static partial class IslandHost
         "share" => "",
         "warning" => "",
         "minus" => "",
+        "phone" => "",
+        "drive" => "",
+        "lock" => "",
+        "computer" => "",
+        "sync" => "",
         _ => "",
     };
 
@@ -269,6 +274,19 @@ public static partial class IslandHost
                     t.CharacterSpacing = 60;
                 }
                 if (JFlag(n, "copyable")) t.IsTextSelectionEnabled = true;
+                // "symbol" (contribution API 16): a glyph before the text, in its colour.
+                string glyph = JStr(n, "symbol");
+                if (glyph.Length > 0)
+                {
+                    var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+                    line.Children.Add(new FontIcon
+                    {
+                        Glyph = SlotGlyph(glyph), FontFamily = SymbolFont, FontSize = size,
+                        Foreground = t.Foreground, VerticalAlignment = VerticalAlignment.Center,
+                    });
+                    line.Children.Add(t);
+                    return line;
+                }
                 return t;
             }
             case "image":
@@ -411,13 +429,21 @@ public static partial class IslandHost
             {
                 // #508: as wide as its row allows (the Mac's TextField), never
                 // narrower than a short path.
+                // "secure" (contribution API 15, Phone access): dots, and never a
+                // value from the tree. What is typed is carried across a rebuild
+                // here, by node id (the add-on renames the field once it has used
+                // or dropped it), and goes with the screen.
+                bool secure = JFlag(n, "secure");
+                string secretKey = $"{at.Addon}/{at.Screen}/{id}";
                 var field = new FakeInput(JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"),
                                           look: InScreenWindow ? ScreenInputLook(_screenFace!) : null)
                 {
-                    Text = JStr(n, "value"),
+                    Secret = secure,
+                    Text = secure ? ScreenSecrets.GetValueOrDefault(secretKey, "") : JStr(n, "value"),
                     MinWidth = 180,
                 };
-                string last = field.Text;
+                if (secure) field.Changed += () => ScreenSecrets[secretKey] = field.Text;
+                string last = secure ? "" : field.Text;
                 field.Submitted += () =>
                 {
                     last = field.Text;
@@ -638,7 +664,9 @@ public static partial class IslandHost
         }
 
         FrameworkElement left = Device("", JStr(n, "from") is { Length: > 0 } f ? f : "This computer", "");
-        FrameworkElement right = Device(null, JStr(n, "to"), state == "done" ? "done" : failed ? "failed" : "");
+        // The VPN's Tunnel ends at the web, not a computer: a globe, not initials.
+        FrameworkElement right = Device(via == "tunnel" ? "\uE774" : null, JStr(n, "to"),
+                                        state == "done" ? "done" : failed ? "failed" : "");
         Grid.SetColumn(right, 2);
         strip.Children.Add(left);
         strip.Children.Add(right);
@@ -803,7 +831,8 @@ public static partial class IslandHost
 
         var captionRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6), HorizontalAlignment = HorizontalAlignment.Center };
         captionRow.Children.Add(SText(JStr(n, "caption"), Body, UiFontSize - 2));
-        if (value >= 0) captionRow.Children.Add(SText($"{Math.Round(value * 100)}%", Title, UiFontSize - 2));
+        TextBlock? percent = value >= 0 ? SText($"{Math.Round(value * 100)}%", Title, UiFontSize - 2) : null;
+        if (percent != null) captionRow.Children.Add(percent);
         root.Children.Add(captionRow);
 
         AutomationProperties.SetName(root, JStr(n, "label"));
@@ -815,8 +844,24 @@ public static partial class IslandHost
             "failed" => "Stopped",
             _ => "Connecting",
         });
+        // The progress moved and nothing else (ScreenTreePatch): the bar and
+        // the percentage follow it here, the dots carry on.
+        LinkProgress.AddOrUpdate(root, new LinkSetter(v =>
+        {
+            value = v;
+            if (percent != null) percent.Text = $"{Math.Round(v * 100)}%";
+            AutomationProperties.SetHelpText(root, $"{Math.Round(v * 100)} percent");
+            Layout();
+        }));
         return root;
     }
+
+    private sealed class LinkSetter(Action<double> set)
+    {
+        public Action<double> Set { get; } = set;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<FrameworkElement, LinkSetter> LinkProgress = new();
 
     // ---- #442 additions: card, ring, tiles, code entry ------------------------------
 
@@ -1892,7 +1937,38 @@ public static partial class IslandHost
 
     // ---- windows, docked panes, sheets ---------------------------------------------
 
-    private static readonly Dictionary<ScreenAt, (Window Window, long Revision)> ScreenWindows = new();
+    // Shown: the screen as last built or patched, for ScreenTreePatch.
+    private static readonly Dictionary<ScreenAt, (Window Window, long Revision, JsonElement Shown)> ScreenWindows = new();
+
+    // Every change found by its id in the last build, and of the kind it was
+    // built as; else nothing is touched and the screen is built again.
+    private static bool PatchScreen(object? content, JsonElement shown, JsonElement next)
+    {
+        if (content is not UIElement root || !ScreenIdsOf.TryGetValue(root, out var ids)) return false;
+        List<MediaViewer.Shared.ScreenTreePatch.Change>? changes = MediaViewer.Shared.ScreenTreePatch.Changes(shown, next);
+        if (changes is null) return false;
+        var apply = new List<Action>(changes.Count);
+        foreach (var c in changes)
+        {
+            if (!ids.TryGetValue(c.Id, out FrameworkElement? e)) return false;
+            if (c.Kind == "text" && e is TextBlock tb)
+            {
+                string words = c.Text;
+                apply.Add(() => tb.Text = words);
+            }
+            else if (c.Kind == "link" && LinkProgress.TryGetValue(e, out LinkSetter? link))
+            {
+                double v = c.Value;
+                apply.Add(() => link.Set(v));
+            }
+            else
+            {
+                return false;
+            }
+        }
+        foreach (Action a in apply) a();
+        return true;
+    }
     private static readonly HashSet<ScreenAt> ClosingFromCore = new();
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1926,10 +2002,17 @@ public static partial class IslandHost
             if (!ScreenWindows.TryGetValue(at, out var open))
             {
                 Window w = OpenScreenWindow(s, at, place);
-                ScreenWindows[at] = (w, revision);
+                ScreenWindows[at] = (w, revision, s.Clone());
                 FrameworkElement content = BuildScreenRoot(s, at, place);
                 w.Content = content;
                 if (place == "window") FitScreenWindow(w, content, (int)JNum(s, "height", 0));
+            }
+            else if (open.Revision != revision && PatchScreen(open.Window.Content, open.Shown, s))
+            {
+                // Only words and a link's progress moved (a transfer, ten times a
+                // second): changed where they are, no rebuild to flicker.
+                ScreenWindows[at] = (open.Window, revision, s.Clone());
+                RefreshSurfaces(at);
             }
             else if (open.Revision != revision && !ScreenPressed.Contains(at))
             {
@@ -1938,7 +2021,7 @@ public static partial class IslandHost
                 FrameworkElement content = BuildScreenRoot(s, at, place);
                 if (kept is { } k) RestoreScreenPlace(content, k);
                 open.Window.Content = content;
-                ScreenWindows[at] = (open.Window, revision);
+                ScreenWindows[at] = (open.Window, revision, s.Clone());
             }
             else
             {

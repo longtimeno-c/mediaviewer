@@ -253,12 +253,21 @@ private struct CoreLibrary: LibraryStore {
           guard let user, let row, let key = row.pointee.key, let name = row.pointee.name else { return }
           user.assumingMemoryBound(to: [Folder].self).pointee.append(
             Folder(id: String(cString: key), name: String(cString: name),
-                   itemCount: Int(row.pointee.item_count), hasSubfolders: row.pointee.has_subfolders != 0))
+                   itemCount: Int(row.pointee.item_count), hasSubfolders: row.pointee.has_subfolders != 0,
+                   fileCount: Int(row.pointee.file_count)))
         }, ptr)
       }
     }
     guard status == MV_MOBILE_OK else { throw CatalogueOpenFailure.unreadable }
     return out
+  }
+
+  /// A catalogue folder's list is everything beneath it, newest first: its first items stand for it.
+  func preview(of folder: Folder, count: Int) async -> FolderPreview {
+    guard let list = try? await list(in: .folder(folder)), !Task.isCancelled else { return .empty }
+    let newest = FolderPreview.newest(of: list, count: count)
+    // Paper peeks out of a folder of documents only.
+    return FolderPreview(items: newest.items, files: nil, folders: nil, others: folder.fileCount > 0 ? folder.fileCount : nil)
   }
 
   func people() async throws -> [Person] {
@@ -447,10 +456,18 @@ private final class CoreSearch: SearchService, @unchecked Sendable {
 
   func search(_ query: String, filters: SearchFilters) async throws -> [SearchHit] {
     let g = try await catalogue.generation()
+    // Overtaken while the catalogue opened (a first search at launch): stop here. Past this point
+    // a cancel reaches the core as soon as it happens; one that came only after a newer search had
+    // started there would stop that newer one instead, and its answer would never show.
+    try Task.checkCancellation()
     let text = QueryText.compose(query, filters: filters)
+    let cancelled = CancelFlag()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[SearchHit], Error>) in
         Self.queue.async {
+          // Overtaken while it waited its turn: a newer search is queued behind it, so this one
+          // runs no encode and scan of its own (or, while the model loads, no wait for it).
+          if cancelled.isSet { return continuation.resume(throwing: CancellationError()) }
           do {
             continuation.resume(returning: try Self.answer(g, text: text))
           } catch {
@@ -459,8 +476,16 @@ private final class CoreSearch: SearchService, @unchecked Sendable {
         }
       }
     } onCancel: {
+      cancelled.set()
       mv_mobile_search_cancel(g.raw)
     }
+  }
+
+  private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
   }
 
   // The phone shows photos and clips: nothing else asks for a tile here.

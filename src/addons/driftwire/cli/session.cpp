@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -18,9 +19,13 @@
 #include <utility>
 
 #include <ftxui/dom/elements.hpp>
+#include <sodium.h>
 
+#include "addons/driftwire/cli/args.h"
 #include "addons/driftwire/cli/complete.h"
+#include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
+#include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/cli/inline_view.h"
 #include "addons/driftwire/cli/keys.h"
 #include "addons/driftwire/cli/line_editor.h"
@@ -238,6 +243,22 @@ bool yes_word(std::string_view s) {
 
 }  // namespace
 
+// ---- the VPN (docs/plans/vpn-addon.md) ---------------------------------------------------------------
+
+// The VPN service's host here: its changes wake the session (which reads its
+// snapshot), its log lines join the engine's. No page, no menu, no Phone access.
+class vpn_bridge final : public vpn::service_host {
+ public:
+  vpn_bridge(terminal& t, cli_host& h) : t_(t), h_(h) {}
+  void post_settings(const std::string&) override { t_.wake(); }
+  bool settings_shown() override { return true; }
+  void log(int level, const char* ascii) override { h_.log(level, ascii); }
+
+ private:
+  terminal& t_;
+  cli_host& h_;
+};
+
 // ---- the controller ----------------------------------------------------------------------------------
 
 struct session::impl {
@@ -250,8 +271,11 @@ struct session::impl {
   session_options o;
   const theme& th;
   std::unique_ptr<engine> eng;
+  std::unique_ptr<vpn_bridge> vbridge;
+  std::unique_ptr<vpn::service> vsvc;  // /vpn; made after eng, gone before it
 
   view v;  // the last snapshot
+  vpn::view vv;  // the VPN's last snapshot
   std::int64_t now = 0, started = 0;
   bool quitting = false;
   int width = 80, height = 24;
@@ -283,7 +307,7 @@ struct session::impl {
   std::int64_t armed_until = 0;
 
   // A modal field: a code, a folder, the relay server.
-  enum class field_kind : std::uint8_t { none, send_to, save_elsewhere, relay_server } field = field_kind::none;
+  enum class field_kind : std::uint8_t { none, send_to, save_elsewhere, relay_server, vpn_server } field = field_kind::none;
   line_editor field_ed;
   std::string field_note;
   std::vector<std::string> field_choices;
@@ -367,6 +391,9 @@ struct session::impl {
 
   void ev(const std::string& node, std::uint32_t kind, const std::string& value) {
     if (eng) eng->on_event(node, kind, value);
+  }
+  void vev(const std::string& node, std::uint32_t kind, const std::string& value) {
+    if (vsvc) vsvc->on_event(node, kind, value);
   }
 
   void refresh_view() {
@@ -459,6 +486,8 @@ struct session::impl {
   void on_view(view next) {
     const view prev = std::move(v);
     v = std::move(next);
+    const vpn::view vprev = std::move(vv);
+    vv = vsvc ? vsvc->snapshot() : vpn::view{};
 
     // The banner, once the network had a moment to come up.
     if (!banner_done && (v.wifi_up || now - started >= kBannerWaitMs)) print_banner();
@@ -480,7 +509,7 @@ struct session::impl {
     on_in(prev);
     on_code(prev);
     on_remember(prev);
-    on_tunnel(prev);
+    on_tunnel(vprev);
     keep_selection(prev);
     try_send_to_name();
     if (field == field_kind::save_elsewhere && v.in != in_phase::asking) close_field();
@@ -488,32 +517,41 @@ struct session::impl {
     if (o.plain) plain_nearby_update();
   }
 
-  // The Tunnel (2026-11-12): the engine starts its proxy on its own thread,
-  // so the address is said when it first shows, and a problem when it changes.
-  void on_tunnel(const view& prev) {
-    if (!v.tunnel) return;
-    if (!v.tunnel_address.empty() && v.tunnel_address != prev.tunnel_address) say_tunnel();
-    if (!v.tunnel_note.empty() && v.tunnel_note != prev.tunnel_note) say(tone::warning, "Tunnel", {v.tunnel_note});
-    if (!v.tunnel_system && !v.tunnel_system_note.empty() && v.tunnel_system_note != prev.tunnel_system_note) {
-      say(tone::info, "Tunnel", {v.tunnel_system_note});
+  // The VPN's Tunnel: the service starts its proxy on its own thread, so the
+  // address is said when it first shows, and a problem when it changes.
+  void on_tunnel(const vpn::view& prev) {
+    if (!vv.tunnel) return;
+    if (!vv.tunnel_address.empty() && vv.tunnel_address != prev.tunnel_address) say_tunnel();
+    if (!vv.tunnel_note.empty() && vv.tunnel_note != prev.tunnel_note) say(tone::warning, "VPN", {vv.tunnel_note});
+    if (!vv.system && !vv.system_note.empty() && vv.system_note != prev.system_note) {
+      say(tone::info, "VPN", {vv.system_note});
     }
   }
 
   void say_tunnel() {
-    if (!v.tunnel) {
-      say(tone::info, "Tunnel: off", {"/tunnel on sends this computer's web traffic through your relay server."});
+    if (!vsvc) {
+      say(tone::info, "VPN: not in this copy");
       return;
     }
-    if (v.tunnel_address.empty()) {
-      say(tone::info, "Tunnel: on, not running", {v.tunnel_note.empty() ? "Starting" + std::string(th.g->ellipsis)
-                                                                       : v.tunnel_note});
+    if (!vv.tunnel) {
+      say(tone::info, "VPN: off", {"/vpn on sends this computer's web traffic through your VPN server."});
       return;
     }
-    say(tone::info, "Tunnel through " + (v.tunnel_relay.empty() ? std::string("your relay server") : v.tunnel_relay) +
-                        glue() + v.tunnel_address,
-        {(v.tunnel_system ? std::string("This computer's proxy setting points at it. ") : std::string()) +
-             "SOCKS5 or HTTP proxy: HTTPS_PROXY=http://" + v.tunnel_address + " in a terminal.",
-         std::to_string(v.tunnel_open) + " open now; /tunnel off turns it off (kept for next time)."});
+    if (vv.mode == "vpn") {
+      say(tone::info, "VPN: all traffic through " + vv.server_shown,
+          {std::to_string(vv.tunnel_open) + " open now; /vpn off turns it off (kept for next time)."});
+      return;
+    }
+    if (vv.tunnel_address.empty()) {
+      say(tone::info, "VPN: on, not running", {vv.tunnel_note.empty() ? "Starting" + std::string(th.g->ellipsis)
+                                                                      : vv.tunnel_note});
+      return;
+    }
+    say(tone::info, "Tunnel through " + (vv.server_shown.empty() ? std::string("your VPN server") : vv.server_shown) +
+                        glue() + vv.tunnel_address,
+        {(vv.system ? std::string("This computer's proxy setting points at it. ") : std::string()) +
+             "SOCKS5 or HTTP proxy: HTTPS_PROXY=http://" + vv.tunnel_address + " in a terminal.",
+         std::to_string(vv.tunnel_open) + " open now; /vpn off turns it off (kept for next time)."});
   }
 
   void print_banner() {
@@ -1106,6 +1144,13 @@ struct session::impl {
                                      : "Relay server set. Codes made from now on use it.");
         break;
       }
+      case field_kind::vpn_server: {
+        vev("server", 3, json_str(text));
+        close_field();
+        // Never echoed: it holds the server's key.
+        say(tone::info, text.empty() ? "No VPN server." : "VPN server set. /vpn on sends this computer's traffic through it.");
+        break;
+      }
       case field_kind::none: break;
     }
   }
@@ -1309,59 +1354,55 @@ struct session::impl {
       set_option(option, *on, true);
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
-    } else if (name == "/tunnel") {
-      if (rest.rfind("vpn", 0) == 0 || rest.rfind("block", 0) == 0) {
-        // /tunnel vpn on|off, /tunnel block on|off: slice 5.
-        const bool vpn_word = rest.rfind("vpn", 0) == 0;
-        const auto on = on_off(trim(rest.substr(vpn_word ? 3 : 5)));
-        const char* label = vpn_word ? "All traffic (VPN)" : "Block when the tunnel is down";
-        if (vpn_word && !v.tunnel_vpn_available) {
-          say(tone::info, "All traffic (VPN): not here", {v.tunnel_vpn_note.empty() ? std::string("Use the proxy.")
-                                                                                     : v.tunnel_vpn_note});
-          return;
-        }
-        if (!on) {
-          say(tone::info, std::string(label) + ": " + ((vpn_word ? v.tunnel_vpn : v.tunnel_block) ? "on" : "off"),
-              {std::string("/tunnel ") + (vpn_word ? "vpn" : "block") + " on or off changes it (kept for next time)."});
-          return;
-        }
-        ev(vpn_word ? "tunnel_vpn" : "tunnel_block", 2, *on ? "true" : "false");
-        refresh_view();
-        say(tone::info, std::string(*on ? "On: " : "Off: ") + label);
+    } else if (name == "/vpn" || name == "/tunnel") {
+      // The VPN add-on's (docs/plans/vpn-addon.md); /tunnel is the old name.
+      if (!vsvc) {
+        say_tunnel();
         return;
       }
-      if (rest.rfind("https", 0) == 0) {
-        // /tunnel https on|off: slice 4, the relay's TLS port.
-        if (!v.tunnel_tls_available) {
+      const auto sub = [&](const char* word) {
+        const std::size_t n = std::strlen(word);
+        return rest.size() >= n && rest.compare(0, n, word) == 0 && (rest.size() == n || rest[n] == ' ');
+      };
+      if (sub("server")) {
+        open_field(field_kind::vpn_server);
+        return;
+      }
+      // /vpn all on|off (the old /tunnel vpn), /vpn block on|off, /vpn https on|off, /vpn apps on|off.
+      struct option_word {
+        const char* word;
+        const char* node;
+        const char* label;
+        bool vpn::view::*value;
+      };
+      static const option_word kOptions[] = {
+          {"all", "all_traffic", "All traffic (VPN)", &vpn::view::all_traffic},
+          {"vpn", "all_traffic", "All traffic (VPN)", &vpn::view::all_traffic},
+          {"block", "block", "Block when the tunnel is down", &vpn::view::block},
+          {"https", "tls", "Look like a web site (port 443)", &vpn::view::tls},
+          {"apps", "all_apps", "Use for all apps", &vpn::view::all_apps},
+      };
+      for (const auto& opt : kOptions) {
+        if (!sub(opt.word)) continue;
+        const std::string node = opt.node;
+        if (node == "all_traffic" && !vv.all_traffic_available) {
+          say(tone::info, "All traffic (VPN): not here",
+              {vv.all_traffic_note.empty() ? std::string("Use the proxy.") : vv.all_traffic_note});
+          return;
+        }
+        if (node == "tls" && !vv.tls_available) {
           flash("This driftwire has no TLS (built without BoringSSL).");
           return;
         }
-        const auto tls_on = on_off(trim(rest.substr(5)));
-        if (!tls_on) {
-          say(tone::info, std::string("Look like a web site (port 443): ") + (v.tunnel_tls ? "on" : "off"),
-              {"/tunnel https on or /tunnel https off changes it (kept for next time)."});
+        const auto on = on_off(trim(rest.substr(std::strlen(opt.word))));
+        if (!on) {
+          say(tone::info, std::string(opt.label) + ": " + (vv.*opt.value ? "on" : "off"),
+              {std::string("/vpn ") + opt.word + " on or off changes it (kept for next time)."});
           return;
         }
-        ev("tunnel_tls", 2, *tls_on ? "true" : "false");
+        vev(node, 2, *on ? "true" : "false");  // never waited on: the Mac may ask for a password meanwhile
         refresh_view();
-        say(tone::info, std::string(*tls_on ? "On" : "Off") + ": Look like a web site (port 443)",
-            {*tls_on ? "The Tunnel reaches your relay server on 443, inside TLS. It needs --tls-port 443 there."
-                     : "The Tunnel reaches your relay server on its own port."});
-        return;
-      }
-      if (rest.rfind("apps", 0) == 0) {
-        // /tunnel apps on|off: the system proxy, "Use for all apps".
-        const auto apps = on_off(trim(rest.substr(4)));
-        if (!apps) {
-          say(tone::info, std::string("Use for all apps: ") + (v.tunnel_all_apps ? "on" : "off"),
-              {"/tunnel apps on or /tunnel apps off changes it (kept for next time)."});
-          return;
-        }
-        ev("tunnel_all_apps", 2, *apps ? "true" : "false");
-        refresh_view();
-        say(tone::info, std::string(*apps ? "On" : "Off") + ": Use for all apps",
-            {*apps ? "While the Tunnel is on, this computer's proxy setting points at it."
-                   : "This computer's proxy setting is left as it was."});
+        say(tone::info, std::string(*on ? "On: " : "Off: ") + opt.label);
         return;
       }
       const auto on = on_off(rest);
@@ -1369,14 +1410,14 @@ struct session::impl {
         say_tunnel();
         return;
       }
-      if (*on && v.relay_server.empty()) {
-        flash("Set /relay-server first: the Tunnel goes through it.");
+      if (*on && vv.server.empty()) {
+        flash("Set /vpn server first: the VPN goes through it.");
         return;
       }
-      const bool was = v.tunnel;
-      ev("tunnel", 2, *on ? "true" : "false");
+      const bool was = vv.tunnel;
+      vev("tunnel", 2, *on ? "true" : "false");
       refresh_view();
-      if (!*on) say(tone::info, std::string("Off: Tunnel") + (was ? "" : " (it already was)"));
+      if (!*on) say(tone::info, std::string("Off: VPN") + (was ? "" : " (it already was)"));
       else if (was) say_tunnel();  // already on: the address now; else on_tunnel says it once it listens
     } else if (name == "/updates") {
       if (!o.updates) {
@@ -1396,6 +1437,8 @@ struct session::impl {
       say(tone::info, *on ? "Driftwire checks once a day for a newer version." : "Driftwire no longer checks for updates.",
           {*on ? "It asks its site, which sees this computer's address and nothing else."
                : "driftwire update still updates it when you ask."});
+    } else if (name == "/host") {
+      run_host_command(rest);
     } else if (name == "/settings") {
       list_settings();
     } else if (name == "/help") {
@@ -1403,6 +1446,109 @@ struct session::impl {
     } else if (name == "/quit") {
       quitting = true;
     }
+  }
+
+  // /host …: `driftwire host …` inside the session (docs/plans/self-hosted.md
+  // §2). What only prints runs here and its words go in the transcript; what
+  // asks (setup, name duckdns) or draws a QR (pair) gets the terminal as a
+  // shell leaves it, then the session takes it back.
+  void run_host_command(std::string_view rest) {
+    std::vector<std::string> argv{"host"};
+    std::string first;
+    {
+      const auto sp = rest.find_first_of(" \t");
+      first = std::string(rest.substr(0, sp));
+      std::string_view more = sp == std::string_view::npos ? std::string_view() : trim(rest.substr(sp));
+      if (first.empty()) first = "status";
+      argv.push_back(first);
+      if (first == "share") {
+        // The path may hold spaces: the options come off its end.
+        bool backup = false;
+        std::string label;
+        if (const auto at = more.rfind(" --backup"); at != std::string_view::npos && at + 9 == more.size()) {
+          backup = true;
+          more = trim(more.substr(0, at));
+        }
+        if (const auto at = more.find(" --label "); at != std::string_view::npos) {
+          label = std::string(trim(more.substr(at + 9)));
+          more = trim(more.substr(0, at));
+        }
+        const parsed_paths p = parse_paths(more, o.paths);
+        if (p.paths.size() + p.missing.size() != 1) {
+          flash("/host share takes one folder: /host share PATH [--label L] [--backup]");
+          return;
+        }
+        argv.push_back(p.paths.empty() ? p.missing[0] : p.paths[0]);
+        if (!label.empty()) argv.insert(argv.end(), {"--label", label});
+        if (backup) argv.emplace_back("--backup");
+      } else if (first == "unshare") {
+        // A label is the rest of the line ("My Photos"), quotes around it taken off.
+        std::string label(more);
+        if (label.size() >= 2 && (label.front() == '"' || label.front() == '\'') && label.back() == label.front()) {
+          label = label.substr(1, label.size() - 2);
+        }
+        if (!label.empty()) argv.push_back(std::move(label));
+      } else {
+        while (!more.empty()) {
+          const auto e = more.find_first_of(" \t");
+          argv.emplace_back(more.substr(0, e));
+          more = e == std::string_view::npos ? std::string_view() : trim(more.substr(e));
+        }
+      }
+    }
+    parsed_args parsed = parse_args(argv, false);  // never the test build's own options here
+    if (!parsed.error.empty()) {
+      flash("/host: " + parsed.error);
+      return;
+    }
+    args a = std::move(parsed.a);
+    a.data = o.data_dir;
+    a.no_color = o.plain;
+    a.test_loopback = o.test_hooks;  // the test build's session: never a real router or duckdns.org
+    if (a.host == host_action::run || a.host == host_action::child) {
+      say(tone::info, "The host runs on its own, not inside this session",
+          {"driftwire host in a terminal of its own, or /host start-at-login on so it starts when you log in."});
+      return;
+    }
+    const bool asks = a.host == host_action::setup || a.host == host_action::pair ||
+                      (a.host == host_action::name && a.on);
+    if (asks) {
+      mouse_reporting(false);
+      if (!o.plain) live.erase();
+      int code = 0;
+      const bool ran = term.run_cooked([&] {
+        code = run_host(a, o.test_hooks, o.version.c_str());
+        print("\n");
+      });
+      if (!o.plain) live.invalidate();
+      prompt_on_line = false;
+      if (!ran) {
+        flash("This one asks at the terminal: run driftwire host " + first + " in a terminal of its own.");
+      } else if (code != 0) {
+        flash("driftwire host " + first + " did not finish.");
+      }
+      return;
+    }
+    std::string out;
+    int code = 0;
+    {
+      const print_capture capture(out);
+      code = run_host(a, o.test_hooks, o.version.c_str());
+    }
+    std::vector<std::string> lines;
+    for (std::size_t at = 0; at < out.size();) {
+      const auto nl = out.find('\n', at);
+      std::string line = out.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+      if (line.rfind("driftwire host: ", 0) == 0) line = line.substr(16);
+      if (!line.empty()) lines.push_back(std::move(line));
+      if (nl == std::string::npos) break;
+      at = nl + 1;
+    }
+    sodium_memzero(out.data(), out.size());  // `host vpn on`'s relay line holds the relay's key
+    if (lines.empty()) lines.emplace_back(code == 0 ? "Done." : "That did not work.");
+    const std::string head = lines.front();
+    lines.erase(lines.begin());
+    say(code == 0 ? tone::info : tone::warning, head, std::move(lines));
   }
 
   void list_files() {
@@ -1466,7 +1612,10 @@ struct session::impl {
         "Continue over the internet if Wi-Fi drops: " + onoff(v.handover),
         "Relay through my computers: " + onoff(v.relay),
         "Relay server: " + std::string(v.relay_server.empty() ? "none" : "set"),
-        "Tunnel: " + (v.tunnel ? (v.tunnel_address.empty() ? std::string("on, not running") : "on, " + v.tunnel_address)
+        "VPN: " + (!vsvc ? std::string("not in this copy")
+                   : vv.tunnel ? (vv.mode == "vpn"                ? std::string("on, all traffic")
+                                  : vv.tunnel_address.empty() ? std::string("on, not running")
+                                                              : "on, " + vv.tunnel_address)
                                : std::string("off")),
         "Remembers devices: " + std::string(v.can_remember ? "yes" : "no (no secret store here)"),
         "Checks for updates: " + (o.updates ? onoff(o.updates->enabled()) : "no (" + o.no_updates_why + ")"),
@@ -2154,6 +2303,10 @@ struct session::impl {
         p.title = "Your own relay server";
         p.placeholder = "address:port#key, as driftwire-relay prints it; empty for none";
         break;
+      case field_kind::vpn_server:
+        p.title = "Your VPN server";
+        p.placeholder = "address:port#key, or a VPN code (mediaviewer://relay#...); empty for none";
+        break;
       case field_kind::none: break;
     }
     Elements rows{prompt(th, p, w())};
@@ -2740,6 +2893,10 @@ struct session::impl {
     editor.set_paste_quote(o.paths.windows ? '"' : '\'');
 
     eng = std::make_unique<engine>(host, eopts);
+    if (o.vpn) {
+      vbridge = std::make_unique<vpn_bridge>(term, host);
+      vsvc = std::make_unique<vpn::service>(*vbridge, *o.vpn);
+    }
     // The window opens: presence, and this computer's name on the air (#501).
     eng->screen_opened("");
     if (!o.send_paths.empty()) add_existing(o.send_paths);
@@ -2850,7 +3007,8 @@ struct session::impl {
       }
     }
     if (!o.plain) live.erase();
-    // The engine stops on this thread, before the terminal is handed back (#530).
+    // The VPN and the engine stop on this thread, before the terminal is handed back (#530).
+    vsvc.reset();
     eng.reset();
     put_back_destination();
     const std::string last = "Driftwire closed" + glue() + "this computer is no longer visible";

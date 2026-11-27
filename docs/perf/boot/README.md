@@ -7,8 +7,8 @@ the launch did not reach. Stages: `src/core/boot_timeline.h`.
 
 | File | What |
 |---|---|
-| `windows-empty.json` | no file, 10 runs: build 0 = base (the timeline only, 86ba2f3f), build 1 = chrome preload |
-| `windows-arw.json` | the 42 MP Sony ARW alone in a folder, 10 runs, same two builds |
+| `windows-empty.json` | no file, 10 runs, one build (9bff6aae, 2026-11-18): interactive median 566 ms |
+| `windows-arw.json` | the 42 MP Sony ARW alone in a folder, 10 runs, same build: interactive 623 ms, first pixel 323 ms, full resolution 1,192 ms |
 | `windows-cr3.json` | the Canon R6 CR3 alone in a folder, 12 runs: base, preload at normal priority (not shipped), preload below normal (shipped) |
 | `windows-empty-baseline-6.json` | the first six base runs, no file |
 | `windows-first-launch-cold.json` | the first launch after a build: the only cold sample |

@@ -372,6 +372,8 @@ class CrashpadHandlerTests(unittest.TestCase):
             with open(out, "rb") as f:
                 ent = plistlib.load(f)
             self.assertEqual(ent[macpack.APP_GROUPS], ["ABCDE12345.io.github.longtimeno-c.mediaviewer.driftwire"])
+            # A restricted entitlement: never without a profile (macOS would not run the app).
+            self.assertNotIn(macpack.KEYCHAIN_GROUPS, ent)
             self.assertIs(ent.get("com.apple.security.personal-information.photos-library"), True)
             with self.assertRaisesRegex(SystemExit, "Team ID"):
                 macpack.app_entitlements(app, "not a team", Path(tmp) / "e.plist")
@@ -663,7 +665,9 @@ class ProvisioningProfileTests(unittest.TestCase):
     NOW = datetime(2026, 11, 14)
 
     def profile(self, bundle_id, needs, **change):
-        ent = {macpack.APP_ID_KEY: f"{self.TEAM}.{bundle_id}", macpack.TEAM_ID_KEY: self.TEAM}
+        # Apple's Developer ID profiles grant every keychain group of the team.
+        ent = {macpack.APP_ID_KEY: f"{self.TEAM}.{bundle_id}", macpack.TEAM_ID_KEY: self.TEAM,
+               macpack.KEYCHAIN_GROUPS: [f"{self.TEAM}.*"]}
         ent.update(needs)
         p = {"Name": "MediaViewer Developer ID", "TeamIdentifier": [self.TEAM],
              "ProvisionsAllDevices": True, "ExpirationDate": datetime(2027, 1, 1), "Entitlements": ent}
@@ -720,6 +724,23 @@ class ProvisioningProfileTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as e:
                 macpack.check_profiles(app, self.TEAM, a, t, read=swapped.__getitem__)
             self.assertIn("app.provisionprofile", str(e.exception))
+            # The app's profile must let it claim Driftwire's keychain group.
+            no_keychain = dict(good)
+            no_keychain[a] = self.profile("com.example.MediaViewer", macpack.APP_PROFILE_NEEDS)
+            no_keychain[a]["Entitlements"][macpack.KEYCHAIN_GROUPS] = [f"{self.TEAM}.com.example.Other"]
+            with self.assertRaises(SystemExit) as e:
+                macpack.check_profiles(app, self.TEAM, a, t, read=no_keychain.__getitem__)
+            self.assertIn(f"{self.TEAM}.com.example.MediaViewer.driftwire", str(e.exception))
+
+    def test_keychain_group_problem(self):
+        group = f"{self.TEAM}.com.example.MediaViewer.driftwire"
+        for granted in ([f"{self.TEAM}.*"], [group]):
+            p = self.profile("com.example.MediaViewer", {macpack.KEYCHAIN_GROUPS: granted})
+            self.assertIsNone(macpack.keychain_group_problem(p, group), granted)
+        for granted in (None, [], ["ZZZZZ99999.*"], [f"{self.TEAM}.com.example.MediaViewer"]):
+            p = self.profile("com.example.MediaViewer", {})
+            p["Entitlements"][macpack.KEYCHAIN_GROUPS] = granted
+            self.assertIn(group, macpack.keychain_group_problem(p, group), granted)
 
     def test_a_release_without_the_extension_takes_none(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -757,6 +778,10 @@ class ProvisioningProfileTests(unittest.TestCase):
             self.assertEqual(seen[sysext][macpack.APP_ID_KEY], f"{self.TEAM}.com.example.MediaViewer.DriftwireTunnel")
             self.assertEqual(seen[sysext][macpack.NETWORK_EXTENSION], [macpack.PACKET_TUNNEL])
             self.assertEqual(seen[app][macpack.TEAM_ID_KEY], self.TEAM)
+            # Driftwire's group, as an app group and as the keychain's (-34018 without it).
+            group = f"{self.TEAM}.com.example.MediaViewer.driftwire"
+            self.assertEqual(seen[app][macpack.APP_GROUPS], [group])
+            self.assertEqual(seen[app][macpack.KEYCHAIN_GROUPS], [group])
 
 
 class CommandLineTests(unittest.TestCase):

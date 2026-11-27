@@ -26,6 +26,7 @@
 #include "addons/driftwire/cli/args.h"
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
+#include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/cli/keys.h"
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/theme.h"
@@ -1369,7 +1370,8 @@ TEST_CASE("driftwire cli session: closed mid-receive, the next session says what
   CHECK(ann.wait_exit() == 0);
 }
 
-TEST_CASE("driftwire cli session: /tunnel turns the Tunnel on and off and says its address", "[driftwire][cli]") {
+TEST_CASE("driftwire cli session: /vpn turns the Tunnel on and off and says its address; /tunnel is the same",
+          "[driftwire][cli][vpn]") {
   scratch_dir s("driftwire_cli_tunnel");
   bus b;
   mv::driftwire::relay::server::options ro;
@@ -1379,35 +1381,77 @@ TEST_CASE("driftwire cli session: /tunnel turns the Tunnel on and off and says i
   REQUIRE(relay);
   const std::string at = "127.0.0.1:" + std::to_string((*relay)->port());
   cli_side ann(s / "ann_received");
-  ann.start(bus_opts(b, "Ann", s / "ann"), session_opts(s.root()));
+  auto so = session_opts(s.root());
+  so.vpn = mv::driftwire::vpn::service::options{};  // the VPN add-on's engine, nothing kept
+  ann.start(bus_opts(b, "Ann", s / "ann"), so);
   REQUIRE(ann.screen_shows("Type or drop files to send"));
-  type_line(ann, "/tunnel");
-  REQUIRE(ann.shows("Tunnel: off"));
-  // It goes through the person's own relay server: none yet.
-  type_line(ann, "/tunnel on");
-  REQUIRE(ann.screen_shows("Set /relay-server first"));
-  type_line(ann, "/relay-server");
-  REQUIRE(ann.screen_shows("Your own relay server"));
+  type_line(ann, "/vpn");
+  REQUIRE(ann.shows("VPN: off"));
+  // It goes through the person's own VPN server: none yet (Driftwire's relay server is another).
+  type_line(ann, "/vpn on");
+  REQUIRE(ann.screen_shows("Set /vpn server first"));
+  type_line(ann, "/vpn server");
+  REQUIRE(ann.screen_shows("Your VPN server"));
   ann.con.type(at + "#" + ro.key);
   ann.con.type("\r");
-  REQUIRE(ann.shows("Relay server set."));
-  type_line(ann, "/tunnel on");
+  REQUIRE(ann.shows("VPN server set."));
+  type_line(ann, "/vpn on");
   REQUIRE(ann.shows("Tunnel through " + at));
   REQUIRE(ann.shows("HTTPS_PROXY=http://127.0.0.1:"));
   type_line(ann, "/settings");
-  REQUIRE(ann.shows("Tunnel: on, 127.0.0.1:"));
-  type_line(ann, "/tunnel vpn");
+  REQUIRE(ann.shows("VPN: on, 127.0.0.1:"));
+  REQUIRE(ann.shows("Relay server: none"));  // Driftwire's own, untouched
+  type_line(ann, "/vpn all");
   REQUIRE(ann.shows("All traffic (VPN): not here"));
-  type_line(ann, "/tunnel https");
+  type_line(ann, "/vpn https");
 #if defined(MV_DRIFTWIRE_TLS)
   REQUIRE(ann.shows("Look like a web site (port 443): off"));
 #else
   // A build without BoringSSL (tls_none.cpp) says so instead (the release's Intel Mac, 2026-11-14).
   REQUIRE(ann.screen_shows("This driftwire has no TLS"));
 #endif
-  type_line(ann, "/tunnel off");
-  REQUIRE(ann.shows("Off: Tunnel"));
+  type_line(ann, "/tunnel off");  // the old name
+  REQUIRE(ann.shows("Off: VPN"));
   CHECK_FALSE(has(ann.text(), ro.key));  // the key is never said
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+}
+
+TEST_CASE("driftwire cli session: /host shares, shows and turns the VPN on; what asks gets the terminal",
+          "[driftwire][cli][host-setup]") {
+  scratch_dir s("driftwire_cli_host");
+  bus b;
+  fs::create_directories(s / "My Photos");
+  cli_side ann(s / "ann_received", 100, 48);
+  auto so = session_opts(s.root());
+  so.data_dir = utf8(s / "hostdata");
+  so.test_hooks = true;
+  ann.start(bus_opts(b, "Ann", s / "ann"), so);
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
+  // A path with a space, quoted as a shell would; the options come off its end.
+  type_line(ann, "/host share \"" + utf8(s / "My Photos") + "\" --backup");
+  REQUIRE(ann.shows("Shared \"My Photos\", phones may back up into it"));
+  type_line(ann, "/host status");
+  REQUIRE(ann.shows("not running (driftwire host starts it)"));
+  REQUIRE(ann.shows("My Photos (backup, no limit)"));
+  type_line(ann, "/host vpn on");
+  REQUIRE(ann.shows("The VPN is on"));
+  const auto key = cli::host_files::relay_secret(cli::host_layout_of(utf8(s / "hostdata")));
+  REQUIRE(key);
+  REQUIRE(ann.shows("#" + *key));  // the relay line, for the laptop, said once here
+  type_line(ann, "/host");  // alone: the status
+  // The transcript folds the columns; the web-site look is on by default, on the relay's port + 1.
+  REQUIRE(ann.shows("VPN on, web-site look on port 47615 (driftwire host vpn on shows the relay line again)"));
+  // What asks at the terminal needs one to hand over (this one has none).
+  type_line(ann, "/host setup");
+  REQUIRE(ann.screen_shows("This one asks at the terminal"));
+  // A token is never an argument here either.
+  type_line(ann, "/host name duckdns home");
+  REQUIRE(ann.screen_shows("/host: host takes setup"));
+  type_line(ann, "/host child");
+  REQUIRE(ann.shows("The host runs on its own"));
+  type_line(ann, "/host unshare My Photos");  // a label with a space, unquoted
+  REQUIRE(ann.shows("\"My Photos\" is no longer shared"));
   type_line(ann, "/quit");
   CHECK(ann.wait_exit() == 0);
 }

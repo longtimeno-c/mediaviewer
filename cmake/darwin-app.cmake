@@ -15,6 +15,8 @@
 # the update archive are `macpack.py release` (README "Ship a Mac build").
 # docs/design/13 "macOS first install", docs/design/15 PR 20.
 
+include("${CMAKE_CURRENT_LIST_DIR}/download.cmake")  # mv_download, whoever includes this file
+
 set(MV_MAC_BUNDLE_ID "io.github.longtimeno-c.mediaviewer" CACHE STRING
   "CFBundleIdentifier of MediaViewer.app; the Quick Look extension appends .thumbnails")
 set(MV_MAC_BUILD_NUMBER "${PROJECT_VERSION}" CACHE STRING
@@ -41,12 +43,9 @@ if(MV_SPARKLE_PUBLIC_ED_KEY)
   set(MV_SPARKLE_DIR "${CMAKE_BINARY_DIR}/_deps/sparkle-${MV_SPARKLE_VERSION}")
   set(MV_SPARKLE_ARCHIVE "${CMAKE_BINARY_DIR}/_deps/Sparkle-${MV_SPARKLE_VERSION}.tar.xz")
   if(NOT EXISTS "${MV_SPARKLE_DIR}/Sparkle.framework")
-    file(DOWNLOAD
+    mv_download(
       "https://github.com/sparkle-project/Sparkle/releases/download/${MV_SPARKLE_VERSION}/Sparkle-${MV_SPARKLE_VERSION}.tar.xz"
-      "${MV_SPARKLE_ARCHIVE}"
-      EXPECTED_HASH SHA256=${MV_SPARKLE_SHA256}
-      TLS_VERIFY ON
-      SHOW_PROGRESS)
+      "${MV_SPARKLE_ARCHIVE}" "${MV_SPARKLE_SHA256}")
     file(ARCHIVE_EXTRACT INPUT "${MV_SPARKLE_ARCHIVE}" DESTINATION "${MV_SPARKLE_DIR}")
   endif()
   # Info.plist keys, spliced into packaging/macos/Info.plist.in. docs/design/13:

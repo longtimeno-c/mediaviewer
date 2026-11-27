@@ -34,6 +34,10 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   private var libraryEpoch = 0
   /// The sample guest's end a connect is already scheduled for.
   private var sampleEndScheduled: Double? = nil
+  /// The server's combined drives (mv_link_storage) as the last connect read them, stamped on every
+  /// snapshot; in sample mode the phone stands in for them (`sampleLostDrive`, from Settings' demo).
+  private var storageNow: Int32 = 0
+  private var sampleLostDrive = false
   /// File mode (docs/plans/phone-in-the-app.md §4): the last check found this library's folders but
   /// no catalogue. Stamped on every snapshot with no catalogue, as the library's id is.
   private var fileModeNow = false
@@ -229,6 +233,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       // A catalogue ends file mode, and so does having no library.
       if !next.hasLibrary || next.catalogue != nil { fileModeNow = false }
       next.fileMode = fileModeNow
+      next.serverStorage = next.hasLibrary ? storageNow : 0
+      next.serverStorageWords = next.serverStorage > 0 ? String(cString: mv_link_storage_words(next.serverStorage)) : ""
       snapshot = next
       return (next, Array(continuations.values))
     }
@@ -502,6 +508,13 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     if let sampleEnd, answered == 0 { scheduleSampleEnd(at: sampleEnd) }
     var status = answered
     if status == 0, sampleEnd == nil, grant.map({ !$0.isNaN }) ?? true { noteAccess(until: grant) }
+    if status == 0, sampleEnd == nil { await noteAddresses(from: link) }
+    // The server's drives: -1 (the link closed meanwhile) keeps what was known. The sample library
+    // has no drives; in sample mode the phone stands in for a server's mirror (showSampleLostDrive).
+    let storage = status == 0 ? await onLinkQueue { mv_link_storage(link.raw) } : Int32(-1)
+    lock.withLock {
+      if record?.isSample == true { storageNow = sampleLostDrive ? 2 : 0 } else if storage >= 0 { storageNow = storage }
+    }
     // §8.2: the NAS's "expired" shows the end and deletes the copy; the phone's own clock past
     // the end the NAS gave only says so, and only when no route answered at all.
     var unreachable = false
@@ -530,6 +543,18 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
   /// What this library keeps on the phone: the JPEG-512 tiles and sound search's model.
   private static func cacheBytes(_ link: LinkHandle) -> Int64 {
     Int64(mv_thumb_bytes_used(link.raw)) + Int64(mv_sound_bytes(LinkFolders.library.path))
+  }
+
+  /// Sample mode only: the phone stands in for a server whose mirror lost a drive, as it stands in
+  /// for a guest's end and a drive that is not connected. Nothing is asked of GitHub.
+  public func showSampleLostDrive(_ lost: Bool) async {
+    let changed = lock.withLock { () -> Bool in
+      guard record?.isSample == true, !forgotten else { return false }
+      sampleLostDrive = lost
+      storageNow = lost ? 2 : 0
+      return true
+    }
+    if changed { publish { _ in } }
   }
 
   /// The sample guest's end (code GUEST) has come, on this phone's clock.
@@ -568,6 +593,28 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     }
     if changed { publish { _ in } }
     lock.withLock { localCopyDropped = false }
+  }
+
+  /// Where the service now says it is (a DuckDNS name or relay added after pairing, a new LAN
+  /// address), kept with the pairing so the next launch dials it too. Never for a library replaced
+  /// meanwhile; an address it left out never wipes one kept.
+  private func noteAddresses(from link: LinkHandle) async {
+    let said = await onLinkQueue { () -> ServiceAddresses? in
+      var a = mv_link_addresses()
+      guard mv_link_addresses_now(link.raw, &a) == 0 else { return nil }
+      return ServiceAddresses(local: linkString(a.local), publicName: linkString(a.public_name), relay: linkString(a.relay))
+    }
+    guard let said else { return }
+    lock.withLock {
+      guard var r = record, handle === link, !forgotten, !r.isSample else { return }
+      let kept = ServiceAddresses(local: r.local, publicName: r.publicName, relay: r.relay ?? "")
+      guard let next = kept.updated(by: said) else { return }
+      r.local = next.local
+      r.publicName = next.publicName
+      r.relay = next.relay
+      record = r
+      _ = r.save()
+    }
   }
 
   /// A time-limited phone whose access ended keeps nothing of the library but its pairing
@@ -651,6 +698,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       localCopyDropped = false
       sampleEndScheduled = nil
       fileModeNow = false
+      storageNow = 0
+      sampleLostDrive = false
       handle = nil
       record = nil
       soundState = .notNeeded

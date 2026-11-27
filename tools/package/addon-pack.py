@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|places|driftwire|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|driftwire|phone-access|vpn|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
     addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
@@ -153,9 +153,53 @@ ADDONS = {
         "notice": ("Driftwire add-on for MediaViewer. GPL-3.0-or-later.\n"
                    "Its link is encrypted with libsodium (ISC) and files are checked with BLAKE3 (CC0-1.0):\n"
                    "linked in on macOS, the app's own copies on Windows.\n"
-                   "The Tunnel's TLS is BoringSSL (Apache-2.0), linked in on both.\n"
+                   "Its TLS is BoringSSL (Apache-2.0), linked in on both.\n"
                    "Files move only to a MediaViewer the person there accepted, over the local network\n"
                    "or Bluetooth. No account, no cloud, no internet relay.\n"),
+    },
+    # Phone access (docs/plans/phone-access-addon.md, owner 2026-11-14): the
+    # Synology path, this computer as the server and their setup, out of the base
+    # app. Code only, no chrome: the hosts draw its card in Settings -> Phone
+    # access from src/addons/phone/manifest.json, which the tests read too.
+    "phone-access": {
+        "name": "Phone access",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/phone/manifest.json",
+        "files": {
+            # host/: the driftwire program (and on Windows the DLLs it loads), which the
+            # add-on installs for "This computer" (docs/plans/phone-access-addon.md §8).
+            "win-x64": {"native": "mv_phone_access.dll", "chrome": "", "include": ["mv_phone_access.dll", "host"]},
+            "macos": {"native": "libmv_phone_access.dylib", "chrome": "",
+                      "include": ["libmv_phone_access.dylib", "host"]},
+        },
+        "licences": [],
+        "notice": ("Phone access add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Its link is encrypted with libsodium (ISC) and files are checked with BLAKE3 (CC0-1.0),\n"
+                   "linked in on both. Its pairing QR follows Project Nayuki's QR Code generator (MIT).\n"
+                   "host/ carries the driftwire program (GPL-3.0-or-later), which links libsodium (ISC),\n"
+                   "BLAKE3 (CC0-1.0), BoringSSL (Apache-2.0) and FTXUI (MIT); on Windows the Visual C++\n"
+                   "runtime beside it is Microsoft's redistributable.\n"
+                   "It talks only to the server you set up (a Synology, this computer, another computer you\n"
+                   "run) and to phones you paired. No account, no cloud.\n"),
+    },
+    # The VPN (docs/plans/vpn-addon.md, owner 2026-11-19): the Tunnel, All traffic,
+    # Connect to a VPN host and hosting through Phone access, on one settings page.
+    # Code only, no chrome: the hosts draw its page from src/addons/vpn/manifest.json.
+    # The Mac's packet tunnel provider is in the app's bundle, not here.
+    "vpn": {
+        "name": "VPN",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/vpn/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_vpn.dll", "chrome": "", "include": ["mv_vpn.dll"]},
+            "macos": {"native": "libmv_vpn.dylib", "chrome": "", "include": ["libmv_vpn.dylib"]},
+        },
+        "licences": [],
+        "notice": ("VPN add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Its link is encrypted with libsodium (ISC); its TLS is BoringSSL (Apache-2.0),\n"
+                   "linked in on both.\n"
+                   "Your traffic goes only through a server you run: your own computer, your NAS or\n"
+                   "your relay server. No VPN company, no account.\n"),
     },
     # Enhance (#297): a restored copy of the photo, clip or audio file on screen. Code
     # and each kind's models/<kind>/model.json; the weights are never in the zip: the

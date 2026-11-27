@@ -119,6 +119,13 @@ public final class MVChromeHost: NSObject {
     PhotosBackupStore.shared.reveal()
   }
 
+  /// A kept entry's Open row for a settings page (docs/plans/self-hosted.md
+  /// "Tray", docs/plans/vpn-addon.md). The host has opened Settings; this
+  /// opens the add-on's page.
+  @MainActor @objc public static func revealAddonSettings(_ addon: String) {
+    AddonNav.shared.show(addon)
+  }
+
   /// The host's MV_SCRIPT_SELFTEST rig (main_mac.mm, docs/design/25 PR 57): Settings
   /// scrolled to From others, where a stopped script add-on says why.
   @MainActor @objc public static func revealOpenAddons() {

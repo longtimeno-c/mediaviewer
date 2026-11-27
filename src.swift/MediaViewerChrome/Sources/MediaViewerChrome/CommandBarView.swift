@@ -210,6 +210,10 @@ public struct CommandBarView: View {
         // the far right.
         HStack(spacing: 0) {
           BarFlyout(title: "Open") { close in
+            // Back to the start screen: whatever is open closes, and the pinned and
+            // recent folders are one click away (owner 2026-11-18). As the Windows Open.
+            FlyoutItem(title: "Home") { close(); mv_chrome_menu(kMenuHome) }
+            FlyoutRule()
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
             FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
             // kMenuReveal reveals the file in Finder; it does not open it (issue #187).
@@ -474,23 +478,22 @@ private struct UpdateBarItem: View {
 }
 
 /// The trail from the highest folder reached to the one on screen, in the
-/// command bar just left of `?`. Up and Root are icons outside the scrolling
+/// command bar just left of `?`. Back, Forward, Up and Root are icons outside the scrolling
 /// ancestor trail; the current name stays pinned and a long middle becomes an
 /// ancestor menu; a search icon ends it. Shown whenever a folder is open,
 /// including while a photo is on the canvas.
 struct PathBar: View {
   @ObservedObject private var store = FolderStore.shared
-  @State private var trailWidth: CGFloat = 0
   @State private var nameWidth: CGFloat = 0
   private let maxTrailWidth: CGFloat = 300
   private let maxNameWidth: CGFloat = 200
 
   var body: some View {
-    // Milestone H: a result list has no folder trail; its title stands in.
-    if let title = store.listTitle {
-      ListTitleBar(title: title)
-    } else {
-      trail
+    // Milestone H: a result list has no folder trail; its title stands in. Another
+    // computer's folder is a folder: the same trail, Back and Forward (PathBarMode).
+    switch PathBarMode.of(listTitle: store.listTitle, remoteFolder: store.remoteFolder) {
+    case .results(let title): ListTitleBar(title: title)
+    case .trail: trail
     }
   }
 
@@ -498,6 +501,13 @@ struct PathBar: View {
     let crumbs = store.crumbs
     let shown = display(crumbs)
     HStack(spacing: MVTheme.space(2)) {
+      // docs/design/16 "Folder navigation": Finder's Back / Forward.
+      PathIcon(symbol: "chevron.backward", enabled: store.canGoBack) { store.goBack() }
+        .help("Back to the folder before (⌘[)")
+        .accessibilityLabel("Back")
+      PathIcon(symbol: "chevron.forward", enabled: store.canGoForward) { store.goForward() }
+        .help("Forward (⌘])")
+        .accessibilityLabel("Forward")
       PathIcon(symbol: "arrow.up", enabled: store.canGoUp) { store.navigateUp() }
         .help("Open the enclosing folder (⌘↑)")
         .accessibilityLabel("Up one folder")
@@ -507,44 +517,17 @@ struct PathBar: View {
       // Issue #444: Share beside Home (ShareMenu.swift).
       BarShareButton()
 
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: MVTheme.space(4)) {
-          ForEach(shown.dropLast()) { crumb in
-            if crumb.isEllipsis {
-              Menu {
-                ForEach(crumbs.dropFirst().dropLast(2)) { ancestor in
-                  Button(ancestor.name) { store.openCrumb(ancestor.index) }
-                    .help(ancestor.path)
-                }
-              } label: { Text("…") }
-              .menuStyle(.borderlessButton)
-              .menuIndicator(.hidden)
-              .fixedSize()
-              .foregroundStyle(MVTheme.body)
-              .help("Open a parent folder")
-              .accessibilityLabel("Hidden parent folders")
-            } else {
-              Button(crumb.name) { store.openCrumb(crumb.index) }
-                .buttonStyle(.borderless)
-                .foregroundStyle(MVTheme.body)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 120)
-                .help(crumbs.first(where: { $0.index == crumb.index })?.path ?? crumb.name)
-            }
-            Image(systemName: "chevron.right")
-              .font(.system(size: 8, weight: .bold))
-              .foregroundStyle(MVTheme.body)
-          }
+      // The ancestors at their own width up to a cap; past that they scroll. ViewThatFits,
+      // not a measured width: a width measured into a preference never reached this frame
+      // (the ancestors stayed at zero width, only the current name showing).
+      ViewThatFits(in: .horizontal) {
+        trailRow(shown, crumbs)
+        ScrollView(.horizontal, showsIndicators: false) {
+          trailRow(shown, crumbs)
         }
-        .padding(.leading, MVTheme.space(4))
-        .background(GeometryReader { geo in
-          Color.clear.preference(key: TrailWidthKey.self, value: geo.size.width)
-        })
       }
-      // Only as wide as the trail, up to a cap; past that it scrolls.
-      .frame(width: min(trailWidth, maxTrailWidth))
-      .onPreferenceChange(TrailWidthKey.self) { trailWidth = $0 }
+      .frame(maxWidth: maxTrailWidth)
+      .fixedSize(horizontal: true, vertical: false)
 
       if let current = shown.last {
         // As wide as the name, up to a cap: a bare maxWidth frame took the
@@ -569,6 +552,7 @@ struct PathBar: View {
           .onPreferenceChange(NameWidthKey.self) { nameWidth = $0 }
           .layoutPriority(1)
           .help(crumbs.last?.path ?? current.name)
+          .folderDropTarget(crumbs.last?.path ?? "", name: current.name, radius: MVTheme.radius(4), inset: 3)
       }
       PathSearchButton()
       // docs/design/25 PR 59: the add-ons' path-bar icons.
@@ -576,6 +560,46 @@ struct PathBar: View {
     }
     .font(MVTheme.font(14))
     .padding(.horizontal, MVTheme.space(6))
+  }
+
+  /// The ancestors and their chevrons, each segment taking drops for its folder.
+  @ViewBuilder
+  private func trailRow(_ shown: [PathPiece], _ crumbs: [Crumb]) -> some View {
+    HStack(spacing: MVTheme.space(4)) {
+      ForEach(shown.dropLast()) { crumb in
+        if crumb.isEllipsis {
+          Menu {
+            ForEach(crumbs.dropFirst().dropLast(2)) { ancestor in
+              Button(ancestor.name) { store.openCrumb(ancestor.index) }
+                .help(ancestor.path)
+            }
+          } label: { Text("…") }
+          .menuStyle(.borderlessButton)
+          .menuIndicator(.hidden)
+          .fixedSize()
+          .foregroundStyle(MVTheme.body)
+          .help("Open a parent folder")
+          .accessibilityLabel("Hidden parent folders")
+        } else {
+          let path = crumbs.first(where: { $0.index == crumb.index })?.path ?? ""
+          Button(crumb.name) { store.openCrumb(crumb.index) }
+            .buttonStyle(.borderless)
+            .foregroundStyle(MVTheme.body)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 120)
+            .help(path.isEmpty ? crumb.name : path)
+            // Drop files on a segment: they go into that folder.
+            .padding(.horizontal, MVTheme.space(2))
+            .folderDropTarget(path, name: crumb.name, radius: MVTheme.radius(4), inset: 1)
+        }
+        Image(systemName: "chevron.right")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(MVTheme.body)
+      }
+    }
+    .padding(.leading, MVTheme.space(4))
+    .padding(.trailing, MVTheme.space(2))  // the last chevron keeps off the current name
   }
 
   private func display(_ crumbs: [Crumb]) -> [PathPiece] {
@@ -650,11 +674,6 @@ private struct PathPiece: Identifiable {
 }
 
 private struct NameWidthKey: PreferenceKey {
-  static let defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct TrailWidthKey: PreferenceKey {
   static let defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

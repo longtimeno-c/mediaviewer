@@ -112,7 +112,21 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
     out.weak_only = !named;
     refs = members;
   }
-  if (refs.size() > p.max_refs) refs.resize(p.max_refs);
+  // A confirmed person (a name, a pinned face) is drawn from every photo and
+  // clip before any gives a second face: the 256 sharpest of a few thousand
+  // are a few sessions, not the person (2026-11-23).
+  const bool confirmed =
+      named || std::any_of(refs.begin(), refs.end(), [&](std::size_t i) { return in.faces[i].pinned; });
+  if (confirmed) {
+    std::set<std::int64_t> seen_asset;
+    std::stable_partition(refs.begin(), refs.end(), [&](std::size_t i) {
+      const refine_face& f = in.faces[i];
+      return f.pinned || f.asset < 0 || seen_asset.insert(f.asset).second;
+    });
+    std::stable_partition(refs.begin(), refs.end(), [&](std::size_t i) { return in.faces[i].pinned; });
+  }
+  const std::size_t cap = confirmed ? std::max(p.max_refs, p.max_refs_confirmed) : p.max_refs;
+  if (refs.size() > cap) refs.resize(cap);
   const std::size_t n = refs.size();
   out.members = static_cast<std::uint32_t>(n);
   if (n == 0) return out;
@@ -223,6 +237,80 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
     out.exemplar_assets.push_back(f.asset);
     const float* v = row(refs[a]);
     out.exemplars.insert(out.exemplars.end(), v, v + dim);
+  }
+  // A confirmed person's other looks (2026-11-23: twelve faces stood for 3,000
+  // photos of a child over years, and half of them read as doubtful). Beyond
+  // the twelve: the core face that the most photos and clips not yet spoken
+  // for (by top_k exemplars, what support averages) resemble as an
+  // unmistakable face of theirs (join + 2 margins), again and again. Pins first, whatever they cover (the user's word); anything
+  // else only while another photo or clip agrees with it, so a stray face in
+  // the core is never a look. The first twelve stand as they were, so a
+  // person's support only ever rises by this.
+  if (confirmed && core.size() > out.exemplar_ids.size()) {
+    const std::size_t budget = std::max(p.max_exemplars, p.max_exemplars_confirmed);
+    const float alike = p.join + 2 * p.margin;
+    const std::size_t nc = core.size();
+    std::map<std::int64_t, std::uint32_t> core_assets;
+    for (const auto& [_, a] : core) {
+      if (in.faces[refs[a]].asset >= 0) ++core_assets[in.faces[refs[a]].asset];
+    }
+    std::vector<float> w(nc, 1.0f);
+    for (std::size_t c = 0; c < nc; ++c) {
+      const std::int64_t as = in.faces[refs[core[c].second]].asset;
+      if (as >= 0) w[c] = 1.0f / static_cast<float>(core_assets[as]);
+    }
+    // Spoken for: top_k exemplars resemble it, which is what support asks.
+    const std::uint32_t enough = std::max<std::uint32_t>(p.top_k, 1);
+    std::vector<std::uint32_t> covered(nc, 0);
+    std::vector<bool> taken(nc, false);
+    const std::set<std::int64_t> have(out.exemplar_ids.begin(), out.exemplar_ids.end());
+    const auto cover = [&](std::size_t c) {
+      const std::size_t a = core[c].second;
+      for (std::size_t d = 0; d < nc; ++d) {
+        if (sim[a * n + core[d].second] >= alike) ++covered[d];
+      }
+    };
+    for (std::size_t c = 0; c < nc; ++c) {
+      if (have.count(in.faces[refs[core[c].second]].id)) {
+        taken[c] = true;
+        cover(c);
+      }
+    }
+    for (const bool pins_turn : {true, false}) {
+      while (out.exemplar_ids.size() < budget) {
+        std::size_t pick = nc;
+        float gain = -1;
+        for (std::size_t c = 0; c < nc; ++c) {
+          if (taken[c] || (core[c].first >= 3.0f) != pins_turn) continue;
+          const std::size_t a = core[c].second;
+          const refine_face& f = in.faces[refs[a]];
+          if (!pins_turn && f.asset >= 0 && seen.count(f.asset)) continue;
+          float g = 0, others = 0;
+          for (std::size_t d = 0; d < nc; ++d) {
+            if (sim[a * n + core[d].second] < alike) continue;
+            if (covered[d] < enough) g += w[d];
+            const std::int64_t das = in.faces[refs[core[d].second]].asset;
+            if (d != c && (das < 0 || das != f.asset)) others += w[d];
+          }
+          // Not a pin: a look needs another photo or clip that agrees, and
+          // something new to say.
+          if (!pins_turn && (others <= 0 || g <= 0)) continue;
+          if (g > gain) {
+            gain = g;
+            pick = c;
+          }
+        }
+        if (pick == nc) break;
+        taken[pick] = true;
+        cover(pick);
+        const refine_face& f = in.faces[refs[core[pick].second]];
+        if (f.asset >= 0) seen.insert(f.asset);
+        out.exemplar_ids.push_back(f.id);
+        out.exemplar_assets.push_back(f.asset);
+        const float* v = row(refs[core[pick].second]);
+        out.exemplars.insert(out.exemplars.end(), v, v + dim);
+      }
+    }
   }
   return out;
 }
@@ -476,6 +564,7 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
                         shortlist.end(), [](const auto& a, const auto& b) {
                           return a.first != b.first ? a.first > b.first : a.second->person < b.second->person;
                         });
+      bool best_confirmed = false;
       for (std::size_t s = 0; s < keep_n; ++s) {
         const person_proto* cp = shortlist[s].second;
         // By exemplars, confirmed or not: the person's mean instead (online's
@@ -486,6 +575,7 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
           vd.second = vd.best;
           vd.best = sc;
           vd.best_person = shortlist[s].second->person;
+          best_confirmed = cp->named || cp->pinned;
         } else if (sc > vd.second) {
           vd.second = sc;
         }
@@ -498,8 +588,19 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       // a rival that scores higher still is a tighter fragment of the same
       // person (one session's clips), which the merge joins, not a reason to
       // move (2026-11-02: 328 of the owner's faces went to such a fragment).
-      const bool vouched = own > 0 && !outranked && vd.own >= p.join + 2 * p.margin && own_neg < p.join;
-      if (!weak && !vouched && vd.best_person != 0 && vd.best >= p.join && vd.best - rival >= p.margin) {
+      // Not against a person the user confirmed (a name, a pinned face) when
+      // its own is not: an unnamed person that took in everyone of a kind
+      // (2026-11-23: every baby, 4,091 faces) vouches for each of them, and
+      // the named child whose faces they are could never have them back.
+      const bool own_confirmed = own_proto && (own_proto->named || own_proto->pinned);
+      const bool vouched = own > 0 && !outranked && vd.own >= p.join + 2 * p.margin && own_neg < p.join &&
+                           (own_confirmed || !best_confirmed);
+      // A weak face nobody has may join a confirmed person that vouches for
+      // it as for an unmistakable face of theirs: a noisy vector does not
+      // resemble three of one person's photos that well by chance, and
+      // nothing else ever files it (it is not in the unknown faces either).
+      const bool may = !weak || (own == 0 && best_confirmed && vd.best >= p.join + 2 * p.margin);
+      if (may && !vouched && vd.best_person != 0 && vd.best >= p.join && vd.best - rival >= p.margin) {
         vd.change = true;
         vd.to = vd.best_person;
         vd.why = own > 0 ? refine_why::move : refine_why::admit;
@@ -745,6 +846,36 @@ std::vector<std::vector<std::int64_t>> find_duplicates(const dedupe_input& in, c
   };
   std::vector<link> links;
   std::set<std::pair<std::size_t, std::size_t>> linked;
+  // A person the user confirmed (a name, a pinned face) and one they did not:
+  // the unconfirmed one is a fragment of the other when the confirmed
+  // person's exemplars vouch for its faces, one way. The fragment is one
+  // session, one look; it cannot vouch for the years of the person it belongs
+  // to, and asking it to left most of a named person's fragments unmerged
+  // (2026-11-23: 8 of ~100 on the owner's library).
+  std::vector<bool> conf(ps.size());
+  for (std::size_t i = 0; i < ps.size(); ++i) conf[i] = ps[i]->pinned || !name_of(ps[i]->person).empty();
+  std::map<std::size_t, std::vector<std::pair<float, std::size_t>>> claims;  // fragment -> (support, confirmed)
+  // Each person's faces, where the caller gave them: the clear ones, or the
+  // usable ones of a person with none; at most kSample, evenly through them.
+  constexpr std::size_t kSample = 256;
+  std::map<std::int64_t, std::vector<std::size_t>> faces_of;
+  if (in.where.size() == in.faces.size() && in.emb.size() >= in.faces.size() * dim) {
+    std::map<std::int64_t, std::vector<std::size_t>> weak;
+    for (std::size_t f = 0; f < in.faces.size(); ++f) {
+      const refine_face& x = in.faces[f];
+      if (in.where[f] <= 0 || x.quality < p.unusable_quality) continue;
+      (x.quality >= p.weak_quality ? faces_of : weak)[in.where[f]].push_back(f);
+    }
+    for (auto& [person, xs] : weak) {
+      if (!faces_of.count(person)) faces_of[person] = std::move(xs);
+    }
+    for (auto& [person, xs] : faces_of) {
+      if (xs.size() <= kSample) continue;
+      std::vector<std::size_t> some;
+      for (std::size_t k = 0; k < kSample; ++k) some.push_back(xs[k * xs.size() / kSample]);
+      xs = std::move(some);
+    }
+  }
   for (std::size_t i = 0; i < ps.size(); ++i) {
     if (in.cancel && in.cancel->load(std::memory_order_relaxed)) return {};
     for (std::size_t j = i + 1; j < ps.size(); ++j) {
@@ -753,12 +884,72 @@ std::vector<std::vector<std::int64_t>> find_duplicates(const dedupe_input& in, c
       const std::string& nb = name_of(ib);
       if (!na.empty() && !nb.empty() && na != nb) continue;
       if (apart(ia, ib)) continue;
+      // One way only for a small part of the confirmed person (fragment_part
+      // of its photos and clips): anything larger is a person in its own
+      // right and vouches back like anyone, or its faces go one by one
+      // (2026-11-23: 390 photos of every baby, each a little like one named
+      // child, would have gone to her whole).
+      const auto photos = [&](std::size_t x) {
+        const auto it = who.find(ps[x]->person);
+        return it == who.end() ? 0u : it->second->faces;
+      };
+      const std::size_t cc = conf[i] ? i : j, uu = conf[i] ? j : i;
+      const bool part = photos(cc) == 0 || static_cast<float>(photos(uu)) <=
+                                               p.fragment_part * static_cast<float>(photos(cc));
       // core_mean is unnormalised: a . b = mean pairwise cosine across the cores.
-      if (dot(ps[i]->core_mean.data(), ps[j]->core_mean.data(), dim) < prefilter) continue;
+      // Not asked of a fragment: one look of a person with many is far from
+      // the middle of them all, and the confirmed are few.
+      const bool one_way = conf[i] != conf[j] && part;
+      if (!one_way && dot(ps[i]->core_mean.data(), ps[j]->core_mean.data(), dim) < prefilter) continue;
+      if (one_way) {
+        const std::size_t c = cc, u = uu;
+        // Most of the fragment's exemplars, each on its own, and all of them
+        // on average: a person made of several people is not a fragment of one.
+        std::size_t nu = ps[u]->exemplar_ids.size();
+        std::size_t agree = 0;
+        float total = 0;
+        for (std::size_t e = 0; e < nu; ++e) {
+          const float sc = support(ps[u]->exemplars.data() + e * dim, *ps[c], dim, 0, p.top_k);
+          total += sc;
+          agree += sc >= p.join ? 1 : 0;
+        }
+        // Its exemplars pass: now every face of it the caller gave.
+        if (const auto fo = faces_of.find(ps[u]->person);
+            fo != faces_of.end() && total / static_cast<float>(nu) >= p.join) {
+          nu = fo->second.size();
+          agree = 0;
+          total = 0;
+          for (std::size_t f : fo->second) {
+            const float sc = support(in.emb.data() + std::size_t{in.faces[f].row} * dim, *ps[c], dim, in.faces[f].id,
+                                     p.top_k, in.faces[f].asset);
+            total += sc;
+            agree += sc >= p.join ? 1 : 0;
+          }
+        }
+        const float s = total / static_cast<float>(nu);
+        if (s < p.join || static_cast<float>(agree) < p.fragment_share * static_cast<float>(nu)) continue;
+        claims[u].emplace_back(s, c);
+        continue;
+      }
       const float s = std::min(vouch(*ps[i], *ps[j], dim, p.top_k), vouch(*ps[j], *ps[i], dim, p.top_k));
       if (s < p.join) continue;
       links.push_back({i, j, s});
       linked.insert({i, j});
+    }
+  }
+  // A fragment two confirmed people claim about as well (within `margin`) is
+  // nobody's, unless those two are themselves the same person.
+  for (auto& [u, cs] : claims) {
+    std::sort(cs.begin(), cs.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+    bool clear = true;
+    for (std::size_t k = 1; k < cs.size() && clear; ++k) {
+      const std::size_t x = std::min(cs[0].second, cs[k].second), y = std::max(cs[0].second, cs[k].second);
+      clear = cs[0].first - cs[k].first >= p.margin || linked.count({x, y}) != 0;
+    }
+    if (!clear) continue;
+    for (const auto& [s, c] : cs) {
+      links.push_back({std::min(u, c), std::max(u, c), s});
+      linked.insert({std::min(u, c), std::max(u, c)});
     }
   }
   std::stable_sort(links.begin(), links.end(), [](const link& x, const link& y) { return x.support > y.support; });
@@ -772,10 +963,18 @@ std::vector<std::vector<std::int64_t>> find_duplicates(const dedupe_input& in, c
     if (ga == gb) continue;
     bool every = true;
     std::set<std::string> names;
+    // Fragments of one confirmed person need not vouch for each other (two
+    // sessions, two looks): each was claimed by that person directly, so no
+    // chain forms. They must not be apart (two people of one frame).
+    bool hub = false;
+    for (std::size_t x : members[ga]) hub = hub || conf[x];
+    for (std::size_t y : members[gb]) hub = hub || conf[y];
     for (std::size_t x : members[ga]) {
       if (const std::string& n = name_of(ps[x]->person); !n.empty()) names.insert(n);
       for (std::size_t y : members[gb]) {
-        if (!linked.count({std::min(x, y), std::max(x, y)})) every = false;
+        if (linked.count({std::min(x, y), std::max(x, y)})) continue;
+        if (hub && !conf[x] && !conf[y] && !apart(ps[x]->person, ps[y]->person)) continue;
+        every = false;
       }
     }
     for (std::size_t y : members[gb]) {

@@ -104,6 +104,10 @@ class tcp_link final : public link {
     close_on_exec(fd_);
     int one = 1;
     (void)::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
+    // Every write is one whole frame, so there is nothing for Nagle to join:
+    // it would only hold a small request, or a reply's last short packet,
+    // for the peer's delayed ack.
+    (void)::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     // A stalled write is a dropped link: the channel pings, so a healthy
     // receiver never leaves the send buffer full this long.
     timeval tv{kSilenceMs / 1000, 0};
@@ -149,6 +153,12 @@ class tcp_link final : public link {
   }
 
   transport via() const noexcept override { return transport::wifi; }
+
+  bool no_delay() const noexcept override {
+    int on = 0;
+    socklen_t len = sizeof on;
+    return ::getsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &on, &len) == 0 && on != 0;
+  }
 
  private:
   int fd_;

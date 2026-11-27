@@ -266,6 +266,20 @@ expected catalogue::read_rows() {
       ++folders_[static_cast<std::size_t>(f)].items;
     }
   }
+  // Documents and audio: their folders, and a count, never rows (the phone opens them from the
+  // server's folder, with the files Local search does not index).
+  stmt others(db_, "SELECT path FROM assets WHERE kind IN (3, 4)");
+  if (others.ok()) {
+    while (others.next()) {
+      const std::string path = others.text(0);
+      const std::size_t slash = path.rfind('/');
+      const auto folder = folder_of_dir(slash == std::string::npos ? std::string_view() : std::string_view(path).substr(0, slash));
+      if (!folder) continue;  // deeper or longer than any real library's: left out, not fatal
+      for (auto f = static_cast<std::int32_t>(*folder); f >= 0; f = folders_[static_cast<std::size_t>(f)].parent) {
+        ++folders_[static_cast<std::size_t>(f)].files;
+      }
+    }
+  }
   std::vector<std::uint32_t> all(rows_.size());
   for (std::size_t i = 0; i < all.size(); ++i) all[i] = static_cast<std::uint32_t>(i);
   all_ = std::make_shared<listing>(list_of(std::move(all)));

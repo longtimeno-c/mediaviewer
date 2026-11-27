@@ -1,13 +1,14 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Share everywhere (issue #444, docs/design/16 "Share"): one share command,
-// four ways in. ⌘⇧S (the router), the gallery's share icon, the command bar's
-// share button beside Home and the right-click Share submenu all run the
-// command table's `share`; the host picks the files (shell/share_menu.h: the
-// range, else the marks, else the current file, or the right-clicked file when
-// it is not one of them) and this shows the one menu: Driftwire first (or its
-// one-click install), then the system's own targets through
-// NSSharingServicePicker (Mail, Messages, AirDrop, Notes…). Nothing is read
+// three ways in. ⌘⇧S (the router), the command bar's one share button beside
+// Home and the right-click Share submenu all run the command table's `share`;
+// the host picks the files (shell/share_menu.h: the range, else the outlined
+// folder tile, else the marks, else the current file, or the right-clicked file
+// when it is not one of them) and this shows the one menu: Driftwire first (or
+// its one-click install), then the system's own targets through
+// NSSharingServicePicker (Mail, Messages, AirDrop, Notes…). A folder has no
+// files for the picker, so it goes to Driftwire, which sends it whole. Nothing is read
 // or sent until a target is picked (rule 6). The Windows twin is
 // IslandHost.Share.cs.
 import AppKit
@@ -23,9 +24,8 @@ final class ShareMenu {
   enum Target: Int32 { case menu = 0, driftwire = 1, system = 2 }
   enum From: Int32 { case key = 0, bar = 1, gallery = 2, context = 3 }
 
-  /// The bar's share button and the gallery's icon, where the menu opens.
+  /// The bar's share button, where the menu opens.
   weak var barAnchor: NSView?
-  weak var galleryAnchor: NSView?
 
   /// The picker on screen and its delegate (the picker keeps a weak one).
   private var picker: NSSharingServicePicker?
@@ -54,6 +54,9 @@ final class ShareMenu {
     guard let (view, rect) = anchor(for: from) else { return }
     switch target {
     case .driftwire:
+      driftwire(files.files, view: view, rect: rect)
+    case .menu where files.media.isEmpty:
+      // A folder (the outlined tile): nothing the picker takes; Driftwire is the one target.
       driftwire(files.files, view: view, rect: rect)
     case .menu:
       showPicker(files, view: view, rect: rect, withDriftwire: true)
@@ -151,14 +154,18 @@ final class ShareMenu {
     offer = popover
   }
 
-  /// The icon and the bar button open under themselves; the key at the bar's
-  /// button while the bar is up, else at the top centre of the window.
+  /// A folder tile's right-click: that folder to Driftwire, whole (it walks
+  /// it once picked). The chrome holds the path; nothing goes through the host.
+  func shareFolder(_ path: String) {
+    guard let (view, rect) = anchor(for: .bar) else { return }
+    driftwire([path], view: view, rect: rect)
+  }
+
+  /// The bar button opens under itself; the key at the bar's button while the
+  /// bar is up, else at the top centre of the window.
   private func anchor(for from: From) -> (NSView, NSRect)? {
     if from == .context, let c = contextAnchor, c.view.window != nil {
       return (c.view, c.rect)
-    }
-    if from == .gallery, let v = galleryAnchor, v.window != nil, !v.isHiddenOrHasHiddenAncestor {
-      return (v, v.bounds)
     }
     if let v = barAnchor, v.window != nil, !v.isHiddenOrHasHiddenAncestor, v.window?.isVisible == true {
       return (v, v.bounds)
@@ -185,7 +192,7 @@ final class ShareMenu {
   }
 
   /// Driftwire's entry: itself, or its one-click install.
-  private static var driftwireTitle: String {
+  static var driftwireTitle: String {
     DriftwireStore.shared.ready || DriftwireStore.shared.installed ? "Driftwire" : "Install Driftwire\u{2026}"
   }
 
@@ -281,23 +288,26 @@ struct ShareAnchor: NSViewRepresentable {
   func updateNSView(_ nsView: NSView, context: Context) { register(nsView) }
 
   private func register(_ v: NSView) {
-    MainActor.assumeIsolated {
-      switch from {
-      case .gallery: ShareMenu.shared.galleryAnchor = v
-      default: ShareMenu.shared.barAnchor = v
-      }
-    }
+    MainActor.assumeIsolated { ShareMenu.shared.barAnchor = v }
   }
 }
 
-/// The command bar's share button, beside Home: the current file in the
-/// viewer, the selection with the gallery open. Off with nothing to share.
+/// The command bar's one share button, beside Home: the current file in the
+/// viewer; with the gallery open its range, else the outlined folder tile,
+/// else the selected cell. Off with nothing to share.
 struct BarShareButton: View {
   @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var edit = EditStore.shared
   @State private var hover = false
 
   var body: some View {
-    let enabled = !store.names.isEmpty && (store.names.indices.contains(store.currentIndex) || !store.range.isEmpty)
+    // shell::share_takes_folder's rule (a Photos album is no folder on disk).
+    let folder = edit.galleryVisible && store.range.isEmpty && store.folders.indices.contains(store.folderCursor)
+      && !store.folders[store.folderCursor].hasPrefix("photos:")
+    let files = !store.names.isEmpty && (store.names.indices.contains(store.currentIndex) || !store.range.isEmpty)
+    let enabled = folder || files
+    let name = store.range.count > 1 ? "Share \(store.range.count) files"
+      : folder ? "Share the folder \(store.folderName(store.folders[store.folderCursor]))" : "Share"
     Button { ShareMenu.shared.request(.menu, from: .bar) } label: {
       Image(systemName: "square.and.arrow.up")
         .font(.system(size: 12, weight: .semibold))
@@ -311,8 +321,24 @@ struct BarShareButton: View {
     .disabled(!enabled)
     .onHover { hover = $0 }
     .background(ShareAnchor(from: .bar))
-    .help("Share: Driftwire, Mail, Messages, AirDrop and more (⇧⌘S)")
-    .accessibilityLabel("Share")
+    .help("\(name): Driftwire, Mail, Messages, AirDrop and more (⇧⌘S)")
+    .accessibilityLabel(name)
+  }
+}
+
+/// A folder tile's (or chip's) right-click: Share ▸ Driftwire with that folder.
+/// The system's targets take files, so they are not offered for a folder.
+struct FolderShareMenu: View {
+  let path: String
+
+  var body: some View {
+    if !path.hasPrefix("photos:") {
+      Menu {
+        Button(ShareMenu.driftwireTitle) { ShareMenu.shared.shareFolder(path) }
+      } label: {
+        Label("Share", systemImage: "square.and.arrow.up")
+      }
+    }
   }
 }
 

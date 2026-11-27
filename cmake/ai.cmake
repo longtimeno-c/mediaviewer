@@ -19,14 +19,17 @@
 #                  install tree stays byte-identical (PR 20 verify), and
 #                  tools/package/build-release.ps1 fails if ORT lands in it.
 #
-# ONNX Runtime 1.30.0 (MIT) is fetched per platform, pinned by SHA-256, into
-# the build tree: the header for mv_infer, and the runtime files the pack
+# ONNX Runtime 1.30.0 (MIT) is fetched from Microsoft's NuGet packages, pinned
+# by SHA-256, into the build tree: the header for mv_infer, and the runtime files the pack
 # stages beside mv_ai. macOS ships arm64 only (Microsoft publishes no x86_64
 # macOS build of 1.30): mv_ai is arm64-only on the Mac and Intel Macs are not
 # offered Local search (docs/design/17, 2026-09-26).
 #
 # Expects, already defined by the includer:
 #   mv_project_options, MV_SQLITE_TARGET, mv_addon (cmake/import.cmake)
+
+# mv_download, from here: cmake/portable includes this file without the root.
+include("${CMAKE_CURRENT_LIST_DIR}/download.cmake")
 
 set(MV_AI_VERSION "1.0.0" CACHE STRING "AI pack version (its manifest's)")
 set(MV_ORT_VERSION "1.30.0")
@@ -37,74 +40,107 @@ endif()
 set(R "${MV_SOURCE_ROOT}")
 
 # ---- ONNX Runtime, pinned -----------------------------------------------------
-set(_ort_base "https://github.com/microsoft/onnxruntime/releases/download/v${MV_ORT_VERSION}")
+# Microsoft's NuGet packages, not the GitHub release archives: the
+# microsoft/onnxruntime repository has returned 404 since 2026-11-18. The same
+# 1.30.0 build (the macOS dylib differs from the GitHub archive's only in its
+# ad-hoc signature; the headers only in line endings). One package carries
+# every platform, so one pin covers Windows, macOS, Linux and the iPhone.
+set(_ort_nuget "https://api.nuget.org/v3-flatcontainer")
+set(_ort_package "Microsoft.ML.OnnxRuntime")
+set(_ort_sha "30df119bd9164eaa187666d93147448fdd4a9a1a3caf83f1505daf7af2d1c5d2")
 if(WIN32)
-  set(_ort_name "onnxruntime-win-x64-${MV_ORT_VERSION}")
-  set(_ort_ext "zip")
-  set(_ort_sha "c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949")
+  set(_ort_rid "win-x64")
 elseif(APPLE)
-  set(_ort_name "onnxruntime-osx-arm64-${MV_ORT_VERSION}")
-  set(_ort_ext "tgz")
-  set(_ort_sha "6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012")
+  set(_ort_rid "osx-arm64")
 else()
-  set(_ort_name "onnxruntime-linux-x64-${MV_ORT_VERSION}")
-  set(_ort_ext "tgz")
-  set(_ort_sha "a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd")
+  set(_ort_rid "linux-x64")
 endif()
 
-function(mv_fetch_ort name ext sha out_dir)
-  set(_dl "${CMAKE_BINARY_DIR}/_ort/${name}.${ext}")
-  set(_dir "${CMAKE_BINARY_DIR}/_ort/${name}")
+# mv_fetch_ort(<package> <rid> <sha256> <out_var>): one platform's files from
+# ORT's NuGet package, laid out as <dir>/include, <dir>/lib (the native
+# libraries, under their package names), LICENSE and ThirdPartyNotices.txt.
+function(mv_fetch_ort package rid sha out_dir)
+  string(TOLOWER "${package}" _id)
+  set(_file "${_id}.${MV_ORT_VERSION}.nupkg")
+  set(_dir "${CMAKE_BINARY_DIR}/_ort/${_id}-${rid}-${MV_ORT_VERSION}")
   if(NOT EXISTS "${_dir}/include/onnxruntime_c_api.h")
-    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${name}.${ext}")
-      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${name}.${ext}")  # offline / CI cache
+    set(_dl "${CMAKE_BINARY_DIR}/_ort/${_file}")
+    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_file}")
+      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_file}")  # offline / CI cache
     else()
-      message(STATUS "Fetching ${name}.${ext} (ONNX Runtime, MIT)")
-      file(DOWNLOAD "${_ort_base}/${name}.${ext}" "${_dl}" EXPECTED_HASH SHA256=${sha} TLS_VERIFY ON)
+      message(STATUS "Fetching ${_file} (ONNX Runtime, MIT)")
+      mv_download("${_ort_nuget}/${_id}/${MV_ORT_VERSION}/${_file}" "${_dl}" "${sha}")
     endif()
     file(SHA256 "${_dl}" _got)
     if(NOT _got STREQUAL sha)
-      message(FATAL_ERROR "${name}.${ext}: SHA-256 ${_got}, expected ${sha}")
+      message(FATAL_ERROR "${_file}: SHA-256 ${_got}, expected ${sha}")
     endif()
-    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${CMAKE_BINARY_DIR}/_ort")
-    # The debug symbols are most of the archive and never used here.
-    file(GLOB _pdbs "${_dir}/lib/*.pdb")
-    file(GLOB _dsyms LIST_DIRECTORIES true "${_dir}/lib/*.dSYM")
-    if(_pdbs OR _dsyms)
-      file(REMOVE_RECURSE ${_pdbs} ${_dsyms})
+    # Only this platform's libraries, the headers (build/ in the CPU package,
+    # buildTransitive/ in the GPU one) and the licence files.
+    set(_tmp "${_dir}.extract")
+    file(REMOVE_RECURSE "${_tmp}" "${_dir}")
+    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${_tmp}"
+         PATTERNS "runtimes/${rid}/native" "build*/native/include"
+                  "LICENSE" "ThirdPartyNotices.txt")
+    file(GLOB _libs "${_tmp}/runtimes/${rid}/native/*")
+    file(GLOB _headers "${_tmp}/build/native/include/*" "${_tmp}/buildTransitive/native/include/*")
+    if(NOT _libs OR NOT _headers)
+      message(FATAL_ERROR "${_file}: no runtimes/${rid}/native or native/include in the package")
+    endif()
+    file(COPY ${_libs} DESTINATION "${_dir}/lib")
+    file(COPY "${_tmp}/LICENSE" "${_tmp}/ThirdPartyNotices.txt" DESTINATION "${_dir}")
+    file(COPY ${_headers} DESTINATION "${_dir}/include")  # last: marks the layout done
+    file(REMOVE_RECURSE "${_tmp}")
+    if(_dl STREQUAL "${CMAKE_BINARY_DIR}/_ort/${_file}")
+      file(REMOVE "${_dl}")  # ~150 MB, mostly other platforms; the layout is kept
     endif()
   endif()
   set(${out_dir} "${_dir}" PARENT_SCOPE)
 endfunction()
 
 if(IOS)
-  # An app may not load downloaded code: Microsoft's static xcframework (the
-  # onnxruntime-c CocoaPods archive, MIT), linked into the app. It has no
-  # include/ folder, so mv_fetch_ort's layout does not fit it.
-  set(_ort_name "pod-archive-onnxruntime-c-${MV_ORT_VERSION}")
-  set(_ort_sha "e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea")
-  set(MV_ORT_DIR "${CMAKE_BINARY_DIR}/_ort/${_ort_name}")
-  if(NOT EXISTS "${MV_ORT_DIR}/Headers/onnxruntime_c_api.h")
-    set(_dl "${CMAKE_BINARY_DIR}/_ort/${_ort_name}.zip")
-    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")
-      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_ort_name}.zip")  # offline / CI cache
+  # An app may not load downloaded code: Microsoft's static xcframework, linked
+  # into the app. It ships inside the same NuGet package as the desktop's
+  # libraries (runtimes/ios/native, for .NET iOS), so the phone and desktop
+  # share one pinned download. The CocoaPods pod-archive it used to come from
+  # sits behind download.onnxruntime.ai, whose certificate stopped matching
+  # the host in 2026-11.
+  string(TOLOWER "${_ort_package}" _id)
+  set(_file "${_id}.${MV_ORT_VERSION}.nupkg")
+  set(MV_ORT_DIR "${CMAKE_BINARY_DIR}/_ort/${_id}-ios-${MV_ORT_VERSION}")
+  if(NOT EXISTS "${MV_ORT_DIR}/onnxruntime.xcframework/Info.plist")
+    set(_dl "${CMAKE_BINARY_DIR}/_ort/${_file}")
+    if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_file}")
+      set(_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_file}")  # offline / CI cache
     else()
-      message(STATUS "Fetching ${_ort_name}.zip (ONNX Runtime, MIT)")
-      file(DOWNLOAD "https://download.onnxruntime.ai/${_ort_name}.zip" "${_dl}"
-           EXPECTED_HASH SHA256=${_ort_sha} TLS_VERIFY ON)
+      message(STATUS "Fetching ${_file} (ONNX Runtime, MIT)")
+      mv_download("${_ort_nuget}/${_id}/${MV_ORT_VERSION}/${_file}" "${_dl}" "${_ort_sha}")
     endif()
     file(SHA256 "${_dl}" _got)
     if(NOT _got STREQUAL _ort_sha)
-      message(FATAL_ERROR "${_ort_name}.zip: SHA-256 ${_got}, expected ${_ort_sha}")
+      message(FATAL_ERROR "${_file}: SHA-256 ${_got}, expected ${_ort_sha}")
     endif()
-    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${MV_ORT_DIR}")
+    set(_tmp "${MV_ORT_DIR}.extract")
+    file(REMOVE_RECURSE "${_tmp}" "${MV_ORT_DIR}")
+    file(ARCHIVE_EXTRACT INPUT "${_dl}" DESTINATION "${_tmp}"
+         PATTERNS "runtimes/ios/native/onnxruntime.xcframework.zip" "LICENSE" "ThirdPartyNotices.txt")
+    if(NOT EXISTS "${_tmp}/runtimes/ios/native/onnxruntime.xcframework.zip")
+      message(FATAL_ERROR "${_file}: no runtimes/ios/native/onnxruntime.xcframework.zip in the package")
+    endif()
+    file(COPY "${_tmp}/LICENSE" "${_tmp}/ThirdPartyNotices.txt" DESTINATION "${MV_ORT_DIR}")
+    file(ARCHIVE_EXTRACT INPUT "${_tmp}/runtimes/ios/native/onnxruntime.xcframework.zip"
+         DESTINATION "${MV_ORT_DIR}")  # last: onnxruntime.xcframework marks the layout done
+    file(REMOVE_RECURSE "${_tmp}")
+    if(_dl STREQUAL "${CMAKE_BINARY_DIR}/_ort/${_file}")
+      file(REMOVE "${_dl}")  # ~150 MB, mostly other platforms; the layout is kept
+    endif()
   endif()
-  set(MV_ORT_INCLUDE "${MV_ORT_DIR}/Headers")
   if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
     set(_ort_slice "ios-arm64_x86_64-simulator")
   else()
     set(_ort_slice "ios-arm64")
   endif()
+  set(MV_ORT_INCLUDE "${MV_ORT_DIR}/onnxruntime.xcframework/${_ort_slice}/onnxruntime.framework/Headers")
   add_library(mv_ort_static STATIC IMPORTED)
   set_target_properties(mv_ort_static PROPERTIES IMPORTED_LOCATION
     "${MV_ORT_DIR}/onnxruntime.xcframework/${_ort_slice}/onnxruntime.framework/onnxruntime")
@@ -112,7 +148,7 @@ if(IOS)
   target_link_libraries(mv_ort_static INTERFACE "-framework Foundation" "-framework CoreML"
                         "-framework UIKit" "-framework Network")
 else()
-  mv_fetch_ort(${_ort_name} ${_ort_ext} ${_ort_sha} MV_ORT_DIR)
+  mv_fetch_ort(${_ort_package} ${_ort_rid} ${_ort_sha} MV_ORT_DIR)
   set(MV_ORT_INCLUDE "${MV_ORT_DIR}/include")
 endif()
 
@@ -139,9 +175,9 @@ if(NOT IOS AND NOT EXISTS "${MV_PDFIUM_DIR}/include/fpdf_text.h")  # iOS: pdf_no
     set(_pdfium_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")  # offline / CI cache
   else()
     message(STATUS "Fetching ${_pdfium_name}.tgz chromium/${MV_PDFIUM_RELEASE} (PDFium, BSD-3-Clause / Apache-2.0)")
-    file(DOWNLOAD
+    mv_download(
       "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${MV_PDFIUM_RELEASE}/${_pdfium_name}.tgz"
-      "${_pdfium_dl}" EXPECTED_HASH SHA256=${_pdfium_sha} TLS_VERIFY ON)
+      "${_pdfium_dl}" "${_pdfium_sha}")
   endif()
   file(SHA256 "${_pdfium_dl}" _got)
   if(NOT _got STREQUAL _pdfium_sha)
@@ -400,13 +436,13 @@ if(WIN32)
 elseif(APPLE)
   add_custom_command(TARGET mv_ai POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${MV_ORT_DIR}/lib/libonnxruntime.${MV_ORT_VERSION}.dylib"
+            "${MV_ORT_DIR}/lib/libonnxruntime.dylib"
             "${CMAKE_BINARY_DIR}/addons/ai/libonnxruntime.dylib"
     COMMENT "Staging ONNX Runtime beside libmv_ai.dylib")
 else()
   add_custom_command(TARGET mv_ai POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${MV_ORT_DIR}/lib/libonnxruntime.so.${MV_ORT_VERSION}"
+            "${MV_ORT_DIR}/lib/libonnxruntime.so"
             "${CMAKE_BINARY_DIR}/addons/ai/libonnxruntime.so"
     COMMENT "Staging ONNX Runtime beside mv_ai")
 endif()
@@ -417,8 +453,10 @@ endif()
 # the piece carries only ORT's MIT files and the self-test falls back to CPU,
 # saying why, when they are missing. Bundling them still needs the review.
 if(WIN32 AND MV_AI_CUDA_PIECE)
-  mv_fetch_ort("onnxruntime-win-x64-gpu_cuda13-${MV_ORT_VERSION}" "zip"
-               "8fa4b08359af682cd605892cb59077049700b640128bb93fd2c7776cf9f55bdc" MV_ORT_CUDA_DIR)
+  # Microsoft.ML.OnnxRuntime.Gpu.Windows 1.30.0 is the CUDA 13 build
+  # (onnxruntime_providers_cuda.dll imports cublas64_13.dll).
+  mv_fetch_ort("Microsoft.ML.OnnxRuntime.Gpu.Windows" "win-x64"
+               "f86f88d2dcdbc1411a5a4f345751c37a85f965300e150da6d882bea41ea7296d" MV_ORT_CUDA_DIR)
   add_custom_target(mv_ai_cuda_piece ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/addons/ai-cuda"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

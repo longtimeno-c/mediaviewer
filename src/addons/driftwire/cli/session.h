@@ -34,6 +34,7 @@
 #include "addons/driftwire/cli/paths_arg.h"
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/engine.h"
+#include "addons/vpn/service.h"
 
 namespace mv::driftwire::cli {
 
@@ -60,7 +61,8 @@ struct session_options {
   // (rich mode only; the program sets it when the terminal takes sequences).
   bool mouse = false;
   std::string version;
-  std::string data_dir;  // "" : none (shown in /settings)
+  std::string data_dir;  // "" : none (shown in /settings); /host's --data
+  bool test_hooks = false;  // the test build: /host runs as `driftwire host` does there
   std::string name_note; // "this run" when --name was given
   path_options paths;    // the current folder, home, the platform's rules
   // --save-to: the Save to kept before this run, put back at the end unless
@@ -75,6 +77,9 @@ struct session_options {
   // "code <text>", "in connecting 123 456", "out done", "quit 0", ...), and
   // "log <line>" for each of the engine's log lines (no path, name or address).
   std::function<void(const std::string& line)> events;
+  // /vpn (the VPN add-on's engine, docs/plans/vpn-addon.md): made at the start
+  // with these, or none (then /vpn says it is not here).
+  std::optional<vpn::service::options> vpn;
 };
 
 class session {

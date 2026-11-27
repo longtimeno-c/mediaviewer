@@ -10,13 +10,52 @@ Trade-offs for the D1–D9 decisions are in [01-decisions.md](01-decisions.md).
 
 ## Phone access
 
-**Phone access is part of the app, not an add-on (2026-11-12, owner).** It pairs a phone, claims and
+**A paired device learns the server's addresses from the server (2026-11-18).** Until now a phone or
+desktop dialled only the addresses in the code it scanned, so a DuckDNS name or a relay added after
+pairing left every device on the home network until each was paired again (and each re-pair left a stale
+device on the server). The service now keeps the owner's addresses (`set_addresses`, from Phone access)
+and sends `local`, `public` and `relay` in every session's `serve_caps`; the client keeps any it is given
+(`servers.json` on a desktop, the Keychain record on the phone). Safe because the handshake pins the
+service's key: an address can only ever lead back to the same server. An address the service leaves out
+never wipes a kept one, so an older service, or one with none set, changes nothing.
+
+**Phone access is an add-on, offered the first time someone opens it (2026-11-14, owner; reverses
+2026-11-12 below).** Issue #686 §1: the Synology path, this computer as the server and their setup screens
+leave the base viewer for a new Phone access add-on (`src/addons/phone`, id `phone-access`), not installed by
+default and offered in Settings → Phone access. The owner wants the viewer to carry the viewer only, now that
+self-hosting made the feature large; the 2026-10-11 rule (add-ons carry their own code) applies again. What
+2026-11-12 built stays: the protocol in `src/wire`, the catalogue's generic half in `src/catalogue`, Local
+search as the catalogue's only builder. The core no longer links either; Local search's catalogue reaches the
+add-on through the host table (`catalogue_*`), and its card is a view tree both hosts draw, so its words exist
+once instead of twice. Phones already paired keep working: the NAS or this computer's `driftwire host` serves
+them on its own; the add-on reads the same OS secret-store items and the same feature folder (the library id)
+in place, nothing is copied or renamed. Plan: [phone-access-addon.md](../plans/phone-access-addon.md).
+
+**Phone access is part of the app, not an add-on (2026-11-12, owner; reversed 2026-11-14 above).** It pairs a phone, claims and
 manages the NAS service, serves nearby and keeps the publisher key with no add-on installed: the phone app
 is its own product and must work without Local search. This is a deliberate exception to the 2026-10-11
 rule that optional features ship as add-ons carrying their own code. The Driftwire protocol it needs moves
 to `src/wire` (linked by the core, the Driftwire add-on, the `driftwire` CLI and iOS), the feature to
 `src/phone`; Local search only builds the catalogue the core signs and delivers. Plan:
 [phone-in-the-app.md](../plans/phone-in-the-app.md).
+
+**On the phone a description the gate holds back is ranked by closeness (owner, 2026-11-14).**
+Reverses #412 (below, "Result order") on the phone only; the desktop keeps the newest-first list. The
+owner reported phone search "not showing accurate results" and "not updating": the "nothing found"
+gate holds back broad one-word subjects that rank correctly, and #412 then showed the whole library
+newest first, the same grid for every such query. Measured the same day on a copy of the owner's
+Dolomites folder (779 items, L/14): snow, sky, clouds, tree, road, river, sunset, church, dog, car,
+food and selfie were all held back, while mountain (314), hiking (279) and "a snowy mountain" (104)
+answered; on the sample library (47, B/32) dog, beach, lake and sunset were held back. A first
+attempt that same day said "Nothing found" instead; the owner rejected it at once ("dog shows nothing
+and I can literally see a dog"). Now `engine_options::rank_when_unanswered` (set by
+`src/mobile/search.cpp`) ranks every allowed picture by its margin over the generic prompts, as an
+answered query ranks, with no cut-off. Not by raw cosine: dark and blurred clip frames sit close to
+every query and filled the top of every list. On the sample library "dog" then leads with five dogs,
+and beach, lake, sunset, city and food with their own photos; on the Dolomites copy "church" leads with
+the cathedral and "snow" with snow. The cost: a query that describes nothing still lists the closest
+pictures. Filters alone (`is:video in:2024`) still list newest first. Retuning the gate for broad
+subjects (desktop too) is separate work.
 
 **Nearby sync is the NAS's protocol, pulled by the phone (2026-11-10).** `docs/plans/mobile.md` §7.5 describes
 the Mac sending files as a Driftwire transfer that skips Accept. Instead the Mac runs a LAN-only
@@ -47,6 +86,20 @@ for any download. Never hidden (App Review guideline
 2.3.1): the Enter-a-code prompt says to type SAMPLE for it, the grid carries a "Sample library" chip,
 Settings names it and where it comes from, and Forget removes it like any library. Cost: a release
 of about 185 MB on GitHub that must stay published, a key to keep, and one more `remote_file`.
+
+**Users of the self-hosted computer, and a LAN SMB share made through one elevated step (owner, 2026-11-14, #686 §2).**
+There is one admin password, the owner's passphrase. Anyone signed in with it, in the app or in the `driftwire`
+CLI, adds and changes other users (`admin`, `change`, `view`). The list is kept in the host service's store
+beside the passphrase, and never holds a password: an SMB password is the OS account's, typed and handed to
+the OS once. This bends call **C3** ("the CLI does not ask for it locally",
+[nas-owner-and-guests.md](../plans/nas-owner-and-guests.md) §3.7) for `host users` only, because the owner asked
+for sign-in in the CLI. The limit is said plainly: whoever can edit the host's files can edit the list, but
+every change to the OS's accounts and shares needs an OS administrator's approval besides. That approval is
+one elevated step (`driftwire host smb-apply`), started by the unprivileged command and approved each time.
+The always-running host still refuses elevation. The share is SMB3 with encryption on that share, has no
+guest access, and is never SMB1. It is LAN only: `host_ports` refuses 137–139, 445 and 3389 whoever asks, which
+keeps self-hosted.md's "never SMB, never RDP". The step changes only accounts and shares it marked as
+MediaViewer's. Plan: [self-host-users-smb.md](../plans/self-host-users-smb.md).
 
 **Claim tokens do not expire (2026-11-10).** Reading one needs access to the share, and that access could write a
 new one, so an expiry adds nothing, while comparing a NAS clock with a file's time could lock a person out.
@@ -2142,6 +2195,57 @@ elevated helper is owed). The TCP/IP stack is Driftwire's own (`netstack.cpp`, t
 connection only): lwIP (BSD-3, compatible) is not in vcpkg, and accepting a connection to any
 address needs patches to it.
 
+**The VPN is one add-on of its own (owner, 2026-11-19).** The Tunnel, All traffic and Connect to a
+VPN host were Driftwire's, and hosting the VPN (this computer or the NAS as the exit) was Phone
+access's card; the owner chose "One VPN add-on" ([plan](../plans/vpn-addon.md)). It reaches Phone
+access's link only through `addon_request` (Phone access answers caller `vpn` alone), keeps its own
+server field and key apart from Driftwire's relay for transfers, and takes the Tunnel's settings over
+from Driftwire once. The Mac's packet tunnel provider stays in the app's bundle (`src/addons/vpn/mac_tunnel`)
+and keeps the id `<app>.DriftwireTunnel`: 0.1.44 ships it signed with profiles for that App ID, so a
+rename would need a new App ID and profiles first. The `driftwire` program's `/tunnel` is `/vpn`
+(`/tunnel` kept), and links the add-on's engine.
+
+**The Mac release carries the VPN's extension with its entitlement (checked 2026-11-19).** Read
+from the installed v0.1.44 (release run 43786302385): `Contents/Library/SystemExtensions/
+io.github.longtimeno-c.mediaviewer.DriftwireTunnel.systemextension` is signed by the team's
+Developer ID with `packet-tunnel-provider-systemextension`, its Developer ID profile (made
+2026-11-14) is embedded and grants it, the app claims `system-extension.install` under its own
+profile, and the app is notarized and stapled (Gatekeeper: "Notarized Developer ID"). So the
+"entitlement owed" above is settled. Not yet run: activating it on a real Mac (the extension
+approval in System Settings, the VPN configuration prompt, traffic through an exit), which no
+release could do while the add-on did not start the VPN (it does from #743, 2026-11-24, with no
+kill switch on the Mac yet); the owner chose to do that together once a release carries it.
+
+**Windows' VPN carries `wintun.dll` under an additional permission, only in its own process
+(owner, 2026-11-19, #672).** WireGuard LLC's licence for the signed `wintun.dll` lets it ship beside
+software that uses it only through `wintun.h`, but it is not GPL-compatible, so the copyright holder
+grants a GPL-3.0 §7 permission to combine MediaViewer's code with it. The permission covers only
+longtimeno-c's code, and Exiv2 (GPL-2.0-or-later, other authors) loads into `MediaViewer.exe`, so
+`wintun.dll` is never to be loaded there: only the VPN service below, which holds no third-party
+GPL code, loads it (`LICENSE-WINTUN.md`). The official signed DLL ships unchanged under its own name. Rejected: loading it
+inside the app (Exiv2's licence has no such exception); OpenVPN's tap-windows6 (GPL-2.0, no linking,
+but an older, slower NDIS 6 driver with its own install prompt); building and signing our own Wintun
+(GPL-2.0-only source, and a kernel driver needs an EV certificate and Microsoft attestation signing);
+wireguard-nt and ovpn-dco-win (they carry their own protocols, not raw packets).
+
+**Windows' VPN gets administrator rights from a service the add-on installs (owner, 2026-11-19,
+#672).** Creating the Wintun adapter, opening a session on it (its device is SYSTEM and
+Administrators only), routes, DNS and WFP filters all need an administrator, and MediaViewer installs
+per user and never elevates. Turning on **All traffic (VPN)** the first time shows one UAC prompt: the
+add-on copies its small pump program and `wintun.dll` into `Program Files` (a LocalSystem service must
+never run from the user-writable `%LocalAppData%`) and registers a Windows service. The service owns
+the adapter, routes, DNS and the kill switch's filters and passes packets to the add-on over a named
+pipe only the installing person can open, the same split as the Mac's extension (the stack, flows and
+relay stay in the add-on). It is the add-on's own code, not a second app anyone opens (2026-10-11).
+The kill switch's filters stay while the app is closed or crashed, until the person turns the VPN off;
+the service adds them again at boot while the VPN is on (today's in-process filters, in
+[28](28-driftwire.md), end at a reboot).
+Removing the add-on asks UAC once and deletes the service, its filters and the adapter. **Not built
+yet:** until it is, `vpn_win.cpp` loads Wintun in process and starts only when MediaViewer runs
+elevated, and no release ships `wintun.dll`. Rejected: a
+UAC prompt at every start (no start at login), a scheduled task (less standard, no restart on
+failure), and running the whole app elevated (today's stopgap).
+
 **Sharepoint is now Driftwire, everywhere (owner, 2026-10-19).** Microsoft already sells a product
 called SharePoint, so the add-on was renamed in full: its name on screen, its id (`driftwire`), its
 files and folders, the release packages (`mediaviewer-addon-driftwire-*`), the relay tool
@@ -2152,6 +2256,85 @@ person reads). An installed Sharepoint does not update itself into Driftwire (a 
 menu offers Driftwire's one-click install, and Sharepoint is removed in Settings → Add-ons. Its
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
+
+**The self-host may map its own router ports (owner, 2026-11-14; plan call 2).** `driftwire serve`
+never touches a router's mapping ([28](28-driftwire.md#the-nas-service-driftwire-serve)). With the
+Synology dead the owner wants their own PC to be the NAS and the VPN exit, easy for someone who has
+never forwarded a port, and accepted [the self-hosting plan](../plans/self-hosted.md)'s call 2: the
+host (`driftwire host`, not `serve` run alone) asks the router for **its own ports only** (the
+service's, and the relay's with the VPN on; 443 for the TLS look unless someone else forwards it),
+with the code's mapping rules (#499: the gateway only, never another's forward taken over, short
+leases renewed while it runs, removed on stop, a ledger for a crash). Never SMB, RDP or another
+program's port. Built as `host_ports.*` (slice 4); behind carrier NAT it says that no forward helps.
+
+**The Phone access add-on carries `driftwire` for "This computer" (2026-11-14, owner: "Yes, ship it
+inside"; amends the row below).** The add-on's package has the program in `host/` (on Windows with the DLLs
+it loads), signed as the command line is (Developer ID and notarized on the Mac, Trusted Signing on
+Windows), and installs it into `<Phone access folder>/bin`, a place that survives add-on updates and that the
+start-at-login entry points at. Installing the add-on with one click is all "This computer" needs: no
+Homebrew or install.ps1 line. Still never the viewer's child: the card runs it, `host start-at-login on`
+registers it, launchd / Task Scheduler start it. **Updates:** a MediaViewer update never touches `bin`, so it
+never stops or replaces the running host. An add-on update copies the new files beside the old ones and
+renames them in, never writing over a running program (on Windows the running .exe and its DLLs are renamed
+aside first); the supervisor sees its program change and ends 75, and the login entry starts the new one, so
+phones see one reconnect. A separately installed command line keeps its own path and its own channel; the
+card runs the add-on's copy, and the login entry points at whichever program last ran
+`host start-at-login on`. Removing the add-on (any Remove but a reinstall) turns the login entry off when it
+runs the add-on's copy, which stops the host, and deletes `bin`; the shared folders, the host's data and the
+pairings stay. The Synology's signed package feed is unaffected. Plan: [phone-access-addon.md](../plans/phone-access-addon.md) §8.
+
+**The app runs an installed `driftwire` for "This computer" (2026-11-14, self-hosting slice 6; amends
+"the app never starts it", 2026-10-23).** Settings → Phone access → Set up the service… → **This
+computer** (owner: "done in-app, no terminal"; plan §8) needs the host to run at login with no
+MediaViewer open, so the host stays the command line's, never the viewer's (plan §4: DuckDNS never in
+the viewer). On the person's click, and only then, the app runs the installed program's own
+`driftwire host share` and `driftwire host start-at-login on` (which registers the login entry and
+starts the host through launchd / Task Scheduler / systemd, never as the app's child), and reads the
+host's files (`state.json`, `host.lock`, `serve.json`, `host.json`) for the status row. The DuckDNS
+name is written where `host name duckdns` (slice 5, built beside this) writes it (`host.json` `ddns`,
+the token as `ddns_token` in `<data>/host/secrets`), because that command asks at a terminal only. The program is still **not in
+the app's payload** (`build-release.ps1` still refuses it) and is installed once with its own one line
+(Homebrew, `install.ps1`); the card says so and checks again. Still no second *app*: nothing opens a
+window. Reopen if the owner wants the program shipped inside the app or the add-on (so the card needs
+no install line), or a non-terminal `host name duckdns` for the card to call instead of the files.
+
+**MediaViewer may erase and combine drives, at the owner's explicit request (owner, 2026-11-14;
+issue #686 §3; against the spirit of rule 5).** Rule 5 says never modify an original, and erasing a
+drive is the most dangerous thing the app could do. With the Synology dead, the owner wants the PC to
+be the NAS, two or more drives combined the way a Synology would. So `driftwire host drives combine`
+(and the "This computer" card's drive step, which runs it) may erase the drives the person picks and
+combine them with **the OS's own tools only**, no RAID code of ours: Storage Spaces on Windows (simple,
+two-way mirror, parity), AppleRAID on the Mac (`diskutil appleRAID create mirror|stripe|concat`),
+`mdadm` on Linux later. **Every choice is offered equally** (owner): Separate (nothing erased),
+Mirror (RAID 1), Span (JBOD), Stripe (RAID 0) and Parity (RAID 5, 3+ drives; macOS has none and the
+row says so), side by side with the space each gives, what a dead drive costs and its speed, under the
+line that **RAID is not a backup**. The guards are not optional: each drive's name, size, model and
+what is on it are shown; the person types each drive's name; a drive holding this computer's system,
+the MediaViewer library or catalogue, or a folder the app shares (it may be the only copy) is refused;
+the erase itself needs an administrator once, approved in the OS's own prompt, never by the running
+host (which still refuses elevation); and tests touch only disk images made for them (the test build
+refuses any other disk). Plan: [self-host-drives.md](../plans/self-host-drives.md). Reopen before
+adding any other erase, or RAID code of our own.
+
+**The app keeps itself, and starts at login, while the self-host does (owner, 2026-11-14; issue
+#686 §4, plan "Tray").** The owner asked for a tray / menu-bar icon while hosting "through the app's
+existing background icon code". So the icon is MediaViewer's own #452 background presence, never a
+second app or a tray in `driftwire host`: while the host runs (its `host.lock` held), the app's
+registry holds one kept entry of its own (`set_shell_keep`, "shell": true) that the hosts draw as a
+kept add-on's, and closing the viewer's window hides it to the icon; while the host's start-at-login
+entry is there, the app's own login item is wanted too (it starts hidden, as #452's does), so the
+icon is there after a login with no window opened. The app runs the host's own `pause`, `resume`
+and `quit` (owner-only, through `host.json`; no socket). Reopen if the cost of MediaViewer hidden
+at every login while hosting is too much (then the icon appears only once the app is opened), or
+when Phone access becomes an add-on (#686 §1), which takes this entry over with `keep_alive` /
+`keep_menu`.
+
+**The server converts phone clips with the app's clip helper, not FFmpeg in the add-on (owner,
+2026-11-15; docs/plans/phone-clip-convert.md).** An exception to "add-ons carry their own code"
+(2026-10-11): `driftwire host` runs the app's `MediaViewerClipJob` (`--convert-*`), which already
+holds FFmpeg, the hardware encoder port and the OS's AAC, rather than the Phone access add-on
+carrying a second FFmpeg (~40 MB) for the same code. The add-on tells the host where the helper is.
+Reopen if the host must convert on a computer without MediaViewer installed.
 
 **A service on the Synology, started before the M1 spikes (owner, 2026-11-10).** The owner's setup
 (`docs/plans/mobile.md` §2.1) puts the library on a Synology reached through one forwarded port from
@@ -2827,6 +3010,13 @@ its anchor is no longer selected, so no selection path needs a hook.
 `ScrollView` the cell's `DragGesture` never saw the mouse drag; a local event monitor turns a
 press on a hovered cell that moves 4 pt into the file drag.
 
+**One Share button, and a folder tile shares the folder (2026-11-14, owner).** Reverses #413's
+share icon over the grid: two buttons judged "something to share" differently (the bar's was off
+over a folder of folders, the grid's stayed on and did nothing), so the command bar's button beside
+Home is the only one, on both hosts. With the gallery open and the keyboard on a folder tile (no
+range), Share sends that folder through Driftwire, whole (`share_takes_folder`); the system sheet,
+which takes files, is off for it. A folder tile's right-click has Share ▸ Driftwire.
+
 ---
 
 ## Open add-ons
@@ -3386,6 +3576,20 @@ refresh's rule), per model now. The sheet's tile-by-tile reveal of a photo (main
 a photo's run has no sheet since one-click, and the working glow over the photo stands for it.
 Renumbered after main's: ABI 0.36 (S5's docked screens) became 0.38, `chrome_cmd_faces` 1100 became
 1109.
+
+**The Mac keychain group is also claimed as `keychain-access-groups` (2026-11-15).** Reverses half
+of #501's "a team-prefixed app group, no profile": the data protection keychain does not take an
+app group as an access group. A copy of v0.1.43, signed with its own entitlements and profile,
+got -34018 (`errSecMissingEntitlement`) from `SecItemAdd` in `<team>.<bundle id>.driftwire`, and
+the same with the profile removed and only the app group claimed; adding the group as
+`keychain-access-groups` made it 0. So no Mac release has kept anything in that store: Driftwire's
+identity and remembered devices were this run's only, and a desktop that paired with a NAS (#686)
+was listed there but could not keep the keys, and said "Can't reach". The group's name is
+unchanged, so nothing moves. `keychain-access-groups` is restricted, so `macpack.py` claims it
+only when the app's Developer ID profile is embedded (every release with the VPN extension since
+2026-11-14; Apple's profiles grant `<team>.*`, and `check_profiles` stops a release whose profile
+does not). A release without a profile still has no working store. A refused write now says so
+(`pair_problem_words`, `status::internal`) instead of "Can't reach".
 
 ## Not built
 

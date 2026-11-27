@@ -65,6 +65,9 @@ struct service_config {
   key32 device_key{};       // this phone's X25519 private key
   std::string device_id = "0000000000000000";
   std::string device_name = "iPhone";
+  // "desktop" (serve::kDeviceDesktop) when a desktop pairs to open the folders: it starts
+  // as "can view files" (docs/plans/self-host-users-smb.md §9). "": a phone.
+  std::string device_kind;
   // Ask for a direct path once on the relay (docs/plans/nas-relay.md §9).
   bool upgrade = false;
   bool loopback_only = false;  // the tests: punch on 127.0.0.1 only
@@ -134,6 +137,15 @@ class link_session final : public remote_file {
   // The live connection's limit, as the service said it in serve_caps: 1
   // limited, 0 unlimited, -1 no live connection (nothing known).
   [[nodiscard]] int grant(std::int64_t& expires_unix, bool& scoped) const;
+  // The caps' "storage" word (serve_wire.h): "" when healthy or none; -1 (as grant) with no live link.
+  [[nodiscard]] int storage(std::string& word) const;
+  // The caps' "role" for this device (serve_wire.h kCapsRole): "view", "change" or "admin"; "" from
+  // a service older than roles. -1 (as grant) with no live link.
+  [[nodiscard]] int role(std::string& word) const;
+  // Where the service is (serve_wire.h kCapsAddresses): the addresses it was set up with, each
+  // replaced by the one the latest connect's caps gave; one the caps left out stays. The next
+  // race uses them, and a host keeps them so the next run does. Never blocks on a connect.
+  void addresses(std::string& local, std::string& public_name, std::string& relay) const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list(const std::string& root,
@@ -146,10 +158,43 @@ class link_session final : public remote_file {
   // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
   // folder's meta folder. status::unsupported_format: the service is from before 1.1.
   [[nodiscard]] result<bool> can_write();
+  // Clips this phone can't play (docs/plans/phone-clip-convert.md): whether the service offers
+  // `convert`, a clip's plan (status::unsupported_format: not offered, or not a clip), and one
+  // segment's MPEG-TS. A segment's first bytes wait for the server's encoder (kConvertStallMs).
+  [[nodiscard]] result<bool> can_convert();
+  [[nodiscard]] result<driftwire::serve::convert_plan> convert_plan(const std::string& root, const std::string& rel,
+                                                                    const cancel_flag* cancel);
+  [[nodiscard]] expected convert_read(const std::string& root, const std::string& rel, std::uint32_t segment,
+                                      const byte_sink& sink, const cancel_flag* cancel);
   [[nodiscard]] result<driftwire::serve::client::write_done> write(
       const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
       const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false);
+  // Changing the shared folders (serve_client.h "changing the shared folders"): plain
+  // pass-throughs to the live client, each blocking (a worker). changes_files(): the
+  // service has mkdir, move and delete; show New folder / Move / Rename / Delete only then,
+  // and on a folder only when its root_info.writable. A dropped link is dropped here, as
+  // write() does; `add` resumes after an offset refusal with `at` = `why->have`.
+  [[nodiscard]] result<bool> changes_files();
+  [[nodiscard]] result<driftwire::serve::client::change_done> add(
+      const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
+      std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
+      const cancel_flag* cancel, driftwire::serve::client::change_refused* why = nullptr);
+  // The phone's Add: the file at `local_path`, hashed here, sent with add() and carried on after an
+  // offset refusal (a cancel or a drop left this device's unfinished copy), once more from the start
+  // after a hash refusal, and once more on a new link after a drop (waiting out "busy" while the
+  // service lets go of the old stream). `progress` gets the bytes the service has, of the size.
+  [[nodiscard]] result<driftwire::serve::client::change_done> add_file(
+      const std::string& root, const std::string& rel, const std::string& local_path,
+      const std::function<void(std::uint64_t done, std::uint64_t total)>& progress, const cancel_flag* cancel,
+      driftwire::serve::client::change_refused* why);
+  [[nodiscard]] result<driftwire::serve::client::change_done> make_folder(
+      const std::string& root, const std::string& rel, driftwire::serve::client::change_refused* why = nullptr);
+  [[nodiscard]] result<driftwire::serve::client::change_done> move(
+      const std::string& root, const std::string& rel, const std::string& to_root, const std::string& to_rel,
+      driftwire::serve::client::change_refused* why = nullptr);
+  [[nodiscard]] result<driftwire::serve::client::change_done> remove(
+      const std::string& root, const std::string& rel, driftwire::serve::client::change_refused* why = nullptr);
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list_meta(const std::string& root, const std::string& rel);
   // The whole listing or an error: status::io when the service cut it short, so a caller that
   // drops what is not listed never drops what was merely past the cut.
@@ -174,7 +219,7 @@ class link_session final : public remote_file {
   [[nodiscard]] std::uint32_t live_caps_ops() const;
   [[nodiscard]] bool upgrade_allowed() const noexcept;
 
-  service_config config_;
+  service_config config_;  // its addresses change under both connect_m_ and m_ (race_locked)
   std::string device_folder_id_;  // serve::device_folder_id of this phone's public key
   mutable std::mutex connect_m_;  // single-flight connect; held across the race, on a worker
   mutable std::mutex m_;          // guards live_

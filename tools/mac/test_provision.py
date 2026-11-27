@@ -114,7 +114,8 @@ class FakeConnect:
         if method == "POST" and path == "/profiles":
             bid = body["data"]["relationships"]["bundleId"]["data"]["id"]
             ident, caps = next((i, c) for i, (b, c) in self.bundles.items() if b == bid)
-            ent = {macpack.APP_ID_KEY: f"{TEAM}.{ident}"}
+            # Apple's Developer ID profiles grant every keychain group of the team.
+            ent = {macpack.APP_ID_KEY: f"{TEAM}.{ident}", macpack.KEYCHAIN_GROUPS: [f"{TEAM}.*"]}
             if "NETWORK_EXTENSIONS" in caps:
                 ent[macpack.NETWORK_EXTENSION] = [macpack.PACKET_TUNNEL, "app-proxy-provider-systemextension"]
             if "SYSTEM_EXTENSION_INSTALL" in caps:

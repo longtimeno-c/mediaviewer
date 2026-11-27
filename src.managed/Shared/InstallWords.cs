@@ -22,6 +22,45 @@ public enum InstallFailure
 /// <summary>The one next step a failure offers.</summary>
 public enum InstallNext { Retry, Reinstall }
 
+/// <summary>Where the automatic repair of one damaged add-on stands, per process.</summary>
+public enum RepairState
+{
+    None,
+    /// <summary>Started; it ended on something a retry can fix (offline, no space).</summary>
+    Tried,
+    /// <summary>Installed again, every file verified.</summary>
+    Repaired,
+    /// <summary>The fresh files did not verify either: something took them as they landed.</summary>
+    Blocked,
+}
+
+/// <summary>
+/// An installed add-on whose files no longer verify (one was deleted or
+/// changed, typically by security software) is installed again by itself, once
+/// per process: it never loops on a copy that keeps breaking. Pure, no UI.
+/// </summary>
+public static class AddonRepair
+{
+    /// <summary>
+    /// <paramref name="damaged"/>: the load refused the copy's files.
+    /// <paramref name="autoCheck"/>: "Check for updates automatically" (nothing
+    /// is downloaded behind a person who turned that off).
+    /// <paramref name="ownsStore"/>: this window installs and removes add-ons.
+    /// </summary>
+    public static bool ShouldStart(bool damaged, RepairState was, bool autoCheck, bool ownsStore, bool busy) =>
+        damaged && was == RepairState.None && autoCheck && ownsStore && !busy;
+
+    public static RepairState After(InstallFailure? failure) =>
+        failure is null ? RepairState.Repaired
+        : failure == InstallFailure.NotVerified ? RepairState.Blocked : RepairState.Tried;
+
+    /// <summary>The state line of a copy that is not usable, or null for the usual one.</summary>
+    public static string? StateText(RepairState state, bool busy) =>
+        state == RepairState.None ? null
+        : busy ? InstallWords.Repairing
+        : state is RepairState.Repaired or RepairState.Blocked ? InstallWords.KeepsBreaking : null;
+}
+
 /// <summary>
 /// #525 (docs/design/18 "Installing"): the words of every add-on install on
 /// both platforms, Import, Local search's pieces, Places, Driftwire and other
@@ -73,6 +112,13 @@ public static class InstallWords
     public static string Updated(string name, string version) => $"{name} updated to {version}.";
 
     public static string Reinstalled(string name) => $"{name} installed again.";
+
+    // A damaged copy repairs itself (AddonRepair).
+    public const string Repairing = "The installed copy is damaged. Installing it again…";
+    public const string KeepsBreaking =
+        "The installed copy keeps losing its files. Security software is the usual cause: check what it removed and allow it, then install again.";
+
+    public static string Repaired(string name) => $"{name} was damaged and has been installed again.";
 
     public static string Failure(InstallFailure failure, string name) => failure switch
     {

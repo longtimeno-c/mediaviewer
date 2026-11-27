@@ -525,6 +525,10 @@ struct SlotAddonsSection: View {
           installed.reload()
         }
       }
+      // Phone access, offered on its page while it is not installed.
+      if only == PhoneAccessStore.addonID && !installed.rows.contains(where: { $0.id == PhoneAccessStore.addonID }) {
+        PhoneAccessOffer()
+      }
       ForEach(installed.rows.filter { $0.id != "places" && shows($0.id) }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
           // On its page the heading names it (#510).

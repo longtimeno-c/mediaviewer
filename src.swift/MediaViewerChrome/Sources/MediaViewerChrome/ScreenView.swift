@@ -362,7 +362,10 @@ private struct TextNode: View {
   var body: some View {
     let style = node.string("style") ?? "body"
     let lines = node.int("lines") ?? 0
-    let text = Text(node.string("text") ?? "")
+    // "symbol" (contribution API 16): a glyph before the text, in its font and colour.
+    let words = Text(node.string("text") ?? "")
+    let line = node.string("symbol").map { Text(Image(systemName: slotSymbol($0))) + Text("  ") + words } ?? words
+    let text = line
       .font(font(style))
       .foregroundStyle(style == "secondary" || style == "caption" ? MVTheme.body : MVTheme.title)
       .lineLimit(lines > 0 ? lines : nil)
@@ -1223,7 +1226,11 @@ private struct TextFieldNode: View {
 
   private var field: some View {
     Group {
-      if node.bool("multiline") {
+      // "secure" (contribution API 15, Phone access): dots, and nothing kept in
+      // the tree; what is typed goes to the add-on on Return or leaving the field.
+      if node.bool("secure") {
+        SecureField(node.string("placeholder") ?? node.label, text: $text)
+      } else if node.bool("multiline") {
         TextField(node.string("placeholder") ?? node.label, text: $text, axis: .vertical).lineLimit(3...8)
       } else {
         TextField(node.string("placeholder") ?? node.label, text: $text)
@@ -1240,7 +1247,11 @@ private struct TextFieldNode: View {
     }
     .accessibilityLabel(node.label)
     .onAppear { text = node.string("value") ?? "" }
-    .onChange(of: revision) { _, _ in if !focused { text = node.string("value") ?? "" } }
+    // Typed and not sent yet: a button's click sends it first (SlotStore.noteTyping).
+    .onChange(of: text) { _, now in
+      if focused { SlotStore.shared.noteTyping(address, node: node.id, text: now) }
+    }
+    .onChange(of: revision) { _, _ in if !focused && !node.bool("secure") { text = node.string("value") ?? "" } }
   }
 }
 
@@ -1799,7 +1810,9 @@ private struct LinkNode: View {
         }
         .frame(height: 64)
         .padding(.top, 24 - 32)
-        device(symbol: nil, name: node.string("to") ?? "", mark: state == "done" ? "checkmark.circle.fill"
+        // The VPN's Tunnel ends at the web, not a computer: a globe, not initials.
+        device(symbol: via == "tunnel" ? "globe" : nil, name: node.string("to") ?? "",
+               mark: state == "done" ? "checkmark.circle.fill"
                : state == "failed" ? "exclamationmark.circle.fill" : nil)
       }
       HStack(spacing: MVTheme.space(6)) {

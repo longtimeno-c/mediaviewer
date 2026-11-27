@@ -21,10 +21,12 @@
 
 namespace mv::mobile::files {
 
-enum class kind : std::int32_t { none = -1, photo = 0, raw = 1, clip = 2 };
+enum class kind : std::int32_t { none = -1, photo = 0, raw = 1, clip = 2, other = 3 };
 
 // What the phone shows a file as, from its extension (the D5 table, io/media_extensions.h): a
-// photo, a RAW, a clip, or nothing (audio, documents and everything else are not shown).
+// photo, a RAW, a clip, or another file (a PDF, a save, an archive: listed by name, opened by the
+// phone's own preview, never decoded here), or nothing: a camera's or an editor's companion file
+// (an XMP sidecar, a THM or LRV beside a clip, Thumbs.db), which only clutters a folder.
 [[nodiscard]] kind kind_of(std::string_view name) noexcept;
 
 struct entry {
@@ -35,8 +37,8 @@ struct entry {
   kind k = kind::none;
 };
 
-// What a folder shows: its folders and the files the phone can show, hidden (dot) names left out,
-// in the listing's order.
+// What a folder shows: its folders, its photos and clips, and its other files, hidden (dot) names
+// and companion files left out, in the listing's order.
 [[nodiscard]] std::vector<entry> shown(std::span<const driftwire::serve::list_entry> listing);
 
 // One value ImageIO read, under the Exiv2 key the desktop's search_facts_of reads it by
@@ -82,5 +84,21 @@ class index {
   std::vector<bool> has_fields_;
   std::size_t tagged_ = 0;
 };
+
+// Where a catalogue folder's files may be among the service's folders, most likely first, when no
+// folder is labelled with its share's name: the catalogue was made where the library sat then (a
+// NAS share, a disk), and the folder served now may be the share under another label, a folder
+// inside it, or the disk above it. Each is a service folder and the path inside it that the
+// catalogue's relative paths go under ("" for its top); the caller keeps the first that holds a file.
+struct place {
+  std::string root;    // the service's folder id
+  std::string prefix;  // '/'-separated, may be empty
+  bool operator==(const place&) const = default;
+};
+struct served_root {
+  std::string id;
+  std::string label;
+};
+[[nodiscard]] std::vector<place> places_for(std::string_view share, std::string_view sub, std::span<const served_root> roots);
 
 }  // namespace mv::mobile::files

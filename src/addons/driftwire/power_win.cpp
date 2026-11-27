@@ -33,10 +33,18 @@ class request final : public stay_awake {
 }  // namespace
 
 std::unique_ptr<stay_awake> hold(bool receiving) noexcept {
+  try {
+    return hold_for(reason(receiving));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+std::unique_ptr<stay_awake> hold_for(const std::string& reason_ascii) noexcept {
   std::wstring text;
   try {
-    // ASCII: the owner is a literal of ours.
-    for (const char c : reason(receiving)) text.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+    // ASCII: the owner and the host's reason are literals of ours.
+    for (const char c : reason_ascii) text.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
   } catch (...) {
     return nullptr;
   }

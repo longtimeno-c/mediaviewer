@@ -21,7 +21,7 @@ struct FileEntry: Sendable {
   let path: FilePath
   let size: UInt64
   let mtime: Int64
-  /// mv_file_entry.kind: 0 photo, 1 RAW, 2 clip.
+  /// mv_file_entry.kind: 0 photo, 1 RAW, 2 clip, 3 any other file.
   let kind: Int32
   let item: MediaItem
 
@@ -29,7 +29,7 @@ struct FileEntry: Sendable {
 }
 
 public final class LinkFiles: @unchecked Sendable {
-  private let connection: LinkConnection
+  let connection: LinkConnection
   private let originals: OriginalStore
   private let lock = NSLock()
   /// The files of the folders listed lately, by item id: what opening one needs. Bounded to the
@@ -46,6 +46,8 @@ public final class LinkFiles: @unchecked Sendable {
   private let memory = ScopedCache<UIImage>(totalCostLimit: 96 << 20)
   private let heads = HeadReads()
   private let posters = OneAtATimeGate(limit: 1)
+  /// Folder tiles' listings: two at a time.
+  private let previews = OneAtATimeGate(limit: 2)
   private let wholeReads = OneAtATimeGate(limit: 2)
   /// The viewer's ±2 and the like: two at a time, and a fast scroll drops what it cannot start.
   private let prefetches = OneAtATimeGate(limit: 2)
@@ -110,29 +112,48 @@ public final class LinkFiles: @unchecked Sendable {
     let folders: [Folder]
     /// Newest first, as every list the screens show is.
     let files: [FileEntry]
+    /// The files that are not photos or clips, by name.
+    let others: [OtherFile]
   }
 
   func roots() async throws -> [Folder] {
     guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
-    let (status, rows) = await onLinkQueue { () -> (Int32, [(String, String)]) in
-      final class Rows { var list: [(String, String)] = [] }
-      let rows = Rows()
-      let status = mv_files_roots(link.raw, { ctx, id, label in
-        guard let ctx, let id, let label else { return }
-        Unmanaged<Rows>.fromOpaque(ctx).takeUnretainedValue().list.append((String(cString: id), String(cString: label)))
-      }, Unmanaged.passUnretained(rows).toOpaque())
-      return (status, rows.list)
-    }
+    let (status, rows) = await Self.rootRows(link, offlineOnly: false)
     guard status == 0 else { throw Self.failure(status) }
-    return rows.map { Folder(id: FilePath(root: $0.0, rel: "").id, name: $0.1, itemCount: -1, hasSubfolders: true) }
-      .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    return rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
 
-  func list(_ folder: FilePath) async throws -> FolderListing {
+  /// The server's folders whose drive is not connected now; [] when it can't be asked.
+  func offlineRoots() async -> [Folder] {
+    guard let link = await connection.awaitLink() else { return [] }
+    let (status, rows) = await Self.rootRows(link, offlineOnly: true)
+    guard status == 0 else { return [] }
+    return rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+  }
+
+  private static func rootRows(_ link: LinkHandle, offlineOnly: Bool) async -> (Int32, [Folder]) {
+    await onLinkQueue { () -> (Int32, [Folder]) in
+      final class Rows { var list: [Folder] = [] }
+      let rows = Rows()
+      let collect: mv_root_fn = { ctx, id, label, offline in
+        guard let ctx, let id, let label else { return }
+        Unmanaged<Rows>.fromOpaque(ctx).takeUnretainedValue().list.append(
+          Folder(id: FilePath(root: String(cString: id), rel: "").id, name: String(cString: label), itemCount: -1,
+                 hasSubfolders: offline == 0, offline: offline != 0))
+      }
+      let ctx = Unmanaged.passUnretained(rows).toOpaque()
+      let status = offlineOnly ? mv_files_offline_roots(link.raw, collect, ctx) : mv_files_roots(link.raw, collect, ctx)
+      return (status, rows.list)
+    }
+  }
+
+  /// `priority` only for a listing not already running: a folder tile's asks at .utility, and the
+  /// library going into that folder then waits on the same read (awaiting raises its priority).
+  func list(_ folder: FilePath, priority: TaskPriority = .userInitiated) async throws -> FolderListing {
     let key = folder.id
     let task: Task<FolderListing, Error> = lock.withLock {
       if let running = listing[key] { return running }
-      let task = Task.detached(priority: .userInitiated) { [self] in try await readListing(folder) }
+      let task = Task.detached(priority: priority) { [self] in try await readListing(folder) }
       listing[key] = task
       return task
     }
@@ -142,6 +163,7 @@ public final class LinkFiles: @unchecked Sendable {
 
   private func readListing(_ folder: FilePath) async throws -> FolderListing {
     guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+    let cache = factCache()
     struct Row { let name: String; let size: UInt64; let mtime: Int64; let dir: Bool; let kind: Int32 }
     let (status, rows) = await onLinkQueue { () -> (Int32, [Row]) in
       final class Rows { var list: [Row] = [] }
@@ -160,21 +182,46 @@ public final class LinkFiles: @unchecked Sendable {
     guard status == 0 else { throw Self.failure(status) }
     var folders: [Folder] = []
     var files: [FileEntry] = []
+    var others: [OtherFile] = []
     for row in rows {
       let path = folder.appending(row.name)
       if row.dir {
         folders.append(Folder(id: path.id, name: row.name, itemCount: -1, hasSubfolders: true))
         continue
       }
+      if row.kind == 3 {
+        others.append(OtherFile(id: path.id, name: row.name, bytes: Int64(row.size),
+                                modified: Date(timeIntervalSince1970: TimeInterval(row.mtime))))
+        continue
+      }
+      // A clip's length when its poster was made before (the folder lists names, sizes and times only).
+      let seconds = row.kind == 2 ? cache?.facts(for: path.stamp(size: row.size, mtime: row.mtime))?.seconds : nil
       let item = MediaItem(id: MediaID(path.id), kind: row.kind == 2 ? .clip : .photo,
                            capturedAt: Date(timeIntervalSince1970: TimeInterval(row.mtime)), pixelWidth: 0, pixelHeight: 0,
-                           duration: nil, fileName: row.name)
+                           duration: seconds, fileName: row.name)
       files.append(FileEntry(path: path, size: row.size, mtime: row.mtime, kind: row.kind, item: item))
     }
     folders.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     files.sort { $0.mtime != $1.mtime ? $0.mtime > $1.mtime : $0.path.rel < $1.path.rel }
+    others.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     remember(files, in: folder)
-    return FolderListing(folders: folders, files: files)
+    return FolderListing(folders: folders, files: files, others: others)
+  }
+
+  /// A catalogue folder's other files: the catalogue holds only photos and clips, so the folder's
+  /// place on the server is asked for (mv_files_folder_place) and listed. [] when it can't be had
+  /// (no link, the share not served): the folder's photos still show.
+  public func otherFiles(inCatalogueFolder key: String) async -> [OtherFile] {
+    guard let link = await connection.awaitLink() else { return [] }
+    let place = await onLinkQueue { () -> FilePath? in
+      var root = [CChar](repeating: 0, count: 256)
+      var rel = [CChar](repeating: 0, count: 4096)
+      let status = key.withCString { mv_files_folder_place(link.raw, $0, &root, root.count, &rel, rel.count) }
+      guard status == 0 else { return nil }
+      return FilePath(root: String(cString: root), rel: String(cString: rel))
+    }
+    guard let place, !Task.isCancelled else { return [] }
+    return (try? await list(place, priority: .userInitiated))?.others ?? []
   }
 
   /// Keeps a listing's files for opening, and forgets the folders listed longest ago.
@@ -188,6 +235,35 @@ public final class LinkFiles: @unchecked Sendable {
         for id in knownByFolder.removeValue(forKey: gone) ?? [] { known[id] = nil }  // a file is in one folder
       }
     }
+  }
+
+  /// A folder's tile: its newest photos (its clips when it has none) or, for a folder that holds only
+  /// folders, those of the first folder down that has any, at most `previewListings` listings deep.
+  /// Behind its own small gate, so tiles never crowd out the folder on screen.
+  func preview(_ folder: FilePath, count: Int) async -> FolderPreview {
+    await previews.run { [self] () -> FolderPreview in
+      guard !Task.isCancelled, let top = try? await list(folder, priority: .utility) else { return .empty }
+      var items = Self.pick(top.files, count: count)
+      var next = top.folders
+      var listed = 1
+      while items.isEmpty, !next.isEmpty, listed < Self.previewListings, !Task.isCancelled {
+        let folder = next.removeFirst()
+        guard !folder.offline, let path = FilePath(id: folder.id),
+              let inner = try? await list(path, priority: .utility) else { continue }
+        listed += 1
+        items = Self.pick(inner.files, count: count)
+        next.insert(contentsOf: inner.folders, at: 0)  // down the first branch before across
+      }
+      return FolderPreview(items: items, files: top.files.count, folders: top.folders.count, others: top.others.count)
+    }
+  }
+
+  static let previewListings = 5
+
+  /// Photos first, newest first: a clip's first frame is a heavier read than a photo's head.
+  static func pick(_ files: [FileEntry], count: Int) -> [MediaItem] {
+    let photos = files.lazy.filter { $0.kind != 2 }.prefix(count).map(\.item)
+    return photos.isEmpty ? Array(files.prefix(count).map(\.item)) : Array(photos)
   }
 
   static func failure(_ status: Int32) -> MediaFailure {
@@ -480,15 +556,75 @@ public final class LinkFiles: @unchecked Sendable {
   /// A clip's first frame, one clip at a time: AVFoundation reads what it needs over the link.
   private func poster(of file: FileEntry, link: LinkHandle) async -> UIImage? {
     let ext = (file.path.name as NSString).pathExtension.lowercased()
-    guard ["mp4", "mov", "m4v"].contains(ext) else { return nil }
+    if LinkClips.transportStreams.contains(ext) {
+      return await posters.run { [self] in
+        guard !Task.isCancelled else { return nil }
+        let read = readFunction(file, link: link, bulk: false)
+        if let layout = await onLinkQueue({ TsStreams.layout(read: read, size: file.size) }) {
+          remember(seconds: layout.duration, of: file)
+          guard let url = await TsStreams.shared.register(layout, read: read),
+                let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels) else { return nil }
+          return UIImage(cgImage: frame)
+        }
+        return await convertedPoster(of: file, link: link)  // MPEG-2, HEVC or LPCM in TS
+      }
+    }
+    guard ["mp4", "mov", "m4v"].contains(ext) else {
+      return await posters.run { [self] in
+        guard !Task.isCancelled else { return nil }
+        return await convertedPoster(of: file, link: link)
+      }
+    }
     return await posters.run { [self] in
       guard !Task.isCancelled, let (asset, loader) = clipAsset(file, link: link) else { return nil }
       let generator = AVAssetImageGenerator(asset: asset)
       generator.appliesPreferredTrackTransform = true
       generator.maximumSize = CGSize(width: Self.thumbPixels, height: Self.thumbPixels)
       let image = try? await generator.image(at: .zero).image
+      // The frame read the clip's header, so its length costs nothing more.
+      if let length = try? await asset.load(.duration) { remember(seconds: length.seconds, of: file) }
       return withExtendedLifetime(loader) { image.map { UIImage(cgImage: $0) } }
     }
+  }
+
+  /// A clip's length, for its tile: what its poster learnt, else its header read for it (a poster
+  /// on disk from before lengths were kept). nil for a clip the phone cannot read itself.
+  func length(for item: MediaItem) async -> TimeInterval? {
+    guard let file = entry(for: item.id), file.kind == 2 else { return nil }
+    if let known = factCache()?.facts(for: file.stamp)?.seconds { return known }
+    let ext = (file.path.name as NSString).pathExtension.lowercased()
+    guard let link = await connection.awaitLink() else { return nil }
+    return await posters.run { [self] () -> TimeInterval? in
+      guard !Task.isCancelled else { return nil }
+      if let known = factCache()?.facts(for: file.stamp)?.seconds { return known }  // a poster meanwhile
+      var seconds: Double?
+      if LinkClips.transportStreams.contains(ext) {
+        let read = readFunction(file, link: link, bulk: false)
+        seconds = await onLinkQueue { TsStreams.layout(read: read, size: file.size) }?.duration
+      } else if ["mp4", "mov", "m4v"].contains(ext), let (asset, loader) = clipAsset(file, link: link) {
+        seconds = (try? await asset.load(.duration))?.seconds
+        withExtendedLifetime(loader) {}
+      }
+      guard let seconds else { return nil }
+      remember(seconds: seconds, of: file)
+      return remembered(seconds)
+    }
+  }
+
+  private func remember(seconds: Double, of file: FileEntry) {
+    guard let value = remembered(seconds), let cache = factCache() else { return }
+    cache.set(.clip(seconds: value), for: file.stamp)
+  }
+
+  /// A length worth keeping: a real one, not AVFoundation's indefinite or a header's zero.
+  private func remembered(_ seconds: Double) -> Double? { seconds.isFinite && seconds > 0 ? seconds : nil }
+
+  /// A clip the phone can't play: the first frame of the server's conversion (its first segment,
+  /// which then waits in the server's cache for the clip to be opened). nil when it converts nothing.
+  private func convertedPoster(of file: FileEntry, link: LinkHandle) async -> UIImage? {
+    guard let url = await ConvertedClips.url(link: link, root: file.path.root, rel: file.path.rel, firstOnly: true),
+          let frame = await TsStreams.firstFrame(url, maxPixels: Self.thumbPixels, timeout: .seconds(20)) else { return nil }
+    return UIImage(cgImage: frame)
   }
 
   private static func readAll(link: LinkHandle, file: FileEntry) async -> Data? {
@@ -557,15 +693,70 @@ public final class LinkFiles: @unchecked Sendable {
     }
   }
 
+  /// An other file whole on the phone, under its own name, for Quick Look. Not through the
+  /// originals store: a game image or an archive can be larger than its whole budget, and a
+  /// document must not push the viewer's photos out. Only the file opened last is kept; opening
+  /// another deletes it, and so does the system's tmp clean-up.
+  func download(_ other: OtherFile, progress: @escaping (Int64, Int64) -> Void) async throws -> URL {
+    guard let path = FilePath(id: other.id) else { throw MediaFailure.originalGone }
+    guard let link = await connection.awaitLink() else { throw MediaFailure.synologyUnreachable }
+    let size = UInt64(max(0, other.bytes))
+    let item = MediaItem(id: MediaID(other.id), kind: .photo, capturedAt: other.modified, pixelWidth: 0, pixelHeight: 0,
+                         duration: nil, fileName: other.name)
+    let entry = FileEntry(path: path, size: size, mtime: Int64(other.modified.timeIntervalSince1970), kind: 3, item: item)
+    let fm = FileManager.default
+    let top = fm.temporaryDirectory.appendingPathComponent("Open", isDirectory: true)
+    try? fm.removeItem(at: top)  // the file opened before, and any download cut short
+    let folder = top.appendingPathComponent(Self.hashName(entry.stamp), isDirectory: true)
+    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    let named = folder.appendingPathComponent(other.name.replacingOccurrences(of: "/", with: "_"))
+    let part = folder.appendingPathComponent(".part")
+    let total = other.bytes
+    progress(0, total)
+    let read = readFunction(entry, link: link)
+    let connection = self.connection
+    let status = await withLinkCancel { cancel in
+      await onLinkQueue { () -> Int32 in
+        guard let made = connection.whileLive(link, { fm.createFile(atPath: part.path, contents: nil) }) else { return 11 }
+        guard made, let handle = try? FileHandle(forWritingTo: part) else { return 13 }
+        defer { try? handle.close() }
+        var written: Int64 = 0
+        var reported: Int64 = 0
+        return read(0, size, cancel) { data in
+          do { try handle.write(contentsOf: data) } catch { return false }
+          written += Int64(data.count)
+          if written - reported >= 256 * 1024 {
+            reported = written
+            progress(written, total)
+          }
+          return true
+        }
+      }
+    }
+    switch status {
+    case 0:
+      try fm.moveItem(at: part, to: named)
+      return named
+    case 11:
+      try? fm.removeItem(at: folder)
+      throw CancellationError()
+    default:
+      try? fm.removeItem(at: folder)
+      throw Self.failure(status)
+    }
+  }
+
   /// Reads a range of the file over the link: what a clip's loader and a whole-file copy use.
-  func readFunction(_ file: FileEntry, link: LinkHandle) -> ClipRead {
+  /// `bulk` false: a clip being watched, ahead of downloads on the link.
+  func readFunction(_ file: FileEntry, link: LinkHandle, bulk: Bool = true) -> ClipRead {
     let root = file.path.root, rel = file.path.rel
+    let lane: Int32 = bulk ? 1 : 0
     return { start, length, cancel, sink in
       let box = Unmanaged.passRetained(BlockBox(sink))
       defer { box.release() }
       return root.withCString { r in
         rel.withCString { p in
-          mv_files_read(link.raw, r, p, start, length, 1, cancel.raw, { ctx, _, bytes, count in
+          mv_files_read(link.raw, r, p, start, length, lane, cancel.raw, { ctx, _, bytes, count in
             guard let ctx, let bytes else { return 0 }
             return Unmanaged<BlockBox>.fromOpaque(ctx).takeUnretainedValue().body(Data(bytes: bytes, count: count)) ? 1 : 0
           }, box.toOpaque())
@@ -751,6 +942,22 @@ public struct FileModeLibrary: LibraryStore {
     guard let parent else { return try await files.roots() }
     guard let path = FilePath(id: parent.id) else { return [] }
     return try await files.list(path).folders
+  }
+
+  public func offlineFolders() async -> [Folder] { await files.offlineRoots() }
+
+  public func otherFiles(in folder: Folder) async throws -> [OtherFile] {
+    guard !folder.offline, let path = FilePath(id: folder.id) else { return [] }
+    return try await files.list(path).others
+  }
+
+  public func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
+    try await files.download(file, progress: progress)
+  }
+
+  public func preview(of folder: Folder, count: Int) async -> FolderPreview {
+    guard !folder.offline, let path = FilePath(id: folder.id) else { return .empty }
+    return await files.preview(path, count: count)
   }
 
   public func people() async throws -> [Person] { [] }

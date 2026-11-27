@@ -1,0 +1,30 @@
+# cmake -DCASE=<ok|bad_hash|unreachable> -DWORK=<dir> -P test_download.cmake
+# Drives cmake/download.cmake over file:// URLs; no network, no waiting.
+cmake_minimum_required(VERSION 3.28)
+set(MV_DOWNLOAD_BACKOFF 0 0)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/download.cmake")
+
+file(REMOVE_RECURSE "${WORK}")
+file(WRITE "${WORK}/src.bin" "pinned payload\n")
+file(SHA256 "${WORK}/src.bin" _sha)
+set(_dest "${WORK}/out/got.bin")
+# file:///D:/... on Windows; file:///tmp/... elsewhere.
+if(WORK MATCHES "^/")
+  set(_base "file://${WORK}")
+else()
+  set(_base "file:///${WORK}")
+endif()
+
+if(CASE STREQUAL "ok")
+  mv_download("${_base}/src.bin" "${_dest}" "${_sha}")
+  file(READ "${_dest}" _body)
+  if(NOT _body STREQUAL "pinned payload\n")
+    message(FATAL_ERROR "downloaded body differs: '${_body}'")
+  endif()
+elseif(CASE STREQUAL "bad_hash")
+  mv_download("${_base}/src.bin" "${_dest}" "0000000000000000000000000000000000000000000000000000000000000000")
+elseif(CASE STREQUAL "unreachable")
+  mv_download("${_base}/missing.bin" "${_dest}" "${_sha}")
+else()
+  message(FATAL_ERROR "unknown CASE '${CASE}'")
+endif()

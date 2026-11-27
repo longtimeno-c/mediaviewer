@@ -108,7 +108,14 @@ final class FolderTreeStore: ObservableObject {
   /// folder; whether its listing is what is on screen.
   @Published private(set) var photosAvailable = false
   @Published private(set) var photosOpen = false
+  /// docs/plans/desktop-client.md: another computer's folders, one row per paired
+  /// server, pinned above the open folder's tree; the remote folder on screen.
+  @Published private(set) var servers: [RemoteServer] = []
+  @Published private(set) var remoteOpen = ""
+  private var serversGeneration: UInt64 = 0
   private var revealedKey = ""
+  /// A drop, a paste, New Folder, a rename or a Trash landed: open rows list again.
+  private var dropGeneration: UInt64 = 0
 
   private init() {
     // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
@@ -132,11 +139,35 @@ final class FolderTreeStore: ObservableObject {
       if nowVisible { revealedKey = "" }
     }
     guard nowVisible else { return }
+    let drops = mv_chrome_drop_generation()
+    if drops != dropGeneration {
+      dropGeneration = drops
+      refreshOpenRows()
+    }
     let photos = mv_chrome_photos_library_available()
     if photos != photosAvailable { photosAvailable = photos }
     let photosShown = mv_chrome_photos_library_open()
     if photosShown != photosOpen { photosOpen = photosShown }
-    let crumbs = readCrumbs()
+    let gen = mv_chrome_remote_generation()
+    if gen != serversGeneration {
+      serversGeneration = gen
+      let rows = readServerLines()
+      if rows != servers.map(\.plain) {
+        let old = Dictionary(servers.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        servers = rows.map { r in
+          let s = old[r.key] ?? RemoteServer(name: r.name, key: r.key)
+          s.state = r.state
+          s.role = r.role
+          return s
+        }
+      }
+    }
+    var keyBuf = [CChar](repeating: 0, count: 4096)
+    _ = keyBuf.withUnsafeMutableBufferPointer { mv_chrome_remote_open_key($0.baseAddress, Int32($0.count)) }
+    let openKey = String(cString: keyBuf)
+    if openKey != remoteOpen { remoteOpen = openKey }
+    // Another computer's folder: its trail is the server's row above, not a local tree.
+    let crumbs = openKey.isEmpty ? readCrumbs() : []
     // Only what moved is published: a poll runs on every pass of the main run
     // loop while the tree is up, and an unchanged write would redraw it.
     guard let first = crumbs.first else {
@@ -161,6 +192,34 @@ final class FolderTreeStore: ObservableObject {
     }
   }
 
+  /// Every expanded row lists its subfolders again, off the main actor (TreeNode.refresh);
+  /// what was listed stays until each new listing lands.
+  private func refreshOpenRows() {
+    var stack: [TreeNode] = servers.map(\.node)
+    if let root { stack.append(root) }
+    while let node = stack.popLast() {
+      guard node.isExpanded else { continue }
+      node.refresh()
+      stack.append(contentsOf: node.children ?? [])
+    }
+  }
+
+  private func readServerLines() -> [RemoteServer.Plain] {
+    var buf = [CChar](repeating: 0, count: 8 * 1024)
+    while true {
+      let needed = Int(buf.withUnsafeMutableBufferPointer { mv_chrome_remote_servers($0.baseAddress, Int32($0.count)) })
+      if needed < 0 { return [] }
+      if needed < buf.count { break }
+      buf = [CChar](repeating: 0, count: needed + 1)
+    }
+    return String(cString: buf).split(separator: "\n").compactMap { line in
+      let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+      guard f.count >= 3 else { return nil }
+      return RemoteServer.Plain(name: String(f[0]), key: String(f[1]), state: String(f[2]),
+                                role: f.count >= 4 ? String(f[3]) : "")
+    }
+  }
+
   private func readCrumbs() -> [(name: String, path: String)] {
     var out: [(String, String)] = []
     var buf = [CChar](repeating: 0, count: 4096)
@@ -176,6 +235,102 @@ final class FolderTreeStore: ObservableObject {
       out.append((leaf.isEmpty ? path : leaf, path))
     }
     return out
+  }
+}
+
+/// One paired server (docs/plans/desktop-client.md): its node lists the named
+/// folders through mv_chrome_list_subdirectories, off the main actor.
+@MainActor
+final class RemoteServer: ObservableObject, Identifiable {
+  struct Plain: Equatable {
+    let name: String
+    let key: String
+    let state: String
+    var role = ""
+  }
+  let name: String
+  let key: String
+  let node: TreeNode
+  @Published var state = "unknown"
+  /// What the server lets this Mac do ("view", "change", "admin"; "" not known yet).
+  @Published var role = ""
+  nonisolated var id: String { key }
+  var plain: Plain { Plain(name: name, key: key, state: state, role: role) }
+
+  init(name: String, key: String) {
+    self.name = name
+    self.key = key
+    node = TreeNode(name: name, path: key)
+  }
+
+  /// What the row says beside the name when the server is not simply there.
+  var note: String? {
+    switch state {
+    case "unreachable": return "Can't reach it"
+    case "access_ended": return "Access ended"
+    case "wrong_service": return "Not the paired server"
+    case "too_old": return "Needs an update"
+    default: return RemoteServer.roleWords(role)
+    }
+  }
+
+  /// The role the server gave this Mac (#686 §2), said only while nothing is wrong.
+  static func roleWords(_ role: String) -> String? {
+    switch role {
+    case "view": return "View only"
+    case "change": return "Can change files"
+    case "admin": return "Admin"
+    default: return nil
+    }
+  }
+}
+
+private struct RemoteServerRow: View {
+  @ObservedObject var server: RemoteServer
+  @ObservedObject var node: TreeNode
+  let current: String
+
+  init(server: RemoteServer, current: String) {
+    self.server = server
+    self.node = server.node
+    self.current = current
+  }
+
+  var body: some View {
+    DisclosureGroup(isExpanded: $node.isExpanded) {
+      if let kids = node.children {
+        ForEach(kids) { TreeRow(node: $0, current: current, cursor: nil, depth: 1) }
+      }
+    } label: {
+      Button {
+        node.isExpanded = true  // a server's top is its folders: open the row
+      } label: {
+        HStack(spacing: MVTheme.space(6)) {
+          Image(systemName: "externaldrive.connected.to.line.below")
+          Text(server.name).lineLimit(1).truncationMode(.middle)
+          if let note = server.note {
+            Text(note).foregroundStyle(MVTheme.body).lineLimit(1)
+          }
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, MVTheme.space(6))
+        .padding(.vertical, MVTheme.space(2))
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(current.hasPrefix(server.key) ? MVTheme.accent : MVTheme.title)
+      .fontWeight(current.hasPrefix(server.key) ? .semibold : .regular)
+      .help(server.role == "change" || server.role == "admin"
+            ? "\(server.name): another computer's folders. Drop files on a folder to add them there."
+            : "\(server.name): another computer's folders, read-only from here.")
+      .folderDropTarget(server.key, name: server.name, radius: MVTheme.radius(4)) { [node] in
+        node.isExpanded = true
+      }
+      .contextMenu {
+        Button("Forget This Server") { server.key.withCString { mv_chrome_remote_forget($0) } }
+      }
+    }
+    .id(server.key)
   }
 }
 
@@ -213,6 +368,11 @@ private struct TreeRow: View {
         RoundedRectangle(cornerRadius: MVTheme.radius(4))
           .fill(node.path == cursor ? MVTheme.title.opacity(0.1) : .clear)  // the theme's ink, as before
       )
+      // docs/design/16 "Drag and drop into folders": files dropped on a row go
+      // into that folder; resting on a closed one opens it in the tree.
+      .folderDropTarget(node.path, name: node.name, radius: MVTheme.radius(4)) { [node] in
+        node.isExpanded = true
+      }
       .accessibilityAddTraits(node.path == cursor ? [.isSelected] : [])
     }
     .id(node.path)
@@ -304,6 +464,7 @@ struct FolderTreeView: View {
     .fontWeight(store.photosOpen ? .semibold : .regular)
     .foregroundStyle(store.photosOpen ? MVTheme.accent : MVTheme.title)
     .help("Your Photos library, iCloud Photos included, as a folder. Read-only: nothing in it is changed.")
+    .folderDropTarget("photos:library", name: "Photos Library", radius: MVTheme.radius(4))
     .padding(.horizontal, MVTheme.space(10))
     .padding(.vertical, MVTheme.space(8))
   }
@@ -312,8 +473,18 @@ struct FolderTreeView: View {
     VStack(alignment: .leading, spacing: 0) {
       Text("Folders").font(MVTheme.font()).fontWeight(.semibold).foregroundStyle(MVTheme.title).padding(.horizontal, MVTheme.space(14)).padding(.top, MVTheme.space(12)).padding(.bottom, MVTheme.space(8))
       Divider()
+      PlacesList()
+      Divider()
       if store.photosAvailable {
         photosRow
+        Divider()
+      }
+      if !store.servers.isEmpty {
+        VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+          ForEach(store.servers) { RemoteServerRow(server: $0, current: store.remoteOpen) }
+        }
+        .padding(.horizontal, MVTheme.space(10))
+        .padding(.vertical, MVTheme.space(6))
         Divider()
       }
       if let root = store.root {
@@ -345,7 +516,7 @@ struct FolderTreeView: View {
             if let path, focused { proxy.scrollTo(path) }
           }
         }
-      } else if !store.photosOpen {
+      } else if !store.photosOpen && store.remoteOpen.isEmpty {
         Text("No folder open").foregroundStyle(MVTheme.body).padding(MVTheme.space(14))
         Spacer()
       } else {
@@ -367,5 +538,114 @@ struct FolderTreeView: View {
     .onKeyPress(.escape) { mv_chrome_tree_blur(); return .handled }
     .onAppear { if store.visible { takeFocus() } }
     .onChange(of: store.visible) { _, nowVisible in if nowVisible { takeFocus() } }
+  }
+}
+
+/// docs/design/16 "Folder navigation": Finder's sidebar places above the tree --
+/// the usual folders of this Mac and every mounted volume (a card, a drive, a
+/// share). Volumes are read off the main thread and again when one mounts or
+/// ejects. A click opens the place as Open Folder does; each row takes drops.
+@MainActor
+final class PlacesStore: ObservableObject {
+  static let shared = PlacesStore()
+
+  struct Place: Identifiable, Equatable {
+    let name: String
+    let path: String
+    let symbol: String
+    var id: String { path }
+  }
+
+  /// Paths from the system, not the disk: no I/O on the main thread.
+  let folders: [Place]
+  @Published private(set) var volumes: [Place] = []
+  private var observers: [NSObjectProtocol] = []
+
+  private init() {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    func place(_ dir: FileManager.SearchPathDirectory, _ name: String, _ symbol: String) -> Place? {
+      fm.urls(for: dir, in: .userDomainMask).first.map { Place(name: name, path: $0.path, symbol: symbol) }
+    }
+    folders = [
+      Place(name: home.lastPathComponent, path: home.path, symbol: "house"),
+      place(.desktopDirectory, "Desktop", "menubar.dock.rectangle"),
+      place(.picturesDirectory, "Pictures", "photo"),
+      place(.moviesDirectory, "Movies", "film"),
+      place(.downloadsDirectory, "Downloads", "arrow.down.circle"),
+    ].compactMap { $0 }
+    let center = NSWorkspace.shared.notificationCenter
+    for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification, NSWorkspace.didRenameVolumeNotification] {
+      observers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+        MainActor.assumeIsolated { PlacesStore.shared.reloadVolumes() }
+      })
+    }
+    reloadVolumes()
+  }
+
+  func reloadVolumes() {
+    Task {
+      let found = await Task.detached(priority: .utility) { () -> [Place] in
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsInternalKey, .volumeIsRootFileSystemKey]
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
+                                                         options: [.skipHiddenVolumes]) ?? []
+        return urls.compactMap { url in
+          let v = try? url.resourceValues(forKeys: Set(keys))
+          let name = v?.volumeName ?? url.lastPathComponent
+          let root = v?.volumeIsRootFileSystem ?? false
+          let symbol = root ? "internaldrive" : (v?.volumeIsInternal ?? false) ? "internaldrive" : "externaldrive"
+          return Place(name: name.isEmpty ? url.path : name, path: url.path, symbol: symbol)
+        }
+      }.value
+      if found != self.volumes { self.volumes = found }
+    }
+  }
+}
+
+private struct PlacesList: View {
+  @ObservedObject private var places = PlacesStore.shared
+  @ObservedObject private var tree = FolderTreeStore.shared
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+      ForEach(places.folders) { PlaceRow(place: $0, current: tree.currentPath) }
+      if !places.volumes.isEmpty {
+        Text("Locations")
+          .font(MVTheme.font(11))
+          .fontWeight(.semibold)
+          .foregroundStyle(MVTheme.body)
+          .padding(.top, MVTheme.space(6))
+          .padding(.horizontal, MVTheme.space(6))
+        ForEach(places.volumes) { PlaceRow(place: $0, current: tree.currentPath) }
+      }
+    }
+    .padding(.horizontal, MVTheme.space(10))
+    .padding(.vertical, MVTheme.space(6))
+  }
+}
+
+private struct PlaceRow: View {
+  let place: PlacesStore.Place
+  let current: String
+
+  var body: some View {
+    let here = current == place.path
+    Button {
+      place.path.withCString { mv_chrome_open_folder($0) }
+    } label: {
+      HStack(spacing: MVTheme.space(6)) {
+        Image(systemName: place.symbol).frame(width: 16)
+        Text(place.name).lineLimit(1).truncationMode(.middle)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, MVTheme.space(6))
+      .padding(.vertical, MVTheme.space(2))
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .fontWeight(here ? .semibold : .regular)
+    .foregroundStyle(here ? MVTheme.accent : MVTheme.title)
+    .help(place.path)
+    .folderDropTarget(place.path, name: place.name, radius: MVTheme.radius(4))
   }
 }

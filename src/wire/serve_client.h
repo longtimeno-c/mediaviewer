@@ -41,6 +41,7 @@ class client {
     std::uint32_t ops = kAllOps;                               // what this client can use
     std::string pair_code;                                     // from the QR: redeemed before serve_hello
     std::string device_name;                                   // what the desktop shows (with pair_code)
+    std::string device_kind;                                   // kDeviceDesktop for a desktop ("": a phone)
   };
 
   // Handshakes over `l`, says what it can do, reads what the service can.
@@ -84,6 +85,16 @@ class client {
                                                                 std::uint32_t window = 1024 * 1024, bool bulk = false,
                                                                 bool meta = false);
 
+  // Clips this phone can't play (docs/plans/phone-clip-convert.md; kConvertOp in caps). The
+  // plan: status::unsupported_format when the service lists no `convert`, or answers it
+  // unsupported (`why` gets kWhyNotAClip or kWhyConvertOff); not_found, permission_denied as stat.
+  [[nodiscard]] result<convert_plan> convert_plan_of(const std::string& root, const std::string& rel,
+                                                     std::string* why = nullptr);
+  // Segment k's MPEG-TS, as a read_range of it. Its first chunk comes when the service has
+  // converted it, which may take a few seconds (a next() timeout is not the end).
+  [[nodiscard]] result<std::unique_ptr<read_stream>> convert_segment(const std::string& root, const std::string& rel,
+                                                                     std::uint32_t k, std::uint32_t window = 1024 * 1024);
+
   [[nodiscard]] result<std::vector<root_info>> roots(end_code* code = nullptr);
   // `meta`: under a backup folder's kBackupMetaFolder (serve_wire.h, "writes").
   // `truncated`, when given, says the service cut the listing short (kMaxListBytes).
@@ -113,6 +124,78 @@ class client {
                                          const std::function<void(std::uint64_t)>& progress,
                                          const std::atomic<bool>* cancel, write_refused* why, bool meta = false);
 
+  // ---- changing the shared folders (serve_wire.h "changing"; docs/design/28 "Changing files") ----
+  // For a device whose role (caps().role) is "change". Ask for kWriteOp | kChangeOps in
+  // options::ops. Show New folder, Move, Rename and Delete only when changes_files() is true,
+  // and on a folder only when its root_info.writable is (roots(), read again after a role
+  // change). Every call blocks until the service answers or the link drops (a move across
+  // volumes copies, which may take minutes on a big folder); none is cancelled once sent.
+  // Paths are a root id and a '/'-separated `rel` inside it, never empty (not the folder
+  // itself) and never hidden (a part starting with '.').
+  //
+  // A refusal fills `why` (when non-null) with a typed reason and the service's word, and is:
+  //   status::permission_denied  refused (not_allowed, path, exists, busy, name, limit, full,
+  //                              offset)
+  //   status::not_found          not_found, or offline (the folder's drive is gone)
+  //   status::unsupported_format unsupported: the service lists no such op (older than this)
+  //   status::corrupt            hash (add only: send it again)
+  //   status::io                 failed: the server's disk, or the link
+  enum class change_why : std::uint8_t {
+    none,
+    unsupported,  // the service is older than these ops
+    not_allowed,  // "not-allowed": not "change" now, outside its grant, or the Catalogue
+    path,         // "path": the folder itself, a hidden or unsafe name, a folder into itself
+    exists,       // "exists": the destination is taken; nothing was replaced (pick another name)
+    busy,         // "busy": another request is on that name now (try again)
+    name,         // "name": the last part is longer than kMaxWriteName
+    limit,        // "limit": past a backup folder's storage limit
+    full,         // "full": the server's disk would keep less than its reserve free
+    offline,      // "offline": the folder's drive is not there now
+    not_found,    // the source is not there (moved or deleted elsewhere)
+    hash,         // "hash" (add): what reached the disk is not what was sent
+    offset,       // "offset" (add): `at` is not where the unfinished copy ends; see `have`
+    failed,       // the server's disk failed it, or the link dropped
+  };
+  struct change_refused {
+    change_why why = change_why::none;
+    std::string word;       // the service's own word ("" when it gave none)
+    std::uint64_t have = 0; // offset: the bytes of this device's unfinished copy
+  };
+  // The typed reason for a service word ("not-allowed", "exists", ...); `failed` for one this
+  // build does not know.
+  [[nodiscard]] static change_why change_why_of(std::string_view word) noexcept;
+  struct change_done {
+    // Where it is now, relative to its folder: the new folder (make_folder), the file (add: a
+    // taken name gets " (2)"), the destination (move), or its place in the folder's trash,
+    // "YYYY-MM-DD/<rel>" (remove).
+    std::string rel;
+    bool existing = false;  // make_folder: it was there; add: an identical file was there
+  };
+  // (caps().ops & kChangeOps) == kChangeOps: the service has make_folder, move and remove, and
+  // takes add in every writable folder. False from a service older than them.
+  [[nodiscard]] bool changes_files() const noexcept;
+  // Adds one file to `rel` (its folders made), as write() but in any writable folder of a
+  // service that changes_files(), and with typed refusals. Never replaces: a taken name that
+  // is not this file gets " (2)"; this very file already there is ok with `existing`.
+  // Resumable: after a cancel (status::cancelled) or a dropped link, call again with `at` =
+  // `why->have` from the offset refusal.
+  [[nodiscard]] result<change_done> add(const std::string& root, const std::string& rel, std::uint64_t size,
+                                        const std::string& hash_hex, std::uint64_t at, const read_fn& read,
+                                        const std::function<void(std::uint64_t)>& progress,
+                                        const std::atomic<bool>* cancel, change_refused* why = nullptr);
+  // Makes the folder `rel` and any missing above it. A folder already there is ok, `existing`.
+  [[nodiscard]] result<change_done> make_folder(const std::string& root, const std::string& rel,
+                                                change_refused* why = nullptr);
+  // Moves or renames a file or folder to `to_rel` in `to_root` (the same root, or another this
+  // device may change). Never replaces: a taken destination is `exists`. The folders above
+  // `to_rel` are made.
+  [[nodiscard]] result<change_done> move(const std::string& root, const std::string& rel, const std::string& to_root,
+                                         const std::string& to_rel, change_refused* why = nullptr);
+  // Deletes a file or folder: it goes to the folder's hidden trash on the server, from which
+  // only its owner removes it (on the host). No listing shows it after.
+  [[nodiscard]] result<change_done> remove(const std::string& root, const std::string& rel,
+                                           change_refused* why = nullptr);
+
   // One request of the owner's (kAdminOp in `ops`). The answer's JSON. Refused,
   // or not the owner: status::permission_denied; `code` says how it ended,
   // and `refusal` gets the stream's JSON however it ended ({"why",...} on a
@@ -139,6 +222,7 @@ class client {
 
  private:
   client() = default;
+  [[nodiscard]] result<change_done> change(open_request& r, std::uint32_t needs, change_refused* why);
   struct state;
   std::shared_ptr<state> st_;
 };

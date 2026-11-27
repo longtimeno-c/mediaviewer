@@ -51,8 +51,17 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case libraryFailed = "library.failed"
   case libraryUnreachableThenStale = "library.unreachableThenStale"
   case libraryFolderEmpty = "library.folderEmpty"
+  /// A slow connection: a folder takes a second to list and its pictures come slowly.
+  case librarySlowLink = "library.slowLink"
+  /// A device whose role is "change": Add, Select, Move, Rename and Delete in every folder.
+  case libraryChange = "library.change"
+  /// The same in the sample library: its folders can be changed, and every page says "Sample library".
+  case libraryChangeSample = "library.changeSample"
   case libraryBackup = "library.backupRunning"
   case libraryBackupEnds = "library.backupEnds"
+  /// A backup running, and once a keyboard is up (with -fixtureKeyboardMeter YES) a new catalogue:
+  /// the People tab appears.
+  case libraryBackupPeopleArrive = "library.backupPeopleArrive"
   case backupChoose = "backup.chooseFolder"
   case backupRunning = "backup.running"
   case backupDone = "backup.done"
@@ -63,6 +72,12 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case backupTooOld = "backup.serviceTooOld"
   case backupNoPhotos = "backup.noPhotosAccess"
   case backupSample = "backup.sample"
+  case vpnNotInThisBuild = "vpn.notInThisBuild"
+  case vpnNotSetUp = "vpn.notSetUp"
+  case vpnOff = "vpn.off"
+  case vpnConnected = "vpn.connected"
+  case vpnFailed = "vpn.failed"
+  case vpnSample = "vpn.sample"
   case searchRecents = "search.recents"
   case searchTyping = "search.typing"
   case searchResults = "search.results"
@@ -74,6 +89,8 @@ public enum FixtureState: String, CaseIterable, Identifiable {
   case searchWarming = "search.warmingUp"
   case viewer
   case viewerNoFilmstrip = "viewer.noFilmstrip"
+  /// A portrait photo listed, as a folder's file is, with no shape: the page takes the picture's.
+  case viewerFolderFile = "viewer.folderFile"
   case viewerRefining = "viewer.refining"
   case viewerRefiningUnknown = "viewer.refiningUnknownSize"
   case viewerSlowNetwork = "viewer.slowNetwork"
@@ -164,6 +181,8 @@ final class FixtureRun {
                                     cacheBytes: base.cacheBytes)
     case .connectionFromMac:
       snapshot = FixtureWorld.connected(source: .nearbyMac)
+    case .vpnSample:
+      snapshot.isSample = true
     default:
       break
     }
@@ -187,6 +206,12 @@ final class FixtureRun {
       world.copyContinuesAfterLeaving = false
     case .viewerRefiningUnknown: world.imageMode = .slowUnknownSize
     case .viewerSlowNetwork: world.imageMode = .slowNetwork
+    case .libraryChange, .libraryChangeSample:
+      world.mayChange = true
+      FixtureDocuments.seed()
+    case .librarySlowLink:
+      world.imageMode = .slowNetwork
+      world.folderListDelay = .seconds(1)
     case .viewerServiceTooOld: world.imageMode = .fails(.serviceTooOld)
     case .viewerPublisherChanged: world.imageMode = .fails(.publisherChanged)
     case .searchWarming: world.searchMode = .modelLoading
@@ -205,6 +230,9 @@ final class FixtureRun {
     case .libraryEmpty: world.libraryEmpty = true
     case .libraryBackup: world.transferTicks = 3600
     case .libraryBackupEnds: world.transferTicks = 8
+    case .libraryBackupPeopleArrive:
+      world.transferTicks = 3600
+      world.hasPeople = false
     case .backupChoose: world.backupNoFolder = true
     case .backupRunning: world.backupState = .running
     case .backupDone: world.backupState = .done
@@ -217,6 +245,12 @@ final class FixtureRun {
     case .backupSample:
       world.backupSample = true
       world.backupState = .running
+    case .vpnNotSetUp: world.vpn = FixtureVPN()
+    case .vpnOff: world.vpn = FixtureVPN(VPNSnapshot(status: .off, host: FixtureVPN.host))
+    case .vpnConnected:
+      world.vpn = FixtureVPN(VPNSnapshot(status: .connected(since: Date().addingTimeInterval(-1_800)), host: FixtureVPN.host, consented: true))
+    case .vpnFailed:
+      world.vpn = FixtureVPN(VPNSnapshot(status: .failed(.serverUnreachable), host: FixtureVPN.host, consented: true))
     default: break
     }
     self.world = world
@@ -276,14 +310,25 @@ final class FixtureRun {
       try? await Task.sleep(for: .seconds(1))
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
+    case .libraryChangeSample:
+      var sample = FixtureWorld.connected(age: 60)
+      sample.isSample = true
+      world.publish(sample)
     case .libraryNewCatalogue:
       try? await Task.sleep(for: .seconds(4))
+      world.hasPeople = true
+      world.publish(FixtureWorld.connected(age: 60))
+    case .libraryBackupPeopleArrive:
+      await FixtureKeyboardMeter.waitUntilUp()
       world.hasPeople = true
       world.publish(FixtureWorld.connected(age: 60))
     case .backupChoose, .backupRunning, .backupDone, .backupPausedWiFi, .backupNotAllowed, .backupLimit, .backupFull,
          .backupTooOld, .backupNoPhotos, .backupSample:
       model.tab = .connection
       model.showsBackup = true
+    case .vpnNotInThisBuild, .vpnNotSetUp, .vpnOff, .vpnConnected, .vpnFailed, .vpnSample:
+      model.tab = .connection
+      model.showsVPN = true
     case .searchFailed:
       model.tab = .search
       model.search.setText("boats at sunset")
@@ -326,6 +371,8 @@ final class FixtureRun {
       openViewer(kind: .photo)
     case .viewer, .viewerRefining, .viewerUnreachable, .viewerGone, .viewerNotThereYet, .viewerCannotDecode, .viewerPhotosDenied:
       openViewer(kind: .photo)
+    case .viewerFolderFile:
+      openViewer(kind: .photo, shapeless: true)
     case .details:
       openViewer(kind: .photo, details: true)
     case .clip, .clipTooBig, .clipNotPlayable, .clipGone, .clipStops, .clipStalls:
@@ -337,24 +384,33 @@ final class FixtureRun {
     }
   }
 
-  private func openViewer(kind: MediaKind, details: Bool = false, play: Bool = false, atMoment: Bool = false) {
+  private func openViewer(kind: MediaKind, details: Bool = false, play: Bool = false, atMoment: Bool = false,
+                          shapeless: Bool = false) {
     model.tab = .library
     Task {
       await waitForLibrary()
-      let items = model.library.entries
-      guard let index = items.indices.first(where: { items[$0].item.kind == kind }) else { return }
+      let items = model.library.current.entries
+      guard let index = items.indices.first(where: {
+        items[$0].item.kind == kind && (!shapeless || items[$0].item.aspect < 1)
+      }) else { return }
       var entries = items
+      if shapeless {
+        let item = items[index].item
+        let listed = MediaItem(id: item.id, kind: item.kind, capturedAt: item.capturedAt, pixelWidth: 0, pixelHeight: 0,
+                               duration: item.duration, fileName: item.fileName)
+        entries = items.replacing(index, with: GridEntry(item: listed, position: index))
+      }
       if atMoment {
         let item = items[index].item
         entries = items.replacing(index, with: GridEntry(item: item, moment: FixtureLibrary.moments(for: item)[1], position: index))
       }
-      model.open(ViewerRequest(context: "library", entries: entries, startIndex: index, showDetails: details, playClip: play),
+      model.open(ViewerRequest(context: model.library.current.context, entries: entries, startIndex: index, showDetails: details, playClip: play),
                  reduceMotion: UIAccessibility.isReduceMotionEnabled)
     }
   }
 
   private func waitForLibrary() async {
-    while model.library.entries.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
+    while model.library.current.entries.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
     try? await Task.sleep(for: .milliseconds(250))
   }
 }
@@ -378,6 +434,7 @@ public struct FixtureHost: View {
       .task(id: run.id) {
         try? await Task.sleep(for: .milliseconds(150))
         await run.arrive()
+        await FixtureWalk.runIfAsked(run.model)
       }
       .background(WindowAnchor(showsButton: showsButton) { state in
         run = FixtureRun(state: state)
@@ -397,7 +454,10 @@ private struct WindowAnchor: UIViewRepresentable {
 
   func updateUIView(_ view: UIView, context: Context) {
     DispatchQueue.main.async {
-      if let scene = view.window?.windowScene { FixtureFrameMeter.startIfAsked(in: scene) }
+      if let scene = view.window?.windowScene {
+        FixtureFrameMeter.startIfAsked(in: scene)
+        FixtureKeyboardMeter.startIfAsked(in: scene)
+      }
     }
     guard showsButton, context.coordinator.overlay == nil else { return }
     DispatchQueue.main.async {
@@ -499,7 +559,7 @@ private struct FixtureScanView: View {
     ("A good code", "fixture:good"),
     ("An expired code", "fixture:expired"),
     ("Not a MediaViewer code", "fixture:unreadable"),
-    ("Synology not reachable", "fixture:unreachable"),
+    ("Server not reachable", "fixture:unreachable"),
     ("Reachable only at home", "fixture:own-network"),
     ("No mobile data on this iPad", "fixture:no-mobile-data"),
     ("Service needs updating", "fixture:too-old"),

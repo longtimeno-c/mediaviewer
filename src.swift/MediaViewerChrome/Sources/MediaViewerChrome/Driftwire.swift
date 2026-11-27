@@ -171,23 +171,3 @@ struct DriftwireOffer: View {
   }
 }
 
-/// The gallery's share icon (#413): one icon for the gallery's selection (its
-/// shift-click range, else the marks, else the selected cell). Issue #444: it
-/// opens the share menu, the one share command's (ShareMenu.swift): Driftwire
-/// first, or its one-click install, then the system's targets.
-struct GalleryShareButton: View {
-  @ObservedObject private var store = FolderStore.shared
-
-  var body: some View {
-    Button {
-      ShareMenu.shared.request(.menu, from: .gallery)
-    } label: {
-      Label(store.range.count > 1 ? "Share \(store.range.count)" : "Share", systemImage: "square.and.arrow.up")
-        .font(MVTheme.font(13))
-    }
-    .buttonStyle(FlatButtonStyle(selected: false, compact: true))
-    .background(ShareAnchor(from: .gallery))
-    .help("Share the selection: Driftwire, Mail, Messages, AirDrop and more")
-    .accessibilityLabel(store.range.count > 1 ? "Share \(store.range.count) files" : "Share the selection")
-  }
-}

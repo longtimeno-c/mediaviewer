@@ -23,7 +23,7 @@
 
 #include "addons/ai/catalog.h"
 #include "catalogue/catalog_chain.h"
-#include "phone/link.h"
+#include "addons/phone/link.h"
 #include "addons/ai/nfc.h"
 #include "codec/decode.h"
 #include "catalogue/sha256.h"
@@ -799,6 +799,7 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
 // #405: a host from before the rating and exposure fields: its tag_facts
 // answers the shorter struct, as an app not yet updated under a newer pack.
 std::atomic<bool> g_old_tag_host{false};
+std::atomic<bool> g_old_tag_host_v2{false};  // a host from before the clip length
 std::mutex g_tag_m;
 std::map<void*, decltype(mv_host_api::tag_facts)> g_tag_facts;  // by host
 
@@ -811,6 +812,7 @@ mv_status MV_CALL tag_facts_maybe_old(void* host, const char* path, mv_addon_tag
     real = it->second;
   }
   if (g_old_tag_host.load() && out) out->struct_size = MV_ADDON_TAG_FACTS_V1_SIZE;
+  if (g_old_tag_host_v2.load() && out) out->struct_size = MV_ADDON_TAG_FACTS_V2_SIZE;
   return real(host, path, out);
 }
 
@@ -938,8 +940,17 @@ struct rig {
     svc.open_sampler = [this](const std::string& path, const mv::addon::sampler_options& o)
         -> mv::result<std::unique_ptr<mv::addon::video_sampler>> {
       ++samplers_opened;
-      return std::unique_ptr<mv::addon::video_sampler>(
-          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
+      // "noopen": a clip the decoder cannot open (its length still comes from the tag pass).
+      // Spelled plainly: MSVC 14.52 hit an internal compiler error (C1001) on
+      // the one-line `if (...) return mv::err(...)` here.
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("noopen") != std::string::npos) {
+        mv::result<std::unique_ptr<mv::addon::video_sampler>> refused = mv::err(mv::status::io);
+        return refused;
+      }
+      std::unique_ptr<mv::addon::video_sampler> sampler =
+          std::make_unique<fake_sampler>(name, o.start_ms, o.min_gap_ms);
+      return sampler;
     };
     svc.video_frame = [this](const std::string& path, std::int64_t ms,
                              std::uint32_t) -> mv::result<mv::addon::rgb_image> {
@@ -1036,6 +1047,8 @@ struct rig {
         std::strcpy(out.label_utf8, "Red");
       }
       if (name.find("reject") != std::string::npos) out.rating = -1;
+      // A clip's header length: "len42" is 42 s.
+      if (name.find("len42") != std::string::npos) out.duration_ms = 42000;
       // #355: a song's tags (title, artist, album).
       if (name.find("song") != std::string::npos) fields = "Hey Jude\x1fThe Beatles\x1fPast Masters";
       // #404: "y2019" was taken on 2019-06-15 12:00 (wall clock read as UTC).
@@ -1347,9 +1360,8 @@ struct rig {
     };
     return d;
   }
-  std::unique_ptr<engine> start_reader() {
-    auto rd = std::make_unique<engine>(table->api(), reader_deps(),
-                                       mv::ai::engine_options{.read_only = true, .background_threads = false});
+  std::unique_ptr<engine> start_reader(mv::ai::engine_options options = {.read_only = true, .background_threads = false}) {
+    auto rd = std::make_unique<engine>(table->api(), reader_deps(), options);
     REQUIRE(rd->start());
     REQUIRE(wait_for(
         [&] {
@@ -2306,7 +2318,7 @@ TEST_CASE("settings attach without models: folders and settings work until start
 }
 
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
-constexpr const char* kSchemaNow = "11";
+constexpr const char* kSchemaNow = "12";
 
 TEST_CASE("schema 8 migrates to 9: documents' passages, their words and a folder's choice (#354)",
           "[ai][engine][documents]") {
@@ -2860,6 +2872,105 @@ TEST_CASE("a clip's telemetry route is kept and streamed after its position", "[
     }));
     CHECK(route_points == mv::ai::kTrackPoints);
     CHECK(plain == 1);
+  }
+}
+
+// The phone's catalogue shows a clip's length from assets.duration_ms: the tag
+// backfill (level 4, schema 12) takes it from the host's header read, so a clip
+// the content pass has not reached, or cannot open, has it too.
+TEST_CASE("a clip's length comes from the tag pass, before the content pass", "[ai][engine][tags][phone]") {
+  SECTION("index_db: schema 11 migrates, only clips without a length are read again") {
+    scratch_dir dir{"ai-lengths"};
+    const std::string path = utf8(dir / "index.db");
+    std::int64_t photo = 0, clip = 0, known = 0, song = 0;
+    {
+      auto d = mv::ai::index_db::open(path);
+      REQUIRE(d);
+      auto root = (*d)->add_root("/library", true);
+      REQUIRE(root);
+      const std::vector<mv::ai::index_db::seen_file> files = {{"/library/a.jpg", 1, 100, mv::ai::asset_kind::photo},
+                                                              {"/library/b.mp4", 1, 100, mv::ai::asset_kind::video},
+                                                              {"/library/c.mp4", 1, 100, mv::ai::asset_kind::video},
+                                                              {"/library/d.mp3", 1, 100, mv::ai::asset_kind::audio}};
+      auto ups = (*d)->see_assets(*root, files, (*d)->next_generation());
+      REQUIRE(ups);
+      photo = (*ups)[0].id;
+      clip = (*ups)[1].id;
+      known = (*ups)[2].id;
+      song = (*ups)[3].id;
+      std::vector<mv::ai::asset_tags> tags(4);
+      for (int i = 0; i < 4; ++i) {
+        tags[i].id = (*ups)[i].id;
+        tags[i].mtime = 1;
+        tags[i].size = 100;
+        tags[i].level = 3;  // as a schema 11 pack read them
+      }
+      REQUIRE((*d)->commit_tags(tags));
+      REQUIRE((*d)->set_duration(known, 5000));  // its content pass already ran
+      REQUIRE((*d)->set_meta("schema", "11"));
+    }
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == kSchemaNow);
+    std::set<std::int64_t> todo;
+    for (const auto& a : (*d)->assets_needing_tags(10)) todo.insert(a.id);
+    CHECK(todo == std::set<std::int64_t>{clip, song});
+    const std::string before = (*d)->content_stamp("", std::vector<std::int64_t>{(*d)->roots().front().id});
+    mv::ai::asset_tags t;
+    t.id = clip;
+    t.mtime = 1;
+    t.size = 100;
+    t.duration_ms = 61000;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->asset_by_id(clip)->duration_ms == 61000);
+    // The phone's publish sees the change.
+    CHECK((*d)->content_stamp("", std::vector<std::int64_t>{(*d)->roots().front().id}) != before);
+    // A header that says nothing leaves a known length be.
+    t.id = known;
+    t.duration_ms = 0;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->asset_by_id(known)->duration_ms == 5000);
+    // Read below level 4 (an older host): nothing is written.
+    t.id = song;
+    t.level = 3;
+    t.duration_ms = 1234;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->asset_by_id(song)->duration_ms == 0);
+    (void)photo;
+  }
+  SECTION("engine: a clip the content pass cannot open still has its length") {
+    rig r;
+    r.file("trip_len42_noopen.mp4");
+    r.file("plain_rgb.mp4");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    r.eng.reset();
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    auto len = (*d)->asset_by_path(utf8(r.photos() / "trip_len42_noopen.mp4"));
+    REQUIRE(len);
+    CHECK(len->duration_ms == 42000);
+    // No header length: the content pass's own (the fake sampler's 9 s).
+    auto plain = (*d)->asset_by_path(utf8(r.photos() / "plain_rgb.mp4"));
+    REQUIRE(plain);
+    CHECK(plain->duration_ms == 9000);
+    CHECK((*d)->tags_pending() == 0);
+  }
+  SECTION("engine: a host from before the length is read to level 3, and not asked again this run") {
+    rig r;
+    r.file("trip_len42_noopen.mp4");
+    g_old_tag_host_v2 = true;
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    r.eng.reset();
+    g_old_tag_host_v2 = false;
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    CHECK((*d)->tags_pending(3) == 0);
+    CHECK((*d)->tags_pending() == 1);  // level 4 owed to the next host
+    CHECK((*d)->asset_by_path(utf8(r.photos() / "trip_len42_noopen.mp4"))->duration_ms == 0);
   }
 }
 
@@ -4360,6 +4471,9 @@ TEST_CASE("words in a photo are found by quoted and plain words (#403)", "[ai][e
   CHECK(r.status().assets_failed == 0);
   CHECK(r.text_reads.load() == 3);       // each photo once
   CHECK(r.clip_text_reads.load() == 3);  // and the clip's three moments (red, green, blue)
+  // One read of each photo for its picture and its text (the picture pass
+  // reads the text too), not one per pass: a hard disk set the pace.
+  CHECK(r.stills_decoded.load() == 3);
   const int embedded = r.fast->images_embedded.load();
 
   const auto top = [&](const std::string& q) {
@@ -5324,6 +5438,40 @@ TEST_CASE("the reader never writes: the index is byte-identical and every change
   engine none(t.api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
   CHECK_FALSE(none.start());
   CHECK_FALSE(fs::exists(empty / "data" / "index.db"));
+}
+
+TEST_CASE("a reader searches an index an older app left at schema 11 but refuses a newer one",
+          "[ai][search-agent]") {
+  // A phone opens the catalogue its desktop published, read-only and immutable:
+  // a desktop from before schema 12 publishes schema 11 (the sample library did).
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  const std::string path = utf8(r.dir / "data" / "index.db");
+  const auto set_schema = [&](const char* v) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    const std::string sql = std::string("UPDATE meta SET value = '") + v + "' WHERE key = 'schema';";
+    REQUIRE(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+
+  set_schema("11");
+  for (const bool immutable : {false, true}) {
+    INFO("immutable " << immutable);
+    auto rd = r.start_reader({.read_only = true, .immutable = immutable, .background_threads = false});
+    CHECK(ranked(*rd, "red").size() == 1);
+  }
+
+  set_schema("99");
+  engine rd(r.table->api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
+  auto started = rd.start();
+  REQUIRE_FALSE(started);
+  CHECK(started.error() == mv::status::unsupported_format);
 }
 
 TEST_CASE("the reader catches up with what the app indexes after it started", "[ai][search-agent]") {
@@ -9637,4 +9785,36 @@ TEST_CASE("perf: a 30k-asset folder removed during a 300k-line reload", "[.perf-
   const double after_drop_ms = std::chrono::duration<double, std::milli>(end - dropped).count();
   CHECK(r.eng->speech_lines() == 300000);
   std::printf("{\"rows\":300000,\"dropped_assets\":30000,\"install_after_drop_ms\":%.1f}\n", after_drop_ms);
+}
+
+TEST_CASE("a phone's reader ranks a description the gate holds back by closeness; filters still list",
+          "[ai][search-agent][order]") {
+  // Owner, 2026-11-14: on the phone "dog" must show the dogs, not #412's
+  // newest-first list. engine_options::rank_when_unanswered.
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.file("blue_sea.jpg");
+  r.file("holiday_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  auto phone = r.start_reader({.read_only = true, .background_threads = false, .rank_when_unanswered = true});
+  auto desk = r.start_reader();
+  // Held back by the gate: the desktop lists newest first, unmatched (#412);
+  // the phone ranks every picture by how close it is, each a picture match.
+  const auto held_desk = ranked(*desk, "xyzzy plugh", MV_AI_KIND_ALL, false);
+  REQUIRE(ranked(*desk, "xyzzy plugh").empty());
+  const auto held_phone = ranked(*phone, "xyzzy plugh");
+  CHECK(held_phone.size() == held_desk.size());
+  for (std::size_t i = 1; i < held_phone.size(); ++i) CHECK(held_phone[i - 1].score >= held_phone[i].score);
+  // An answered description is the same on both.
+  const auto red_desk = ranked(*desk, "red");
+  const auto red_phone = ranked(*phone, "red");
+  REQUIRE_FALSE(red_phone.empty());
+  REQUIRE(red_phone.size() == red_desk.size());
+  for (std::size_t i = 0; i < red_desk.size(); ++i) CHECK(red_phone[i].name == red_desk[i].name);
+  // Filters alone still list what they allow, newest first.
+  CHECK(ranked(*phone, "video", MV_AI_KIND_ALL, false).size() == 1);
+  CHECK(ranked(*phone, "photo", MV_AI_KIND_ALL, false).size() == 3);
 }

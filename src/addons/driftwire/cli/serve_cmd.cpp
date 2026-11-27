@@ -1,5 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "addons/driftwire/cli/convert_run.h"
 #include "addons/driftwire/cli/serve_cmd.h"
 
 #include <sodium.h>
@@ -275,8 +276,16 @@ int run_service(const args& a, bool test_hooks, const std::string& data, secrets
   o.store = &store;
   o.loopback_only = test_hooks && a.test_loopback;
   o.claimable = true;
+  o.vpn = true;  // the NAS as a VPN host, when its owner turns it on (a host runs its own relay)
   o.devices_lock = data + "/serve-devices.lock";
   o.save_config = [path = data + "/" + kConfigFile](const serve::config& c) { return write_config(path, c); };
+  // Clips the phone can't play (docs/plans/phone-clip-convert.md): with the app's clip helper.
+  if (!a.convert_helper.empty()) {
+    convert_check found;
+    o.converter = start_converter(a.convert_helper, data + "/convert-cache", &found);
+    print(o.converter ? "driftwire serve: converting clips for phones with " + found.family + "\n"
+                      : std::string("driftwire serve: no hardware video encoder found; phones keep the download\n"));
+  }
   auto srv = serve::server::start(o);
   if (!srv) {
     if (srv.error() == status::not_found) return fail("no access key yet: run `driftwire serve init` first.", 1);
@@ -585,7 +594,9 @@ int run_grant(const args& a, secrets::store& store, const std::string& data) {
   // Its folders, whether it is a guest and when it was added stay as they are:
   // only the time changes.
   std::optional<serve::grants::grant> next;
-  if (!a.forever) {
+  if (a.for_duration.empty() && !a.forever) {
+    next = current;  // --role alone: the time and the folders stay as they are
+  } else if (!a.forever) {
     const auto parsed = serve::grants::parse_duration(a.for_duration);
     if (!parsed) return fail("--for takes a duration up to 365d: 90m, 24h, 7d or seconds.", 2);
     next = current.value_or(serve::grants::grant{});
@@ -595,9 +606,26 @@ int run_grant(const args& a, secrets::store& store, const std::string& data) {
     next = *current;  // no end, still only its folders
     next->expires = 0;
   }
+  // The device's role (docs/plans/self-host-users-smb.md §9): change may write (phone backup,
+  // the service's only write); view may not. Otherwise what it had is kept.
+  // (--forever for every folder lifts every limit, backup with it, as the service's own grant does.)
+  const bool lifts_all = a.forever && !(current && current->roots);
+  const bool may_change = !a.role.empty() ? a.role == "change" : (lifts_all || !current || current->backup);
+  if (!may_change) {
+    if (!next) {
+      next = serve::grants::grant{};
+      next->created = now;
+    }
+    next->backup = false;
+  } else if (next) {
+    next->backup = true;
+    if (next->expires == 0 && !next->roots) next.reset();  // no limit left: the paired list
+  }
   if (const int r = put_device(store, found->first, found->second, next, now); r != 0) return r;
-  print(next && next->expires != 0 ? "until " + std::to_string(next->expires) + " (unix seconds)\n"
-                                   : std::string(next ? "no end, its folders only\n" : "unlimited\n"));
+  std::string out = next && next->expires != 0 ? "until " + std::to_string(next->expires) + " (unix seconds)"
+                                               : std::string(next && next->roots ? "no end, its folders only" : "no end");
+  out += std::string(", ") + (may_change ? "can change files" : "can view files") + "\n";
+  print(out);
   return 0;
 }
 
@@ -664,9 +692,13 @@ int run_devices(secrets::store& store) {
 }  // namespace
 
 int run_serve(const args& a, bool test_hooks, const char* version) {
-#if !defined(_WIN32)
-  // It faces the internet, and its keys would then be root's: it runs as its own unprivileged user.
-  if (!test_hooks && ::geteuid() == 0) return fail("it must not run as root; run it as its own user.", 1);
+  // It faces the internet, and its keys would then be root's (or the
+  // administrator's): it runs as its own unprivileged user.
+#if defined(_WIN32)
+  if (!test_hooks && serve_is_privileged())
+    return fail("it must not run as administrator; run it from a terminal that is not elevated.", 1);
+#else
+  if (!test_hooks && serve_is_privileged()) return fail("it must not run as root; run it as its own user.", 1);
 #endif
   if (sodium_init() < 0) return fail("could not start its cryptography.", 1);
   const std::string data = data_folder(a);

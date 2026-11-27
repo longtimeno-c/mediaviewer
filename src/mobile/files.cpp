@@ -3,6 +3,8 @@
 #include "mobile/files.h"
 
 #include "core/fold.h"
+#include <algorithm>
+
 #include "io/media_extensions.h"
 #include "meta/meta.h"
 #include "meta/search.h"
@@ -32,14 +34,38 @@ bool starts_with_nocase(std::string_view s, std::string_view prefix) {
 
 }  // namespace
 
+namespace {
+
+bool equal_nocase(std::string_view a, std::string_view b) { return a.size() == b.size() && starts_with_nocase(a, b); }
+
+// Files a camera or an editor leaves beside the pictures: never something to open on a phone.
+bool companion(std::string_view name) noexcept {
+  for (std::string_view whole : {"Thumbs.db", "desktop.ini", "Icon\r"}) {
+    if (equal_nocase(name, whole)) return true;
+  }
+  const auto ext = io::extension_of(name);
+  // Editors' sidecars; GoPro and DJI previews and telemetry (THM, LRV, LRF, SRT); Canon's CTG; the
+  // AVCHD and Sony card indexes (CPI, BDM, MPL, BIM).
+  for (std::string_view e : {".xmp", ".thm", ".lrv", ".aae", ".pp3", ".dop", ".on1", ".lrf", ".srt", ".ctg", ".cpi",
+                             ".bdm", ".mpl", ".bim"}) {
+    if (equal_nocase(ext, e)) return true;
+  }
+  // Sony XAVC's metadata beside each clip: C0001M01.XML.
+  if (equal_nocase(ext, ".xml") && name.size() >= 7 && equal_nocase(name.substr(name.size() - 7, 3), "M01")) return true;
+  return false;
+}
+
+}  // namespace
+
 kind kind_of(std::string_view name) noexcept {
+  if (companion(name)) return kind::none;
   const auto* row = io::find_media_extension(io::extension_of(name));
-  if (!row) return kind::none;
+  if (!row) return kind::other;
   switch (row->kind) {
     case io::media_kind::still: return kind::photo;
     case io::media_kind::raw: return kind::raw;
     case io::media_kind::video: return kind::clip;
-    default: return kind::none;  // audio and documents: not something this phone shows
+    default: return kind::other;  // audio and documents: listed, opened by the phone's own preview
   }
 }
 
@@ -137,6 +163,40 @@ std::size_t index::count() const {
 std::size_t index::tagged() const {
   std::lock_guard lock(m_);
   return tagged_;
+}
+
+std::vector<place> places_for(std::string_view share, std::string_view sub, std::span<const served_root> roots) {
+  std::vector<std::string> parts;
+  for (std::size_t at = 0; at <= sub.size();) {
+    const std::size_t slash = std::min(sub.find('/', at), sub.size());
+    if (slash > at) parts.emplace_back(sub.substr(at, slash - at));
+    at = slash + 1;
+  }
+  const auto join_from = [&](std::size_t first) {
+    std::string out;
+    for (std::size_t i = first; i < parts.size(); ++i) out += (out.empty() ? "" : "/") + parts[i];
+    return out;
+  };
+  std::vector<place> out;
+  const auto add = [&](const std::string& root, std::string prefix) {
+    place p{root, std::move(prefix)};
+    if (std::find(out.begin(), out.end(), p) == out.end()) out.push_back(std::move(p));
+  };
+  // The share's own name, then a folder of the share's tree by its name: the label says where it is.
+  for (const auto& r : roots) {
+    if (r.label == share) add(r.id, join_from(0));
+  }
+  for (const auto& r : roots) {
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      if (parts[i] == r.label) add(r.id, join_from(i + 1));
+    }
+  }
+  // Then any folder as the share itself, as a folder deeper in it, or as what holds the share.
+  for (const auto& r : roots) {
+    for (std::size_t i = 0; i <= parts.size(); ++i) add(r.id, join_from(i));
+    add(r.id, parts.empty() ? std::string(share) : std::string(share) + "/" + join_from(0));
+  }
+  return out;
 }
 
 }  // namespace mv::mobile::files

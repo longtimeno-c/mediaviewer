@@ -116,12 +116,79 @@ public struct Folder: Identifiable, Hashable, Sendable {
   /// folder in file mode, which is never walked).
   public let itemCount: Int
   public let hasSubfolders: Bool
+  /// The drive that holds it is not connected to the server now (unplugged, a share not mounted;
+  /// docs/plans/self-hosted.md §6): shown, said so, and never opened until it is back.
+  public let offline: Bool
+  /// Documents and audio a catalogue indexed in it and beneath (never grid items); 0 when unknown.
+  public let fileCount: Int
 
-  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool) {
+  public init(id: String, name: String, itemCount: Int, hasSubfolders: Bool, offline: Bool = false, fileCount: Int = 0) {
     self.id = id
     self.name = name
     self.itemCount = itemCount
     self.hasSubfolders = hasSubfolders
+    self.offline = offline
+    self.fileCount = fileCount
+  }
+}
+
+/// A folder's tile (LibraryStore.preview): the pictures on it and, in file mode, what the folder
+/// holds directly (a catalogue's folders carry their count in `Folder.itemCount`).
+public struct FolderPreview: Equatable, Sendable {
+  public let items: [MediaItem]
+  /// Photos and clips directly inside; nil when not known.
+  public let files: Int?
+  /// Folders directly inside; nil when not known.
+  public let folders: Int?
+  /// Other files directly inside (PDFs, saves, archives); nil when not known.
+  public let others: Int?
+
+  public init(items: [MediaItem], files: Int?, folders: Int?, others: Int? = nil) {
+    self.items = items
+    self.files = files
+    self.folders = folders
+    self.others = others
+  }
+
+  public static let empty = FolderPreview(items: [], files: nil, folders: nil)
+}
+
+/// A file in a NAS folder that is not a photo or a clip (a PDF, a game's save, an archive): listed by
+/// name, opened by the phone's own preview (Quick Look), never decoded by MediaViewer.
+public struct OtherFile: Identifiable, Hashable, Sendable {
+  public let id: String
+  public let name: String
+  public let bytes: Int64
+  public let modified: Date
+
+  public init(id: String, name: String, bytes: Int64, modified: Date) {
+    self.id = id
+    self.name = name
+    self.bytes = bytes
+    self.modified = modified
+  }
+
+  /// "pdf", lower case; "" for a name with none.
+  public var fileExtension: String {
+    guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return "" }
+    return name[name.index(after: dot)...].lowercased()
+  }
+
+  public enum Family: Sendable { case pdf, text, sheet, slides, archive, audio, code, disc, other }
+
+  public var family: Family {
+    switch fileExtension {
+    case "pdf": return .pdf
+    case "txt", "md", "rtf", "doc", "docx", "pages", "odt", "nfo", "log": return .text
+    case "xls", "xlsx", "csv", "numbers", "ods": return .sheet
+    case "ppt", "pptx", "key", "odp": return .slides
+    case "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz": return .archive
+    case "mp3", "m4a", "m4p", "wav", "flac", "aac", "ogg", "opus", "aiff": return .audio
+    case "json", "xml", "html", "htm", "ini", "cfg", "yaml", "yml", "lua", "py", "js", "sh", "bat": return .code
+    case "iso", "img", "bin", "cue", "dmg", "nds", "gba", "gb", "gbc", "nes", "sfc", "smc", "n64", "z64", "chd", "cia", "3ds", "nsp", "xci", "sav", "srm":
+      return .disc
+    default: return .other
+    }
   }
 }
 
@@ -333,6 +400,11 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   /// The library has no catalogue yet, and is its NAS's folders (docs/plans/phone-in-the-app.md
   /// §4): browsed folder by folder and searched by name and tag. Ends when a catalogue arrives.
   public var fileMode = false
+  /// The server's combined drives as its caps said at the last connect (docs/plans/self-host-drives.md
+  /// §4): 0 healthy or none, 1 rebuilding, 2 degraded (a mirror lost a drive), 3 offline, 4 failing.
+  public var serverStorage: Int32 = 0
+  /// The sentence for `serverStorage` ("Your server's mirror lost a drive. …"); "" when healthy.
+  public var serverStorageWords = ""
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

@@ -38,7 +38,7 @@
 	</array>
 	<!-- The Synology on its own network, and the Mac nearby for M4b's sync (§7.5). -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>MediaViewer connects to your Synology on this network to show your photos and videos.</string>
+	<string>MediaViewer connects to your server on this network to show your photos and videos.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_mediaviewer._tcp</string>
@@ -46,6 +46,9 @@
 	<!-- The link uses standard algorithms (Noise with libsodium). The owner's App Store Connect answers
 	     (2026-11-11, call 10): standard encryption, not distributed in France, so Apple asks for no
 	     documents and the app declares false here. Distributing in France needs a French declaration first. -->
+	<!-- The team prefix, for the VPN's shared Keychain group (MobileLinkSupport VPNNames). -->
+	<key>MVAppIdentifierPrefix</key>
+	<string>$(AppIdentifierPrefix)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>

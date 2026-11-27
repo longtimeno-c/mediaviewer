@@ -38,42 +38,6 @@ bool suffix_ok(std::string_view s) noexcept {
   });
 }
 
-// docs/design/11: as Path 2 (clip_encode.cpp), never x264 / x265 / a software
-// HEVC encoder; a software one only for the tests that ask.
-bool licence_ok(const AVCodec* enc, bool allow_software) noexcept {
-  if (std::strncmp(enc->name, "libx26", 6) == 0 || std::strcmp(enc->name, "libkvazaar") == 0) return false;
-  if (enc->capabilities & (AV_CODEC_CAP_HARDWARE | AV_CODEC_CAP_HYBRID)) return true;
-  return allow_software && enc->id != AV_CODEC_ID_HEVC;
-}
-
-std::vector<AVPixelFormat> encoder_formats(const AVCodec* enc) {
-  std::vector<AVPixelFormat> out;
-#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
-  const void* cfg = nullptr;
-  int n = 0;
-  if (avcodec_get_supported_config(nullptr, enc, AV_CODEC_CONFIG_PIX_FORMAT, 0, &cfg, &n) >= 0 && cfg) {
-    const auto* fmts = static_cast<const AVPixelFormat*>(cfg);
-    for (int i = 0; i < n; ++i) {
-      const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(fmts[i]);
-      if (d && !(d->flags & AV_PIX_FMT_FLAG_HWACCEL)) out.push_back(fmts[i]);
-    }
-  }
-#else
-  for (const AVPixelFormat* f = enc->pix_fmts; f && *f != AV_PIX_FMT_NONE; ++f) {
-    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(*f);
-    if (d && !(d->flags & AV_PIX_FMT_FLAG_HWACCEL)) out.push_back(*f);
-  }
-#endif
-  return out;
-}
-
-AVPixelFormat pick_format(const std::vector<AVPixelFormat>& fmts) {
-  const auto has = [&](AVPixelFormat f) { return std::find(fmts.begin(), fmts.end(), f) != fmts.end(); };
-  if (has(AV_PIX_FMT_NV12)) return AV_PIX_FMT_NV12;
-  if (has(AV_PIX_FMT_YUV420P)) return AV_PIX_FMT_YUV420P;
-  return fmts.empty() ? AV_PIX_FMT_YUV420P : fmts.front();
-}
-
 }  // namespace
 
 // ---- frames out --------------------------------------------------------------------
@@ -343,7 +307,7 @@ result<std::unique_ptr<picture_writer>> picture_writer::open(std::string_view so
     ctx->width = static_cast<int>(options.width);
     ctx->height = static_cast<int>(options.height);
     ctx->sample_aspect_ratio = ist->codecpar->sample_aspect_ratio;
-    ctx->pix_fmt = pick_format(encoder_formats(c));
+    ctx->pix_fmt = pick_format(encoder_formats(c), false);
     ctx->time_base = ist->time_base;
     if (ctx->time_base.den > 65535 && c->id == AV_CODEC_ID_MPEG4) ctx->time_base = av_inv_q(fr);
     ctx->framerate = fr;

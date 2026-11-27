@@ -106,6 +106,19 @@ struct http_answer {
 // GET `url` (https only, redirects to https only, no cookies, no credentials);
 // blocks up to `timeout_ms`. With no transport here: status 0 and an error.
 [[nodiscard]] http_answer https_get(const std::string& url, std::size_t max_bytes, int timeout_ms);
+// ACME's (docs/plans/vpn-stealth.md; acme.h): GET or POST `url` (https only,
+// no redirects followed, no cookies, no credentials), a POST's `body` sent as
+// `content_type`; the status, the body whatever the status (at most
+// max_bytes), and the three headers ACME reads. Blocks up to `timeout_ms`.
+struct https_reply {
+  int status = 0;  // 0: no answer (`error` says why; it may hold the URL: never logged)
+  std::string body, location, nonce;  // Location, Replay-Nonce
+  std::int64_t retry_after = 0;       // Retry-After in seconds (0: none, or a date)
+  std::string error;
+};
+[[nodiscard]] https_reply https_request(const std::string& method, const std::string& url,
+                                        const std::string& content_type, const std::string& body,
+                                        std::size_t max_bytes, int timeout_ms);
 // The running program's path, links resolved ("" when unknown).
 [[nodiscard]] std::string self_path();
 // %LOCALAPPDATA% on Windows; "" elsewhere.

@@ -277,6 +277,10 @@ class loaded_addon {
 // store::remove. Nothing to do (not installed, does not verify, no export) is
 // a no-op; a failing forget never blocks the removal.
 void forget_outside_data(const store& s, const std::string& id) noexcept;
+// Every Remove, kept data or not: the same way, its MV_ADDON_REMOVED_SYMBOL
+// (what it set up outside the app: a login entry, a program it installed).
+// Call after it is unloaded and before forget_outside_data and store::remove.
+void tell_removed(const store& s, const std::string& id, bool keep_data) noexcept;
 
 // ---- Quit (not Remove) --------------------------------------------------------
 //

@@ -793,6 +793,10 @@ TEST_CASE("perf: a folder's date keys, the date scan against the tag pass", "[.p
     cold = secs(t);
     for (const auto& e : files) keyed += index.date_key(e) ? 1 : 0;
   }
+  std::size_t with_length = 0;  // clips whose header gave a length (the phone's catalogue)
+  for (const auto& e : files) {
+    if (auto row = cache.lookup(e.path_utf8, e.size, e.mtime_unix); row && row->facts.duration_ms > 0) ++with_length;
+  }
   {
     meta::tag_index index(&cache);
     t = std::chrono::steady_clock::now();
@@ -803,9 +807,9 @@ TEST_CASE("perf: a folder's date keys, the date scan against the tag pass", "[.p
   }
   jobs.shutdown();
   std::printf("[perf-pass] %zu files: date scan %.2f s (%.3f ms/file, %zu dated); tag pass cold %.2f s "
-              "(%.3f ms/file, %zu dated), warm %.3f s\n",
+              "(%.3f ms/file, %zu dated, %zu with a length), warm %.3f s\n",
               files.size(), date_scan, date_scan * 1000 / files.size(), dated.load(), cold, cold * 1000 / files.size(),
-              keyed, warm);
+              keyed, with_length, warm);
 }
 
 // #291 review: the bounded search read must say what the full read says.

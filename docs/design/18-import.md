@@ -124,7 +124,7 @@ against `import.db`, uncached, to find rot); folders and shares as sources.
 Every first-party add-on (Import, the AI pack [17](17-local-ai-search.md), Places, Driftwire)
 uses this mechanism.
 
-- **Settings → Add-ons** is a short list: Import, Local search, Places, Driftwire, other own
+- **Settings → Add-ons** is a short list: Import, Local search, Places, Driftwire, Enhance, Phone access, other own
   add-ons, then **From other makers**. Each row is name + state (*Installed · 1.2.0*, *Update
   available · 1.3.0*, *Restart to finish updating*, *Not installed*, *Needs an update*,
   *Couldn't start*, *Installing…*). A row opens the add-on's page: actions (Install / Update to X
@@ -142,6 +142,13 @@ uses this mechanism.
   again** when the copy on disk is unusable (keeps data). A working copy whose update failed is
   never removed. Details go to the log, never a message that could hold a path. Words:
   `src.managed/Shared/InstallWords.cs`, `InstallWords.swift`.
+- **A damaged copy repairs itself** (Windows; slot add-ons). When the load refuses an installed
+  copy's files (one missing or changed: antivirus quarantining a bundled `.exe` is the case seen),
+  the chrome installs it again over the damaged copy, once per process, only while the automatic
+  update check is on, keeping data (`AddonRepair`, `RepairDamagedSlotAddons`). If the fresh copy
+  breaks again, or its files do not verify as they land, it does not loop: the card says the copy
+  keeps losing its files and that security software is the usual cause. The Mac still offers only
+  the Reinstall button.
 - **Signed, verified, then loaded.** Two fixed release assets per platform:
   `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by plain GET
   (no identifier, query or cookies). `manifest.json` lists files, SHA-256 and a licence per file,
@@ -224,7 +231,12 @@ in the first window. The first window loads the full pack on demand
 Add-ons link nothing of each other. `addon_request(id, method, json, reply)` (host table) lands on
 the other add-on's slot worker through `mv.request.1`, with the caller's id filled in by the host;
 the reply comes back on the caller's thread. `MV_ERR_NOT_FOUND` means not installed (offer to
-install). No add-on serves `mv.request.1` today.
+install). Served today (2026-11-19, [VPN add-on](../plans/vpn-addon.md)):
+
+| Add-on | Methods | Who may ask |
+|---|---|---|
+| `phone-access` | `vpn_state`, `vpn_set {on}`, `vpn_code`, `vpn_code_hide`, `vpn_domain {domain}`: this computer or the claimed server as the VPN's exit | `vpn` only |
+| `vpn` | `status` → `{"tunnel": bool}`: it is installed and loaded | anyone (Driftwire asks) |
 
 ## Commands
 

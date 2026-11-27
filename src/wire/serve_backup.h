@@ -47,8 +47,12 @@ class book {
   enum class verdict : std::uint8_t { ok, limit, full };
   // Holds `bytes` against the folder's limit and the volume's reserve. `meta`: a device's ledger
   // copy (at most kMaxLedgerBytes), which only the reserve bounds, so a folder at its limit still
-  // keeps the record of what is in it.
+  // keeps the record of what is in it. A folder that is not a backup folder (a "change" device
+  // adding to it, kChangeOps) has no limit and is never walked: only the volume's free space
+  // bounds it, keeping kDefaultReserve free.
   [[nodiscard]] verdict reserve(const root_config& root, std::uint64_t bytes, bool meta = false);
+  // `used` is kept only for a folder counted already (a backup folder, from its first reserve):
+  // another folder's bytes are never added up, so one made a backup folder later is walked fresh.
   void wrote(const std::string& root_id, std::uint64_t bytes);     // held bytes, now on disk
   void release(const std::string& root_id, std::uint64_t bytes);  // held bytes never written
   void removed(const std::string& root_id, std::uint64_t bytes);   // bytes taken off the disk
@@ -57,6 +61,8 @@ class book {
   // One writer per unfinished copy: a second stream for the same .mvpart is refused.
   [[nodiscard]] bool claim(const std::string& part);
   void drop(const std::string& part);
+  // Whether anything claimed lies inside the folder `dir` (a path claimed below it).
+  [[nodiscard]] bool claimed_beneath(const std::string& dir);
 
   // One commit at a time per folder: where the OS has no rename-without-replace
   // (exFAT, some SMB mounts), two devices placing the same name could otherwise

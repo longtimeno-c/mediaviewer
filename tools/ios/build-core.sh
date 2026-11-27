@@ -2,7 +2,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Xcode's run-script phase for the MediaViewer target: builds the static C++ core
+# Xcode's run-script phase for the MediaViewer target and its VPN extension: builds the static C++ core
 # (docs/plans/mobile.md 8.1) for this SDK into build-ios-<platform>/. The link flags in the
 # project name those libraries. VCPKG_ROOT defaults to ~/Dev/.mv-toolchain/vcpkg.
 set -euo pipefail
@@ -18,4 +18,4 @@ if [ ! -f "$build/build.ninja" ]; then
   cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_SYSROOT="$sdk" -DCMAKE_TOOLCHAIN_FILE="$vcpkg/scripts/buildsystems/vcpkg.cmake"
 fi
-exec ninja -C "$build" mv_mobile_link mv_mobile_search mv_infer mv_model_fetch mv_driftwire_engine mv_wire mv_catalogue mv_sha256
+exec ninja -C "$build" mv_mobile_vpn mv_mobile_vpn_code mv_vpn_engine mv_mobile_link mv_mobile_search mv_infer mv_model_fetch mv_driftwire_engine mv_wire mv_catalogue mv_sha256

@@ -242,6 +242,15 @@ enum chrome_command : int {
   // docs/plans/edit-refresh.md S8: the Faces panel's controls (IslandHost.Faces.cs),
   // arg = shell::pack_faces_op (op x 100000 + (face + 1) x 100 + (action + 1)).
   chrome_cmd_faces = 1109,
+  // docs/plans/desktop-client.md: a pairing worked or a server was forgotten in
+  // the tree (IslandHost.Remote.cs); native pins the new server with the
+  // folders and drops the pins of servers gone (mv_remote_pair_state_json, mv_remote_servers_json).
+  chrome_cmd_remote_changed = 1110,
+  // Open > Home (owner 2026-11-18): back to the welcome card, nothing open.
+  chrome_cmd_go_home = 1111,
+  // docs/design/16 "Folder navigation": one click on a folder tile selects it
+  // (arg: the tile's index, -1 the images); two open it (open_subfolder).
+  chrome_cmd_folder_cursor = 1112,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -344,6 +353,10 @@ enum class chrome_popup : std::int32_t {
   clip_tools = 7,    // PR 14; mode_mask carries clip flags (trim_state.h kClipFlag*)
   rename = 8,        // issue #210; mode_mask carries the folder index of the stop to rename
 };
+// chrome_popup::settings's mode_mask: bring Settings → Phone access into view
+// (docs/plans/self-hosted.md "Tray": the host's Open Phone access settings row).
+// IslandHost.Settings.cs mirrors it.
+inline constexpr std::int32_t kSettingsRevealPhone = 1;
 
 struct chrome_popup_args {
   std::int32_t kind;       // chrome_popup
@@ -483,7 +496,8 @@ static_assert(static_cast<int>(command_id::tool_smaller) == 216 && static_cast<i
               static_cast<int>(command_id::tool_brush) == 224 && static_cast<int>(command_id::tool_red_eye) == 225 &&
               static_cast<int>(command_id::tool_extend) == 226 && static_cast<int>(command_id::tool_faces) == 227);
 static_assert(chrome_cmd_canvas_tool >= kCommandCount && chrome_cmd_tool_erase_set >= kCommandCount);
-static_assert(chrome_cmd_faces >= kCommandCount);
+static_assert(chrome_cmd_faces >= kCommandCount && chrome_cmd_remote_changed >= kCommandCount &&
+              chrome_cmd_go_home >= kCommandCount && chrome_cmd_folder_cursor >= kCommandCount);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -524,7 +538,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
       chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min,
       chrome_cmd_canvas_tool, chrome_cmd_tool_size_set, chrome_cmd_tool_erase_set,
-      chrome_cmd_faces};
+      chrome_cmd_faces, chrome_cmd_remote_changed, chrome_cmd_go_home, chrome_cmd_folder_cursor};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -1309,8 +1323,11 @@ class chrome_host {
   [[nodiscard]] bool run_addon_command(const std::string& addon, const std::string& id,
                                        const std::string& json) noexcept;
   // #452: an add-on's screen, opened or brought forward (the notification-area
-  // icon's Open <screen>). False when the chrome has no such entry.
-  [[nodiscard]] bool open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
+  // icon's Open <screen>). none when the chrome has no such entry. A
+  // settings-place screen is no window (docs/plans/vpn-addon.md): the chrome
+  // wants its add-on's page and answers settings_page; the host opens Settings.
+  enum class addon_screen_opened { none, window, settings_page };
+  [[nodiscard]] addon_screen_opened open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
   // docs/design/25: an add-on package (*.mvaddon) handed to the app. The chrome
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
@@ -1350,7 +1367,8 @@ class chrome_host {
   [[nodiscard]] gallery_search_answer gallery_search(gallery_search_action action,
                                                      std::int32_t arg = 0) noexcept;
   void scale_gallery(std::int32_t direction, std::int32_t index) noexcept;
-  void apply_browse(std::int32_t folder_cursor, bool can_go_up, const std::string& crumbs,
+  // `moves`: bit 0 Up, bit 1 Back, bit 2 Forward.
+  void apply_browse(std::int32_t folder_cursor, std::int32_t moves, const std::string& crumbs,
                     bool finding = false, const std::string& query = {}) noexcept;
 
   // True when the island consumed the message (do not Translate/Dispatch).

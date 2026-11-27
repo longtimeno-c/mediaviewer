@@ -296,7 +296,9 @@ expected static_remote::connect(const cancel_flag* cancel) {
 
 result<std::vector<driftwire::serve::root_info>> static_remote::roots() {
   MV_TRY(file_list list, list_now(nullptr));
-  return list.roots;
+  auto roots = std::move(list.roots);
+  roots.push_back({.id = std::string(kOfflineRootID), .label = std::string(kOfflineRootLabel), .offline = true});
+  return roots;
 }
 
 result<std::vector<driftwire::serve::list_entry>> static_remote::list(const std::string&, const std::string&) {

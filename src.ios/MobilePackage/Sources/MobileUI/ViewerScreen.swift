@@ -20,18 +20,21 @@ struct ViewerScreen: View {
   @AppStorage(Preferences.filmstrip) private var showsFilmstrip = true
   @State private var pageStates: [MediaID: PageState] = [:]
   @State private var showDetails: Bool
-  @State private var playing: GridEntry?
-  @State private var save: SaveState?
-  /// The item `save` is about. Swiping away leaves the save running but out of sight.
-  @State private var saveItem: MediaItem?
-  /// The last save failed because Photos access was refused: the line offers Settings.
-  @State private var photosRefused = false
-  @Environment(\.openURL) private var openURL
-  @State private var saveToken = UUID()
+  /// The clip open on its page (ClipLive, ClipScreen.swift): one at a time, swiped past like a photo.
+  @State private var live = ClipLive()
+  /// Where the controls end at the top and the filmstrip starts at the bottom, and the screen's
+  /// safe area: the room an open clip's page leaves them.
+  @State private var headerBottom: CGFloat = 0
+  @State private var stripTop: CGFloat?
+  /// The top of the card above the filmstrip (a download's progress), when one shows.
+  @State private var slotTop: CGFloat?
+  @State private var screen = ScreenEdges()
+  /// Save to Photos and Share: the original, one at a time (OriginalActions.swift).
+  @State private var transfer = OriginalTransfer()
 
-  private enum SaveState: Equatable {
-    case running(TransferProgress?)
-    case outcome(ProgressOutcome)
+  private struct ScreenEdges: Equatable {
+    var bottom: CGFloat = 0
+    var safe = EdgeInsets()
   }
 
   init(request: ViewerRequest, namespace: Namespace.ID) {
@@ -39,8 +42,6 @@ struct ViewerScreen: View {
     self.namespace = namespace
     _index = State(initialValue: request.startIndex)
     _showDetails = State(initialValue: request.showDetails)
-    let start = request.entries[request.startIndex]
-    _playing = State(initialValue: request.playClip && start.item.kind == .clip ? start : nil)
   }
 
   private var current: GridEntry { request.entries[index] }
@@ -50,35 +51,65 @@ struct ViewerScreen: View {
       Color.black.ignoresSafeArea()
       PagerView(entries: request.entries, startIndex: request.startIndex, images: model.services.images,
                 onIndex: pageChanged, onTap: toggleChrome, onZoomed: { zoomed = $0 },
-                onPlay: { playing = $0 }, onState: { pageStates[$0] = $1 },
+                onPlay: { openClip(at: $0) }, onState: { pageStates[$0] = $1 },
                 onPullChanged: { pulling = $0 }, onClose: close,
-                onSettled: { model.viewerFocus = "\(request.context)/\($0)" }, jump: jump, isCovered: playing != nil)
+                onSettled: { model.viewerFocus = "\(request.context)/\($0)" }, jump: jump,
+                live: live, liveIndex: live.index, transfer: transfer, model: model)
         .ignoresSafeArea()
-      // Not just invisible: nothing under an open clip may be reachable by VoiceOver.
-      if chromeShown && !pulling && playing == nil {
+      if chromeShown && !pulling {
         chrome.transition(.opacity)
       }
-      if let playing {
-        ClipScreen(entry: playing) { closeClip() }
-          .id(playing.id)
-          .transition(.opacity)
-      }
     }
+    .onGeometryChange(for: ScreenEdges.self) { proxy in
+      ScreenEdges(bottom: proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom, safe: proxy.safeAreaInsets)
+    } action: { screen = $0 }
+    .onChange(of: clipInsets, initial: true) { _, insets in live.insets = insets }
+    // A pull to close leaves the page as it is: only a tap shows or hides the controls for it.
+    .onChange(of: chromeShown, initial: true) { _, shown in live.chromeShown = shown }
+    .task {
+      // Opened from a clip's tile: it plays at once, on its page.
+      if request.playClip, current.item.kind == .clip, live.index == nil { openClip(at: index) }
+    }
+    .onDisappear { live.close() }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chromeShown && !pulling)
-    .statusBarHidden(!chromeShown || playing != nil)
+    .statusBarHidden(!chromeShown)
     .persistentSystemOverlays(chromeShown ? .automatic : .hidden)
     .inspector(isPresented: $showDetails) {
-      DetailsScreen(item: current.item)
+      DetailsScreen(item: current.item, clip: live.index == index ? live.clip : nil)
         .presentationDetents([.medium, .large])
         .inspectorColumnWidth(min: 300, ideal: 340, max: 420)
     }
     .navigationTransition(.zoom(sourceID: "\(request.context)/\(index)", in: namespace))
     .interactiveDismissDisabled(zoomed)
+    .sharesOriginals(transfer)
     .presentationBackground(.black)
   }
 
   private func pageChanged(_ new: Int) {
     index = new
+    guard live.index != new else { return }
+    // Watching one clip and swiping to the next plays it, as Photos does; from a photo, a clip
+    // waits for its Play button (each one streams from the server).
+    let watching = live.clip.map { $0.isPlaying || $0.phase == .reading } ?? false
+    live.close()
+    if watching, request.entries[new].item.kind == .clip { openClip(at: new) }
+  }
+
+  private func openClip(at position: Int) {
+    guard request.entries.indices.contains(position), request.entries[position].item.kind == .clip else { return }
+    live.open(request.entries[position], at: position, clips: model.services.clips)
+  }
+
+  /// The room an open clip's page leaves the controls: below the top bar and above the filmstrip
+  /// while they show, the screen's safe area while they are hidden.
+  private var clipInsets: EdgeInsets {
+    let shown = chromeShown
+    let top = shown && headerBottom > 0 ? headerBottom + 8 : screen.safe.top
+    let edge = [stripTop, slotTop].compactMap { $0 }.min()
+    let bottom: CGFloat
+    if shown, let edge, screen.bottom > edge { bottom = screen.bottom - edge + 8 }
+    else { bottom = screen.safe.bottom }
+    return EdgeInsets(top: top, leading: screen.safe.leading, bottom: bottom, trailing: screen.safe.trailing)
   }
 
   private func toggleChrome() { chromeShown.toggle() }
@@ -88,21 +119,17 @@ struct ViewerScreen: View {
     model.closeViewer(reduceMotion: reduceMotion)
   }
 
-  private func closeClip() {
-    if request.playClip, index == request.startIndex {
-      close()
-    } else {
-      playing = nil
-    }
-  }
-
   private var chrome: some View {
     VStack(spacing: 0) {
       controls
       if showsFilmstrip {
         Filmstrip(entries: request.entries, current: index, images: model.services.images) { target in
           jump = PagerJump(index: target)
+        } scrub: { target in
+          jump = PagerJump(index: target, animated: false)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { stripTop = $0 }
+        .onDisappear { stripTop = nil }
       }
     }
   }
@@ -115,11 +142,9 @@ struct ViewerScreen: View {
             .buttonStyle(ChromeIconStyle())
             .accessibilityLabel("Close")
             .accessibilityIdentifier(zoomed ? "viewer-close-zoomed" : "viewer-close")
+          ShareOriginalButton(item: current.item, transfer: transfer)
           Spacer(minLength: 0)
-          Button(action: startSave) { Image(systemName: "square.and.arrow.down") }
-            .buttonStyle(ChromeIconStyle())
-            .accessibilityLabel("Save to Photos")
-            .disabled(isSaving)
+          SaveOriginalButton(item: current.item, transfer: transfer)
           Button { showDetails = true } label: { Image(systemName: "info") }
             .buttonStyle(ChromeIconStyle())
             .accessibilityLabel("Details")
@@ -136,35 +161,21 @@ struct ViewerScreen: View {
           .padding(.top, 7)
           .padding(.horizontal, 96)
       }
+      .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { headerBottom = $0 }
       Spacer(minLength: 0)
       bottomSlot
         .frame(maxWidth: Theme.readableWidth)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+          slotTop = frame.height > 0 ? frame.minY : nil
+        }
     }
     .padding(12)
   }
 
-  private var shownSave: SaveState? { saveItem?.id == current.item.id ? save : nil }
-
-  private var isSaving: Bool {
-    if case .running = shownSave { return true }
-    return false
-  }
-
   @ViewBuilder
   private var bottomSlot: some View {
-    if let save = shownSave {
-      slotCard {
-        switch save {
-        case .running(let progress):
-          ProgressLine(verb: "Saving to Photos",
-                       fraction: progress.map { $0.totalBytes > 0 ? Double($0.doneBytes) / Double($0.totalBytes) : 0 },
-                       detail: progress.map { ProgressWords.amounts($0.doneBytes, of: $0.totalBytes) },
-                       key: "save-\(current.item.id.raw)")
-        case .outcome(let outcome):
-          ProgressLine(verb: "Saving to Photos", fraction: nil, outcome: outcome, onRetry: retrySave,
-                       extra: photosRefused ? (title: "Open Settings", action: openSettings) : nil)
-        }
-      }
+    if transfer.state(for: current.item) != nil {
+      slotCard { OriginalProgress(item: current.item, transfer: transfer) }
     } else {
       switch pageStates[current.item.id] {
       case .refining(let done, let total):
@@ -200,61 +211,36 @@ struct ViewerScreen: View {
       .arrives(reduceMotion: reduceMotion)
   }
 
-  private func startSave() { startSave(current.item) }
-
-  private func retrySave() {
-    if let saveItem { startSave(saveItem) }
-  }
-
-  private func openSettings() {
-    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-  }
-
-  private func startSave(_ item: MediaItem) {
-    let token = UUID()
-    saveToken = token
-    saveItem = item
-    photosRefused = false
-    save = .running(nil)
-    Task {
-      do {
-        for try await progress in model.services.saver.save(item) {
-          if token == saveToken { save = .running(progress) }
-        }
-        guard token == saveToken else { return }
-        save = .outcome(.done("Saved to Photos"))
-        try? await Task.sleep(for: .seconds(2))
-        if token == saveToken, case .outcome(.done) = save { save = nil }
-      } catch let failure as MediaFailure {
-        if token == saveToken {
-          photosRefused = failure == .photosNotAllowed
-          save = .outcome(.failed(FailureCopy.line(for: failure, sample: model.connection.isSample), canRetry: false))
-        }
-      } catch {
-        if token == saveToken { save = .outcome(.failed("Couldn't save this to Photos.", canRetry: true)) }
-      }
-    }
-  }
 }
 
 // MARK: Filmstrip
 
-/// The Mac's bottom strip, for a phone. It follows the page once a swipe has settled, and shows and
-/// hides with the rest of the viewer's controls.
+/// The Mac's bottom strip, for a phone, scrubbed as Photos' is: dragging it shows the photo whose
+/// cell is in the middle, one cut per cell, and it comes to rest on a cell. A tap goes to that
+/// photo. It follows the page once a swipe has settled, and shows and hides with the rest of the
+/// viewer's controls.
 private struct Filmstrip: View {
   let entries: GridSource
   let current: Int
   let images: ImageLadder
   let choose: (Int) -> Void
+  /// The cell in the middle while the person moves the strip: the pager cuts to it.
+  let scrub: (Int) -> Void
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The cell in the middle of the strip.
+  @State private var centred: Int?
+  /// The person is moving the strip (a drag, or the coast after one): what comes to the middle
+  /// leads the pager, rather than the pager leading the strip.
+  @State private var scrubbing = false
   private static let cellSide: CGFloat = 48
+  private static let spacing: CGFloat = 4
 
   var body: some View {
-    ScrollViewReader { proxy in
+    GeometryReader { space in
       ScrollView(.horizontal, showsIndicators: false) {
         // Lazy, so a very large library builds only the cells on screen.
-        LazyHStack(spacing: 4) {
+        LazyHStack(spacing: Self.spacing) {
           ForEach(entries.indices, id: \.self) { index in
             Button { choose(index) } label: {
               FilmstripCell(entry: entries[index], images: images, side: Self.cellSide, isCurrent: index == current)
@@ -265,17 +251,31 @@ private struct Filmstrip: View {
             .id(index)
           }
         }
-        .padding(.horizontal, Theme.inset)
+        .scrollTargetLayout()
         .padding(.vertical, 8)
       }
-      .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
-      .onAppear { proxy.scrollTo(current, anchor: .center) }
+      // Margins of half the strip less half a cell: the first and the last photo reach the middle
+      // too, and a cell at rest sits there.
+      .contentMargins(.horizontal, max(0, (space.size.width - Self.cellSide) / 2), for: .scrollContent)
+      .scrollTargetBehavior(.viewAligned)
+      .scrollPosition(id: $centred, anchor: .center)
+      .onScrollPhaseChange { _, phase in
+        scrubbing = phase == .interacting || phase == .decelerating
+        // At rest on a cell the scrub has already shown: nothing more to do.
+        if !scrubbing, let centred, centred != current { scrub(centred) }
+      }
+      .onChange(of: centred) { _, new in
+        guard scrubbing, let new, new != current, entries.indices.contains(new) else { return }
+        scrub(new)
+      }
+      .onAppear { centred = current }
       .onChange(of: current) { _, new in
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-          proxy.scrollTo(new, anchor: .center)
-        }
+        // The strip leads while it is being moved; otherwise it follows the page.
+        guard !scrubbing, new != centred else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { centred = new }
       }
     }
+    .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
     .frame(height: Self.cellSide + 16)
     .background(Color.black.opacity(0.55).ignoresSafeArea(edges: .bottom))
   }
@@ -366,8 +366,11 @@ struct InfoRow: View {
 
 struct DetailsScreen: View {
   let item: MediaItem
+  /// The clip open on this page, when it is one: its stream's facts.
+  var clip: ClipModel? = nil
   @Environment(AppModel.self) private var model
   @State private var details: MediaDetails?
+  @State private var video: VideoFacts?
 
   var body: some View {
     ScrollView {
@@ -377,6 +380,7 @@ struct DetailsScreen: View {
           if let place = details?.place { InfoRow(label: "Place", value: place) }
           if let duration = item.duration { InfoRow(label: "Length", value: .clockFrom(duration)) }
         }
+        if item.kind == .clip { videoCard }
         if let details, details.camera != nil || details.lens != nil || details.exposure != nil {
           InfoCard {
             if let camera = details.camera { InfoRow(label: "Camera", value: camera) }
@@ -400,5 +404,30 @@ struct DetailsScreen: View {
     }
     .background(Theme.ground)
     .task(id: item.id) { details = try? await model.services.library.details(for: item) }
+    // The stream's facts come once it plays: asked again when its phase changes.
+    .task(id: "\(item.id.raw)|\(clip.map { "\($0.phase)" } ?? "")") { video = await clip?.videoFacts() }
+  }
+
+  @ViewBuilder
+  private var videoCard: some View {
+    InfoCard {
+      if let video {
+        if let resolution = video.resolution { InfoRow(label: "Resolution", value: resolution) }
+        if let frameRate = video.frameRate { InfoRow(label: "Frame rate", value: frameRate) }
+        if video.converted {
+          InfoRow(label: "Playing as", value: "Converted by your server for this phone")
+        } else {
+          if let codec = video.codec { InfoRow(label: "Codec", value: codec) }
+          if let range = video.dynamicRange { InfoRow(label: "Range", value: range) }
+          if let bitRate = video.bitRate { InfoRow(label: "Bit rate", value: bitRate) }
+          if let audio = video.audio { InfoRow(label: "Audio", value: audio) }
+        }
+      } else {
+        Text(clip == nil ? "Play the clip to see its resolution, frame rate and codec." : "Reading the clip…")
+          .font(.subheadline)
+          .foregroundStyle(Theme.body)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
   }
 }

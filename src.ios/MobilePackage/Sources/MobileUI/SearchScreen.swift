@@ -14,15 +14,28 @@ struct SearchScreen: View {
     NavigationStack {
       content
         .background(Theme.ground)
-        .safeAreaInset(edge: .top, spacing: 0) { FilterRow() }
+        .safeAreaInset(edge: .top, spacing: 0) {
+          VStack(alignment: .leading, spacing: 0) {
+            if search.capability == .filesOnly { SearchScopeRow() }
+            FilterRow()
+          }
+          .background(Theme.ground.ignoresSafeArea(edges: .top))
+        }
         .navigationTitle("Search")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: Binding(get: { search.text }, set: { search.setText($0) }),
                     placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: search.capability == .filesOnly ? "Find files by name or tag in this folder" : "Type what you remember")
+                    prompt: prompt)
         .onSubmit(of: .search) { search.submit() }
     }
     .task { await search.prepare() }
+  }
+
+  /// File search looks in one folder, so the field names it.
+  private var prompt: String {
+    guard model.search.capability == .filesOnly else { return "Type what you remember" }
+    guard let folder = model.library.trail.last else { return "Open a folder to search it" }
+    return "Search “\(folder.name)” by name or tag"
   }
 
   /// One answer glides into the next: tiles that stay move to their new place, new ones fade in,
@@ -60,6 +73,9 @@ struct SearchScreen: View {
                 context: "search", answering: "\(search.entries.count)|\(search.answered)") {
         topNotices
       }
+      // The keyboard goes only when the person drags it away: results arriving under it while they
+      // type (a new grid, a header line growing, the tab bar shrinking) never take it.
+      .scrollDismissesKeyboard(.interactively)
     case .nothing:
       // Centred while it fits; at the largest text sizes it is taller than a small phone, and
       // then it scrolls rather than run under the search field and the tab bar.
@@ -72,6 +88,7 @@ struct SearchScreen: View {
           .frame(minHeight: space.size.height)
         }
         .scrollBounceBehavior(.basedOnSize)
+        .scrollDismissesKeyboard(.interactively)
       }
     }
   }
@@ -166,6 +183,43 @@ private struct FileSearchLines: View {
       line += " · Still reading tags — \(reading.done.formatted()) of \(reading.total.formatted())"
     }
     return line
+  }
+}
+
+/// File search (no catalogue yet) looks in the folder open in Library, and nowhere else: this row
+/// says which, and takes you there to choose another.
+private struct SearchScopeRow: View {
+  @Environment(AppModel.self) private var model
+
+  var body: some View {
+    let trail = model.library.trail
+    HStack(spacing: 8) {
+      Image(systemName: trail.isEmpty ? "folder" : "folder.fill")
+        .font(.footnote)
+        .foregroundStyle(Theme.body)
+        .accessibilityHidden(true)
+      if let folder = trail.last {
+        (Text("Searching in ").foregroundStyle(Theme.body) + Text(folder.name).foregroundStyle(Theme.title).fontWeight(.semibold))
+          .font(.subheadline)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      } else {
+        Text("Search looks in one folder at a time.")
+          .font(.subheadline)
+          .foregroundStyle(Theme.body)
+          .lineLimit(2)
+      }
+      Spacer(minLength: 8)
+      Button(trail.isEmpty ? "Choose a folder" : "Change") { model.tab = .library }
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(Theme.accent)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityHint("Opens Library, where search's folder is chosen")
+    }
+    .padding(.horizontal, Theme.inset)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(trail.isEmpty ? "No folder open" : "Searching in " + (["All media"] + trail.map(\.name)).joined(separator: ", "))
   }
 }
 

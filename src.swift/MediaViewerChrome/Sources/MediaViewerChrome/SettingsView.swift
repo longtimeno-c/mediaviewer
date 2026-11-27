@@ -378,6 +378,7 @@ final class StorageStore: ObservableObject {
       case "places": return ("Places", "The add-on and its place database.")
       case "import": return ("Import", "The add-on.")
       case "driftwire": return ("Driftwire", "The add-on.")
+      case "vpn": return ("VPN", "The add-on.")
       case "enhance": return ("Enhance", "The add-on and the models it downloaded.")
       default: return (folder, "An add-on and its data.")
       }
@@ -606,10 +607,6 @@ struct SettingsView: View {
         // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
         section("Storage")
         StorageSection()
-        // docs/plans/phone-in-the-app.md: Phone access is the app's, with or
-        // without Local search.
-        section("Phone access")
-        PhoneAccessSection()
         // docs/design/26: the Photos library's backup, once the library was added
         // (Local search -> Add Photos Library); absent otherwise.
         PhotosBackupSection()

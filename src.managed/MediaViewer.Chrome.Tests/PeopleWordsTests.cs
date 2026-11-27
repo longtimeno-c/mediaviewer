@@ -256,4 +256,97 @@ public class PeopleWordsTests
         Assert.True(o.IsEmpty);
         Assert.Equal("No duplicates found, and every face matches.", PeopleWords.DedupeLookHeader(o));
     }
+
+    // ---- the grid's reorder (Reconcile): cards stay, the few that moved move ----
+
+    private sealed class Item(string name)
+    {
+        public override string ToString() => name;
+    }
+
+    // Counts each change the repeater would see.
+    private sealed class Recording<T> : System.Collections.ObjectModel.Collection<T>
+    {
+        public int Changes;
+        protected override void InsertItem(int index, T item) { ++Changes; base.InsertItem(index, item); }
+        protected override void RemoveItem(int index) { ++Changes; base.RemoveItem(index); }
+    }
+
+    private static (Recording<Item> List, Dictionary<string, Item> By) Start(string order)
+    {
+        var by = new Dictionary<string, Item>();
+        var list = new Recording<Item>();
+        foreach (char c in order)
+        {
+            var it = new Item(c.ToString());
+            by[c.ToString()] = it;
+            list.Add(it);
+        }
+        list.Changes = 0;
+        return (list, by);
+    }
+
+    private static List<Item> Want(Dictionary<string, Item> by, string order) =>
+        order.Select(c => by.TryGetValue(c.ToString(), out Item? it) ? it : by[c.ToString()] = new Item(c.ToString())).ToList();
+
+    [Theory]
+    [InlineData("ABCDE", "ABCDE", 0)]  // same order: nothing touched
+    [InlineData("ABCDE", "BCDEA", 2)]  // A fell to the end: one card leaves and comes back
+    [InlineData("ABCDE", "EABCD", 2)]  // E rose to the top: one move, not four
+    [InlineData("ABCDE", "ABXCDE", 1)] // a new person: one insert
+    [InlineData("ABCDE", "ABDE", 1)]   // merged away: one remove
+    [InlineData("ABCDE", "BACDE", 2)]  // two swapped: one of them moves
+    [InlineData("", "ABC", 3)]
+    [InlineData("ABC", "", 3)]
+    public void Reconcile_reaches_the_order_with_the_fewest_changes(string from, string to, int changes)
+    {
+        (Recording<Item> list, Dictionary<string, Item> by) = Start(from);
+        List<Item> want = Want(by, to);
+        PeopleWords.Reconcile(list, want);
+        Assert.Equal(want, list);
+        Assert.True(list.Zip(want).All(p => ReferenceEquals(p.First, p.Second)));
+        Assert.Equal(changes, list.Changes);
+    }
+
+    [Fact]
+    public void Reconcile_keeps_the_same_objects()
+    {
+        (Recording<Item> list, Dictionary<string, Item> by) = Start("ABCD");
+        Item b = by["B"];
+        PeopleWords.Reconcile(list, Want(by, "DCBA"));
+        Assert.Same(b, list[2]);
+        Assert.Equal("DCBA", string.Concat(list));
+    }
+
+    [Fact]
+    public void Reconcile_shuffled_lists_always_land_in_order()
+    {
+        var rng = new Random(7);
+        for (int round = 0; round < 200; ++round)
+        {
+            var pool = Enumerable.Range(0, 30).Select(i => new Item(i.ToString())).ToList();
+            var list = pool.Where(_ => rng.Next(3) > 0).OrderBy(_ => rng.Next()).ToList();
+            var want = pool.Where(_ => rng.Next(3) > 0).OrderBy(_ => rng.Next()).ToList();
+            PeopleWords.Reconcile(list, want);
+            Assert.True(list.Count == want.Count && list.Zip(want).All(p => ReferenceEquals(p.First, p.Second)));
+        }
+    }
+
+    [Theory]
+    [InlineData(new int[0], 0)]
+    [InlineData(new[] { 0, 1, 2, 3 }, 4)]
+    [InlineData(new[] { 3, 2, 1, 0 }, 1)]
+    [InlineData(new[] { 1, 2, 3, 4, 0 }, 4)]
+    [InlineData(new[] { 4, 0, 1, 2, 3 }, 4)]
+    public void LongestIncreasing_finds_the_run(int[] a, int length)
+    {
+        HashSet<int> keep = PeopleWords.LongestIncreasing(a);
+        Assert.Equal(length, keep.Count);
+        int last = -1;
+        foreach (int i in keep.OrderBy(i => i))
+        {
+            Assert.True(a[i] > last);
+            last = a[i];
+        }
+    }
 }

@@ -225,6 +225,13 @@ A screen is a **view tree**, a vocabulary both hosts render with their own contr
   list, table, button, toggle, choice, slider, number, text field, progress, separator, `surface`
   (pixels the add-on drew), and later `tiles`, `link` and looks; full list with APIs in the
   [PRs 58–59 notes](#implementation-notes-prs-58-59-2026-10-11).
+- **Secure text fields** (contribution API 15, the Phone access add-on): `"secure": true` draws
+  dots; the core never keeps the value in the tree (a posted tree may only give `""`; an event's
+  value goes to the add-on alone). The add-on renames the field once it has used or dropped what
+  was typed, so the host draws a new, empty one.
+- **Glyphs on text** (contribution API 16, Phone access's section headings): a `text` may carry a
+  `symbol` from `kSymbols`, drawn before it in its size and colour. API 16 also adds the glyphs
+  phone, drive, lock, computer and sync (SF Symbols / Segoe Fluent Icons, mapped in each host).
 - **State** lives in the add-on: it posts a tree, then diffs; the host applies them on the UI
   thread in one pass. Events post back to the add-on's worker.
 - **Keyboard-complete:** every control focusable and named; commands are table rows
@@ -371,6 +378,7 @@ slot-only add-on names no `chrome`.
 | 11 | `editor_items` |
 | 12 | Screen place `"edit"` (`MV_SLOT_PLACE_EDIT`); `surface` `"fill"` and `open_list`; a `choice` option's `"disabled"` |
 | 13 | `progress` `detail` and `timed` |
+| 15 | `text_field` `"secure": true`: dots on screen, its value never kept in the tree, a snapshot, a log or a crash report (the Phone access add-on, 2026-11-14) |
 
 An add-on asks for the API of each addition it uses, so an older host says "needs a newer
 MediaViewer" instead of refusing the tree or showing a blank window.
@@ -386,7 +394,9 @@ How it works:
   VoiceOver/Narrator name). Chrome events are checked against the tree (exists, interactive,
   enabled, value kind and range); the tree keeps the value; the add-on answers with a diff. Text
   fields report on Return and focus loss, sliders on release: never per key. Windows rebuilds a
-  screen window when its revision moves, but waits while a pointer is down.
+  screen window when its revision moves, but waits while a pointer is down; when only text nodes'
+  words and a link's `value` moved (a transfer's progress), it updates them in place instead
+  (`src.managed/Shared/ScreenTreePatch.cs`).
 - **Info sections** are asked for when the Metadata pane shows a file, once per file and width,
   never for a file without coordinates when `"when": "location"`. Drawn at the bottom of the `I`
   pane after built-in metadata, every tab, never collapsed. A `surface` is BGRA at pane width ×

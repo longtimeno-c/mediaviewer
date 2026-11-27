@@ -71,9 +71,10 @@ struct folder_row {
   std::string key, name;
   uint32_t items;
   uint32_t subs;
+  uint32_t files = 0;
 };
 void add_folder(void* user, const mv_mobile_folder* f) {
-  static_cast<std::vector<folder_row>*>(user)->push_back({f->key, f->name, f->item_count, f->has_subfolders});
+  static_cast<std::vector<folder_row>*>(user)->push_back({f->key, f->name, f->item_count, f->has_subfolders, f->file_count});
 }
 
 }  // namespace
@@ -133,6 +134,18 @@ TEST_CASE("a generation opens as the phone's grid: newest first, folders, tiles"
   REQUIRE(under.size() == 1);
   CHECK(under[0].name == "trip");
   CHECK(under[0].items == 2);  // a folder counts what is beneath it
+  CHECK(top[0].files == 2);     // the documents and audio, counted, never tiles
+  CHECK(under[0].files == 2);
+  // A folder holding only a document is still a folder: its files open from the server's folder.
+  std::vector<folder_row> in_trip_folders;
+  REQUIRE(mv_mobile_library_folders(lib, under[0].key.c_str(), &add_folder, &in_trip_folders) == MV_MOBILE_OK);
+  REQUIRE(in_trip_folders.size() == 2);
+  CHECK(in_trip_folders[0].name == "day1");
+  CHECK(in_trip_folders[0].items == 1);
+  CHECK(in_trip_folders[0].files == 1);
+  CHECK(in_trip_folders[1].name == "papers");
+  CHECK(in_trip_folders[1].items == 0);
+  CHECK(in_trip_folders[1].files == 1);
 
   mv_mobile_list* in_trip = nullptr;
   REQUIRE(mv_mobile_list_open(lib, MV_MOBILE_SCOPE_FOLDER, under[0].key.c_str(), &in_trip) == MV_MOBILE_OK);
@@ -369,7 +382,7 @@ TEST_CASE("names, dates and files answer without a model; meaning waits for one"
     return out;
   };
   mv_mobile_status st = MV_MOBILE_ERR_INTERNAL;
-  CHECK(paths("in:1970", &st).size() == 4);  // the document too: kinds 0 is every kind
+  CHECK(paths("in:1970", &st).size() == 5);  // the documents too: kinds 0 is every kind
   CHECK(st == MV_MOBILE_OK);
   const auto by_file = paths("file:c", &st);
   CHECK(st == MV_MOBILE_OK);

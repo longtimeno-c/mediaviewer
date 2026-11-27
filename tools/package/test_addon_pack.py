@@ -373,6 +373,51 @@ class DriftwirePackTest(unittest.TestCase):
         self.assertIn("libsodium", notice)
         self.assertIn("No account, no cloud", notice)
 
+    # docs/plans/phone-access-addon.md: Phone access, code only, one settings screen.
+    def test_phone_access_carries_the_code_and_one_settings_screen(self):
+        (self.src / "mv_phone_access.dll").write_bytes(b"MZ" + os.urandom(1024))
+        (self.src / "libmv_phone_access.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "host").mkdir()
+        (self.src / "host" / "driftwire").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "host" / "driftwire.exe").write_bytes(b"MZ" + os.urandom(1024))
+        for platform, native in (("win-x64", "mv_phone_access.dll"), ("macos", "libmv_phone_access.dylib")):
+            addon_pack.main(["pack", "--addon", "phone-access", "--platform", platform, "--src", str(self.src),
+                             "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
+            m = json.loads((self.out / f"mediaviewer-addon-phone-access-{platform}.json").read_bytes())
+            self.assertEqual(m["id"], "phone-access")
+            self.assertEqual(m["native"], native)
+            self.assertEqual(m["chrome"], "")
+            paths = sorted(f["path"] for f in m["files"])
+            self.assertIn(native, paths)
+            self.assertTrue(any(p.startswith("host/driftwire") for p in paths))
+            c = m["contributes"]
+            self.assertEqual(c["api"], {"min": 16, "max": 16})
+            self.assertEqual(c["screens"], [{"id": "settings", "title": "Phone access", "place": "settings"}])
+        with zipfile.ZipFile(self.out / "mediaviewer-addon-phone-access-macos.zip") as z:
+            notice = z.read("LICENSES/NOTICE.txt").decode()
+        self.assertIn("Project Nayuki", notice)
+        self.assertIn("BoringSSL (Apache-2.0)", notice)
+
+    # docs/plans/vpn-addon.md: the VPN, code only, one settings screen.
+    def test_vpn_carries_the_code_and_one_settings_screen(self):
+        (self.src / "mv_vpn.dll").write_bytes(b"MZ" + os.urandom(1024))
+        (self.src / "libmv_vpn.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        for platform, native in (("win-x64", "mv_vpn.dll"), ("macos", "libmv_vpn.dylib")):
+            addon_pack.main(["pack", "--addon", "vpn", "--platform", platform, "--src", str(self.src),
+                             "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
+            m = json.loads((self.out / f"mediaviewer-addon-vpn-{platform}.json").read_bytes())
+            self.assertEqual(m["id"], "vpn")
+            self.assertEqual(m["native"], native)
+            self.assertEqual(m["chrome"], "")
+            self.assertEqual(sorted(f["path"] for f in m["files"] if not f["path"].startswith("LICENSES/")), [native])
+            c = m["contributes"]
+            self.assertEqual(c["api"], {"min": 16, "max": 16})
+            self.assertEqual(c["screens"], [{"id": "settings", "title": "VPN", "place": "settings"}])
+        with zipfile.ZipFile(self.out / "mediaviewer-addon-vpn-macos.zip") as z:
+            notice = z.read("LICENSES/NOTICE.txt").decode()
+        self.assertIn("BoringSSL (Apache-2.0)", notice)
+        self.assertIn("No VPN company", notice)
+
 
 class EnhancePackTest(unittest.TestCase):
     """#297: Enhance carries its code and each kind's model.json; the weights are

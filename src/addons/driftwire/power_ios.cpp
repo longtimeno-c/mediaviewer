@@ -8,5 +8,6 @@
 namespace mv::driftwire::power {
 
 std::unique_ptr<stay_awake> hold(bool) noexcept { return nullptr; }
+std::unique_ptr<stay_awake> hold_for(const std::string&) noexcept { return nullptr; }
 
 }  // namespace mv::driftwire::power

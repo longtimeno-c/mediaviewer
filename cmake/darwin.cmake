@@ -482,6 +482,8 @@ add_library(mv_clip STATIC
   src/edit/clip_sample.cpp
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
+  src/edit/clip_convert.cpp
+  src/edit/clip_convert.h
   src/edit/clip_picture_io.cpp
   src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
@@ -524,8 +526,11 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 # The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
 # build/addons/driftwire, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
-# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+# The Phone access add-on (docs/plans/phone-access-addon.md): libmv_phone_access.dylib
+# in build/addons/phone-access, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/phone.cmake")
+# Another desktop opens the host's drives (docs/plans/desktop-client.md): part of the app.
+include("${CMAKE_CURRENT_LIST_DIR}/remote.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -581,6 +586,12 @@ add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
   src/shell/browse_path.h
+  # docs/design/16 "Folder navigation" / "Drag and drop into folders": Back /
+  # Forward, what a drop becomes, and the copy / move worker (shared with Windows).
+  src/shell/browse_history.h
+  src/shell/file_drop.h
+  src/shell/file_transfer.cpp
+  src/shell/file_transfer.h
   # The one key router and command table, shared with Windows (docs/design/16): the
   # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
   # translates virtual keys. Pure C++, no platform header.
@@ -607,6 +618,8 @@ add_library(mv_shell STATIC
   # Check library: the backup's index is the Import add-on's, through mv.import.1.
   src/shell/photos_backup_library.cpp
   src/shell/photos_backup_library.h
+  src/shell/photos_backup_server.cpp
+  src/shell/photos_backup_server.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
@@ -734,6 +747,9 @@ set(MV_MAC_HOST_SOURCES
   src/shell/addons_mac.h
   # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
   src/shell/slots_mac.mm
+  # docs/plans/self-hosted.md "Tray": the host's rows in the menu-bar item.
+  src/abi/host_tray_glue.cpp
+  src/abi/host_tray_glue.h
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
@@ -760,7 +776,10 @@ function(mv_mac_host target)
     mv_image
     mv_canvas
     mv_shell
+    # Only the server menu's objects (host_tray, self_host): the rest of
+    # Phone access is the add-on's.
     mv_phone
+    mv_remote
     mv_io
     mv_player
     imgui::imgui
@@ -922,6 +941,10 @@ if(MV_BUILD_TESTS)
     tests/test_dino_game.cpp
     tests/test_browse_index.cpp
     tests/test_browse_path.cpp
+    tests/test_browse_history.cpp
+    tests/test_abi_text.cpp
+    tests/test_file_drop.cpp
+    tests/test_file_transfer.cpp
     tests/test_dir_tree.cpp
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
@@ -942,6 +965,8 @@ if(MV_BUILD_TESTS)
     # docs/design/26: virtual items in a result list (the Photos library as a folder).
     tests/test_folder_virtual_mac.cpp
     src/shell/folder_model_mac.cpp
+    # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
+    tests/test_desktop_client.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp
@@ -1058,6 +1083,8 @@ if(MV_BUILD_TESTS)
     tests/test_places.cpp
   )
   target_link_libraries(mv_tests PRIVATE
+    mv_remote
+    mv_wire
     mv_core
     mv_io
     mv_gfx

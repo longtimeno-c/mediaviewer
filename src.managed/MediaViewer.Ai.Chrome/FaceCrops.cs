@@ -37,7 +37,11 @@ internal sealed class FaceCrops(AiApi api, Look look)
     // calls into the pack, each possibly a decode (the Mac's ThumbGate).
     private readonly SemaphoreSlim _gate = new(4);
 
-    public FrameworkElement Crop(ulong face, double[] box, double size, string monogram, DispatcherQueue queue)
+    /// <param name="ready">Runs once the crop shows what it will show: the picture,
+    /// or the monogram when there is none or it failed. Lets a card keep the old
+    /// cover up until the new one is there.</param>
+    public FrameworkElement Crop(ulong face, double[] box, double size, string monogram, DispatcherQueue queue,
+                                 Action? ready = null)
     {
         // The placeholder disc, then the picture over it once it decodes.
         var back = new Ellipse { Width = size, Height = size, Fill = look.Tint(AddonColour.Title, 20) };
@@ -49,7 +53,19 @@ internal sealed class FaceCrops(AiApi api, Look look)
         grid.Children.Add(back);
         grid.Children.Add(shape);
         grid.Children.Add(initial);
-        if (face == 0 || box.Length != 4) return grid;
+        // Always on a later turn: the caller holds the returned crop by then.
+        bool readied = false;
+        void Ready()
+        {
+            if (readied || ready is null) return;
+            readied = true;
+            queue.TryEnqueue(() => ready());
+        }
+        if (face == 0 || box.Length != 4)
+        {
+            Ready();
+            return grid;
+        }
         double x = box[0], y = box[1], w = Math.Max(0.01, box[2]), h = Math.Max(0.01, box[3]);
         // Pad the face a little so a crop reads as a portrait, not a mask.
         const double Pad = 0.25;
@@ -77,10 +93,18 @@ internal sealed class FaceCrops(AiApi api, Look look)
                 // Fill now: a BitmapImage nothing in the live tree uses is never
                 // decoded, so waiting for ImageOpened to fill left every crop
                 // blank. The monogram stays on top until the picture is there.
+                bitmap.ImageOpened += (_, _) =>
+                {
+                    initial.Visibility = Visibility.Collapsed;
+                    Ready();
+                };
+                bitmap.ImageFailed += (_, _) => Ready();
                 shape.Fill = brush;
-                bitmap.ImageOpened += (_, _) => initial.Visibility = Visibility.Collapsed;
             }
-            catch (Exception ex) when (ex is UriFormatException or ArgumentException) { }
+            catch (Exception ex) when (ex is UriFormatException or ArgumentException)
+            {
+                Ready();
+            }
         }
 
         if (_thumbPaths.TryGetValue(face, out string? known))
@@ -95,10 +119,21 @@ internal sealed class FaceCrops(AiApi api, Look look)
             try { path = api.FaceThumb(face); }  // [worker-thread]: may make the JPEG
             catch (MediaViewerException) { }
             finally { _gate.Release(); }
-            if (string.IsNullOrEmpty(path)) return;
+            if (string.IsNullOrEmpty(path))
+            {
+                queue.TryEnqueue(Ready);
+                return;
+            }
             queue.TryEnqueue(() =>
             {
                 _thumbPaths[face] = path;
+                // The crop left the screen while the pack made its JPEG (a card
+                // recycled, a sheet hidden): nothing to decode it for.
+                if (shape.XamlRoot is null)
+                {
+                    Ready();
+                    return;
+                }
                 Show(path);
             });
         });

@@ -5,7 +5,7 @@
 // Update available · 1.3.0, Restart to finish updating, Not installed), and
 // each row opens that add-on's own page in Settings: its line, Install /
 // Update / Open / Remove, its progress and messages, and its settings. The
-// order is Import, Local search, Places, Driftwire, Enhance (Apple silicon), any
+// order is Import, Local search, Places, Driftwire, Enhance (Apple silicon), Phone access, any
 // other installed add-on of MediaViewer's, then From other makers.
 //
 // The pages are the views the add-ons always had (ImportAddonPage,
@@ -109,6 +109,7 @@ struct AddonsSection: View {
   @ObservedObject private var slots = SlotAddonsSection.Installed.shared
   @ObservedObject private var places = SlotAddonOffer.places
   @ObservedObject private var driftwire = DriftwireStore.shared
+  @ObservedObject private var phone = PhoneAccessStore.shared
   @ObservedObject private var others = OpenAddonStore.shared
   @ObservedObject private var restart = AddonRestart.shared
   @ObservedObject private var nav = AddonNav.shared
@@ -158,8 +159,20 @@ struct AddonsSection: View {
                                        SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance"),
                                        "Enhance")))
     }
+    // Installed by its own store (PhoneAccess.swift), updated by its channel like the others.
+    let phoneRow = slots.rows.first { $0.id == PhoneAccessStore.addonID }
+    let phoneOffer = SlotAddonOffer.channel(id: PhoneAccessStore.addonID, name: "Phone access")
+    list.append(Entry(id: PhoneAccessStore.addonID, name: "Phone access",
+                      line: AddonListWords.line(
+                        known: slots.known, installed: phoneRow != nil, version: phoneRow?.version ?? "",
+                        state: phoneRow?.state ?? "",
+                        update: phoneRow.flatMap { r in
+                          phoneOffer.offer?.version.flatMap { v in AddonChannel.isNewer(v, than: r.version) ? v : nil }
+                        },
+                        restart: restarting("Phone access"), busy: phone.busy || phoneOffer.phase != nil)))
     let rest = slots.rows.filter {
       $0.id != "places" && $0.id != DriftwireStore.addonID && $0.id != SlotAddonOffer.enhanceID
+        && $0.id != PhoneAccessStore.addonID
     }
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     for row in rest {
@@ -258,6 +271,7 @@ struct AddonPageView: View {
     case "places": return "Places"
     case DriftwireStore.addonID: return "Driftwire"
     case SlotAddonOffer.enhanceID: return "Enhance"
+    case PhoneAccessStore.addonID: return "Phone access"
     default: return installed.rows.first { $0.id == id }?.name ?? id
     }
   }

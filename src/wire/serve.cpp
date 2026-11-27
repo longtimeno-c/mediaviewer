@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <climits>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -28,7 +29,9 @@
 #include "wire/keys.h"
 #include "wire/owner_pass.h"
 #include "wire/serve_backup.h"
+#include "wire/share_users.h"
 #include "core/json.h"
+#include "io/content_hash.h"
 #include "io/file_port.h"
 
 namespace mv::driftwire::serve {
@@ -92,6 +95,19 @@ struct stream {
   std::size_t body_at = 0;
   std::uint64_t count = 0;
   bool truncated = false;
+  // convert: waiting for the converter, then a segment's file (as read_range) or an end of
+  // its own (the plan, a refusal), sent by the pump.
+  bool waiting = false;
+  bool has_end = false, end_sent = false;
+  end_code end = end_code::ok;
+  std::string end_json;
+};
+
+// Where the converter's answers find a session that may have ended since it asked.
+class session_state;
+struct convert_inbox {
+  std::mutex m;
+  session_state* s = nullptr;  // under m; null once the session stops
 };
 
 // A file a phone is writing into a backup folder (serve_backup.h).
@@ -133,6 +149,11 @@ struct conn {
   std::array<std::uint8_t, 32> device{};
   bool has_device = false;  // under m
   bool is_owner = false;    // set before its session starts
+  // docs/plans/self-hosted.md "Tray": what this session read and wrote (file
+  // bytes; one relaxed add per chunk, no lock), since when and how it came.
+  std::atomic<std::uint64_t> bytes_read{0}, bytes_written{0};
+  std::int64_t since_unix = 0;        // under m, with has_device
+  server::usage_via via = server::usage_via::internet;  // under m, with has_device
   // A device with a limit (grants.h): the grant it came in with, set before
   // its session starts; nullopt for an unlimited one and the owner.
   std::optional<grants::grant> grant;
@@ -156,9 +177,12 @@ struct waiting_code {
 
 // The Catalogue root, which every grant may read (docs/plans/nas-owner-and-guests.md §5.2).
 bool is_catalogue(const root_config& r) {
-  const std::string tail = std::string("/") + kCatalogueFolder;
-  return r.label == kCatalogueLabel && r.path.size() >= tail.size() &&
-         r.path.compare(r.path.size() - tail.size(), tail.size(), tail) == 0;
+  // Either separator: a path that came from Windows (a config written by hand, a native
+  // path) ends "\\.mediaviewer", and missing it would make the Catalogue an ordinary folder.
+  const std::string_view name = kCatalogueFolder;
+  if (r.label != kCatalogueLabel || r.path.size() <= name.size()) return false;
+  const char sep = r.path[r.path.size() - name.size() - 1];
+  return (sep == '/' || sep == '\\') && std::string_view(r.path).substr(r.path.size() - name.size()) == name;
 }
 
 std::array<std::uint8_t, 32> code_hash(std::string_view code) {
@@ -319,6 +343,7 @@ struct server::state {
   std::atomic<int> pending{0}, sessions{0};
   std::mutex conns_m;
   std::list<std::shared_ptr<conn>> conns;  // under conns_m
+  std::map<std::array<std::uint8_t, 32>, std::pair<std::uint64_t, std::uint64_t>> ended_usage;  // under conns_m: read, written
   std::mutex source_m;
   std::map<std::string, int> in_flight;  // under source_m: handshakes per address
 
@@ -351,6 +376,25 @@ struct server::state {
   };
   std::function<result<std::unique_ptr<link>>(const std::string&, std::uint16_t, int)> relay_connect;
   std::function<void()> before_gather;  // the tests
+  std::function<bool(const root_config&)> root_present;  // the host's (options::root_present)
+  bool copy_moves = false;                                // the tests (options::copy_moves)
+  std::function<void()> during_copy;                      // the tests (options::during_copy)
+  std::function<std::string()> storage;  // options::storage
+  std::mutex conv_m;
+  std::shared_ptr<convert::service> conv;  // under conv_m (options::converter)
+  std::shared_ptr<convert::service> converter() {
+    std::lock_guard lock(conv_m);
+    return conv;
+  }
+  // The NAS as a VPN host (options::vpn): this service's own forwarding relay,
+  // started and stopped by the owner's set_vpn and at start, under vpn_m.
+  bool vpn_offered = false;
+  std::function<void(relay::server::options&)> vpn_tweak;
+  std::mutex vpn_m;
+  std::unique_ptr<relay::server> vpn_relay;  // under vpn_m
+  std::uint16_t vpn_asked = 0;                // under vpn_m: the port it was started for
+  // (Re)starts or stops it for `port` (0: off). False when it could not listen.
+  bool apply_vpn_locked(std::uint16_t want);
   std::mutex admit_m;  // admit(): the listener and the relay's waiters, one at a time
   std::mutex relay_m;
   std::condition_variable relay_cv;
@@ -401,10 +445,13 @@ struct server::state {
   backup::book book;  // phone backup: limits and unfinished copies, across sessions
   // The tests' stand-in for the grants (server::options::may_write); empty: the grants decide.
   std::function<bool(const std::array<std::uint8_t, 32>&)> may_write_override;
-  // Phone backup (B2): whether this session's device may create files in `root` now. Read
-  // fresh at each write, so a grant changed on the card applies to the next file.
+  // Whether this session's device may change files in `root` now: its role is "change"
+  // (self-host-users-smb.md §9: unlimited, or a grant with `backup` on) and its grant reaches the
+  // folder. Phone backup's writes into backup folders and kChangeOps's everywhere else alike.
+  // Read fresh at each request, so a grant changed on the card applies to the next one. The
+  // owner's session never; the Catalogue never.
   [[nodiscard]] bool device_may_write(const conn& c, const root_config& root) {
-    if (c.is_owner || !root.backup) return false;
+    if (c.is_owner || is_catalogue(root)) return false;
     if (may_write_override) return may_write_override(c.device);
     const auto acc = access_for_write(c.device);
     if (acc.a == access::full) return true;
@@ -415,7 +462,7 @@ struct server::state {
   std::mutex write_access_m;
   std::map<std::array<std::uint8_t, 32>, std::pair<clock::time_point, device_access>> write_access;  // under write_access_m
   [[nodiscard]] device_access access_for_write(const std::array<std::uint8_t, 32>& key) {
-    const auto t = clock::now();
+    const auto t = steady();
     {
       std::lock_guard lock(write_access_m);
       if (const auto it = write_access.find(key); it != write_access.end() && t - it->second.first < std::chrono::seconds(1)) {
@@ -466,11 +513,53 @@ class session_state {
   using upgrade_fn = std::function<std::optional<std::pair<end_code, std::string>>(std::uint32_t, std::string_view)>;
   // Phone backup: whether this session's device may write into a backup folder (its grant).
   using write_fn = std::function<bool(const root_config&)>;
+  using converter_fn = std::function<std::shared_ptr<convert::service>()>;
   session_state(send_fn send, config_fn cfg, std::uint32_t ops, admin_fn admin = {}, upgrade_fn upgrade = {},
                 backup::book* book = nullptr, const std::array<std::uint8_t, 32>& device = {}, write_fn may_write = {})
       : send_(std::move(send)), cfg_(std::move(cfg)), ops_(ops), admin_(std::move(admin)), upgrade_(std::move(upgrade)),
-        book_(book), device_(device), device_id_(device_folder_id(device)), may_write_(std::move(may_write)) {}
-  ~session_state() { join_commits(); }
+        book_(book), device_(device), device_id_(device_folder_id(device)), may_write_(std::move(may_write)) {
+    inbox_->s = this;
+  }
+  ~session_state() {
+    leave_inbox();
+    join_commits();
+  }
+  // The server's converter, asked at each convert request (it may be turned off).
+  void set_converter(converter_fn fn) { converter_ = std::move(fn); }
+
+  // The converter's answer for stream `id` (its worker's thread, or the pump's on a hit).
+  void converted(std::uint32_t id, convert::outcome o, const std::string& file, const convert_plan* plan) {
+    io::file_reader reader;
+    bool opened = false;
+    if (o == convert::outcome::ok && !plan) opened = reader.open(file, io::read_mode::sequential).has_value();
+    std::lock_guard lock(m_);
+    for (auto& t : streams_) {
+      if (t->id != id || t->kind != op::convert || !t->waiting) continue;
+      t->waiting = false;
+      if (plan && o == convert::outcome::ok) {
+        t->has_end = true;
+        t->end_json = convert_plan_json(*plan);
+      } else if (opened && reader.size() > 0) {
+        t->reader = std::move(reader);
+        t->at = 0;
+        t->remaining = t->reader.size();
+      } else {
+        t->has_end = true;
+        t->end = o == convert::outcome::not_a_clip ? end_code::unsupported
+                 : o == convert::outcome::off      ? end_code::unsupported
+                                                   : end_code::error;
+        if (o == convert::outcome::not_a_clip) t->end_json = why_json(kWhyNotAClip);
+        if (o == convert::outcome::off) t->end_json = why_json(kWhyConvertOff);
+      }
+      cv_.notify_all();
+      break;
+    }
+  }
+  // "Tray": file bytes sent and written are added here (the conn's own).
+  void count_into(std::atomic<std::uint64_t>* read, std::atomic<std::uint64_t>* written) {
+    read_ctr_ = read;
+    write_ctr_ = written;
+  }
 
   // The reader thread's: a message from the client. False: end the session.
   bool on_message(const message& m) {
@@ -485,7 +574,7 @@ class session_state {
         {
           std::lock_guard lock(m_);
           // Writes count too: each holds an open file until its commit is done.
-          full = opens_.size() + streams_.size() + live_writes_.load() >= kMaxStreams;
+          full = opens_.size() + streams_.size() + live_writes_.load() + live_changes_.load() >= kMaxStreams;
           if (!full) {
             opens_.push_back(std::move(*r));
             cv_.notify_all();
@@ -577,6 +666,8 @@ class session_state {
   }
 
   void stop() {
+    leave_inbox();
+    changes_stop_ = true;  // a change not yet begun is not begun now
     {
       std::lock_guard lock(m_);
       stopping_ = true;
@@ -643,14 +734,20 @@ class session_state {
 
  private:
   [[nodiscard]] bool can_run(const stream& s) const noexcept {
-    if (s.busy || s.cancelled || finished(s)) return false;
-    return s.credit > 0;
+    if (s.busy || s.cancelled || s.waiting || finished(s)) return false;
+    return s.has_end || s.credit > 0;
   }
   [[nodiscard]] bool runnable() const noexcept {
     return std::any_of(streams_.begin(), streams_.end(), [&](const auto& s) { return can_run(*s); });
   }
   [[nodiscard]] static bool finished(const stream& s) noexcept {
+    if (s.kind == op::convert) return !s.waiting && (s.has_end ? s.end_sent : s.remaining == 0);
     return s.kind == op::read_range ? s.remaining == 0 : s.body_at >= s.body.size();
+  }
+
+  void leave_inbox() {
+    std::lock_guard lock(inbox_->m);
+    inbox_->s = nullptr;
   }
   stream* pick() {
     const std::size_t n = streams_.size();
@@ -686,6 +783,32 @@ class session_state {
     return e == status::permission_denied ? end_code::refused : end_code::not_found;
   }
 
+  // Whether a named folder is there now. Asked for `roots`, and after a
+  // request on it failed, never before one: a working request costs nothing.
+  bool root_online(const root_config& root) const {
+    if (root_present_ && !root_present_(root)) return false;
+    auto st = io::stat_beneath(root.path, "");
+    return st && st->is_directory;
+  }
+
+ public:
+  // The host's check of a folder's drive (server::options::root_present).
+  void set_root_present(std::function<bool(const root_config&)> fn) { root_present_ = std::move(fn); }
+
+ private:
+  std::atomic<std::uint64_t>* read_ctr_ = nullptr;   // "Tray": the conn's, set before pump starts
+  std::atomic<std::uint64_t>* write_ctr_ = nullptr;
+
+
+  // A request on `root` failed with `e`: said as offline when its folder is
+  // gone (a drive unplugged), so the phone can say so instead of "not found".
+  bool send_failed(std::uint32_t id, const root_config& root, status e) {
+    if (e != status::permission_denied && !root_online(root)) {
+      return send_end(id, end_code::not_found, why_json(kWhyOffline));
+    }
+    return send_end(id, end_for(e));
+  }
+
   bool send_end(std::uint32_t id, end_code code, std::string_view json = {}) {
     return send_(msg::stream_end, encode_end(id, code, json));
   }
@@ -717,22 +840,26 @@ class session_state {
       for (const auto& c : cfg->roots) {
         root_info info{c.id, c.label};
         info.backup = c.backup;
-        info.writable = c.backup && may_write(c);
+        info.writable = may_change(c);
+        info.offline = !root_online(c);
         out.push_back(std::move(info));
       }
       return send_end(r.id, end_code::ok, roots_json(out));
     }
+    // Changing the folders: answered from the worker, with its own checks.
+    if (r.kind == op::mkdir || r.kind == op::move || r.kind == op::remove) return open_change(r, cfg);
     const root_config* root = find_root(*cfg, r.root);
     // Before any file is looked at.
     if (!root || (!r.rel.empty() && !safe_relative(r.rel))) return send_end(r.id, end_code::refused);
     // The meta folder: only a backup folder's, only to a device that may write there.
-    if (r.meta && !may_write(*root)) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
+    if (r.meta && (!root->backup || !may_write(*root))) return send_end(r.id, end_code::refused, why_json(kWhyNotAllowed));
     if (r.kind == op::write) return open_write(r, *root);
+    if (r.kind == op::convert) return r.meta ? send_end(r.id, end_code::refused) : open_convert(r, *root);
     const std::string rel = r.meta ? (r.rel.empty() ? std::string(kBackupMetaFolder) : std::string(kBackupMetaFolder) + "/" + r.rel) : r.rel;
     if (r.kind == op::read_range && rel.empty()) return send_end(r.id, end_code::refused);
     if (r.kind == op::stat) {
       auto st = io::stat_beneath(root->path, rel);
-      if (!st) return send_end(r.id, end_for(st.error()));
+      if (!st) return send_failed(r.id, *root, st.error());
       stat_info info{st->size, st->mtime_unix, st->is_directory};
       if (root->backup && rel.empty() && may_write(*root)) book_->space(*root, info);
       return send_end(r.id, end_code::ok, stat_json(info));
@@ -752,7 +879,7 @@ class session_state {
       }
       if (held >= kMaxListBytes) return send_end(r.id, end_code::too_many);  // no lock across a send
       auto children = io::list_beneath(root->path, rel, true);
-      if (!children) return send_end(r.id, end_for(children.error()));
+      if (!children) return send_failed(r.id, *root, children.error());
       for (const auto& c : *children) {
         if (!safe_relative(c.name)) continue;  // a hidden name, or one no peer may ask for
         if (s->body.size() >= kMaxListBytes) {
@@ -763,7 +890,7 @@ class session_state {
         ++s->count;
       }
     } else {
-      if (auto opened = s->reader.open_beneath(root->path, rel); !opened) return send_end(r.id, end_for(opened.error()));
+      if (auto opened = s->reader.open_beneath(root->path, rel); !opened) return send_failed(r.id, *root, opened.error());
       const std::uint64_t size = s->reader.size();
       s->at = std::min(r.at, size);
       s->remaining = std::min(r.length, size - s->at);
@@ -791,10 +918,65 @@ class session_state {
     return duplicate ? send_end(r.id, end_code::bad_request) : true;
   }
 
+  // ---- convert (docs/plans/phone-clip-convert.md) -------------------------------------------
+
+  bool open_convert(const open_request& r, const root_config& root) {
+    const auto conv = converter_ ? converter_() : nullptr;
+    if (!conv) return send_end(r.id, end_code::unsupported, why_json(kWhyConvertOff));
+    // The same walk as a read: no link at any part. The helper gets the path it checked.
+    auto st = io::stat_beneath(root.path, r.rel);
+    if (!st) return send_failed(r.id, root, st.error());
+    if (st->is_directory) return send_end(r.id, end_code::refused);
+    convert::source src;
+    src.path = root.path;
+    if (!src.path.empty() && src.path.back() != '/' && src.path.back() != '\\') src.path += '/';
+    src.path += r.rel;
+    src.root_id = root.id;
+    src.rel = r.rel;
+    src.size = st->size;
+    src.mtime = st->mtime_unix;
+    auto s = std::make_unique<stream>();
+    s->id = r.id;
+    s->kind = op::convert;
+    s->credit = r.credit;
+    s->waiting = true;
+    bool duplicate = false;
+    {
+      std::lock_guard lock(m_);
+      opening_ = 0;
+      if (opening_cancelled_) return true;
+      s->credit = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(std::uint64_t{s->credit} + opening_credit_, kMaxStreamCredit));
+      duplicate = std::any_of(streams_.begin(), streams_.end(), [&](const auto& t) { return t->id == r.id; });
+      if (!duplicate) streams_.push_back(std::move(s));
+    }
+    if (duplicate) return send_end(r.id, end_code::bad_request);
+    // Registered first: a cache hit answers on this thread, before these return.
+    const auto inbox = inbox_;
+    const std::uint32_t id = r.id;
+    if (r.segment < 0) {
+      conv->plan(src, [inbox, id](convert::outcome o, const convert_plan& p) {
+        std::lock_guard lock(inbox->m);
+        if (inbox->s) inbox->s->converted(id, o, {}, &p);
+      });
+    } else {
+      conv->segment(src, static_cast<std::uint32_t>(r.segment), [inbox, id](convert::outcome o, const std::string& file) {
+        std::lock_guard lock(inbox->m);
+        if (inbox->s) inbox->s->converted(id, o, file, nullptr);
+      });
+    }
+    return true;
+  }
+
   // ---- writes (phone backup) ----------------------------------------------------------------
 
   [[nodiscard]] bool may_write(const root_config& root) const {
-    if (!book_ || (ops_ & kWriteOp) == 0 || !root.backup) return false;
+    if (!book_ || (ops_ & kWriteOp) == 0 || is_catalogue(root)) return false;
+    return may_write_ ? may_write_(root) : book_->allowed(root, device_);
+  }
+  // Whether this device may change files in `root` (root_info.writable): write, mkdir, move, delete.
+  [[nodiscard]] bool may_change(const root_config& root) const {
+    if (!book_ || (ops_ & (kWriteOp | kChangeOps)) == 0 || is_catalogue(root)) return false;
     return may_write_ ? may_write_(root) : book_->allowed(root, device_);
   }
 
@@ -832,8 +1014,17 @@ class session_state {
       }
       rel_dir = std::string(kBackupMetaFolder) + "/" + device_id_;
     }
+    // At the folder's top there is no walk to fail, so its drive is looked
+    // at here (one stat, as the walk's own open of the folder would be). A
+    // mount point or a volume the host keeps is looked at before every write:
+    // an unmounted one is an empty folder on the system disk, and the walk
+    // would make the write's folders there.
+    const bool guarded = root.mount || !root.volume.empty();
+    if ((rel_dir.empty() || guarded) && !root_online(root)) {
+      return send_end(r.id, end_code::not_found, why_json(kWhyOffline));
+    }
     auto dir = rel_dir.empty() ? result<std::string>(root.path) : io::make_directories_beneath(root.path, rel_dir);
-    if (!dir) return send_end(r.id, end_for(dir.error()));
+    if (!dir) return send_failed(r.id, root, dir.error());
     if (!r.meta) {
       // Already there under this name or a numbered one: nothing to send.
       if (const auto found = backup::find_existing(*dir, name, r.size, r.hash, book_)) {
@@ -971,6 +1162,7 @@ class session_state {
       return send_end(d->id, end_code::error);
     }
     w->next += n;
+    if (write_ctr_) write_ctr_->fetch_add(n, std::memory_order_relaxed);
     w->credit -= static_cast<std::uint32_t>(n);
     w->held -= n;
     book_->wrote(w->root.id, n);
@@ -1032,29 +1224,466 @@ class session_state {
   }
 
   void hand_to_commit(std::shared_ptr<write_stream> w) {
+    run_later([this, w = std::move(w)] {
+      const auto [code, json] = commit(*w);
+      book_->drop(w->part);
+      --live_writes_;
+      // A session already gone cannot hear it; the copy is whole on disk either way.
+      (void)send_end(w->id, code, json);
+    });
+  }
+
+  // The worker's queue: write commits and changes, in order, off the pump (a hash or a copy
+  // across volumes takes a while; this session's reads go on meanwhile).
+  void run_later(std::function<void()> job) {
     std::lock_guard lock(cm_);
-    commits_.push_back(std::move(w));
+    jobs_.push_back(std::move(job));
     if (!committer_.joinable()) committer_ = std::thread([this] { commit_loop(); });
     ccv_.notify_all();
   }
 
   void commit_loop() {
     for (;;) {
-      std::shared_ptr<write_stream> w;
+      std::function<void()> job;
       {
         std::unique_lock lock(cm_);
-        ccv_.wait(lock, [&] { return commit_stop_ || !commits_.empty(); });
-        if (commits_.empty()) return;
-        w = std::move(commits_.front());
-        commits_.pop_front();
+        ccv_.wait(lock, [&] { return commit_stop_ || !jobs_.empty(); });
+        if (jobs_.empty()) return;
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
       }
-      const auto [code, json] = commit(*w);
-      book_->drop(w->part);
-      --live_writes_;
-      // A session already gone cannot hear it; the copy is whole on disk either way.
-      (void)send_end(w->id, code, json);
+      job();
     }
   }
+
+  // ---- changing the shared folders (kChangeOps; serve_wire.h "changing") -------------------
+  // Every path is a root id and a rel that passes safe_relative (no "..", no hidden part, no
+  // absolute path), reached part by part with no link at any part (the *_beneath walks) before
+  // anything is renamed. Which folder is inside which is decided by file identity (volume and
+  // file number), never by comparing names: a case or normalisation variant of a name, or a
+  // named folder lying inside another, is the same folder to it. Nothing here logs a path or a
+  // name (rule 6).
+
+  using answer = std::pair<end_code, std::string>;
+  static answer refused_why(const char* why) { return {end_code::refused, why_json(why)}; }
+
+  // The pump's: queued for the worker, which answers.
+  bool open_change(const open_request& r, std::shared_ptr<const config> cfg) {
+    ++live_changes_;
+    run_later([this, r, cfg = std::move(cfg)] {
+      const answer a = changes_stop_.load() ? answer{end_code::error, {}} : change(r, *cfg);
+      --live_changes_;
+      (void)send_end(r.id, a.first, a.second);
+    });
+    return true;
+  }
+
+  answer change(const open_request& r, const config& cfg) {
+    const root_config* root = find_root(cfg, r.root);
+    // A folder this device's grant does not reach is not in its view at all.
+    if (!root || !may_change(*root)) return refused_why(kWhyNotAllowed);
+    // Never the folder itself, never a hidden name (the trash, the backup meta folder, a part).
+    if (r.meta || r.rel.empty() || !safe_relative(r.rel)) return refused_why(kWhyPath);
+    if (!online_for_change(*root)) return {end_code::not_found, why_json(kWhyOffline)};
+    switch (r.kind) {
+      case op::mkdir: return make_folder(r, *root);
+      case op::move: {
+        const root_config* to = find_root(cfg, r.to_root);
+        if (!to || !may_change(*to)) return refused_why(kWhyNotAllowed);
+        if (r.to_rel.empty() || !safe_relative(r.to_rel)) return refused_why(kWhyPath);
+        if (!online_for_change(*to)) return {end_code::not_found, why_json(kWhyOffline)};
+        return move_entry(r, *root, *to);
+      }
+      case op::remove: return trash_entry(r, *root);
+      default: return {end_code::unsupported, {}};
+    }
+  }
+
+  // A folder on a mount point or a volume the host keeps is looked at first: unmounted, it is
+  // an empty folder on the system disk, and a change would land there.
+  bool online_for_change(const root_config& root) const {
+    return !(root.mount || !root.volume.empty()) || root_online(root);
+  }
+
+  static std::pair<std::string, std::string> split_rel(const std::string& rel) {
+    const auto slash = rel.rfind('/');
+    if (slash == std::string::npos) return {std::string(), rel};
+    return {rel.substr(0, slash), rel.substr(slash + 1)};
+  }
+  static std::string path_of(const root_config& root, const std::string& rel) {
+    return io::join_path(root.path, io::native_relative(rel));
+  }
+  // A source that could not be reached: a link at a part (refused), its drive gone, or not there.
+  answer missing(const root_config& root, status e) const {
+    if (e == status::permission_denied) return refused_why(kWhyPath);
+    if (!root_online(root)) return {end_code::not_found, why_json(kWhyOffline)};
+    return {end_code::not_found, {}};
+  }
+  // Holds names against every other session's change of them: two at once is "busy".
+  struct claims {
+    backup::book* book = nullptr;
+    std::vector<std::string> held;
+    bool take(const std::string& path) {
+      if (!book->claim(kChangeClaim + path)) return false;
+      held.push_back(kChangeClaim + path);
+      return true;
+    }
+    ~claims() {
+      for (const auto& h : held) book->drop(h);
+    }
+  };
+  static constexpr const char* kChangeClaim = "\x01";
+  // Names a move's copy and a write's unfinished copy have: never carried, never walked into.
+  static bool working_name(std::string_view name) {
+    return name.ends_with(".mvpart") || name.ends_with(".mvmove");
+  }
+
+  static std::optional<io::file_id> id_of(const std::string& path) {
+    auto id = io::identify_entry(path);
+    if (!id || !id->known()) return std::nullopt;
+    return *id;
+  }
+  // Whether the folder or file at `path` is `outer` or inside it: its own identity and each
+  // folder above it, up to the top of the disk, compared with `outer`'s.
+  static bool within(std::string path, const io::file_id& outer) {
+    for (int i = 0; i < 256 && !path.empty(); ++i) {
+      if (const auto id = id_of(path); id && *id == outer) return true;
+      std::string up(io::parent_of(path));
+      if (up == path) break;
+      path = std::move(up);
+    }
+    return false;
+  }
+  // A folder that is, or holds, a named folder of this service (any of them, not only this
+  // device's), or a folder below it on another volume (a drive mounted inside it): moving or
+  // trashing it would carry a whole named folder or drive along, so it is refused.
+  bool holds_a_root_or_drive(const root_config& root, const std::string& rel, const io::file_id& dir) const {
+    const auto all = all_cfg_ ? all_cfg_() : cfg_();
+    for (const auto& r : all->roots) {
+      if (within(r.path, dir)) return true;
+    }
+    return crosses_volume(root.path, rel, dir.volume, 0);
+  }
+  static bool crosses_volume(const std::string& root, const std::string& rel, std::uint64_t volume, int depth) {
+    if (depth > 64) return true;
+    auto children = io::list_beneath(root, rel, true);
+    if (!children) return true;  // a folder it cannot look into is not taken on trust
+    for (const auto& c : *children) {
+      if (!c.is_directory) continue;
+      const std::string child = rel + "/" + c.name;
+      const auto id = id_of(io::join_path(root, io::native_relative(child)));
+      if (!id || id->volume != volume || crosses_volume(root, child, volume, depth + 1)) return true;
+    }
+    return false;
+  }
+  // A write still open, or another change, somewhere inside the folder at `path`.
+  bool busy_beneath(const std::string& path) const {
+    return book_->claimed_beneath(path) || book_->claimed_beneath(kChangeClaim + path);
+  }
+  // Whether a move's copy goes on: this session not ending, and the device still allowed both
+  // ends (its grant read again at most once a second, and at once on a revoke).
+  bool copy_may_go_on(const root_config& from, const root_config& to) const {
+    return !changes_stop_.load() && may_change(from) && may_change(to);
+  }
+
+  answer make_folder(const open_request& r, const root_config& root) {
+    if (split_rel(r.rel).second.size() > kMaxWriteName) return refused_why(kWhyName);
+    if (auto st = io::stat_beneath(root.path, r.rel)) {
+      if (st->is_directory) return {end_code::ok, name_json({}, r.rel, true)};
+      return refused_why(kWhyExists);
+    } else if (st.error() == status::permission_denied) {
+      return refused_why(kWhyPath);
+    }
+    if (auto made = io::make_directories_beneath(root.path, r.rel); !made) {
+      return made.error() == status::permission_denied ? refused_why(kWhyPath) : missing(root, status::io);
+    }
+    return {end_code::ok, name_json({}, r.rel, false)};
+  }
+
+  answer move_entry(const open_request& r, const root_config& from, const root_config& to) {
+    const auto [to_dir, to_name] = split_rel(r.to_rel);
+    if (to_name.size() > kMaxWriteName) return refused_why(kWhyName);
+    const bool same_root = from.id == to.id;
+    if (same_root && r.rel == r.to_rel) return refused_why(kWhyPath);
+    auto src = io::stat_beneath(from.path, r.rel);
+    if (!src) return missing(from, src.error());
+    const std::string src_path = path_of(from, r.rel);
+    const auto src_id = id_of(src_path);
+    if (!src_id) return {end_code::error, {}};
+    if (auto there = io::stat_beneath(to.path, r.to_rel)) return refused_why(kWhyExists);
+    else if (there.error() == status::permission_denied) return refused_why(kWhyPath);  // a link on the way
+    if (src->is_directory) {
+      // Into itself or below itself: the deepest part of the destination already there, by
+      // identity, before anything is made (a name differing only in case is the same folder).
+      std::string probe = to_dir;
+      while (!probe.empty() && !io::stat_beneath(to.path, probe)) probe = split_rel(probe).first;
+      if (within(probe.empty() ? to.path : path_of(to, probe), *src_id)) return refused_why(kWhyPath);
+      if (holds_a_root_or_drive(from, r.rel, *src_id)) return refused_why(kWhyPath);
+    }
+    claims held{book_, {}};
+    if (!held.take(src_path)) return refused_why(kWhyBusy);
+    if (src->is_directory && busy_beneath(src_path)) return refused_why(kWhyBusy);
+    auto dir = to_dir.empty() ? result<std::string>(to.path) : io::make_directories_beneath(to.path, to_dir);
+    if (!dir) return dir.error() == status::permission_denied ? refused_why(kWhyPath) : missing(to, dir.error());
+    const std::string dst_path = io::join_path(*dir, to_name);
+    if (!held.take(dst_path)) return refused_why(kWhyBusy);
+    const auto dir_id = id_of(*dir);
+    // A rename moves it on one volume. Only a destination on another volume (by identity, or
+    // the tests' copy_moves between folders) is copied; any other failure of the rename is the
+    // disk's, answered as such and never turned into a copy.
+    const bool other_volume = dir_id && dir_id->volume != src_id->volume;
+    const bool across = !same_root;
+    const bool copy = other_volume || (across && copy_moves_);
+    // What it adds to another folder: a backup folder's limit counts it, and a copy needs room.
+    std::uint64_t bytes = 0;
+    if (across || copy) bytes = src->is_directory ? io::tree_size(src_path).bytes : src->size;
+    std::uint64_t reserved = 0;
+    struct release {
+      backup::book* b;
+      const std::string& id;
+      std::uint64_t& n;
+      ~release() {
+        if (n) b->release(id, n);
+      }
+    } unheld{book_, to.id, reserved};
+    if ((across && to.backup) || copy) {
+      switch (book_->reserve(to, bytes)) {
+        case backup::book::verdict::ok: reserved = bytes; break;
+        case backup::book::verdict::limit: return refused_why(kWhyLimit);
+        case backup::book::verdict::full: return refused_why(kWhyFull);
+      }
+    }
+    const auto placed = [&](std::uint64_t added, std::uint64_t taken) -> answer {
+      // A backup folder counts what came in and what went (another folder's count is never kept).
+      if (reserved) {
+        const std::uint64_t in = std::min(added, reserved);
+        book_->wrote(to.id, in);
+        if (reserved > in) book_->release(to.id, reserved - in);
+        reserved = 0;
+      }
+      if (across) book_->removed(from.id, taken);
+      json::writer w;
+      w.begin_object().key("name").string(r.to_rel).end_object();
+      return {end_code::ok, w.take()};
+    };
+    if (!copy) {
+      auto renamed = io::rename_no_replace(src_path, dst_path);
+      if (!renamed) return {end_code::error, {}};
+      if (*renamed != io::rename_outcome::renamed) return refused_why(kWhyExists);
+      return placed(bytes, bytes);
+    }
+    // Copied into a hidden name beside the destination, every file flushed and read back from
+    // the device, every folder's entries synced; renamed into place without replacing; and only
+    // then is each source file removed, if it is as it was when it was copied.
+    const std::string staging = io::join_path(*dir, "." + to_name + "." + device_id_ + ".mvmove");
+    if (!held.take(staging)) return refused_why(kWhyBusy);
+    std::vector<copied> files;
+    std::vector<std::string> made;  // the staging's folders, each after what is in it
+    const auto go_on = [&] { return copy_may_go_on(from, to); };
+    // A leftover of this device's from a move that was cut off: its own, so it goes.
+    (void)io::remove_tree(staging);
+    (void)io::remove_file(staging);
+    copy_end how = copy_end::failed;
+    if (src->is_directory) {
+      how = io::make_directories(staging) ? copy_tree(from.path, r.rel, staging, files, made, go_on, 0) : copy_end::failed;
+      made.push_back(staging);
+    } else {
+      how = copy_file(from.path, r.rel, staging, files, go_on);
+    }
+    const auto drop_staging = [&] {
+      if (src->is_directory) {
+        (void)io::remove_tree(staging);
+      } else {
+        (void)io::remove_file(staging);
+      }
+    };
+    if (how == copy_end::done) {
+      for (const auto& d : made) {
+        if (!io::sync_directory(d)) how = copy_end::failed;
+      }
+    }
+    if (how != copy_end::done) {
+      drop_staging();
+      if (how == copy_end::stopped && !changes_stop_.load()) return refused_why(kWhyNotAllowed);
+      return {end_code::error, {}};
+    }
+    if constexpr (io::kHasHiddenFlag) {
+      if (!src->is_directory) (void)io::set_hidden(staging, false);
+    }
+    auto renamed = io::rename_no_replace(staging, dst_path);  // and its folder synced
+    if (!renamed || *renamed != io::rename_outcome::renamed) {
+      drop_staging();
+      return renamed ? refused_why(kWhyExists) : answer{end_code::error, {}};
+    }
+    std::uint64_t added = 0, taken = 0;
+    for (const auto& f : files) {
+      added += f.size;
+      const auto now = io::stat_beneath(from.path, f.rel);
+      if (now && !now->is_directory && now->size == f.size && now->mtime_ns == f.mtime_ns &&
+          io::remove_file(path_of(from, f.rel))) {
+        taken += f.size;
+      }
+    }
+    if (src->is_directory) {
+      // Each source folder once it is empty, deepest first; one with something left stays.
+      std::vector<std::string> source_dirs;
+      collect_dirs(from.path, r.rel, source_dirs, 0);
+      std::sort(source_dirs.begin(), source_dirs.end(),
+                [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+      source_dirs.push_back(r.rel);
+      for (const auto& d : source_dirs) {
+        if (const auto st = io::stat_beneath(from.path, d); st && st->is_directory) {
+          std::error_code ec;
+          const std::string p = path_of(from, d);
+          std::filesystem::remove(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(p.data()), p.size())), ec);
+        }
+      }
+    }
+    return placed(added, taken);
+  }
+
+  struct copied {
+    std::string rel;
+    std::uint64_t size = 0;
+    std::int64_t mtime_ns = 0;
+  };
+  enum class copy_end : std::uint8_t { done, failed, stopped };
+
+  // BLAKE3 of the file as the device has it: read uncached (not from the page cache the write
+  // just filled), where the volume allows that; otherwise a plain read.
+  static std::optional<std::string> hash_from_device(const std::string& path) {
+    io::file_reader r;
+    if (!r.open(path, io::read_mode::uncached)) {
+      const auto h = backup::hash_file(path);
+      return h ? std::optional<std::string>(h.value()) : std::nullopt;
+    }
+    io::aligned_buffer buf(1u << 20);
+    if (buf.empty()) return std::nullopt;
+    io::hasher h;
+    for (std::uint64_t at = 0;;) {
+      auto got = r.read_at(at, std::span<std::uint8_t>(buf.data(), buf.size()));
+      if (!got) return std::nullopt;
+      if (*got == 0) break;
+      h.update(std::span<const std::uint8_t>(buf.data(), *got));
+      at += *got;
+      if (*got < buf.size()) break;
+    }
+    return h.finish().hex();
+  }
+
+  // One file, read as the walk reaches it, written to `into` (new), flushed, and read back from
+  // the device: done only when what is there is what was read.
+  copy_end copy_file(const std::string& root, const std::string& rel, const std::string& into,
+                     std::vector<copied>& files, const std::function<bool()>& go_on) const {
+    if (during_copy_) during_copy_();
+    if (!go_on()) return copy_end::stopped;
+    const auto st = io::stat_beneath(root, rel);
+    if (!st || st->is_directory) return copy_end::failed;
+    io::file_reader in;
+    if (!in.open_beneath(root, rel)) return copy_end::failed;
+    io::file_writer out;
+    if (auto made = out.create_new(into); !made || *made != io::rename_outcome::renamed) return copy_end::failed;
+    if constexpr (io::kHasHiddenFlag) (void)io::set_hidden(into, true);
+    io::hasher h;
+    std::vector<std::uint8_t> buf(1u << 20);
+    std::uint64_t at = 0;
+    for (;;) {
+      if (changes_stop_.load()) return copy_end::stopped;
+      auto got = in.read(buf);
+      if (!got) return copy_end::failed;
+      if (*got == 0) break;
+      const auto bytes = std::span<const std::uint8_t>(buf.data(), *got);
+      h.update(bytes);
+      if (!out.write_at(at, bytes)) return copy_end::failed;
+      at += *got;
+    }
+    if (!out.set_mtime(st->mtime_unix) || !out.flush_durable() || !out.close()) return copy_end::failed;
+    const auto back = hash_from_device(into);
+    if (!back || *back != h.finish().hex()) return copy_end::failed;
+    files.push_back({rel, st->size, st->mtime_ns});
+    return copy_end::done;
+  }
+  copy_end copy_tree(const std::string& root, const std::string& rel, const std::string& into, std::vector<copied>& files,
+                     std::vector<std::string>& made, const std::function<bool()>& go_on, int depth) const {
+    if (depth > 64) return copy_end::failed;
+    auto children = io::list_beneath(root, rel, true);  // links are left out, and stay
+    if (!children) return copy_end::failed;
+    for (const auto& c : *children) {
+      if (working_name(c.name)) continue;  // another device's unfinished copy stays where it is
+      const std::string child = rel + "/" + c.name;
+      const std::string target = io::join_path(into, c.name);
+      copy_end e = copy_end::done;
+      if (c.is_directory) {
+        if (!io::make_directories(target)) return copy_end::failed;
+        e = copy_tree(root, child, target, files, made, go_on, depth + 1);
+        made.push_back(target);
+      } else {
+        e = copy_file(root, child, target, files, go_on);
+      }
+      if (e != copy_end::done) return e;
+    }
+    return copy_end::done;
+  }
+  static void collect_dirs(const std::string& root, const std::string& rel, std::vector<std::string>& out, int depth) {
+    if (depth > 64) return;
+    auto children = io::list_beneath(root, rel, true);
+    if (!children) return;
+    for (const auto& c : *children) {
+      if (!c.is_directory) continue;
+      const std::string child = rel + "/" + c.name;
+      out.push_back(child);
+      collect_dirs(root, child, out, depth + 1);
+    }
+  }
+
+  // The folder's own trash, today's part: `<root>/.mediaviewer-trash/YYYY-MM-DD` (UTC).
+  static std::string trash_day() {
+    using namespace std::chrono;
+    const year_month_day d{floor<days>(system_clock::now())};
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%04d-%02u-%02u", static_cast<int>(d.year()), static_cast<unsigned>(d.month()),
+                  static_cast<unsigned>(d.day()));
+    return buf;
+  }
+
+  // Into the folder's trash by a rename on its own volume. What is in the trash still counts
+  // against a backup folder's limit (it is on that disk, in that folder) until the owner empties
+  // it, so a delete changes no count.
+  answer trash_entry(const open_request& r, const root_config& root) {
+    auto src = io::stat_beneath(root.path, r.rel);
+    if (!src) return missing(root, src.error());
+    const std::string src_path = path_of(root, r.rel);
+    if (src->is_directory) {
+      const auto src_id = id_of(src_path);
+      if (!src_id) return {end_code::error, {}};
+      if (holds_a_root_or_drive(root, r.rel, *src_id)) return refused_why(kWhyPath);
+    }
+    claims held{book_, {}};
+    if (!held.take(src_path)) return refused_why(kWhyBusy);
+    if (src->is_directory && busy_beneath(src_path)) return refused_why(kWhyBusy);
+    const auto [rel_dir, name] = split_rel(r.rel);
+    const std::string day = trash_day();
+    const std::string in_trash = rel_dir.empty() ? day : day + "/" + rel_dir;
+    const bool fresh = !io::stat_beneath(root.path, kTrashFolder);
+    auto dir = io::make_directories_beneath(root.path, std::string(kTrashFolder) + "/" + in_trash);
+    if (!dir) return dir.error() == status::permission_denied ? refused_why(kWhyPath) : missing(root, dir.error());
+    if constexpr (io::kHasHiddenFlag) {
+      if (fresh) (void)io::set_hidden(io::join_path(root.path, kTrashFolder), true);
+    }
+    for (int n = 1; n <= backup::kMaxNumbered; ++n) {
+      const std::string candidate = backup::numbered(name, n);
+      auto renamed = io::rename_no_replace(src_path, io::join_path(*dir, candidate));
+      // Not on the trash's volume (a drive mounted inside the folder): never copied away.
+      if (!renamed) return {end_code::error, {}};
+      if (*renamed == io::rename_outcome::renamed) {
+        json::writer w;
+        w.begin_object().key("trash").string(in_trash + "/" + candidate).end_object();
+        return {end_code::ok, w.take()};
+      }
+    }
+    return refused_why(kWhyExists);
+  }
+
 
   // Flush, hash what is on disk, rename into place without replacing anything (serve_backup.h).
   std::pair<end_code, std::string> commit(write_stream& w) {
@@ -1091,7 +1720,14 @@ class session_state {
 
   // One chunk of `s`. False ends the session.
   bool step(stream& s, std::vector<std::uint8_t>& buf) {
-    if (s.kind == op::read_range) {
+    if (s.kind == op::convert && s.has_end) {
+      {
+        std::lock_guard lock(m_);
+        s.end_sent = true;
+      }
+      return send_end(s.id, s.end, s.end_json);
+    }
+    if (s.kind == op::read_range || s.kind == op::convert) {
       const std::size_t chunk = s.bulk ? kBulkChunk : kInteractiveChunk;
       std::size_t want = 0;
       {
@@ -1110,6 +1746,7 @@ class session_state {
       }
       put_data_header(std::span<std::uint8_t, kDataHeaderBytes>(buf.data(), kDataHeaderBytes), s.id, s.at);
       if (!send_(msg::stream_data, std::span<const std::uint8_t>(buf).first(kDataHeaderBytes + *got))) return false;
+      if (read_ctr_) read_ctr_->fetch_add(*got, std::memory_order_relaxed);
       std::uint64_t left = 0;
       {
         std::lock_guard lock(m_);
@@ -1153,6 +1790,9 @@ class session_state {
 
   send_fn send_;
   config_fn cfg_;
+  std::function<bool(const root_config&)> root_present_;
+  converter_fn converter_;
+  std::shared_ptr<convert_inbox> inbox_ = std::make_shared<convert_inbox>();
   const std::uint32_t ops_;
   admin_fn admin_;
   upgrade_fn upgrade_;
@@ -1174,10 +1814,23 @@ class session_state {
   std::map<std::uint32_t, std::shared_ptr<write_stream>> writes_;  // under wm_
   std::mutex cm_;
   std::condition_variable ccv_;
-  std::deque<std::shared_ptr<write_stream>> commits_;  // under cm_
+  std::deque<std::function<void()>> jobs_;             // under cm_
   bool commit_stop_ = false;                           // under cm_
   std::thread committer_;                              // started under cm_
   std::atomic<std::size_t> live_writes_{0};            // opened and not yet closed or committed
+  std::atomic<std::size_t> live_changes_{0};           // changes queued or running on the worker
+  std::atomic<bool> changes_stop_{false};
+  bool copy_moves_ = false;                            // the tests: a move between folders copies
+  std::function<void()> during_copy_;                  // the tests: before each file a move copies
+  config_fn all_cfg_;                                  // every named folder, not only this device's
+
+ public:
+  // The tests (server::options::copy_moves): every move between two folders takes the copy
+  // path, as one across volumes does.
+  void set_copy_moves(bool on) { copy_moves_ = on; }
+  void set_during_copy(std::function<void()> fn) { during_copy_ = std::move(fn); }
+  // Every named folder (a scoped device's view leaves some out), for the nested-folder check.
+  void set_all_config(config_fn fn) { all_cfg_ = std::move(fn); }
 };
 
 }  // namespace
@@ -1233,7 +1886,8 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       // (A punched one is direct already: not offered again.) Writes (phone
       // backup) to any device but the owner's session; each folder asks its grant.
       const bool punched = c.source.starts_with("punch:");
-      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0));
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp | kChangeOps) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0) |
+                          (converter() ? kConvertOp : 0));
     }
   }
   std::string extra = (ops & kAdminOp) != 0 ? owner_fields() : std::string();
@@ -1244,6 +1898,40 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     w.key("scoped").boolean(c.grant->roots.has_value()).end_object().end_object();
     const std::string g = w.take();
     extra = g.substr(1, g.size() - 2);
+  }
+  {
+    // The device's role (kCapsRole; self-host-users-smb.md §9): "change" may write, make
+    // folders, move and delete (kChangeOps) where root_info.writable says, "view" may not,
+    // "admin" is the owner's session. Clients show their commands by it.
+    const char* role = c.is_owner ? "admin" : (!c.grant || c.grant->backup) ? "change" : "view";
+    json::writer w;
+    w.begin_object().key(kCapsRole).string(role).end_object();
+    const std::string r = w.take();
+    extra += (extra.empty() ? "" : ",") + r.substr(1, r.size() - 2);
+  }
+  if (storage) {
+    // Every session's, the owner's and a limited phone's alike: the health of the server's drives.
+    if (const std::string word = storage(); is_storage_word(word)) {
+      json::writer w;
+      w.begin_object().key("storage").string(word).end_object();
+      const std::string sw = w.take();
+      extra += (extra.empty() ? "" : ",") + sw.substr(1, sw.size() - 2);
+    }
+  }
+  {
+    // Every paired session's: where the service is now (kCapsAddresses), so a device paired
+    // before a DuckDNS name, a relay or a new LAN address learns it without pairing again.
+    const auto now = cfg();
+    if (!now->local.empty() || !now->public_name.empty() || !now->relay.empty()) {
+      json::writer w;
+      w.begin_object().key(kCapsAddresses).begin_object();
+      if (!now->local.empty()) w.key("local").string(now->local);
+      if (!now->public_name.empty()) w.key("public").string(now->public_name);
+      if (!now->relay.empty()) w.key("relay").string(now->relay);
+      w.end_object().end_object();
+      const std::string a = w.take();
+      extra += (extra.empty() ? "" : ",") + a.substr(1, a.size() - 2);
+    }
   }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
@@ -1261,6 +1949,12 @@ void server::state::session(conn& c, std::optional<message> first_message) {
   session_state s([&ch](msg type, std::span<const std::uint8_t> body) { return ch.send(type, body).has_value(); },
                   [this, g = c.grant] { return cfg_for(g); }, ops, std::move(admin_handler), std::move(upgrade_handler),
                   &book, c.device, [this, &c](const root_config& root) { return device_may_write(c, root); });
+  s.set_root_present(root_present);
+  s.set_converter([this] { return converter(); });
+  s.set_copy_moves(copy_moves);
+  s.set_during_copy(during_copy);
+  s.set_all_config([this] { return cfg(); });
+  s.count_into(&c.bytes_read, &c.bytes_written);
   // Out of memory (a huge folder listed on a small NAS) ends this session, never the service.
   std::thread pump([&s, &ch] {
     try {
@@ -1429,6 +2123,11 @@ void server::state::serve_connection(conn* c) {
     c->ch = std::move(opened);
     c->device = *peer;
     c->has_device = true;
+    c->since_unix = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+    c->via = c->relayed ? server::usage_via::relay
+             : (!c->source.starts_with("punch:") && on_own_network(c->from)) ? server::usage_via::home
+                                                                              : server::usage_via::internet;
   }
   n_sessions.fetch_add(1);
   if (c->source.starts_with("punch:")) n_punched.fetch_add(1);  // moved: counted once its session is up
@@ -1445,6 +2144,16 @@ void server::state::reap() {
     std::lock_guard lock(conns_m);
     for (auto it = conns.begin(); it != conns.end();) {
       if ((*it)->done.load()) {
+        // "Tray": its bytes are final (its session ended); kept per device in the
+        // same step as it leaves the list, so usage() never sees it in neither.
+        const conn& c = **it;
+        const auto r = c.bytes_read.load(std::memory_order_relaxed);
+        const auto w = c.bytes_written.load(std::memory_order_relaxed);
+        if ((r != 0 || w != 0) && !c.is_owner) {
+          auto& t = ended_usage[c.device];
+          t.first += r;
+          t.second += w;
+        }
         gone.push_back(std::move(*it));
         it = conns.erase(it);
       } else {
@@ -1730,7 +2439,10 @@ std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
   json::writer w;
-  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).end_array();
+  w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers);
+  w.string(kFeatureAddresses);
+  if (vpn_offered) w.string(kFeatureVpn);
+  w.end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
   w.key("passphrase").string(stored_name(s)).end_object();
   std::string out = w.take();
@@ -2070,12 +2782,17 @@ server::state::redeemed server::state::redeem(channel& ch, const std::array<std:
     }
   } counted{*this};
   std::optional<grants::grant> g;
+  // A desktop (pair_msg::kind "desktop": it opens the folders, it backs nothing up)
+  // starts as "can view files" whatever the code gave; an admin may change it
+  // (serve_admin grant {role}). A plain code's desktop is no guest.
+  const bool plain_code = !gives->any();
+  if (p && p->kind == kDeviceDesktop) gives->backup = false;
   if (gives->any()) {
     grants::grant x;
     const auto t = now();
     x.expires = gives->for_s != 0 ? t + gives->for_s : 0;
     x.roots = gives->roots;
-    x.guest = true;
+    x.guest = !plain_code;
     x.created = t;
     x.backup = gives->backup;
     g = std::move(x);
@@ -2110,6 +2827,11 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         unlocked ? std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(c.unlocked_until - steady()).count()) : 0);
     w.key("locked_until").integer(locked_until(owner_counter));
     w.key("relay").string(cfg()->relay);  // the address only, as in the caps
+    if (vpn_offered) {
+      std::lock_guard vl(vpn_m);
+      w.key("vpn_port").integer(cfg()->vpn_port).key("vpn_running").boolean(vpn_relay != nullptr);
+      if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
+    }
     w.end_object();
     return {end_code::ok, w.take()};
   }
@@ -2170,9 +2892,59 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
   // What adds access, or changes what is served, needs an unlocked session
   // once there is a passphrase (§3.4). Revoking and reading never do.
   if (*what == "add_device" || *what == "pair_code" || *what == "add_root" || *what == "remove_root" ||
-      *what == "set_relay" || *what == "set_backup") {
+      *what == "set_relay" || *what == "set_backup" || *what == "set_vpn") {
     // (grant and guest_code check for themselves.)
     if (auto refused = needs_unlock(c)) return *refused;
+  }
+
+  // ---- the self-hosted computer's users (docs/plans/self-host-users-smb.md §4) ----
+  // Names and roles only: no password is ever sent or kept. Reading needs no
+  // unlock; adding or changing one adds access and needs it; removing does not.
+  if (*what == "users" || *what == "user_set" || *what == "user_remove") {
+    if (*what == "user_set") {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    std::lock_guard lock(devices_m);
+    std::unique_ptr<net::instance_lock> held;
+    if (*what != "users" && !may_change_devices(held)) return {end_code::error, {}};
+    std::vector<share_users::user> list;
+    if (!share_users::load(*store, list)) return {end_code::error, {}};
+    if (*what == "user_set") {
+      share_users::user u;
+      u.name = text("name");
+      const auto r = share_users::parse_role(text("role"));
+      if (!r) return {end_code::bad_request, {}};
+      u.r = *r;
+      if (const json::value* f = doc->find("folders")) {
+        if (f->k != json::kind::array) return {end_code::bad_request, {}};
+        std::vector<std::string> labels;
+        for (const auto& e : f->a) {
+          if (e.k != json::kind::string) return {end_code::bad_request, {}};
+          labels.push_back(e.s);
+        }
+        u.folders = std::move(labels);
+      }
+      const std::string why = share_users::upsert(list, std::move(u), now());
+      if (why == "too-many") return {end_code::too_many, {}};
+      if (!why.empty()) return {end_code::bad_request, {}};
+      if (!share_users::save(*store, list)) return {end_code::error, {}};
+    } else if (*what == "user_remove") {
+      if (!share_users::remove(list, text("name"))) return {end_code::not_found, {}};
+      if (!share_users::save(*store, list)) return {end_code::error, {}};
+    }
+    json::writer w;
+    w.begin_object().key("users").begin_array();
+    for (const auto& u : list) {
+      w.begin_object().key("name").string(u.name).key("role").string(share_users::role_name(u.r));
+      if (u.folders) {
+        w.key("folders").begin_array();
+        for (const auto& f : *u.folders) w.string(f);
+        w.end_array();
+      }
+      w.key("applied").integer(u.applied).end_object();
+    }
+    w.end_array().end_object();
+    return {end_code::ok, w.take()};
   }
 
   if (*what == "devices") {
@@ -2255,8 +3027,15 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     const auto for_s = doc->integer("for_s");
     const bool forever = doc->boolean("forever") == true;
     // "backup" (phone backup, B2) alone keeps the expiry and the folders as they are.
-    const std::optional<bool> backup_flag = doc->find("backup") ? doc->boolean("backup") : std::nullopt;
+    // "role" says the same in the words the host's users have: "change" may write, "view" not.
+    std::optional<bool> backup_flag = doc->find("backup") ? doc->boolean("backup") : std::nullopt;
     if (doc->find("backup") && !backup_flag) return {end_code::bad_request, {}};
+    if (const std::string* role = doc->str("role")) {
+      if ((*role != "change" && *role != "view") || doc->find("backup")) return {end_code::bad_request, {}};
+      backup_flag = *role == "change";
+    } else if (doc->find("role")) {
+      return {end_code::bad_request, {}};
+    }
     const bool keep_time = !forever && !for_s && backup_flag.has_value();
     if ((!keep_time && forever == for_s.has_value()) || (for_s && (*for_s <= 0 || *for_s > grants::kMaxSeconds))) {
       return {end_code::bad_request, {}};
@@ -2438,6 +3217,53 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     w.begin_object().key("id").string(id).end_object();
     return {end_code::ok, w.take()};
   }
+  if (*what == "set_vpn") {
+    // The NAS as a VPN host: this service's own relay forwards the owner's
+    // laptop traffic out (TCP 80, 443, UDP 53; never a private, loopback or
+    // link-local address: no VPN into the home network), as `driftwire host vpn
+    // on` makes a computer's. On answers the port and the key, once, for the
+    // owner's relay line; the key stays in the store.
+    if (!vpn_offered) return {end_code::refused, {}};
+    const bool on = doc->boolean("on").value_or(false);
+    const auto asked = doc->integer("port").value_or(0);
+    if (asked < 0 || asked > 65535) return {end_code::bad_request, {}};
+    std::string key;
+    std::uint16_t vpn_port_now = 0;
+    {
+      std::lock_guard lock(claim_m);
+      config next = *cfg();
+      if (on) {
+        if (store->exists(kVpnKeyName)) {
+          auto v = store->get(kVpnKeyName);
+          if (!v || v->size() < relay::kMinKeyChars) return {end_code::error, {}};
+          key.assign(v->begin(), v->end());
+          sodium_memzero(v->data(), v->size());
+        } else {
+          key = relay::random_key();
+          if (!store->put(kVpnKeyName, std::span(reinterpret_cast<const std::uint8_t*>(key.data()), key.size()))) {
+            return {end_code::error, {}};
+          }
+        }
+        vpn_port_now = asked != 0 ? static_cast<std::uint16_t>(asked) : next.vpn_port != 0 ? next.vpn_port : relay::kDefaultPort;
+      }
+      next.vpn_port = vpn_port_now;
+      if (!publish_config(std::move(next))) {
+        sodium_memzero(key.data(), key.size());
+        return {end_code::error, {}};
+      }
+    }
+    std::lock_guard vl(vpn_m);
+    const bool running = apply_vpn_locked(vpn_port_now);
+    json::writer w;
+    w.begin_object().key("vpn_port").integer(vpn_port_now).key("vpn_running").boolean(running);
+    if (vpn_relay) w.key("vpn_listening").integer(vpn_relay->port());
+    // The web-site look's port when it listens: the code is then its (relay-tls).
+    if (vpn_relay && vpn_relay->tls_port() != 0) w.key("tls_port").integer(vpn_relay->tls_port());
+    if (on) w.key("key").string(key);
+    w.end_object();
+    sodium_memzero(key.data(), key.size());
+    return {end_code::ok, w.take()};
+  }
   if (*what == "set_relay") {
     // The person's own relay: the address in serve.json, the key in the
     // secret store. Empty address: no relay (the waiters stop).
@@ -2466,6 +3292,25 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       relay_poke = true;
     }
     relay_cv.notify_all();
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "set_addresses") {
+    // Where paired devices find the service (kCapsAddresses), as the owner's desktop knows them:
+    // {"local"?,"public"?}, each "host:port" or "" for none; a member left out stays as it is.
+    // No unlock: it adds no access, and a device only ever reaches this service's key by it.
+    std::lock_guard lock(claim_m);  // one change of serve.json at a time
+    config next = *cfg();
+    for (auto [k, into] : {std::pair{"local", &next.local}, std::pair{"public", &next.public_name}}) {
+      if (!doc->find(k)) continue;
+      const std::string* v = doc->str(k);
+      std::string host;
+      std::uint16_t p = 0;
+      if (!v || v->size() > kMaxAddressBytes || (!v->empty() && !parse_relay_address(*v, host, p))) {
+        return {end_code::bad_request, {}};
+      }
+      *into = *v;
+    }
+    if (!publish_config(std::move(next))) return {end_code::error, {}};
     return {end_code::ok, "{}"};
   }
   if (*what == "remove_root") {
@@ -2499,6 +3344,52 @@ void server::state::cut_sessions(const conn* except) {
     }
   }
   for (auto& c : live) (void)c->ch->cancel(kCancelWaitMs, "folders-changed");
+}
+
+std::vector<std::array<std::uint8_t, 32>> server::connected_devices() const {
+  std::vector<std::array<std::uint8_t, 32>> out;
+  {
+    std::lock_guard all(st_->conns_m);  // then each conn's m, as cut_sessions takes them
+    for (const auto& c : st_->conns) {
+      std::lock_guard lock(c->m);
+      if (c->has_device && !c->is_owner) out.push_back(c->device);  // the desktop that claimed it is no phone
+    }
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+std::vector<server::device_usage> server::usage() const {
+  std::map<std::array<std::uint8_t, 32>, device_usage> by;
+  std::lock_guard all(st_->conns_m);
+  for (const auto& [key, t] : st_->ended_usage) {
+    auto& u = by[key];
+    u.device = key;
+    u.read += t.first;
+    u.written += t.second;
+  }
+  for (const auto& c : st_->conns) {
+    if (c->is_owner) continue;
+    std::lock_guard lock(c->m);
+    const auto r = c->bytes_read.load(std::memory_order_relaxed);
+    const auto w = c->bytes_written.load(std::memory_order_relaxed);
+    if (!c->has_device && r == 0 && w == 0) continue;  // never admitted, or nothing of it to count
+    auto& u = by[c->device];
+    u.device = c->device;
+    u.read += r;
+    u.written += w;
+    if (c->has_device) {
+      if (!u.connected || c->since_unix < u.since_unix) u.since_unix = c->since_unix;
+      // Home beats the internet beats the relay: the best way it is connected now.
+      if (!u.connected || static_cast<int>(c->via) < static_cast<int>(u.via)) u.via = c->via;
+      u.connected = true;
+    }
+  }
+  std::vector<device_usage> out;
+  out.reserve(by.size());
+  for (auto& [k, u] : by) out.push_back(u);
+  return out;
 }
 
 server::state::lists server::state::read_lists() {
@@ -2630,11 +3521,23 @@ result<std::unique_ptr<server>> server::start(const options& o) {
     st.listen = std::move(*l);
   }
   st.port = st.listen->port();
-  st.acceptor = std::thread([&st] { st.accept_loop(); });
-  st.watcher = std::thread([&st] { st.watch_loop(); });
+  // Everything a session or the relay thread reads, set before either starts.
   st.relay_connect = o.relay_connect;
   st.before_gather = o.before_gather;
+  st.root_present = o.root_present;
+  st.copy_moves = o.copy_moves;
+  st.during_copy = o.during_copy;
+  st.storage = o.storage;
+  st.conv = o.converter;
+  st.vpn_offered = o.vpn && !o.lan_only;
+  st.vpn_tweak = o.vpn_tweak;
+  st.acceptor = std::thread([&st] { st.accept_loop(); });
+  st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
+  if (st.vpn_offered && o.cfg.vpn_port != 0) {
+    std::lock_guard vl(st.vpn_m);
+    (void)st.apply_vpn_locked(o.cfg.vpn_port);  // a port taken: off until the owner turns it on again
+  }
   return srv;
 }
 
@@ -3005,8 +3908,74 @@ std::array<std::uint8_t, 32> claim_key(std::string_view token_hex) {
   return k;
 }
 
+bool server::state::apply_vpn_locked(std::uint16_t want) {
+  // Already listening for that port: left as it is, so asking for the code again
+  // never cuts a laptop's open forwards.
+  if (vpn_relay && want != 0 && want == vpn_asked) return true;
+  vpn_relay.reset();  // its destructor stops it, and its forwards with it
+  vpn_asked = 0;
+  if (want == 0 || stopping.load()) return false;
+  auto v = store->get(kVpnKeyName);
+  if (!v || v->size() < relay::kMinKeyChars) return false;
+  relay::server::options ro;
+  ro.key.assign(v->begin(), v->end());
+  sodium_memzero(v->data(), v->size());
+  ro.port = want;
+  ro.loopback_only = loopback_only;
+  // The web-site look beside it (docs/plans/vpn-stealth.md), on the next port,
+  // self-signed: the code the owner copies points at it.
+  ro.tls_port = static_cast<std::uint16_t>(want < 65535 ? want + 1 : want - 1);
+  // All traffic, never into the home's networks, nor to the home's outside
+  // address (the router's, which hairpins to its forwarded ports): the
+  // outside name as the owner's desktop last set it, looked up as it changes.
+  relay::vpn_host_defaults(ro);
+  ro.forward_refused = [this, name = std::string(), check = std::function<bool(const net::address&)>(),
+                        m = std::make_shared<std::mutex>()](const net::address& a) mutable {
+    std::string now;
+    if (const auto c = cfg(); c && !c->public_name.empty()) {
+      std::uint16_t p = 0;
+      if (!parse_relay_address(c->public_name, now, p)) now.clear();
+    }
+    std::function<bool(const net::address&)> f;
+    {
+      std::lock_guard lock(*m);
+      if (now != name) {
+        name = now;
+        check = relay::refuse_name_addresses(now);
+      }
+      f = check;
+    }
+    return f && f(a);
+  };
+  if (vpn_tweak) vpn_tweak(ro);
+  auto r = relay::server::start(ro);
+  if (!r && ro.tls_port != 0) {
+    ro.tls_port = 0;  // no TLS in this build, or its port taken: the plain relay rather than none
+    r = relay::server::start(ro);
+  }
+  sodium_memzero(ro.key.data(), ro.key.size());
+  if (!r) return false;
+  vpn_relay = std::move(*r);
+  vpn_asked = want;
+  return true;
+}
+
+bool server::replace_config(config next) {
+  if (next.roots.empty()) return false;
+  auto made = std::make_shared<const config>(std::move(next));
+  std::lock_guard lock(st_->cfg_m);
+  st_->cfg_now = std::move(made);
+  return true;
+}
+
+void server::set_converter(std::shared_ptr<convert::service> c) {
+  std::lock_guard lock(st_->conv_m);
+  st_->conv = std::move(c);
+}
+
 void server::recheck_devices() noexcept {
   try {
+    st_->forget_write_access();  // a revoked device's next change (or a copy's next file) is refused
     st_->cut_unpaired();
   } catch (...) {
   }
@@ -3023,6 +3992,10 @@ void server::stop() noexcept {
   }
   st_->relay_cv.notify_all();
   if (st_->relayer.joinable()) st_->relayer.join();
+  {
+    std::lock_guard vl(st_->vpn_m);
+    st_->vpn_relay.reset();
+  }
   st_->stop_punches();
   std::vector<std::shared_ptr<conn>> live;
   {

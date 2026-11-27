@@ -99,6 +99,24 @@ class ReleaseTests(unittest.TestCase):
         release.prepare()
         self.assertIn('tag=v0.1.1\n', (self.folder / 'output').read_text())
 
+    def test_a_used_version_fails_preflight_before_the_builds(self):
+        # v0.1.44 was published, CMakeLists.txt still said 0.1.44, and the run
+        # failed at publish, 1.5 hours in.
+        for name in ('MV_MANIFEST_SIGNING_KEY', 'MV_MAC_CERT_P12_BASE64', 'MV_MAC_CERT_PASSWORD',
+                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_PASSWORD', 'MV_SPARKLE_PRIVATE_KEY'):
+            os.environ[name] = 'test'
+        for mode in ('preview', 'stable'):
+            os.environ['MODE'] = mode
+            for used in ((0, 1, 1), (0, 1, 2)):
+                self.highest.return_value = used
+                with self.assertRaisesRegex(ValueError, 'Bump CMakeLists.txt'):
+                    release.prepare()
+            self.highest.return_value = (0, 1, 0)
+            release.prepare()
+        os.environ['MODE'] = 'artifacts'  # unpublished test installers may reuse a version
+        self.highest.return_value = (0, 1, 1)
+        release.prepare()
+
     def test_tag_version_reads_stable_and_legacy_preview_tags(self):
         self.assertEqual(release.tag_version('v0.1.4'), (0, 1, 4))
         self.assertEqual(release.tag_version('v0.1.4.preview.36219649049'), (0, 1, 4))
@@ -166,6 +184,20 @@ class ReleaseTests(unittest.TestCase):
         for job in ('driftwire-repo', 'driftwire-homebrew'):
             body = workflow.split(f'\n  {job}:\n', 1)[1].split('\n  driftwire-', 1)[0]
             self.assertIn("if: inputs.mode == 'stable' && vars.MV_DRIFTWIRE_REPO == '1'", body, job)
+
+    def test_windows_uploads_every_addon_a_stable_release_requires(self):
+        # Publish refuses a stable release missing a required add-on, but only
+        # after both builds: the Windows job's upload list must carry each one.
+        workflow = (Path(__file__).parents[2] / '.github/workflows/release.yml').read_text()
+        collect = workflow.split('- name: Collect release assets', 1)[1].split('- uses: actions/upload-artifact', 1)[0]
+        listed = re.search(r"foreach \(\$addon in ([^)]*)\)", collect)
+        self.assertIsNotNone(listed)
+        uploaded = set(re.findall(r"'([a-z0-9-]+)'", listed.group(1)))
+        with patch.dict(os.environ, {'MV_RELEASE_ADDONS': '1', 'MV_RELEASE_AI': '1'}):
+            required = {addon for addon in release.required_addons('stable')
+                        if 'win-x64' in release.addon_platforms(addon)}
+        self.assertTrue(required)
+        self.assertEqual(required - uploaded, set())
 
     def test_release_cannot_blocklist_itself(self):
         os.environ['BLOCKLIST'] = '0.1.1'

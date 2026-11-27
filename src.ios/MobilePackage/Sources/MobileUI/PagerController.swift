@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The viewer's swipe and pinch: UIKit, because this is the one place SwiftUI cannot hold smooth
-// paging and zoom (docs/plans/mobile.md M7). A page keeps the shape of the item, not of whichever
-// picture has arrived, so a sharper one replaces the last with no layout shift.
+// paging and zoom (docs/plans/mobile.md M7). A page takes the shape of the picture showing (the
+// item's, before one has come) and keeps it while a sharper one of that shape replaces the last.
 import MobileKit
 import QuartzCore
 import SwiftUI
@@ -12,6 +12,8 @@ import UIKit
 struct PagerJump: Equatable {
   let id = UUID()
   let index: Int
+  /// A neighbour slides in. False for the filmstrip's scrub, which cuts from photo to photo.
+  var animated = true
 }
 
 enum PageState: Equatable {
@@ -28,25 +30,29 @@ struct PagerView: UIViewControllerRepresentable {
   let onIndex: (Int) -> Void
   let onTap: () -> Void
   let onZoomed: (Bool) -> Void
-  let onPlay: (GridEntry) -> Void
+  let onPlay: (Int) -> Void
   let onState: (MediaID, PageState) -> Void
   let onPullChanged: (Bool) -> Void
   let onClose: () -> Void
   let onSettled: (Int) -> Void
   /// A request to show a page, from the filmstrip.
   let jump: PagerJump?
-  /// Something opaque is over the pages, so VoiceOver must not reach them.
-  let isCovered: Bool
+  /// The open clip, played on its own page.
+  let live: ClipLive
+  let liveIndex: Int?
+  let transfer: OriginalTransfer
+  let model: AppModel
 
   func makeUIViewController(context: Context) -> PagerController {
     PagerController(entries: entries, startIndex: startIndex, images: images, onIndex: onIndex,
                     onTap: onTap, onZoomed: onZoomed, onPlay: onPlay, onState: onState,
-                    onPullChanged: onPullChanged, onClose: onClose, onSettled: onSettled)
+                    onPullChanged: onPullChanged, onClose: onClose, onSettled: onSettled,
+                    live: live, transfer: transfer, model: model)
   }
 
   func updateUIViewController(_ controller: PagerController, context: Context) {
     if let jump { controller.go(to: jump) }
-    controller.view.accessibilityElementsHidden = isCovered
+    controller.setLive(liveIndex)
   }
 }
 
@@ -57,7 +63,7 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
   private let onIndex: (Int) -> Void
   private let onTap: () -> Void
   private let onZoomed: (Bool) -> Void
-  private let onPlay: (GridEntry) -> Void
+  private let onPlay: (Int) -> Void
   private let onState: (MediaID, PageState) -> Void
   private let onPullChanged: (Bool) -> Void
   private let onClose: () -> Void
@@ -71,13 +77,21 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
   private static let pageGap: CGFloat = 20
 
   private let layout = UICollectionViewFlowLayout()
-  private lazy var collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
+  private lazy var collection = PagerCollectionView(frame: .zero, collectionViewLayout: layout)
+  private let live: ClipLive
+  private let transfer: OriginalTransfer
+  private let model: AppModel
+  /// The page that shows the open clip's player rather than its poster.
+  private var liveIndex: Int?
 
   init(entries: GridSource, startIndex: Int, images: ImageLadder, onIndex: @escaping (Int) -> Void,
        onTap: @escaping () -> Void, onZoomed: @escaping (Bool) -> Void,
-       onPlay: @escaping (GridEntry) -> Void, onState: @escaping (MediaID, PageState) -> Void,
+       onPlay: @escaping (Int) -> Void, onState: @escaping (MediaID, PageState) -> Void,
        onPullChanged: @escaping (Bool) -> Void, onClose: @escaping () -> Void,
-       onSettled: @escaping (Int) -> Void) {
+       onSettled: @escaping (Int) -> Void, live: ClipLive, transfer: OriginalTransfer, model: AppModel) {
+    self.live = live
+    self.transfer = transfer
+    self.model = model
     self.entries = entries
     index = startIndex
     self.images = images
@@ -107,18 +121,70 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
     collection.dataSource = self
     collection.delegate = self
     collection.register(ZoomPageCell.self, forCellWithReuseIdentifier: "page")
+    collection.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "clip")
+    collection.holdsDrag = { [weak self] point in self?.onScrubBar(point) ?? false }
     view.addSubview(collection)
+    // A press held on either side of an open clip's picture plays it at double speed until the
+    // finger lifts; it cancels the tap the picture would otherwise take.
+    let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+    hold.minimumPressDuration = 0.3
+    hold.allowableMovement = 40
+    hold.delegate = self
+    collection.addGestureRecognizer(hold)
     let pull = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
     pull.delegate = self
     collection.addGestureRecognizer(pull)
   }
 
-  // Pulling a photo down closes it. Only straight down, and never while it is zoomed in.
+  // Pulling a photo down closes it. Only straight down, and never while it is zoomed in, nor from
+  // the open clip's position bar or a list on its page that can scroll (its moments).
   func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+    if gesture is UILongPressGestureRecognizer { return onPictureSide(gesture.location(in: collection)) }
     guard let pan = gesture as? UIPanGestureRecognizer, pan.view === collection else { return true }
     let v = pan.velocity(in: view)
     let zoomed = collection.visibleCells.contains { ($0 as? ZoomPageCell)?.isZoomed == true }
-    return v.y > 0 && v.y > abs(v.x) && !zoomed
+    let at = pan.location(in: collection)
+    return v.y > 0 && v.y > abs(v.x) && !zoomed && !onScrubBar(at) && !inScrollingList(at)
+  }
+
+  /// A drag from the open clip's position bar scrubs. Only with the pager at rest on that page: the
+  /// bar's place is measured there.
+  private func onScrubBar(_ point: CGPoint) -> Bool {
+    guard let liveIndex, let window = collection.window, collection.bounds.width > 0,
+          abs(collection.contentOffset.x - CGFloat(liveIndex) * collection.bounds.width) < 1 else { return false }
+    return live.scrubFrame.contains(collection.convert(point, to: window))
+  }
+
+  /// The outer third either side of the open clip's picture, with the pager at rest on it.
+  private func onPictureSide(_ point: CGPoint) -> Bool {
+    guard let liveIndex, let window = collection.window, collection.bounds.width > 0,
+          abs(collection.contentOffset.x - CGFloat(liveIndex) * collection.bounds.width) < 1 else { return false }
+    let frame = live.pictureFrame
+    let at = collection.convert(point, to: window)
+    guard !frame.isNull, frame.contains(at) else { return false }
+    let third = frame.width / 3
+    return at.x < frame.minX + third || at.x > frame.maxX - third
+  }
+
+  @objc private func held(_ hold: UILongPressGestureRecognizer) {
+    switch hold.state {
+    case .began:
+      UIImpactFeedbackGenerator(style: .light).impactOccurred()
+      live.clip?.setFast(true)
+    case .ended, .cancelled, .failed:
+      live.clip?.setFast(false)
+    default:
+      break
+    }
+  }
+
+  private func inScrollingList(_ point: CGPoint) -> Bool {
+    var view = collection.hitTest(point, with: nil)
+    while let v = view, v !== collection {
+      if let list = v as? UIScrollView, list.contentSize.height > list.bounds.height + 1 { return true }
+      view = v.superview
+    }
+    return false
   }
 
   @objc private func pulled(_ pan: UIPanGestureRecognizer) {
@@ -168,11 +234,35 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
 
   func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { entries.count }
 
+  /// Swaps the poster page and the player page of the clip opened or left. No animation: the
+  /// player's first frame is the poster the page already showed.
+  func setLive(_ new: Int?) {
+    guard new != liveIndex else { return }
+    let changed = [liveIndex, new].compactMap { $0 }.filter { entries.indices.contains($0) }
+    liveIndex = new
+    guard collection.bounds.width > 0, !changed.isEmpty else { return }
+    UIView.performWithoutAnimation {
+      collection.reloadItems(at: changed.map { IndexPath(item: $0, section: 0) })
+    }
+  }
+
   func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+    if indexPath.item == liveIndex {
+      let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "clip", for: indexPath)
+      cell.backgroundColor = .black
+      let entry = entries[indexPath.item]
+      cell.contentConfiguration = UIHostingConfiguration { [live, transfer, model, onTap] in
+        ClipLivePage(entry: entry, live: live, transfer: transfer, onTap: onTap)
+          .padding(.trailing, Self.pageGap)
+          .environment(model)
+      }
+      .margins(.all, 0)
+      return cell
+    }
     let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "page", for: indexPath) as! ZoomPageCell
     let entry = entries[indexPath.item]
     cell.show(entry: entry, images: images, trailingGap: Self.pageGap, fittingPixels: fittingPixels,
-              onTap: onTap, onPlay: { [onPlay] in onPlay(entry) },
+              onTap: onTap, onPlay: { [onPlay] in onPlay(indexPath.item) },
               onZoomed: { [weak self] zoomed in
                 guard let self else { return }
                 if indexPath.item == self.index { self.onZoomed(zoomed) }
@@ -201,7 +291,7 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
     prefetchAround(index)
     let offset = CGPoint(x: CGFloat(index) * collection.bounds.width, y: 0)
     // A neighbour slides in; anything further cuts, as flying past hundreds of photos would be noise.
-    if distance == 1, !UIAccessibility.isReduceMotionEnabled {
+    if distance == 1, jump.animated, !UIAccessibility.isReduceMotionEnabled {
       collection.setContentOffset(offset, animated: true)
     } else {
       collection.setContentOffset(offset, animated: false)
@@ -246,6 +336,17 @@ final class PagerController: UIViewController, UICollectionViewDataSource, UICol
   }
 }
 
+/// The pager's collection: a drag that starts on the open clip's position bar scrubs the clip and
+/// never turns the page.
+final class PagerCollectionView: UICollectionView {
+  var holdsDrag: ((CGPoint) -> Bool)?
+
+  override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+    if gesture === panGestureRecognizer, holdsDrag?(gesture.location(in: self)) == true { return false }
+    return super.gestureRecognizerShouldBegin(gesture)
+  }
+}
+
 final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   private let scroll = UIScrollView()
   private let imageView = UIImageView()
@@ -258,6 +359,8 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   private var onPlay: (() -> Void)?
   private var onZoomed: ((Bool) -> Void)?
   private var lastSize = CGSize.zero
+  /// The width over height the picture was last fitted at.
+  private var lastShape: CGFloat = 0
   private var holdsRefinement: (() -> Bool)?
   private var heldRefinement: UIImage?
 
@@ -320,6 +423,7 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
     self.onTap = onTap
     self.onPlay = onPlay
     self.onZoomed = onZoomed
+    lastShape = 0
     let item = entry.item
     imageView.accessibilityLabel = entry.accessibilityName
     playButton.isHidden = item.kind != .clip
@@ -334,6 +438,7 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
       loading = Task { [weak self] in
         guard let poster = await images.thumbnail(for: item), !Task.isCancelled else { return }
         self?.imageView.image = poster
+        self?.setNeedsLayout()
       }
       return
     }
@@ -384,12 +489,36 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   private func sharpen(to image: UIImage) {
     guard imageView.image != nil, !UIAccessibility.isReduceMotionEnabled else {
       imageView.image = image
+      setNeedsLayout()
       return
     }
     UIView.transition(with: imageView, duration: 0.2, options: [.transitionCrossDissolve, .allowUserInteraction]) {
       self.imageView.image = image
     }
+    // A picture of another shape than the item said (a folder's file says none) takes its own.
+    setNeedsLayout()
+    UIView.animate(withDuration: 0.2, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+      self.layoutIfNeeded()
+    }
   }
+
+  /// The page's shape: the picture's own once one shows, else what the item says. A folder's file
+  /// and a catalogue row not yet measured say nothing (square), so the item alone would fit a
+  /// portrait photo inside a square, small with black all round.
+  static func shape(of item: MediaItem, picture: UIImage?) -> CGFloat {
+    if let size = picture?.size, size.width > 0, size.height > 0 { return size.width / size.height }
+    return CGFloat(item.aspect)
+  }
+
+  /// The largest size of that shape inside the page.
+  static func fit(shape: CGFloat, in page: CGSize) -> CGSize {
+    page.width / page.height > shape
+      ? CGSize(width: page.height * shape, height: page.height)
+      : CGSize(width: page.width, height: page.width / shape)
+  }
+
+  /// Where the picture sits in the page, unzoomed.
+  var pictureFrame: CGRect { imageView.frame }
 
   override func layoutSubviews() {
     super.layoutSubviews()
@@ -397,13 +526,16 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
     scroll.frame = page
     let side: CGFloat = 72
     playButton.frame = CGRect(x: page.midX - side / 2, y: page.midY - side / 2, width: side, height: side)
-    guard page.size != lastSize, let entry, page.width > 0 else { return }
+    guard let entry, page.width > 0, page.height > 0 else { return }
+    let shape = Self.shape(of: entry.item, picture: imageView.image)
+    // A sharper picture of the same shape replaces the last with no shift; a new shape waits for
+    // the photo to be zoomed back out.
+    let reshaped = lastShape == 0 || abs(shape - lastShape) > lastShape * 0.01
+    guard page.size != lastSize || (reshaped && !isZoomed) else { return }
     lastSize = page.size
+    lastShape = shape
     scroll.zoomScale = 1
-    let aspect = CGFloat(entry.item.aspect)
-    let fit: CGSize = page.width / page.height > aspect
-      ? CGSize(width: page.height * aspect, height: page.height)
-      : CGSize(width: page.width, height: page.width / aspect)
+    let fit = Self.fit(shape: shape, in: page.size)
     imageView.frame = CGRect(origin: .zero, size: fit)
     scroll.contentSize = fit
     centerImage()
@@ -420,6 +552,10 @@ final class ZoomPageCell: UICollectionViewCell, UIScrollViewDelegate {
   func scrollViewDidZoom(_ scrollView: UIScrollView) {
     centerImage()
     onZoomed?(scrollView.zoomScale > 1.01)
+  }
+
+  func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+    if !isZoomed { setNeedsLayout() }
   }
 
   @objc private func singleTapped() { onTap?() }

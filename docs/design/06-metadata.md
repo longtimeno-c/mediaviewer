@@ -301,7 +301,12 @@ Every tag searchable, without the AI pack ([16](16-commands.md) "File search"). 
   path, size, mtime and `kSearchFactsVersion` match. It holds the fields and their fold, date
   taken, the position and the AI flag, and (#405, `kSearchFactsVersion` 2, cache schema 2) the
   rating, colour label, ISO, aperture, focal length and exposure time as numbers. Those numbers
-  are never search fields: a word search for "400" does not return every ISO 400 frame. A damaged or foreign file (not a database, another schema,
+  are never search fields: a word search for "400" does not return every ISO 400 frame. Cache
+  schema 3 adds `duration_ms`, a clip's or audio file's length from the header the search read
+  already opens (`avformat_find_stream_info`, bounded; no decode, no extra open), for the AI
+  pack's `assets.duration_ms` and so the phone's catalogue. The column is added in place
+  (`DEFAULT -1`): rows survive, a still's row is served as before, and only a clip whose row
+  predates it is read again, once. A damaged or foreign file (not a database, another schema,
   or corruption found by a later write) is deleted and made again (it is a cache); a file another
   process has locked (a second window) is busy, never deleted, and an open that fails is retried
   at most every 30 s. Rows of files gone from a folder are dropped when the folder is seen again

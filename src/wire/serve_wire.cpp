@@ -20,13 +20,17 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 7> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 11> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
                                                              {op::admin, "admin"},
                                                              {op::upgrade, "upgrade"},
-                                                             {op::write, "write"}}};
+                                                             {op::write, "write"},
+                                                             {op::convert, "convert"},
+                                                             {op::mkdir, "mkdir"},
+                                                             {op::move, "move"},
+                                                             {op::remove, "delete"}}};
 
 bool lower_hex64(std::string_view s) noexcept {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
@@ -109,6 +113,18 @@ std::optional<hello_msg> parse_hello(std::string_view text) {
   return h;
 }
 
+bool is_storage_word(std::string_view w) noexcept {
+  return w == "degraded" || w == "rebuilding" || w == "offline" || w == "failing";
+}
+
+const char* storage_words(std::string_view w) noexcept {
+  if (w == "degraded") return "Your server's mirror lost a drive. Your files are safe until another one fails: replace it soon.";
+  if (w == "rebuilding") return "Your server is rebuilding its mirror onto a new drive.";
+  if (w == "offline") return "Your server's combined drive is offline: some of its drives are not there.";
+  if (w == "failing") return "A drive in your server reports it is failing. Replace it soon.";
+  return "";
+}
+
 std::string caps_json(std::uint32_t version, std::uint32_t ops, std::string_view owner_fields) {
   json::writer w;
   w.begin_object().key("v").integer(version);
@@ -146,6 +162,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* p = doc->str("passphrase"); p && p->size() <= 16) c.passphrase = *p;
+  if (const std::string* s = doc->str("storage"); s && is_storage_word(*s)) c.storage = *s;
   if (const json::value* g = doc->find("grant"); g && g->k == json::kind::object) {
     const auto expires = g->integer("expires");
     if (expires && *expires >= 0) {
@@ -153,6 +170,19 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
       c.grant_expires = *expires;
       c.grant_scoped = g->boolean("scoped") == true;
     }
+  }
+  if (const std::string* r = doc->str(kCapsRole); r && (*r == "view" || *r == "change" || *r == "admin")) c.role = *r;
+  if (const json::value* a = doc->find(kCapsAddresses); a && a->k == json::kind::object) {
+    // Each on its own: one that is not an address is dropped, never the others.
+    const auto take = [&](const char* k, std::string& into) {
+      std::string host;
+      std::uint16_t port = 0;
+      const std::string* v = a->str(k);
+      if (v && v->size() <= kMaxAddressBytes && parse_relay_address(*v, host, port)) into = *v;
+    };
+    take("local", c.local);
+    take("public", c.public_name);
+    take("relay", c.relay);
   }
   return c;
 }
@@ -172,6 +202,8 @@ std::vector<std::uint8_t> encode_open(const open_request& r) {
     w.key("size").integer(static_cast<std::int64_t>(r.size));
     w.key("hash").string(r.hash);
   }
+  if (r.kind == op::convert) w.key("seg").integer(r.segment);
+  if (r.kind == op::move) w.key("to_root").string(r.to_root).key("to_rel").string(r.to_rel);
   if (r.meta) w.key("meta").boolean(true);
   if (r.credit != 0) w.key("credit").integer(static_cast<std::int64_t>(r.credit));
   w.end_object();
@@ -229,6 +261,18 @@ std::optional<open_request> parse_open(std::span<const std::uint8_t> body, bool&
     r.at = static_cast<std::uint64_t>(*at);
     r.size = static_cast<std::uint64_t>(*size);
     r.hash = *hash;
+  }
+  if (r.kind == op::convert) {
+    const auto seg = doc->integer("seg");
+    if (!in_range(seg, -1, kMaxConvertSegments - 1) || r.rel.empty()) return std::nullopt;
+    r.segment = *seg;
+  }
+  if (r.kind == op::move) {
+    const std::string* to_root = doc->str("to_root");
+    const std::string* to_rel = doc->str("to_rel");
+    if (!to_root || !to_rel) return std::nullopt;
+    r.to_root = *to_root;
+    r.to_rel = *to_rel;
   }
   if (const json::value* m = doc->find("meta")) {
     if (m->k != json::kind::boolean) return std::nullopt;
@@ -298,6 +342,9 @@ std::string roots_json(std::span<const root_info> roots) {
     w.begin_object().key("id").string(r.id).key("label").string(r.label);
     // Only on a backup folder, so a reader from before 1.1 sees exactly what it did.
     if (r.backup) w.key("backup").boolean(true).key("writable").boolean(r.writable);
+    // Elsewhere only when true: a reader from before kChangeOps reads it on a backup folder alone.
+    if (!r.backup && r.writable) w.key("writable").boolean(true);
+    if (r.offline) w.key("offline").boolean(true);
     w.end_object();
   }
   w.end_array().end_object();
@@ -316,7 +363,8 @@ std::optional<std::vector<root_info>> parse_roots(std::string_view text) {
     if (!id || !valid_id(*id) || !label || label->size() > kMaxLabelBytes) return std::nullopt;
     root_info info{*id, *label};
     info.backup = v.boolean("backup").value_or(false);
-    info.writable = info.backup && v.boolean("writable").value_or(false);
+    info.writable = v.boolean("writable").value_or(false);
+    info.offline = v.boolean("offline").value_or(false);
     out.push_back(std::move(info));
   }
   return out;
@@ -399,9 +447,13 @@ std::optional<std::vector<list_entry>> parse_listing(std::string_view lines) {
   return out;
 }
 
-std::string pair_json(std::string_view code, std::string_view name) {
+std::string pair_json(std::string_view code, std::string_view name) { return pair_json(code, name, {}); }
+
+std::string pair_json(std::string_view code, std::string_view name, std::string_view kind) {
   json::writer w;
-  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name))).end_object();
+  w.begin_object().key("code").string(code).key("name").string(clean_name(std::string(name)));
+  if (!kind.empty()) w.key("kind").string(kind);
+  w.end_object();
   return w.take();
 }
 
@@ -413,6 +465,7 @@ std::optional<pair_msg> parse_pair(std::string_view text) {
   pair_msg out;
   out.code = *code;
   if (const std::string* name = doc->str("name")) out.name = clean_name(*name);
+  if (const std::string* kind = doc->str("kind"); kind && *kind == kDeviceDesktop) out.kind = *kind;
   return out;
 }
 
@@ -432,7 +485,7 @@ std::optional<admin_msg> parse_admin(std::span<const std::uint8_t> body) noexcep
   return m;
 }
 
-result<config> parse_config(std::string_view text, bool any_port) {
+result<config> parse_config(std::string_view text, bool any_port, bool no_roots) {
   if (text.size() > kMaxConfigBytes) return err(status::invalid_arg);
   const auto doc = json::parse(text, 6);
   if (!doc) return err(status::corrupt);
@@ -443,7 +496,7 @@ result<config> parse_config(std::string_view text, bool any_port) {
   const std::string* name = doc->str("name");
   c.name = name ? clean_name(*name) : std::string("MediaViewer");
   const json::value* roots = doc->find("roots");
-  if (!roots || roots->k != json::kind::array || roots->a.empty() || roots->a.size() > kMaxRoots) {
+  if (!roots || roots->k != json::kind::array || (roots->a.empty() && !no_roots) || roots->a.size() > kMaxRoots) {
     return err(status::invalid_arg);
   }
   std::set<std::string> seen;
@@ -471,11 +524,27 @@ result<config> parse_config(std::string_view text, bool any_port) {
       rc.limit = static_cast<std::uint64_t>(*limit);
       rc.reserve = reserve ? static_cast<std::uint64_t>(*reserve) : kDefaultReserve;
     }
+    if (const json::value* m = v.find("mount")) {
+      if (m->k != json::kind::boolean) return err(status::invalid_arg);
+      rc.mount = v.boolean("mount").value_or(false);
+    }
+    if (v.find("volume")) {
+      const std::string* g = v.str("volume");
+      if (!g || g->size() > 64 || g->rfind("\\\\?\\Volume{", 0) != 0) return err(status::invalid_arg);
+      rc.volume = *g;
+    }
     c.roots.push_back(std::move(rc));
   }
-  if (const std::string* relay = doc->str("relay")) {
-    if (relay->size() > 300) return err(status::invalid_arg);
-    c.relay = *relay;
+  for (auto [k, into] : {std::pair{"relay", &c.relay}, std::pair{"local", &c.local}, std::pair{"public", &c.public_name}}) {
+    if (const std::string* v = doc->str(k)) {
+      if (v->size() > 300) return err(status::invalid_arg);  // as serve.json always allowed; caps carry <= kMaxAddressBytes
+      *into = *v;
+    }
+  }
+  if (doc->find("vpn_port")) {
+    const auto p = doc->integer("vpn_port");
+    if (!p || *p < 0 || *p > 65535) return err(status::invalid_arg);
+    c.vpn_port = static_cast<std::uint16_t>(*p);
   }
   return c;
 }
@@ -491,10 +560,15 @@ std::string config_json(const config& c) {
       w.key("reserve").integer(static_cast<std::int64_t>(r.reserve));
       w.end_object();
     }
+    if (r.mount) w.key("mount").boolean(true);
+    if (!r.volume.empty()) w.key("volume").string(r.volume);
     w.end_object();
   }
   w.end_array();
   if (!c.relay.empty()) w.key("relay").string(c.relay);
+  if (!c.local.empty()) w.key("local").string(c.local);
+  if (!c.public_name.empty()) w.key("public").string(c.public_name);
+  if (c.vpn_port != 0) w.key("vpn_port").integer(c.vpn_port);
   w.end_object();
   return w.take();
 }
@@ -585,6 +659,45 @@ bool parse_relay_address(std::string_view address, std::string& host, std::uint1
   return true;
 }
 
+std::string relay_connect_code(std::string_view relay_line, bool tls) {
+  return std::string(tls ? kRelayTlsCodePrefix : kRelayCodePrefix) + std::string(relay_line);
+}
+
+std::optional<std::string> parse_relay_connect_code(std::string_view text, bool* tls) {
+  const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+  while (!text.empty() && space(text.front())) text.remove_prefix(1);
+  while (!text.empty() && space(text.back())) text.remove_suffix(1);
+  // The scheme in any case, as a link may arrive.
+  const auto starts = [&](std::string_view prefix) {
+    if (text.size() < prefix.size()) return false;
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+      const char a = text[i] >= 'A' && text[i] <= 'Z' ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
+      if (a != prefix[i]) return false;
+    }
+    return true;
+  };
+  bool look = false;
+  if (starts(kRelayTlsCodePrefix)) {
+    text.remove_prefix(kRelayTlsCodePrefix.size());
+    look = true;
+  } else if (starts(kRelayCodePrefix)) {
+    text.remove_prefix(kRelayCodePrefix.size());
+  }
+  if (tls) *tls = false;
+  const std::size_t hash = text.find('#');
+  if (hash == std::string_view::npos || text.find('#', hash + 1) != std::string_view::npos) return std::nullopt;
+  const std::string_view key = text.substr(hash + 1);
+  if (key.size() < 16 || key.size() > 4096) return std::nullopt;  // relay::kMinKeyChars, set_relay's cap
+  for (const char ch : key) {
+    if (static_cast<unsigned char>(ch) <= 0x20 || ch == 0x7f) return std::nullopt;
+  }
+  std::string host;
+  std::uint16_t port = 0;
+  if (!parse_relay_address(text.substr(0, hash), host, port)) return std::nullopt;
+  if (tls) *tls = look;
+  return std::string(text);
+}
+
 std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& access_key,
                                          const std::array<std::uint8_t, 32>& device_public) {
   static const unsigned char label[] = "MediaViewer relay token v1";
@@ -594,6 +707,40 @@ std::array<std::uint8_t, 16> relay_token(const std::array<std::uint8_t, 32>& acc
   std::array<std::uint8_t, 16> out{};
   crypto_generichash(out.data(), out.size(), m.data(), m.size(), access_key.data(), access_key.size());
   return out;
+}
+
+std::string convert_plan_json(const convert_plan& p) {
+  json::writer w;
+  w.begin_object()
+      .key("duration_ms").integer(p.duration_ms)
+      .key("segment_ms").integer(p.segment_ms)
+      .key("segments").integer(p.segments)
+      .key("width").integer(p.width)
+      .key("height").integer(p.height)
+      .end_object();
+  return w.take();
+}
+
+std::optional<convert_plan> parse_convert_plan(std::string_view text) {
+  if (text.size() > kMaxRequestBytes) return std::nullopt;
+  const auto doc = json::parse(text, 2);
+  if (!doc || doc->k != json::kind::object) return std::nullopt;
+  const auto d = doc->integer("duration_ms"), s = doc->integer("segment_ms"), n = doc->integer("segments");
+  const auto w = doc->integer("width"), h = doc->integer("height");
+  if (!in_range(d, 1, std::int64_t{1} << 40) || !in_range(s, 500, 60000) || !in_range(n, 1, kMaxConvertSegments) ||
+      !in_range(w, 1, 16384) || !in_range(h, 1, 16384)) {
+    return std::nullopt;
+  }
+  // The segments cover the duration; a short tail may join the segment before it.
+  const std::int64_t whole = (*d + *s - 1) / *s;
+  if (*n != whole && *n != whole - 1) return std::nullopt;
+  convert_plan p;
+  p.duration_ms = *d;
+  p.segment_ms = static_cast<std::uint32_t>(*s);
+  p.segments = static_cast<std::uint32_t>(*n);
+  p.width = static_cast<std::uint32_t>(*w);
+  p.height = static_cast<std::uint32_t>(*h);
+  return p;
 }
 
 }  // namespace mv::driftwire::serve

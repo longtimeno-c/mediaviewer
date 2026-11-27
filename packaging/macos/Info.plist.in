@@ -119,6 +119,8 @@
         <string>org.webmproject.webm</string>
         <string>public.avi</string>
         <string>public.mpeg-2-transport-stream</string>
+        <string>public.avchd-mpeg-2-transport-stream</string>
+        <string>public.mpeg</string>
       </array>
     </dict>
     <!-- Audio: in Finder's Open With, never made the default — not by the

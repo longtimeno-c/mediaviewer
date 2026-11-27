@@ -16,8 +16,9 @@
 //      go no further: message 3 needs the device's key);
 //   4. only then does it do any key work or say anything;
 //   5. the device key from the finished handshake must be a paired one:
-//      paired devices hold a read grant on the named folders, and may create
-//      files in the backup folders (serve_backup.h); a device
+//      paired devices hold a read grant on the named folders; a device whose
+//      role is "change" may also add, move and delete files in them
+//      (serve_wire.h "changing", serve_backup.h for backup folders); a device
 //      that is not paired, or was revoked, is told so, sealed, and refused.
 //
 // A running session is cut within kDevicesRecheckMs of its device being
@@ -42,7 +43,9 @@
 
 #include "wire/net.h"
 #include "wire/secrets.h"
+#include "wire/serve_convert.h"
 #include "wire/serve_wire.h"
+#include "wire/splice.h"
 #include "core/result.h"
 
 namespace mv::driftwire::serve {
@@ -73,8 +76,18 @@ inline constexpr const char* kFeatureRelay = "relay";
 // Phone backup (1.1): backup folders and the backup flag on a phone's grant, so the cards
 // show their controls only to a service that has them.
 inline constexpr const char* kFeatureBackup = "backup";
+// The self-hosted computer's users (share_users.h): serve_admin users, user_set, user_remove.
+inline constexpr const char* kFeatureUsers = "users";
+// The service keeps where paired devices find it (serve_admin set_addresses) and tells them in
+// their caps (kCapsAddresses).
+inline constexpr const char* kFeatureAddresses = "addresses";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
+// The VPN (docs/design/28 "The NAS as a VPN host"): offered by `driftwire serve`
+// (options::vpn), the key its own relay runs on, kept apart from the person's
+// other relay's.
+inline constexpr const char* kFeatureVpn = "vpn";
+inline constexpr const char* kVpnKeyName = "vpn_relay_key";
 // Waiters at the relay, one per paired device: the relay's own per-source cap.
 inline constexpr int kMaxRelayWaiters = 4;
 
@@ -126,13 +139,19 @@ class server {
     std::function<bool(const config&)> save_config;
     // Taken around every change of the paired list ("": none), against `serve add`.
     std::string devices_lock;
-    // Phone backup (1.1): whether a device may create files in the backup
-    // folders. Empty: its grant decides (docs/plans/mobile.md §10b.1, B2): an
-    // unlimited paired device may, a limited one only with `backup` on and only
-    // in its folders, and the owner's session never. The tests set it.
+    // Whether a device may change files (role "change": phone backup's writes, and
+    // kChangeOps's add, mkdir, move and delete) in the folders it sees. Empty: its grant
+    // decides (docs/plans/mobile.md §10b.1, B2; self-host-users-smb.md §9): an unlimited
+    // paired device may, a limited one only with `backup` on and only in its folders, the
+    // owner's session never, and nobody in the Catalogue. The tests set it.
     std::function<bool(const std::array<std::uint8_t, 32>&)> may_write;
     // Tests: a volume's free bytes, instead of asking the OS.
     std::function<std::uint64_t(const std::string&)> free_bytes;
+    // Tests: a move between two named folders always copies, checks and removes, as one
+    // across volumes does (serve_wire.h "changing"), so that path runs on one disk.
+    bool copy_moves = false;
+    // Tests: called on the worker before each file a move copies (a revoke in the middle).
+    std::function<void()> during_copy;
     // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
     // it. Empty: the system clock.
     std::function<std::int64_t()> now_unix;
@@ -147,6 +166,25 @@ class server {
     std::function<result<std::unique_ptr<link>>(const std::string& host, std::uint16_t port, int timeout_ms)> relay_connect;
     // The tests: runs before a direct path's candidates are gathered (a slow relay).
     std::function<void()> before_gather;
+    // Self-hosting (docs/plans/self-hosted.md §6): whether a named folder's drive is there,
+    // beyond the folder being a folder (an unmounted mount point, a volume whose letter now
+    // names another drive). Asked wherever the folder's presence is (roots, a failed
+    // request, before a write). Empty: the folder alone decides.
+    std::function<bool(const root_config&)> root_present;
+    // Self-hosting with combined drives (docs/plans/self-host-drives.md §4): the worst
+    // set's health word ("degraded", "rebuilding", "offline", "failing"; "" when healthy
+    // or none), sent to every session in serve_caps "storage" so a phone can say
+    // "Your server's mirror lost a drive". Any thread; never blocks.
+    std::function<std::string()> storage;
+    // Clips the phone can't play (docs/plans/phone-clip-convert.md): the host's converter, or
+    // none. With one, every session's caps list `convert`. set_converter changes it later.
+    std::shared_ptr<convert::service> converter;
+    // The NAS as a VPN host (docs/design/28): the owner may turn on a relay of
+    // this service's own that forwards (the Tunnel/VPN exit, as `driftwire host
+    // vpn on` does). Only `driftwire serve` offers it; a host runs its own relay.
+    bool vpn = false;
+    // The tests: that relay's options before it starts (loopback, a private site).
+    std::function<void(relay::server::options&)> vpn_tweak;
   };
 
   // Listens and returns. status::not_found when the store has no usable
@@ -159,10 +197,34 @@ class server {
 
   [[nodiscard]] std::uint16_t port() const noexcept;
   [[nodiscard]] counters stats() const noexcept;
+  // The devices with a session up now, each once (docs/plans/self-hosted.md
+  // "Tray": the host's menu names the phones connected). Their keys only; the
+  // owner's own session (the desktop that claimed it) is not one of them.
+  [[nodiscard]] std::vector<std::array<std::uint8_t, 32>> connected_devices() const;
+  // "Tray" usage: per paired device (never the owner's own sessions), the file
+  // bytes read and written by this server's sessions so far (ended ones kept),
+  // whether it is connected now, since when and how. Counted with one relaxed
+  // atomic add per chunk; folded here, when the host writes its state.
+  enum class usage_via : std::uint8_t { home, internet, relay };  // its network; direct from away; the person's relay
+  struct device_usage {
+    std::array<std::uint8_t, 32> device{};
+    std::uint64_t read = 0, written = 0;
+    bool connected = false;
+    std::int64_t since_unix = 0;  // the earliest session up now
+    usage_via via = usage_via::internet;
+  };
+  [[nodiscard]] std::vector<device_usage> usage() const;
   [[nodiscard]] std::vector<root_config> roots() const;
   // Reads the paired list now and cuts sessions no longer on it (it is also
   // read on a timer and for every new connection).
   void recheck_devices() noexcept;
+  // `driftwire host`: the named folders changed on disk (a `host share` from another
+  // process, a drive's new letter). Taken as they are, not saved again; requests already
+  // open keep the view they opened with. False for a config with no folders.
+  bool replace_config(config next);
+  // The converter turned on or off: sessions that start from now see the change in their
+  // caps; one already listing `convert` is answered unsupported {"why":"off"} without one.
+  void set_converter(std::shared_ptr<convert::service> c);
   void stop() noexcept;
 
  private:

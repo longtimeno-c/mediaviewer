@@ -26,6 +26,10 @@ class stay_awake {
 // transfer runs anyway). `receiving`: the reason the OS shows (powercfg
 // /requests, pmset -g assertions, systemd-inhibit --list) says which way.
 [[nodiscard]] std::unique_ptr<stay_awake> hold(bool receiving) noexcept;
+// The same request with a reason of the caller's (ASCII): `driftwire host`
+// holds one for as long as it hosts ("Driftwire is hosting your server",
+// docs/plans/self-hosted.md §3), the only other holder.
+[[nodiscard]] std::unique_ptr<stay_awake> hold_for(const std::string& reason_ascii) noexcept;
 
 namespace detail {
 inline std::atomic<const char*> owner{"MediaViewer"};

@@ -7,6 +7,8 @@
 //   MobileUI        Every screen. Knows only MobileKit.
 //   MobileCore      The real library, search and tiles, over the C ABI of src/mobile.
 //   MobileLink      The real services over src/mobile's C ABI (mv_mobile_link.h).
+//   CMobileVPN      The VPN's C ABI (src/mobile/mv_mobile_vpn.h): the app's code parse and knock
+//                   key, and the packet tunnel extension's whole tunnel (docs/plans/phone-vpn.md).
 //   MobileFixtures  Stand-in services, generated pictures, the state gallery. Debug only: it does
 //                   not compile outside DEBUG, and only the MediaViewerFixtures app links it.
 import Foundation
@@ -22,7 +24,7 @@ let coreLink: [String] = [
   simCore + "/libmv_infer.a", simCore + "/libmv_model_fetch.a", simCore + "/libmv_driftwire_engine.a",
   simCore + "/libmv_wire.a", simCore + "/libmv_catalogue.a", simCore + "/libmv_sha256.a",
   simTriplet + "/libsqlite3.a", simTriplet + "/libsodium.a", simTriplet + "/libblake3.a",
-  simCore + "/_ort/pod-archive-onnxruntime-c-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
+  simCore + "/_ort/microsoft.ml.onnxruntime-ios-1.30.0/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime",
   "-lc++", "-framework", "CoreML", "-framework", "Network", "-framework", "Security", "-framework", "SystemConfiguration",
 ]
 
@@ -35,6 +37,9 @@ let package = Package(
     .library(name: "MobileCore", targets: ["MobileCore"]),
     .library(name: "MobileFixtures", targets: ["MobileFixtures"]),
     .library(name: "MobileLink", targets: ["MobileLink"]),
+    // The VPN extension links these two and nothing else of the package.
+    .library(name: "CMobileVPN", targets: ["CMobileVPN"]),
+    .library(name: "MobileLinkSupport", targets: ["MobileLinkSupport"]),
   ],
   targets: [
     .target(name: "MobileKit"),
@@ -47,8 +52,9 @@ let package = Package(
                 linkerSettings: [.unsafeFlags(coreLink)]),
     // The real connection, sync, pictures and clips (src/mobile/link*, sync*), linked by the app.
     .target(name: "CMobileLink", publicHeadersPath: "include"),
+    .target(name: "CMobileVPN", publicHeadersPath: "include"),
     .target(name: "MobileLinkSupport"),
-    .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink", "MobileLinkSupport"]),
+    .target(name: "MobileLink", dependencies: ["MobileKit", "CMobileLink", "CMobileVPN", "MobileLinkSupport"]),
     .testTarget(name: "MobileLinkSupportTests", dependencies: ["MobileLinkSupport"]),
     .testTarget(name: "MobileUITests", dependencies: ["MobileUI", "MobileKit"]),
   ],

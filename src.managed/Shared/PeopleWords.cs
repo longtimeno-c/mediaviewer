@@ -470,4 +470,53 @@ public static class PeopleWords
 
     private static string Str(JsonElement e, string key) =>
         e.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+
+    /// <summary>
+    /// <paramref name="list"/> becomes <paramref name="want"/> (the same objects, by
+    /// reference) with the fewest changes: the longest run already in order stays
+    /// put, the rest leave and come back in place. The People grid's repeater keeps
+    /// every card it still shows, so a read that reorders people (most photos first,
+    /// while faces stream in) moves the few that changed place, never rebuilds all.
+    /// </summary>
+    public static void Reconcile<T>(IList<T> list, IReadOnlyList<T> want) where T : class
+    {
+        var at = new Dictionary<T, int>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < want.Count; ++i) at.TryAdd(want[i], i);
+        for (int i = list.Count - 1; i >= 0; --i)
+        {
+            if (!at.ContainsKey(list[i])) list.RemoveAt(i);
+        }
+        HashSet<int> stay = LongestIncreasing(list.Select(s => at[s]).ToArray());
+        for (int i = list.Count - 1; i >= 0; --i)
+        {
+            if (!stay.Contains(i)) list.RemoveAt(i);
+        }
+        for (int i = 0; i < want.Count; ++i)
+        {
+            if (i >= list.Count || !ReferenceEquals(list[i], want[i])) list.Insert(i, want[i]);
+        }
+    }
+
+    /// <summary>Positions in <paramref name="a"/> of one longest strictly increasing run.</summary>
+    public static HashSet<int> LongestIncreasing(IReadOnlyList<int> a)
+    {
+        var tails = new List<int>();
+        var prev = new int[a.Count];
+        for (int i = 0; i < a.Count; ++i)
+        {
+            int lo = 0, hi = tails.Count;
+            while (lo < hi)
+            {
+                int mid = (lo + hi) / 2;
+                if (a[tails[mid]] < a[i]) lo = mid + 1;
+                else hi = mid;
+            }
+            prev[i] = lo > 0 ? tails[lo - 1] : -1;
+            if (lo == tails.Count) tails.Add(i);
+            else tails[lo] = i;
+        }
+        var keep = new HashSet<int>();
+        for (int k = tails.Count > 0 ? tails[^1] : -1; k >= 0; k = prev[k]) keep.Add(k);
+        return keep;
+    }
 }

@@ -18,7 +18,9 @@
 #include <map>
 #include <random>
 #include <set>
+#include <thread>
 
+#include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/secrets.h"
 #include "wire/serve.h"
@@ -67,6 +69,7 @@ struct temp_root {
 };
 
 const std::string kBackupRoot = "b0b0b0b0b0b0b0b0";
+const std::string kSharedRoot = "a1a1a1a1a1a1a1a1";  // an ordinary shared folder (changing files)
 const std::string kLibrary = "library-1";
 
 // A "camera roll": files on disk standing in for PhotoKit's resources.
@@ -136,6 +139,8 @@ struct nas {
   std::unique_ptr<serve::server> srv;
   std::uint64_t limit = 1ull << 34;
   std::function<bool(const key32&)> may_write;
+  fs::path shared = tmp.root / "shared";
+  bool with_shared = false;  // a second, ordinary folder: "Photos"
 
   nas() {
     REQUIRE(sodium_init() >= 0);
@@ -162,6 +167,10 @@ struct nas {
     b.limit = limit;
     b.reserve = 0;
     o.cfg.roots.push_back(b);
+    if (with_shared) {
+      fs::create_directories(shared);
+      o.cfg.roots.push_back(serve::root_config{kSharedRoot, "Photos", shared.string()});
+    }
     o.free_bytes = [](const std::string&) { return std::uint64_t{1} << 40; };
     o.may_write = may_write;
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
@@ -387,6 +396,321 @@ TEST_CASE("backup: the storage limit, a folder this phone may not write, and a d
   }
 }
 
+TEST_CASE("backup: the folders offered follow the server while the phone is connected", "[mobile-link]") {
+  const key32 device = random_key();
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), device.data());
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const auto ids = [](const std::vector<bk::folder>& fs) {
+    std::vector<std::string> out;
+    for (const auto& f : fs) out.push_back(f.id + (f.writable ? "+w" : ""));
+    return out;
+  };
+  const auto cfg_with = [&](bool backup) {
+    serve::config c;
+    c.name = "NAS";
+    for (const auto& r : n.srv->roots()) c.roots.push_back(r);
+    for (auto& r : c.roots) {
+      if (r.id == kBackupRoot) r.backup = backup;
+    }
+    return c;
+  };
+
+  SECTION("a folder made a backup folder after the phone connected") {
+    n.pair(device);
+    REQUIRE(n.srv->replace_config(cfg_with(false)));
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    auto before = target->folders();
+    REQUIRE(before);
+    CHECK(before->empty());
+    REQUIRE(n.srv->replace_config(cfg_with(true)));
+    auto after = target->folders();
+    REQUIRE(after);
+    CHECK(ids(*after) == std::vector<std::string>{kBackupRoot + "+w"});
+  }
+  SECTION("a phone limited to other folders, with backup on") {
+    serve::grants::grant g;
+    g.name = "Phone";
+    g.key = pub;
+    g.roots = std::vector<std::string>{kSharedRoot};
+    g.backup = true;
+    REQUIRE(serve::grants::save(*n.store, {g}));
+    n.srv->recheck_devices();
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    // The service tells it only its own folders: none, and the phone knows why.
+    auto folders = target->folders();
+    REQUIRE(folders);
+    CHECK(folders->empty());
+    CHECK(target->limited_to_some_folders());
+    // A run into the backup folder it chose before it was limited: "choose another" (whose list
+    // then says none may be used), never "can't reach".
+    temp_root phone;
+    const fs::path scratch = phone.root / "scratch";
+    fs::create_directories(scratch);
+    camera_roll roll(phone.root / "roll", scratch, 2, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    CHECK(run_once(*target, roll, **ledger, scratch, 0).now == bk::state::no_folder);
+    CHECK(files_under(n.backup).empty());
+  }
+  SECTION("a phone whose pairing ended is never told \"not allowed\"") {
+    n.pair(device);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    REQUIRE(target->folders());
+    REQUIRE(dw::known::save(*n.store, {}));  // removed on the desktop
+    n.srv->recheck_devices();
+    CHECK_FALSE(target->limited_to_some_folders());
+    temp_root phone;
+    const fs::path scratch = phone.root / "scratch";
+    fs::create_directories(scratch);
+    camera_roll roll(phone.root / "roll", scratch, 2, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    const auto now = run_once(*target, roll, **ledger, scratch, 0).now;
+    CHECK(now != bk::state::not_allowed);
+    CHECK(now != bk::state::no_folder);
+    CHECK(files_under(n.backup).empty());
+  }
+  SECTION("a phone the owner has not let back up sees the folder, not writable") {
+    serve::grants::grant g;
+    g.name = "Phone";
+    g.key = pub;
+    g.backup = false;
+    REQUIRE(serve::grants::save(*n.store, {g}));
+    n.srv->recheck_devices();
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    auto folders = target->folders();
+    REQUIRE(folders);
+    CHECK(ids(*folders) == std::vector<std::string>{kBackupRoot});
+  }
+}
+
+namespace {
+
+// One run with Photos' deletions: the last report and the keys it finished with.
+std::pair<bk::status_report, std::vector<std::string>> run_deleting(bk::target& t, camera_roll& roll, std::vector<bk::item> items,
+                                                                     std::vector<std::string> deleted, bk::ledger& l,
+                                                                     const fs::path& scratch, const std::string& root) {
+  bk::engine e(options_for(scratch, root), t, roll, l);
+  e.set_items(std::move(items));
+  e.set_deleted(std::move(deleted));
+  mob::cancel_flag cancel;
+  bk::status_report last;
+  (void)e.run(&cancel, [&](const bk::status_report& s) { last = s; });
+  return {last, e.deleted_done()};
+}
+
+std::size_t trashed_under(const fs::path& root) {
+  std::size_t n = 0;
+  const fs::path trash = root / serve::kTrashFolder;
+  if (!fs::exists(trash)) return 0;
+  for (auto it = fs::recursive_directory_iterator(trash); it != fs::recursive_directory_iterator(); ++it) {
+    if (it->is_regular_file()) ++n;
+  }
+  return n;
+}
+
+// The real target, but the folder's trash out of reach (offline, an older service).
+struct no_trash final : bk::target {
+  bk::target& t;
+  explicit no_trash(bk::target& real) : t(real) {}
+  mv::result<std::vector<bk::folder>> folders() override { return t.folders(); }
+  mv::result<serve::stat_info> space(const std::string& r) override { return t.space(r); }
+  mv::result<std::vector<serve::list_entry>> list(const std::string& r, const std::string& rel) override { return t.list(r, rel); }
+  mv::result<serve::client::write_done> write(const std::string& r, const std::string& rel, std::uint64_t size,
+                                              const std::string& hash, std::uint64_t at, const serve::client::read_fn& read,
+                                              const std::function<void(std::uint64_t)>& progress, const mob::cancel_flag* cancel,
+                                              serve::client::write_refused* why, bool meta) override {
+    return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta);
+  }
+  mv::result<std::vector<std::string>> ledger_ids(const std::string& r) override { return t.ledger_ids(r); }
+  mv::result<std::string> read_ledger(const std::string& r, const std::string& id) override { return t.read_ledger(r, id); }
+  std::string device_id() const override { return t.device_id(); }
+  mv::result<bool> trash(const std::string&, const std::string&) override { return mv::err(mv::status::not_found); }
+};
+
+void check_deletions(bk::target& target, const fs::path& folder, const std::string& root) {
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  fs::create_directories(scratch);
+  camera_roll roll(phone.root / "roll", scratch, 6, 11);
+  auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+  REQUIRE(ledger);
+  REQUIRE(run_deleting(target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+  const std::size_t all = files_under(folder).size();
+  REQUIRE(all == roll.resource_count());
+
+  const bk::item gone = roll.items[1];    // deleted in Photos: a Live Photo, two files
+  const bk::item hidden = roll.items[2];  // hidden in Photos: left out of the items, not deleted
+  const bk::item back = roll.items[4];    // deleted, then put back from Recently Deleted
+  std::vector<bk::item> now;
+  for (const auto& it : roll.items) {
+    if (it.key != gone.key && it.key != hidden.key) now.push_back(it);
+  }
+  const std::vector<std::string> deleted{gone.key, back.key, "cloud-never-backed-up"};
+
+  // The trash out of reach: nothing moves, nothing is forgotten, the key waits.
+  no_trash blocked(target);
+  auto [stuck, stuck_done] = run_deleting(blocked, roll, now, deleted, **ledger, scratch, root);
+  CHECK(stuck.trashed == 0);
+  CHECK(std::find(stuck_done.begin(), stuck_done.end(), gone.key) == stuck_done.end());
+  CHECK((*ledger)->find(root, gone.key, gone.resources[0].kind, gone.resources[0].name));
+
+  auto [report, done] = run_deleting(target, roll, now, deleted, **ledger, scratch, root);
+  CHECK(report.now == bk::state::done);
+  CHECK(report.trashed == gone.resources.size());
+  std::sort(done.begin(), done.end());
+  std::vector<std::string> want = deleted;
+  std::sort(want.begin(), want.end());
+  CHECK(done == want);
+  // Moved, never deleted: in the trash, out of the folder and the ledger; the rest as they were.
+  CHECK(trashed_under(folder) == gone.resources.size());
+  CHECK(files_under(folder).size() == all);  // (files_under counts the trash too)
+  for (const auto& r : gone.resources) CHECK_FALSE((*ledger)->find(root, gone.key, r.kind, r.name));
+  for (const auto& r : hidden.resources) CHECK((*ledger)->find(root, hidden.key, r.kind, r.name));
+  for (const auto& r : back.resources) CHECK((*ledger)->find(root, back.key, r.kind, r.name));
+
+  // Asked again (the app had not heard it was done): nothing more moves.
+  auto [again, again_done] = run_deleting(target, roll, now, deleted, **ledger, scratch, root);
+  CHECK(again.trashed == 0);
+  CHECK(again_done.size() == deleted.size());
+  CHECK(trashed_under(folder) == gone.resources.size());
+}
+
+}  // namespace
+
+TEST_CASE("backup: a photo deleted from Photos goes into the folder's trash, and nothing else does", "[mobile-link]") {
+  SECTION("on the server") {
+    nas n;
+    n.start();
+    const key32 device = random_key();
+    n.pair(device);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    check_deletions(*target, n.backup, kBackupRoot);
+  }
+  SECTION("in the sample library's folder on the phone") {
+    temp_root phone;
+    const fs::path nas = phone.root / "sample-nas";
+    auto target = bk::local_target(nas.string(), "0123456789abcdef", bk::kSampleLimit,
+                                   [](const std::string&) { return std::uint64_t{1} << 40; });
+    check_deletions(*target, nas, bk::kSampleFolderId);
+  }
+}
+
+// From the review of trash-on-delete: what must never be moved.
+TEST_CASE("backup: a file another photo relies on stays, a refused one does not hold the rest up, and many at once move nothing",
+          "[mobile-link]") {
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  const fs::path nas = phone.root / "sample-nas";
+  fs::create_directories(scratch);
+  auto target = bk::local_target(nas.string(), "0123456789abcdef", bk::kSampleLimit,
+                                 [](const std::string&) { return std::uint64_t{1} << 40; });
+  const std::string root = bk::kSampleFolderId;
+
+  SECTION("the same picture twice in Photos: deleting one leaves the file for the other") {
+    camera_roll roll(phone.root / "roll", scratch, 4, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    REQUIRE(run_deleting(*target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+    const bk::item first = roll.items[0];
+    // A second photo recorded against the first one's files, as a duplicate in Photos is.
+    for (const auto& r : first.resources) {
+      auto row = (*ledger)->find(root, first.key, r.kind, r.name);
+      REQUIRE(row);
+      row->key = "twin-of-first";
+      REQUIRE((*ledger)->add(*row));
+    }
+    std::vector<bk::item> now(roll.items.begin() + 1, roll.items.end());
+    auto [report, done] = run_deleting(*target, roll, now, {first.key}, **ledger, scratch, root);
+    CHECK(report.trashed == 0);
+    CHECK(trashed_under(nas) == 0);
+    CHECK(done == std::vector<std::string>{first.key});
+    for (const auto& r : first.resources) {
+      CHECK_FALSE((*ledger)->find(root, first.key, r.kind, r.name));  // this photo's row goes
+      CHECK((*ledger)->find(root, "twin-of-first", r.kind, r.name));   // the other's stays, with its file
+    }
+    // The twin deleted too: now nothing relies on the file, and it goes.
+    auto [after, after_done] = run_deleting(*target, roll, now, {"twin-of-first"}, **ledger, scratch, root);
+    CHECK(after.trashed == first.resources.size());
+    CHECK(trashed_under(nas) == first.resources.size());
+  }
+
+  SECTION("one file the service refuses to move does not hold the others up") {
+    camera_roll roll(phone.root / "roll", scratch, 5, 9);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    REQUIRE(run_deleting(*target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+    struct refuses_one final : bk::target {
+      bk::target& t;
+      std::string refused;
+      explicit refuses_one(bk::target& real) : t(real) {}
+      mv::result<std::vector<bk::folder>> folders() override { return t.folders(); }
+      mv::result<serve::stat_info> space(const std::string& r) override { return t.space(r); }
+      mv::result<std::vector<serve::list_entry>> list(const std::string& r, const std::string& rel) override { return t.list(r, rel); }
+      mv::result<serve::client::write_done> write(const std::string& r, const std::string& rel, std::uint64_t size,
+                                                  const std::string& hash, std::uint64_t at, const serve::client::read_fn& read,
+                                                  const std::function<void(std::uint64_t)>& progress, const mob::cancel_flag* cancel,
+                                                  serve::client::write_refused* why, bool meta) override {
+        return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta);
+      }
+      mv::result<std::vector<std::string>> ledger_ids(const std::string& r) override { return t.ledger_ids(r); }
+      mv::result<std::string> read_ledger(const std::string& r, const std::string& id) override { return t.read_ledger(r, id); }
+      std::string device_id() const override { return t.device_id(); }
+      mv::result<bool> trash(const std::string& r, const std::string& rel) override {
+        if (rel == refused) return mv::err(mv::status::permission_denied);
+        return t.trash(r, rel);
+      }
+    } picky(*target);
+    const bk::item stuck = roll.items[0], fine = roll.items[1];
+    picky.refused = (*ledger)->find(root, stuck.key, stuck.resources[0].kind, stuck.resources[0].name)->rel;
+    std::vector<bk::item> now(roll.items.begin() + 2, roll.items.end());
+    auto [report, done] = run_deleting(picky, roll, now, {stuck.key, fine.key}, **ledger, scratch, root);
+    CHECK(report.trashed == fine.resources.size());
+    CHECK(done == std::vector<std::string>{fine.key});  // the refused one waits, the other is done
+    CHECK((*ledger)->find(root, stuck.key, stuck.resources[0].kind, stuck.resources[0].name));
+  }
+
+  SECTION("more than the limit gone at once is a library removed from the phone: nothing moves") {
+    const int count = static_cast<int>(bk::kMaxDeletedAtOnce) + 1;
+    camera_roll roll(phone.root / "roll", scratch, count, 3);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    REQUIRE(run_deleting(*target, roll, roll.items, {}, **ledger, scratch, root).first.now == bk::state::done);
+    const std::size_t rows = (*ledger)->size(root);
+    std::vector<std::string> all;
+    for (const auto& it : roll.items) all.push_back(it.key);
+    auto [report, done] = run_deleting(*target, roll, {}, all, **ledger, scratch, root);
+    CHECK(report.trashed == 0);
+    CHECK(trashed_under(nas) == 0);
+    CHECK(done.size() == all.size());         // done with: never mirrored on a later run either
+    CHECK((*ledger)->size(root) == rows);     // and still recorded as backed up
+    // One short of that is someone deleting photos.
+    all.pop_back();
+    std::vector<bk::item> kept{roll.items.back()};
+    auto [some, some_done] = run_deleting(*target, roll, kept, all, **ledger, scratch, root);
+    CHECK(some.trashed > 0);
+    CHECK(trashed_under(nas) == some.trashed);
+  }
+}
+
 TEST_CASE("backup: the sample library's folder on the phone runs the same backup and sends nothing", "[mobile-link]") {
   temp_root phone;
   const fs::path scratch = phone.root / "scratch";
@@ -421,6 +745,51 @@ TEST_CASE("backup: the sample library's folder on the phone runs the same backup
 }
 
 #include "mobile/mv_mobile_link.h"
+
+TEST_CASE("backup: the C ABI says a phone limited to other folders has none it may use", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), device.data());
+  serve::grants::grant g;
+  g.name = "Phone";
+  g.key = pub;
+  g.roots = std::vector<std::string>{kSharedRoot};
+  REQUIRE(serve::grants::save(*n.store, {g}));
+  n.srv->recheck_devices();
+  temp_root phone;
+  const auto cfg = n.config(device);
+  const std::string lib_dir = (phone.root / "library").string(), cache = (phone.root / "cache").string();
+  mv_link_config lc{};
+  lc.library_dir = lib_dir.c_str();
+  lc.cache_dir = cache.c_str();
+  lc.library_id = kLibrary.c_str();
+  lc.local = cfg.local.c_str();
+  lc.public_name = cfg.public_name.c_str();
+  lc.device_name = "Test iPhone";
+  lc.identity = cfg.identity.data();
+  lc.access_key = cfg.access_key.data();
+  lc.device_key = cfg.device_key.data();
+  key32 publisher{};
+  lc.publisher_key = publisher.data();
+  mv_mobile_link* link = mv_link_open(&lc);
+  REQUIRE(link);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(link, nullptr, &report) == MV_LINK_OK);
+  const std::string ledger_path = (phone.root / "ledger.db").string(), scratch = (phone.root / "scratch").string();
+  fs::create_directories(scratch);
+  mv_backup_config bc{ledger_path.c_str(), scratch.c_str(), kLibrary.c_str(), nullptr};
+  mv_backup* b = mv_backup_open(link, &bc);
+  REQUIRE(b);
+  int count = 0;
+  CHECK(mv_backup_folders(b, [](void* ctx, const char*, const char*, int32_t) { ++*static_cast<int*>(ctx); }, &count) ==
+        MV_LINK_NO_FOLDER);
+  CHECK(count == 0);
+  mv_backup_close(b);
+  mv_link_close(link);
+}
 
 TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]") {
   nas n;
@@ -555,4 +924,325 @@ TEST_CASE("backup: a hostile or garbled ledger copy on the NAS never blocks or s
   CHECK(last.now == bk::state::done);
   CHECK(last.copied == roll.resource_count());
   CHECK(last.backed_up == roll.items.size());
+}
+
+// ---- changing the shared folders (serve_client.h "changing the shared folders") ----------------
+
+namespace {
+
+// A "view" device: on the grants list with backup off.
+void grant_view(nas& n, const key32& device) {
+  key32 pub;
+  crypto_scalarmult_base(pub.data(), device.data());
+  std::vector<serve::grants::grant> list;
+  REQUIRE(serve::grants::load(*n.store, list));
+  serve::grants::grant g;
+  g.name = "Viewer";
+  g.key = pub;
+  g.backup = false;
+  g.created = 1;
+  list.push_back(g);
+  REQUIRE(serve::grants::save(*n.store, list));
+}
+
+std::string random_bytes(std::size_t n) {
+  std::string s(n, '\0');
+  randombytes_buf(s.data(), s.size());
+  return s;
+}
+
+bool root_writable(mob::link_session& link, const std::string& id) {
+  auto roots = link.roots();
+  REQUIRE(roots);
+  for (const auto& r : *roots) {
+    if (r.id == id) return r.writable;
+  }
+  return false;
+}
+
+int leftovers(const fs::path& root) {
+  int n = 0;
+  for (const auto& e : fs::recursive_directory_iterator(root)) {
+    const std::string name = e.path().filename().string();
+    if (name.ends_with(".mvpart") || name.ends_with(".mvmove")) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST_CASE("change: a change device adds, makes folders, renames, moves and deletes over the link", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  REQUIRE(link.changes_files());
+  CHECK(*link.changes_files());
+  CHECK(root_writable(link, kSharedRoot));
+
+  const fs::path local = phone.root / "IMG_0001.jpg";
+  write_file(local, "a photo from the phone");
+  serve::client::change_refused why;
+  auto added = link.add_file(kSharedRoot, "Trips/IMG_0001.jpg", local.string(), nullptr, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/IMG_0001.jpg");
+  CHECK(read_all(n.shared / "Trips" / "IMG_0001.jpg") == "a photo from the phone");
+  // The same name again, a different file: kept beside it, never over it.
+  write_file(local, "another photo");
+  added = link.add_file(kSharedRoot, "Trips/IMG_0001.jpg", local.string(), nullptr, nullptr, &why);
+  REQUIRE(added);
+  CHECK(added->rel == "Trips/IMG_0001 (2).jpg");
+  CHECK(read_all(n.shared / "Trips" / "IMG_0001.jpg") == "a photo from the phone");
+
+  REQUIRE(link.make_folder(kSharedRoot, "Trips/Lisbon", &why));
+  CHECK(fs::is_directory(n.shared / "Trips" / "Lisbon"));
+  // Rename, then move into the new folder.
+  REQUIRE(link.move(kSharedRoot, "Trips/IMG_0001 (2).jpg", kSharedRoot, "Trips/Harbour.jpg", &why));
+  REQUIRE(link.move(kSharedRoot, "Trips/Harbour.jpg", kSharedRoot, "Trips/Lisbon/Harbour.jpg", &why));
+  CHECK(read_all(n.shared / "Trips" / "Lisbon" / "Harbour.jpg") == "another photo");
+  // A taken destination is refused, and nothing is replaced.
+  auto clash = link.move(kSharedRoot, "Trips/IMG_0001.jpg", kSharedRoot, "Trips/Lisbon/Harbour.jpg", &why);
+  CHECK_FALSE(clash);
+  CHECK(why.why == serve::client::change_why::exists);
+  CHECK(read_all(n.shared / "Trips" / "Lisbon" / "Harbour.jpg") == "another photo");
+  // Delete: into the folder's trash on the server, gone from every listing.
+  auto removed = link.remove(kSharedRoot, "Trips/Lisbon", &why);
+  REQUIRE(removed);
+  CHECK_FALSE(fs::exists(n.shared / "Trips" / "Lisbon"));
+  CHECK(removed->rel.ends_with("/Trips/Lisbon"));
+  CHECK(fs::exists(n.shared / serve::kTrashFolder / removed->rel / "Harbour.jpg"));
+  auto listed = link.list(kSharedRoot, "Trips");
+  REQUIRE(listed);
+  CHECK(listed->size() == 1);
+  CHECK(leftovers(n.shared) == 0);
+}
+
+TEST_CASE("change: a view device sees no writable folder and is refused", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  const key32 device = random_key();
+  n.start();
+  grant_view(n, device);
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  CHECK_FALSE(root_writable(link, kSharedRoot));
+  serve::client::change_refused why;
+  CHECK_FALSE(link.make_folder(kSharedRoot, "New folder", &why));
+  CHECK(why.why == serve::client::change_why::not_allowed);
+  CHECK_FALSE(fs::exists(n.shared / "New folder"));
+}
+
+TEST_CASE("change: an add carries on after a cancel and after a dropped link, and arrives whole", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  const fs::path local = phone.root / "clip.mov";
+  const std::string bytes = random_bytes(24u << 20);
+  write_file(local, bytes);
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+
+  SECTION("cancelled part way, then again: picks up where the copy ended") {
+    mob::cancel_flag cancel;
+    auto first = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                               [&](std::uint64_t done, std::uint64_t) {
+                                 if (done >= (4u << 20)) cancel.stop = true;
+                               },
+                               &cancel, &why);
+    CHECK_FALSE(first);
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+    std::uint64_t lowest = UINT64_MAX;
+    auto again = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                               [&](std::uint64_t done, std::uint64_t) { lowest = std::min(lowest, done); }, nullptr, &why);
+    REQUIRE(again);
+    CHECK(again->rel == "clip.mov");
+    CHECK(lowest >= (4u << 20));  // never from the start
+  }
+  SECTION("stopped while it is still being hashed: nothing is sent") {
+    mob::cancel_flag cancel;
+    cancel.stop = true;
+    bool sent = false;
+    auto stopped = link.add_file(kSharedRoot, "clip.mov", local.string(), [&](std::uint64_t, std::uint64_t) { sent = true; },
+                                 &cancel, &why);
+    REQUIRE_FALSE(stopped);
+    CHECK(stopped.error() == mv::status::cancelled);
+    CHECK_FALSE(sent);
+    CHECK(fs::is_empty(n.shared));
+    // Then sent whole, as the other sections end.
+    REQUIRE(link.add_file(kSharedRoot, "clip.mov", local.string(), nullptr, nullptr, &why));
+  }
+  SECTION("the link cut mid-file: reconnected, and carried on") {
+    std::atomic<bool> cut{false};
+    std::thread cutter;
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (4u << 20) && !cut.exchange(true)) cutter = std::thread([&] { link.disconnect(); });
+                              },
+                              nullptr, &why);
+    if (cutter.joinable()) cutter.join();
+    CHECK(cut);
+    INFO("status " << (done ? 0 : static_cast<int>(done.error())) << " why " << static_cast<int>(why.why) << " "
+                   << why.word);
+    REQUIRE(done);
+    CHECK(done->rel == "clip.mov");
+  }
+  CHECK(read_all(n.shared / "clip.mov").size() == bytes.size());
+  CHECK((read_all(n.shared / "clip.mov") == bytes));
+  CHECK(leftovers(n.shared) == 0);
+}
+
+TEST_CASE("change: the C ABI the app calls", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  const auto cfg = n.config(device);
+  const std::string lib_dir = (phone.root / "library").string(), cache = (phone.root / "cache").string();
+  mv_link_config lc{};
+  lc.library_dir = lib_dir.c_str();
+  lc.cache_dir = cache.c_str();
+  lc.library_id = kLibrary.c_str();
+  lc.local = cfg.local.c_str();
+  lc.public_name = cfg.public_name.c_str();
+  lc.device_name = "Test iPhone";
+  lc.identity = cfg.identity.data();
+  lc.access_key = cfg.access_key.data();
+  lc.device_key = cfg.device_key.data();
+  key32 publisher{};
+  lc.publisher_key = publisher.data();
+  mv_mobile_link* link = mv_link_open(&lc);
+  REQUIRE(link);
+  mv_route_report report{};
+  REQUIRE(mv_link_connect(link, nullptr, &report) == MV_LINK_OK);
+
+  int32_t can = 0;
+  REQUIRE(mv_files_can_change(link, &can) == MV_LINK_OK);
+  CHECK(can == 1);
+  std::map<std::string, int> writable;
+  REQUIRE(mv_files_writable_roots(link, [](void* ctx, const char* id, int32_t w) {
+            (*static_cast<std::map<std::string, int>*>(ctx))[id] = w;
+          }, &writable) == MV_LINK_OK);
+  CHECK(writable[kSharedRoot] == 1);
+
+  const fs::path local = phone.root / "notes.txt";
+  write_file(local, "notes");
+  mv_change_result out{};
+  std::uint64_t last = 0;
+  REQUIRE(mv_files_add(link, kSharedRoot.c_str(), "notes.txt", local.string().c_str(), nullptr,
+                       [](void* ctx, uint64_t done, uint64_t) { *static_cast<std::uint64_t*>(ctx) = done; }, &last,
+                       &out) == MV_LINK_OK);
+  CHECK(std::string(out.rel) == "notes.txt");
+  CHECK(last == 5);
+  REQUIRE(mv_files_mkdir(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_OK);
+  REQUIRE(mv_files_move(link, kSharedRoot.c_str(), "notes.txt", kSharedRoot.c_str(), "Docs/notes.txt", &out) == MV_LINK_OK);
+  CHECK(std::string(out.rel) == "Docs/notes.txt");
+  REQUIRE(mv_files_mkdir(link, kSharedRoot.c_str(), "Docs2", &out) == MV_LINK_OK);
+  CHECK(mv_files_move(link, kSharedRoot.c_str(), "Docs2", kSharedRoot.c_str(), "Docs", &out) == MV_LINK_DENIED);
+  CHECK(out.why == MV_CHANGE_EXISTS);
+  REQUIRE(mv_files_delete(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_OK);
+  CHECK_FALSE(fs::exists(n.shared / "Docs"));
+  CHECK(mv_files_delete(link, kSharedRoot.c_str(), "Docs", &out) == MV_LINK_NOT_FOUND);
+  CHECK(out.why == MV_CHANGE_NOT_FOUND);
+  CHECK(mv_files_mkdir(link, kSharedRoot.c_str(), "", &out) == MV_LINK_INVALID);
+  // The phone's own file missing: said as the phone's, not the server's.
+  CHECK(mv_files_add(link, kSharedRoot.c_str(), "x.txt", (phone.root / "missing.txt").string().c_str(), nullptr, nullptr,
+                     nullptr, &out) == MV_LINK_INVALID);
+  CHECK(out.why == MV_CHANGE_LOCAL);
+  mv_link_close(link);
+}
+
+TEST_CASE("change: the phone's own file failing is told apart from the server and the link", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+
+  SECTION("not on the phone any more") {
+    auto gone = link.add_file(kSharedRoot, "a.jpg", (phone.root / "missing.jpg").string(), nullptr, nullptr, &why);
+    REQUIRE_FALSE(gone);
+    CHECK(gone.error() == mv::status::invalid_arg);
+    CHECK(link.connected());
+  }
+  SECTION("cut short while it is sent: the link stays, and nothing is left whole on the server") {
+    const fs::path local = phone.root / "clip.mov";
+    write_file(local, random_bytes(12u << 20));
+    bool cut = false;
+    auto short_read = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                                    [&](std::uint64_t sent, std::uint64_t) {
+                                      if (sent >= (2u << 20) && !cut) {
+                                        cut = true;
+                                        fs::resize_file(local, 1u << 20);
+                                      }
+                                    },
+                                    nullptr, &why);
+    REQUIRE_FALSE(short_read);
+    CHECK(short_read.error() == mv::status::invalid_arg);
+    CHECK(link.connected());
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+  }
+}
+
+TEST_CASE("change: what arrives is never kept unless it is what was hashed", "[mobile-link]") {
+  nas n;
+  n.with_shared = true;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  temp_root phone;
+  mob::link_session link(n.config(device));
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  serve::client::change_refused why;
+  const fs::path local = phone.root / "clip.mov";
+
+  SECTION("changed on the phone while it is sent: sent again once, then refused as damaged") {
+    write_file(local, random_bytes(8u << 20));
+    bool changed = false;
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (1u << 20) && !changed) {
+                                  changed = true;
+                                  write_file(local, random_bytes(8u << 20));  // same size, other bytes
+                                }
+                              },
+                              nullptr, &why);
+    REQUIRE_FALSE(done);
+    CHECK(why.why == serve::client::change_why::hash);
+    CHECK_FALSE(fs::exists(n.shared / "clip.mov"));
+    CHECK(leftovers(n.shared) == 0);
+  }
+  SECTION("an unfinished copy of another file under the same name: the new one arrives whole") {
+    write_file(local, random_bytes(16u << 20));
+    mob::cancel_flag cancel;
+    CHECK_FALSE(link.add_file(kSharedRoot, "clip.mov", local.string(),
+                              [&](std::uint64_t sent, std::uint64_t) {
+                                if (sent >= (4u << 20)) cancel.stop = true;
+                              },
+                              &cancel, &why));
+    const std::string other = random_bytes(16u << 20);
+    write_file(local, other);
+    auto done = link.add_file(kSharedRoot, "clip.mov", local.string(), nullptr, nullptr, &why);
+    REQUIRE(done);
+    CHECK(done->rel == "clip.mov");
+    CHECK((read_all(n.shared / "clip.mov") == other));
+  }
 }

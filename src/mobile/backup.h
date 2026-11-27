@@ -18,7 +18,7 @@
 // resource at a time is exported to a scratch file, hashed, sent and removed, so
 // the phone never holds more than the largest single file. Files go out through
 // `target`: the NAS service over the link, or in the sample library the
-// clearly labelled "Sample NAS on this iPhone" folder (local_target), which
+// clearly labelled "Sample server on this iPhone" folder (local_target), which
 // writes through the service's own commit step (serve_backup.h) and never
 // sends anything anywhere.
 //
@@ -77,13 +77,24 @@ class target {
   [[nodiscard]] virtual result<std::string> read_ledger(const std::string& root, const std::string& id) = 0;
   // This phone's folder id (serve::device_folder_id).
   [[nodiscard]] virtual std::string device_id() const = 0;
+  // Whether this phone is limited to some folders (a scoped grant), as of the last folders()
+  // answer: the service names only those, so with none of them a backup folder, folders() is
+  // empty though the server may have one.
+  [[nodiscard]] virtual bool limited_to_some_folders() const { return false; }
+  // A backed-up file into the folder's hidden trash (a photo deleted from Photos): true when
+  // moved, false when it was not there. status::unsupported_format: a service that cannot.
+  [[nodiscard]] virtual result<bool> trash(const std::string& root, const std::string& rel) {
+    (void)root;
+    (void)rel;
+    return err(status::unsupported_format);
+  }
 };
 
 [[nodiscard]] std::unique_ptr<target> link_target(link_session& link);
 
 // The sample library's "NAS": a folder on this phone, never sent anywhere.
 inline constexpr const char* kSampleFolderId = "5a3b1e0f5a3b1e0f";
-inline constexpr const char* kSampleFolderLabel = "Sample NAS on this iPhone";
+inline constexpr const char* kSampleFolderLabel = "Sample server on this iPhone";
 inline constexpr std::uint64_t kSampleLimit = 250ull * 1024 * 1024;
 [[nodiscard]] std::unique_ptr<target> local_target(const std::string& folder_path, const std::string& device_id,
                                                    std::uint64_t limit = kSampleLimit,
@@ -117,6 +128,9 @@ class source {
 };
 
 // ---- the ledger -----------------------------------------------------------------------------
+
+// The most backed-up photos one run moves to the trash for having been deleted from Photos.
+inline constexpr std::size_t kMaxDeletedAtOnce = 100;
 
 struct row {
   std::string key, kind, name;
@@ -192,6 +206,7 @@ struct status_report {
   std::uint64_t files_done = 0;   // files in the ledger and in the folder
   std::uint64_t copied = 0;       // files copied this run
   std::uint64_t bytes = 0;        // sent this run
+  std::uint64_t trashed = 0;      // files moved into the folder's trash this run (photos deleted from Photos)
   std::string current;            // the file being copied (this phone's own screen only)
   double current_fraction = 0;
   std::vector<failure> failures;  // this run's
@@ -210,6 +225,15 @@ class engine {
   engine(options o, target& t, source& s, ledger& l);
   // Newest first (§10b: recent photos are safe soonest).
   void set_items(std::vector<item> items);
+  // Keys of photos Photos says were deleted (never merely missing from the items: hidden photos
+  // and a burst's other frames are left out of those). A run moves their files in this folder
+  // into its trash, never one whose key is in the items again; deleted_done() then names the keys
+  // handled. One it could not finish (the folder offline, an older service, the link) stays out.
+  // More backed-up photos than kMaxDeletedAtOnce gone at once is taken for a library being
+  // removed from the phone (iCloud Photos turned off, signed out), not for deleting: nothing is
+  // moved and the keys are done with. A file another photo's row still names is never moved.
+  void set_deleted(std::vector<std::string> keys);
+  [[nodiscard]] std::vector<std::string> deleted_done() const;
   // One run, to the end or the first state that stops it. `report` is called
   // from this thread as things change.
   state run(const cancel_flag* cancel, const std::function<void(const status_report&)>& report);
@@ -221,6 +245,7 @@ class engine {
   [[nodiscard]] bool restore_if_empty();
   [[nodiscard]] result<present_set> check_folder();
   [[nodiscard]] bool item_done(const item& it) const;
+  void trash_deleted(const cancel_flag* cancel);
   void copy_ledger();
 
   options o_;
@@ -230,6 +255,8 @@ class engine {
   std::vector<item> items_;
   mutable std::mutex m_;
   std::vector<std::string> remaining_;  // under m_
+  std::vector<std::string> deleted_;
+  std::vector<std::string> deleted_done_;  // under m_
   status_report st_;
   bool restored_ = false;  // rows came from the NAS's copy this run: send ours back
 };

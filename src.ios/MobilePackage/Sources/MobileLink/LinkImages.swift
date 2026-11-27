@@ -59,6 +59,11 @@ public final class LinkImages: ImageLadder, @unchecked Sendable {
     return image
   }
 
+  /// File mode's clips only: a catalogue's lengths come with the catalogue.
+  public func length(for item: MediaItem) async -> TimeInterval? {
+    FilePath.isFile(item.id.raw) ? await files.length(for: item) : nil
+  }
+
   public func thumbnail(for item: MediaItem) async -> UIImage? {
     if FilePath.isFile(item.id.raw) { return await files.thumbnail(for: item) }
     guard let asset = assetID(item.id) else { return nil }

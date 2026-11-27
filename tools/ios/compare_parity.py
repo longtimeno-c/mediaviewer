@@ -4,7 +4,9 @@
 """docs/plans/mobile.md 9: the phone and the desktop on one generation, row for row.
 
 Rows are (path, moment, kind, match, more-in-clip) and must match in order. Scores must agree to
-within --score-delta; they are reported, not ranked, since both towers ran on the CPU.
+within --score-delta; they are reported, not ranked, since both towers ran on the CPU. One
+difference is meant: a description the gate holds back is the desktop's newest-first list (#412,
+every row unmatched) and the phone's ranking by closeness (decision log, 2026-11-14).
 """
 import argparse
 import json
@@ -42,6 +44,7 @@ def main():
     rows_total = 0
     empties = 0
     with_hits = 0
+    unanswered = 0
     for q, d in desktop.items():
         p = phone[q]
         dr = [r[:5] for r in d["rows"]]
@@ -51,6 +54,9 @@ def main():
             with_hits += 1
         else:
             empties += 1
+        if dr and all(r[3] == 0 for r in dr) and pr and all(r[3] != 0 for r in pr) and len(pr) == len(dr):
+            unanswered += 1
+            continue
         if dr != pr:
             bad += 1
             print(f"DIFFER: {q!r}: desktop {len(dr)} rows, phone {len(pr)} rows")
@@ -70,6 +76,7 @@ def main():
         "queries": len(desktop),
         "queries_with_rows": with_hits,
         "queries_without_rows": empties,
+        "queries_held_back_ranked_on_phone": unanswered,
         "rows": rows_total,
         "queries_differing": bad,
         "largest_score_delta": biggest,

@@ -59,7 +59,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Lin
 endif()
 
 project(mediaviewer
-  VERSION 0.1.42
+  VERSION 0.1.46
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -72,6 +72,18 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 option(MV_BUILD_TESTS "Build the core test suite" ON)
 option(MV_ASAN "Build with AddressSanitizer (docs/design/09 CI configuration)" OFF)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/download.cmake")  # mv_download: retried, hash-checked
+if(MV_BUILD_TESTS AND NOT IOS)
+  foreach(_case ok bad_hash unreachable)
+    add_test(NAME cmake_download_${_case}
+             COMMAND "${CMAKE_COMMAND}" -DCASE=${_case} -DWORK=${CMAKE_BINARY_DIR}/_test_download/${_case}
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_download.cmake")
+  endforeach()
+  set_tests_properties(cmake_download_bad_hash PROPERTIES WILL_FAIL ON)
+  set_tests_properties(cmake_download_unreachable PROPERTIES
+    PASS_REGULAR_EXPRESSION "Download failed after 3 tries")
+endif()
 
 # The iPhone core (docs/plans/mobile.md): engines only, no viewer.
 if(IOS)
@@ -728,6 +740,8 @@ add_library(mv_clip STATIC
   src/edit/clip_sample.cpp
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
+  src/edit/clip_convert.cpp
+  src/edit/clip_convert.h
   src/edit/clip_picture_io.cpp
   src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
@@ -785,7 +799,7 @@ file(GENERATE
 # (docs/design/08 "Execution & UX"; docs/design/12 2026-09-25). Beside MediaViewer.exe; no
 # mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
 add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
-target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options)
+target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options shell32)  # shell32: CommandLineToArgvW (the phone's conversion)
 target_include_directories(MediaViewerClipJob PRIVATE src)
 mv_asan_runtime_beside(MediaViewerClipJob)
 
@@ -806,8 +820,11 @@ include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
 # The Driftwire add-on (docs/design/28): mv_driftwire.dll in
 # build/addons/driftwire, packed and signed separately; never installed with the app.
 include("${CMAKE_SOURCE_DIR}/cmake/driftwire.cmake")
-# Phone access, part of the app (docs/plans/phone-in-the-app.md).
+# The Phone access add-on (docs/plans/phone-access-addon.md): mv_phone_access.dll in
+# build/addons/phone-access, packed and signed separately; never installed with the app.
 include("${CMAKE_SOURCE_DIR}/cmake/phone.cmake")
+# Another desktop opens the host's drives (docs/plans/desktop-client.md): part of the app.
+include("${CMAKE_SOURCE_DIR}/cmake/remote.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -867,8 +884,13 @@ add_library(mediaviewer_core SHARED
   src/abi/script_abi.cpp
   src/abi/crash_export.cpp
   src/abi/meta_abi.cpp
-  src/abi/phone_abi.cpp
-  src/abi/phone_source.h
+  # The server's menu while `driftwire host` runs (docs/plans/self-hosted.md "Tray"):
+  # the base app's own kept entry; its model is src/addons/phone/host_tray.* (mv_phone).
+  src/abi/host_tray_glue.cpp
+  src/abi/host_tray_abi.cpp
+  src/abi/host_tray_glue.h
+  src/abi/remote_abi.cpp
+  src/abi/remote_source.h
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
@@ -884,7 +906,11 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip mv_phone)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip
+  # Only the server menu's objects (host_tray, self_host) are pulled from mv_phone: the
+  # desk, the link and the card are the Phone access add-on's. mv_remote: another
+  # computer's folders (docs/plans/desktop-client.md).
+  mv_phone mv_remote)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -915,6 +941,11 @@ add_executable(mediaviewer_lab WIN32
   src/shell/key_router.h
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
+  src/shell/browse_history.h
+  src/shell/abi_text.h
+  src/shell/file_drop.h
+  src/shell/file_transfer.cpp
+  src/shell/file_transfer.h
   src/shell/marks.h
   src/shell/share_menu.h
   src/shell/meta_store.cpp
@@ -1171,6 +1202,8 @@ if(MV_BUILD_TESTS)
   add_executable(mv_tests
     tests/crt_no_dialogs.cpp
     tests/test_result.cpp
+    # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
+    tests/test_desktop_client.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_boot_timeline.cpp
@@ -1193,6 +1226,10 @@ if(MV_BUILD_TESTS)
     tests/test_tree_watch.cpp
     tests/test_dir_tree.cpp
     tests/test_browse_path.cpp
+    tests/test_browse_history.cpp
+    tests/test_abi_text.cpp
+    tests/test_file_drop.cpp
+    tests/test_file_transfer.cpp
     tests/test_folder.cpp
     tests/test_presenter.cpp
     tests/test_colour_desc.cpp
@@ -1204,6 +1241,7 @@ if(MV_BUILD_TESTS)
     tests/test_transport.cpp
     tests/test_container_probe.cpp
     tests/test_audio_files.cpp
+    tests/test_camera_containers.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
     tests/test_page_thumbs.cpp
@@ -1286,6 +1324,7 @@ if(MV_BUILD_TESTS)
     # docs/design/26: the Photos backup engine, portable; PhotoKit is the Mac host's.
     tests/test_photos_backup.cpp
     src/shell/photos_backup.cpp
+    src/shell/photos_backup_server.cpp
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
@@ -1358,6 +1397,7 @@ if(MV_BUILD_TESTS)
     src/shell/keymap.cpp
     src/shell/key_router.cpp
     src/shell/file_jobs.cpp
+    src/shell/file_transfer.cpp
     src/shell/open_request.cpp
     src/shell/os_integration.cpp
     src/shell/settings.cpp
@@ -1379,6 +1419,8 @@ if(MV_BUILD_TESTS)
   endif()
   target_link_libraries(mv_tests PRIVATE
     ${MV_SQLITE_TARGET}  # docs/design/26: the Photos backup engine's manifest
+    mv_remote
+    mv_wire
     mv_core
     mv_gfx
     mv_player
@@ -1413,7 +1455,7 @@ if(MV_BUILD_TESTS)
   # The clip helper with its test hooks (a crash, a hang, a software encoder);
   # the product MediaViewerClipJob.exe is built without them.
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
-  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options)
+  target_link_libraries(mv_clipjob_test PRIVATE mv_clip mv_project_options shell32)  # shell32: CommandLineToArgvW
   target_include_directories(mv_clipjob_test PRIVATE src)
   # The hooks reach clip::detail through clip_internal.h, which includes FFmpeg;
   # mv_clip keeps those headers PRIVATE.
