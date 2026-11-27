@@ -756,6 +756,9 @@ set(MV_MAC_HOST_SOURCES
   # Text in images: the Vision half of shell/text_in_image.h's port.
   src/shell/text_recognition_mac.mm
   src/shell/text_recognition_mac.h
+  # docs/plans/desktop-client.md §6a: a paired server's SMB shares in the Finder (NetFS).
+  src/shell/lan_share_mac.mm
+  src/shell/lan_share_mac.h
 )
 set_source_files_properties(
   src/shell/main_mac.mm
@@ -766,6 +769,7 @@ set_source_files_properties(
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   src/shell/text_recognition_mac.mm
+  src/shell/lan_share_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 function(mv_mac_host target)
@@ -791,6 +795,7 @@ function(mv_mac_host target)
     "-framework QuartzCore"
     "-framework CoreServices"
     "-framework DiskArbitration"
+    "-framework NetFS"  # §6a: the server's shares in the Finder (shell/lan_share_mac.mm)
     "-framework UniformTypeIdentifiers"
     "-framework MediaPlayer"  # PR 15: Now Playing / MPRemoteCommandCenter
     # docs/design/26: the Photos library as a folder and its backup (shell/photos_items_mac.mm).
@@ -967,6 +972,8 @@ if(MV_BUILD_TESTS)
     src/shell/folder_model_mac.cpp
     # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
     tests/test_desktop_client.cpp
+    # §6a: a paired server's LAN share in the Finder: when and what to mount.
+    tests/test_lan_share.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp

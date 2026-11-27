@@ -22,6 +22,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
@@ -1179,4 +1180,76 @@ TEST_CASE("a Photos backup run reaches a paired server's folder, and a second ru
   p = run();
   CHECK(p.state == bk::run_state::failed);
   CHECK(p.held == 0);
+}
+
+// docs/plans/desktop-client.md §6a: the host mounts a server's LAN share when it answers. The
+// library says when a server comes online (pairing, the first connect of a run, again after it
+// was unreachable) and how it was reached, so the share is mounted only from its LAN route.
+TEST_CASE("a desktop says when a server answers, and by which route", "[desktop-client]") {
+  host h;
+  scratch_dir dir{"desktop_online"};
+  REQUIRE(dw::secrets::owner_only_folder(utf8(dir / "keys")));
+  auto keys = dw::secrets::file_store(utf8(dir / "keys"));
+  REQUIRE(keys);
+  std::atomic<int> online{0};
+  std::string last;
+  std::mutex m;
+  auto make = [&] {
+    auto c = desktop_config(dir.root(), keys.get());
+    c.on_online = [&](const std::string& id) {
+      std::lock_guard lock(m);
+      last = id;
+      online.fetch_add(1);
+    };
+    auto lib = std::make_unique<rm::library>(std::move(c));
+    REQUIRE(lib->load());
+    return lib;
+  };
+  auto lib = make();
+  // The code names only the LAN address, so that is the route that answers.
+  auto id = lib->pair(h.code(600, /*with_public=*/false), std::time(nullptr));
+  REQUIRE(id);
+  CHECK(online.load() == 1);
+  {
+    std::lock_guard lock(m);
+    CHECK(last == *id);
+  }
+  auto route = lib->last_route(*id);
+  REQUIRE(route);
+  CHECK(route->address == "localhost:" + std::to_string(h.port));
+  CHECK_FALSE(route->over_internet);
+  CHECK_FALSE(route->relayed);
+  REQUIRE(lib->server(*id));
+  CHECK(lib->server(*id)->local == "localhost:" + std::to_string(h.port));
+  // Listing on the live link is not a new connect: nothing more is said.
+  REQUIRE(lib->list(rm::server_key(*id)));
+  CHECK(online.load() == 1);
+
+  // A new run: nothing known until it answers, then once.
+  lib.reset();
+  lib = make();
+  CHECK_FALSE(lib->last_route(*id));
+  auto top = lib->list(rm::server_key(*id));
+  REQUIRE(top);
+  CHECK(online.load() == 2);
+  REQUIRE(lib->last_route(*id));
+  CHECK_FALSE(lib->last_route(*id)->over_internet);
+  REQUIRE_FALSE(top->folders.empty());
+  CHECK(top->folders[0].name == "Photos");  // the label the host names its share after
+  (void)lib->list(rm::server_key(*id));
+  CHECK(online.load() == 2);
+
+  // Unreachable, then back: said again.
+  const std::uint16_t port = h.port;
+  h.stop();
+  lib.reset();
+  lib = make();
+  (void)lib->list(rm::server_key(*id));
+  REQUIRE(lib->server(*id));
+  CHECK(lib->server(*id)->state == rm::reach::unreachable);
+  CHECK_FALSE(lib->last_route(*id));
+  CHECK(online.load() == 2);
+  h.start(port);
+  REQUIRE(lib->list(rm::server_key(*id)));
+  CHECK(online.load() == 3);
 }

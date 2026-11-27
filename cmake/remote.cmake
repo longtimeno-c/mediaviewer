@@ -38,7 +38,8 @@ if(NOT TARGET mv_remote AND TARGET mv_io)
     $<TARGET_OBJECTS:mv_mobile_route>
     ${_R}/key.cpp ${_R}/key.h
     ${_R}/cache.cpp ${_R}/cache.h
-    ${_R}/library.cpp ${_R}/library.h)
+    ${_R}/library.cpp ${_R}/library.h
+    ${_R}/lan_share.cpp ${_R}/lan_share.h)
   target_include_directories(mv_remote PUBLIC "${MV_SOURCE_ROOT}/src")
   target_link_libraries(mv_remote PUBLIC mv_project_options mv_wire Threads::Threads
     PRIVATE ${MV_SODIUM_TARGET} mv_io)

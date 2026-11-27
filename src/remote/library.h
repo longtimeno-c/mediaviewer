@@ -64,6 +64,9 @@ struct server_info {
   // so, owner call 1), "change" or "admin" once a host's admin grants it; "" until it has
   // answered this run, or from a service older than roles.
   std::string role;
+  // The server's LAN "host:port" as last kept (servers.json), "" without one: where its SMB
+  // shares are at home (remote/lan_share.h), also when it has not answered this run.
+  std::string local;
 };
 
 struct folder {
@@ -119,6 +122,17 @@ struct config {
   // that kind without a tile.
   std::function<result<std::vector<std::uint8_t>>(std::span<const std::uint8_t>, const job_context*)> still_tile;
   std::function<result<std::vector<std::uint8_t>>(range_reader&, const job_context*)> clip_tile;
+  // A server answered after it had not this run (unknown, unreachable, ...): its id. Called on
+  // the worker that connected, never under the library's locks; the host hands it on (the
+  // Mac mounts the server's LAN share, remote/lan_share.h). Null: nothing.
+  std::function<void(const std::string& server_id)> on_online;
+};
+
+// How the last connect reached a server (mobile::route_report, without the failures).
+struct route_seen {
+  std::string address;  // "host:port" that answered
+  bool over_internet = false;
+  bool relayed = false;
 };
 
 // What a code says before it is redeemed: shown so the person can compare
@@ -164,6 +178,8 @@ class library {
   // ---- what the rows show; never blocks --------------------------------------
   [[nodiscard]] std::vector<server_info> servers() const;
   [[nodiscard]] std::optional<server_info> server(std::string_view id) const;
+  // How this run's latest connect to the server reached it; nullopt before one answered.
+  [[nodiscard]] std::optional<route_seen> last_route(std::string_view id) const;
   // The name a folder key is shown under: a named folder's label, a
   // subfolder's leaf, the server's name. "" when unknown.
   [[nodiscard]] std::string display_name(std::string_view key) const;

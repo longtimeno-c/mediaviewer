@@ -1204,6 +1204,8 @@ if(MV_BUILD_TESTS)
     tests/test_result.cpp
     # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
     tests/test_desktop_client.cpp
+    # §6a: a paired server's LAN share in the Finder: when and what to mount.
+    tests/test_lan_share.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_boot_timeline.cpp
