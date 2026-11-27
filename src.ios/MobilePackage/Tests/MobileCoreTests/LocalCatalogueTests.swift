@@ -122,6 +122,28 @@ final class LocalCatalogueTests: XCTestCase {
     withExtendedLifetime(before) {}
   }
 
+  /// A person's round icon is their own face, which the desktop cut from its cover of them
+  /// (2026-11-27: "Nigel" was the baby in the middle of his photo): read and decoded off the main
+  /// thread, then from memory for the next first paint.
+  func testAPersonsFaceIsTheirOwnCoverNotTheirPhoto() async throws {
+    let (location, _, _) = try library()
+    let catalogue = LocalCatalogue(location: location)
+    let people = try await catalogue.library.people()
+    let anna = try XCTUnwrap(people.first)
+    XCTAssertEqual(anna.name, "Anna")
+    XCTAssertTrue(anna.hasFace)
+    XCTAssertNil(catalogue.images.cachedFace(for: anna))
+    let face = await catalogue.images.face(for: anna)
+    XCTAssertEqual(face?.size, CGSize(width: 32, height: 48))  // the crop the desktop sent
+    let photo = await catalogue.images.thumbnail(for: anna.face)
+    XCTAssertEqual(photo?.size, CGSize(width: 48, height: 32))  // not the photo's tile
+    XCTAssertNotNil(catalogue.images.cachedFace(for: anna))
+    // An older desktop's catalogue sends no face: nothing is asked of it.
+    let older = Person(id: anna.id, name: anna.name, itemCount: anna.itemCount, face: anna.face, hasFace: false)
+    let none = await catalogue.images.face(for: older)
+    XCTAssertNil(none)
+  }
+
   /// #10: opening the grid starts nothing; the first tile does, after it has painted.
   func testWarmUpWaitsForTheFirstTile() async throws {
     let (location, _, _) = try library()

@@ -380,12 +380,13 @@ expected make_database(const build_options& o, const std::string& file, build_co
 
 // A faces.db a read-only engine opens as its own (faces_db::open_read_only),
 // made from the app's schema: named people and which assets and moments they
-// are in. Never an embedding (owner call 7): `emb` is empty. Every box is
-// dropped but one per person, their cover's, so the phone's People page crops
-// to that face as the app's does: the app's cover order (faces_db::people),
-// over the stills this share holds only, since a clip's phone tile is its
-// poster, not the moment the face was found in. The cover is marked pinned.
-expected make_people(const build_options& o, const std::string& catalogue, const std::string& file, build_counts& n) {
+// are in. Never an embedding (owner call 7): `emb` is empty and the box is
+// dropped, so nothing of a face leaves this machine but who it was. The
+// phone's People page shows each person by `covers`: a small picture of their
+// cover face (the desktop's cover order, faces_db::people), cut here as the
+// desktop cuts its covers (2026-11-27, owner: a crop, not a box).
+expected make_people(const build_options& o, const std::string& catalogue, const std::string& file, build_counts& n,
+                     const control& c) {
   {
     MV_TRY(auto fresh, faces_db::open(file, face_tuning{}, 128, "names-only"));
     (void)fresh;
@@ -414,11 +415,6 @@ expected make_people(const build_options& o, const std::string& catalogue, const
                 " WHERE f.person_id IN (SELECT id FROM main.people)") ||
       // A name whose faces are all in folders this share does not hold stays here.
       !exec(db, "DELETE FROM main.people WHERE id NOT IN (SELECT person_id FROM main.faces)") ||
-      !exec(db, "UPDATE main.faces SET (x, y, w, h, pinned) = (SELECT s.x, s.y, s.w, s.h, 1 FROM src.faces s"
-                " WHERE s.id = main.faces.id) WHERE id IN (SELECT (SELECT s.id FROM src.faces s"
-                " JOIN main.faces m ON m.id = s.id WHERE s.person_id = p.id AND s.pts_ms < 0 AND s.w > 0 AND s.h > 0"
-                " ORDER BY s.pinned DESC, COALESCE(s.quality, 0) DESC, s.score * s.w * s.h DESC, s.id LIMIT 1)"
-                " FROM main.people p)") ||
       !exec(db, "COMMIT")) {
     return err(status::io);
   }
@@ -426,6 +422,28 @@ expected make_people(const build_options& o, const std::string& catalogue, const
     stmt q(db, "SELECT COUNT(*) FROM main.people");
     if (!q.next()) return err(status::io);
     n.people = static_cast<std::uint64_t>(q.i64(0));
+  }
+  if (!exec(db, "CREATE TABLE main.covers(person_id INTEGER PRIMARY KEY, jpeg BLOB NOT NULL)")) return err(status::io);
+  if (o.face_cover) {
+    // Only faces this share holds (main.faces), each from its own file.
+    stmt q(db, "SELECT p.id, (SELECT s.id FROM src.faces s JOIN main.faces m ON m.id = s.id WHERE s.person_id = p.id"
+               " AND s.w > 0 AND s.h > 0 ORDER BY s.pinned DESC, COALESCE(s.quality, 0) DESC, s.score * s.w * s.h DESC,"
+               " s.id LIMIT 1) FROM main.people p ORDER BY p.id");
+    stmt face(db, "SELECT path, pts_ms, x, y, w, h FROM src.faces WHERE id = ?1");
+    stmt put(db, "INSERT INTO main.covers(person_id, jpeg) VALUES(?1, ?2)");
+    if (!exec(db, "BEGIN")) return err(status::io);
+    while (q.next()) {
+      if (c.cancelled && c.cancelled()) return err(status::cancelled);
+      face.reset();
+      if (!face.bind(1, q.i64(1)).next()) continue;
+      const std::array<float, 4> box{static_cast<float>(face.real(2)), static_cast<float>(face.real(3)),
+                                     static_cast<float>(face.real(4)), static_cast<float>(face.real(5))};
+      auto jpeg = o.face_cover(face.text(0), face.i64(1), box);
+      if (!jpeg || jpeg->empty()) continue;  // a file gone or unreadable: the phone shows the photo
+      put.reset();
+      if (!put.bind(1, q.i64(0)).bind_blob(2, *jpeg).run()) return err(status::io);
+    }
+    if (q.failed || !exec(db, "COMMIT")) return err(status::io);
   }
   if (!exec(db, "DETACH cat") || !exec(db, "DETACH src")) return err(status::io);
   return {};
@@ -590,7 +608,7 @@ result<build_counts> build(const build_options& o, const control& c) {
   if (!write_text(o.out_dir + "/settings.json", o.settings_json)) return fail(status::io);
   names.push_back("settings.json");
   if (!o.faces_db.empty() && fs::exists(fs_path(o.faces_db), ec)) {
-    if (const expected made = make_people(o, file, o.out_dir + "/faces.db", n); !made) return fail(made.error());
+    if (const expected made = make_people(o, file, o.out_dir + "/faces.db", n, c); !made) return fail(made.error());
     names.push_back("faces.db");
   }
   if (o.thumbs) {

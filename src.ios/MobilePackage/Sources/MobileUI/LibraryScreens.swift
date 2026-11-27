@@ -262,8 +262,8 @@ private struct PersonCell: View {
       Theme.surface
         .aspectRatio(1, contentMode: .fit)
         .overlay {
-          if let face = face ?? model.services.images.cachedImage(for: person.face.id) {
-            FaceIcon(image: face, box: person.faceBox)
+          if let face = face ?? PersonIcon.cached(for: person, in: model.services.images) {
+            Image(uiImage: face).resizable().scaledToFill()
           }
         }
         .clipShape(Circle())
@@ -276,25 +276,24 @@ private struct PersonCell: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(person.name), \(person.itemCount) photos and clips")
     .accessibilityAddTraits(.isButton)
-    .task { face = await model.services.images.thumbnail(for: person.face) }
+    .task { face = await PersonIcon.image(for: person, in: model.services.images) }
   }
 }
 
-/// The person's own face, framed as the desktop frames it (FaceCrop): the picture scaled and moved
-/// so that square fills the cell. Layout only: no pixels are copied on the main thread.
-struct FaceIcon: View {
-  let image: UIImage
-  let box: CGRect?
+/// A person's round icon: their own face where the desktop sent one, as its People covers are;
+/// the middle of their photo from an older desktop, or when the face cannot be read.
+enum PersonIcon {
+  /// For first paint. Never their whole photo while their face may still come: the middle of it
+  /// can be someone else.
+  @MainActor
+  static func cached(for person: Person, in images: ImageLadder) -> UIImage? {
+    if let face = images.cachedFace(for: person) { return face }
+    return person.hasFace ? nil : images.cachedImage(for: person.face.id)
+  }
 
-  var body: some View {
-    GeometryReader { geo in
-      let crop = FaceCrop.square(of: image.size, box: box)
-      let k = crop.width > 0 ? geo.size.width / crop.width : 1
-      Image(uiImage: image).resizable()
-        .frame(width: image.size.width * k, height: image.size.height * k)
-        .offset(x: -crop.minX * k, y: -crop.minY * k)
-    }
-    .clipped()
+  static func image(for person: Person, in images: ImageLadder) async -> UIImage? {
+    if person.hasFace, let face = await images.face(for: person) { return face }
+    return await images.thumbnail(for: person.face)
   }
 }
 

@@ -448,7 +448,8 @@ agent. The host table (`mediaviewer_addon.h`, append-only, every layout served) 
 (`video_frame`, `video_frame_rgb`), JPEG-512 moments, `audio_open` / `audio_read` / `audio_close`
 (mono float PCM), `thumbnail_jpeg` / `thumbnail_store_jpeg` / `thumbnail_make`, `tag_facts`,
 `route_of`, `read_cues`, `document_text`, `watch_tree`, `place_matches`, `locations_of_index`,
-`place_labels`, and verified family pieces.
+`place_labels`, `jpeg_shrink` / `jpeg_face_crop` (the phone's tiles and People covers), and
+verified family pieces.
 
 ## Audio
 

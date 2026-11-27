@@ -189,8 +189,7 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
     // One named person, on asset 1 (variant 1 names them differently). Variant 0 is a People
     // cover that is not the obvious face: Anna's cover is the face she was named by (pinned) at the
     // top right of a.jpg, which an unnamed baby's sharper face fills the middle of; her
-    // highest-scoring face is in b.jpg, and her clearest pinned one in the clip, whose phone tile
-    // is its poster, not that moment.
+    // highest-scoring face is in b.jpg, and her clearest one in the clip.
     const fs::path faces = root / "faces.db";
     {
       auto made = mv::ai::faces_db::open(faces.string(), mv::ai::face_tuning{}, 128, "fixture-faces/pre1");
@@ -208,7 +207,7 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
                                "(2, 2, '" + p + "/trip/b.jpg', -1, 0.4, 0.4, 0.2, 0.2, 0.99, 1, zeroblob(512),"
                                " 'fixture-faces/pre1', 0, 0.5),"
                                "(3, 3, '" + p + "/trip/day1/c.mov', 4000, 0.1, 0.1, 0.3, 0.3, 0.95, 1, zeroblob(512),"
-                               " 'fixture-faces/pre1', 1, 0.95),"
+                               " 'fixture-faces/pre1', 0, 0.95),"
                                "(4, 1, '" + p + "/a.jpg', -1, 0.4, 0.45, 0.2, 0.2, 0.99, 2, zeroblob(512),"
                                " 'fixture-faces/pre1', 0, 0.95);")) {
       return 2;
@@ -247,6 +246,17 @@ extern "C" int mv_mobile_test_make_generation(const char* root_utf8, int variant
     o.active_spec = spec;
     o.settings_json = R"({"audio_files":true,"document_files":true,"tier":"default","faces":true})";
     o.faces_db = faces.string();
+    // A real picture (variant 1's tile, 32 x 48: not the photo's own), then what it was cut
+    // from after the JPEG's end, for a test to read back.
+    o.face_cover = [&](const std::string& path, std::int64_t ms,
+                       const std::array<float, 4>& box) -> mv::result<std::vector<std::uint8_t>> {
+      std::vector<std::uint8_t> out(std::begin(kTileB), std::end(kTileB));
+      char said[160];
+      std::snprintf(said, sizeof said, "|face %s %lld %.2f %.2f %.2f %.2f", fs::path(path).filename().string().c_str(),
+                    static_cast<long long>(ms), box[0], box[1], box[2], box[3]);
+      out.insert(out.end(), said, said + std::strlen(said));
+      return out;
+    };
     o.roots = {cat::root_map{7, p, "aaaaaaaa-0000-4000-8000-000000000001", "Photos", ""}};
     o.thumbs = store->get();
     o.model_spec = spec;

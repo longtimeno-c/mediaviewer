@@ -78,16 +78,11 @@ struct listing {
   std::vector<month> months;
 };
 
-// A face's box in 0..1 of its picture as shown (oriented).
-struct face_box {
-  double x = 0, y = 0, w = 0, h = 0;
-};
-
 struct person {
   std::string key, name;
   std::uint32_t items = 0;
   std::int64_t face_asset = 0;
-  std::optional<face_box> face;  // on face_asset; none from a desktop that sends no box
+  bool has_face = false;  // person_face has their cover; false from an older desktop
 };
 
 struct details {
@@ -140,6 +135,9 @@ class catalogue {
   [[nodiscard]] result<std::vector<folder>> folders_under(std::string_view parent) const;
   [[nodiscard]] result<std::vector<person>> people() const;
   [[nodiscard]] std::uint32_t people_count() const;
+  // A person's round cover, a small JPEG of their own face as the desktop cuts its People
+  // covers. not_found when the publisher sent none (an older desktop, a file it could not read).
+  [[nodiscard]] result<std::vector<std::uint8_t>> person_face(std::string_view key) const;
   [[nodiscard]] result<details> details_of(std::int64_t id) const;
   [[nodiscard]] filter_options filters() const;
   // The Whisper the publisher reads `said:` from first: "" when it had none
@@ -168,6 +166,7 @@ class catalogue {
   manifest manifest_;
   sqlite3* db_ = nullptr;
   sqlite3* faces_ = nullptr;
+  bool covers_ = false;  // faces.db has the covers table
   std::vector<row> rows_;
   std::string names_;
   std::vector<std::pair<std::int64_t, std::uint32_t>> by_id_;

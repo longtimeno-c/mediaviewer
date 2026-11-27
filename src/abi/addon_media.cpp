@@ -1344,6 +1344,40 @@ result<std::vector<std::uint8_t>> make_thumbnail_jpeg(const std::string& path, s
   return image::make_thumb_jpeg(bytes);
 }
 
+namespace {
+
+// The `cw` x `ch` region at (x0, y0) of an RGBA raster `stride` pixels wide,
+// box-averaged to `w` x `h`: what a small tile wants.
+std::vector<std::uint8_t> box_average(const std::vector<std::uint8_t>& rgba, std::uint32_t stride, std::uint32_t x0,
+                                      std::uint32_t y0, std::uint32_t cw, std::uint32_t ch, std::uint32_t w,
+                                      std::uint32_t h) {
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4u);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint32_t ya = y0 + y * ch / h, yb = std::max(ya + 1, y0 + (y + 1) * ch / h);
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::uint32_t xa = x0 + x * cw / w, xb = std::max(xa + 1, x0 + (x + 1) * cw / w);
+      std::uint32_t sum[3] = {0, 0, 0};
+      for (std::uint32_t sy = ya; sy < yb; ++sy) {
+        const std::uint8_t* p = rgba.data() + (static_cast<std::size_t>(sy) * stride + xa) * 4u;
+        for (std::uint32_t sx = xa; sx < xb; ++sx, p += 4) {
+          sum[0] += p[0];
+          sum[1] += p[1];
+          sum[2] += p[2];
+        }
+      }
+      const std::uint32_t n = (xb - xa) * (yb - ya);
+      std::uint8_t* d = out.data() + (static_cast<std::size_t>(y) * w + x) * 4u;
+      d[0] = static_cast<std::uint8_t>((sum[0] + n / 2) / n);
+      d[1] = static_cast<std::uint8_t>((sum[1] + n / 2) / n);
+      d[2] = static_cast<std::uint8_t>((sum[2] + n / 2) / n);
+      d[3] = 255;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
 result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                               std::uint32_t quality) {
   if (max_edge == 0 || quality < 1 || quality > 100) return err(status::invalid_arg);
@@ -1355,33 +1389,34 @@ result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg
   MV_TRY(codec::raster r, codec::decode_jpeg(jpeg, nullptr, denom));
   const std::uint32_t from = std::max(r.width, r.height);
   if (from <= max_edge) return codec::encode_jpeg_rgba(r.rgba, r.width, r.height, static_cast<int>(quality));
-  // Box average over each target pixel: the last step is at most 2:1 at a DCT
-  // scale, and a box is what a small tile wants.
+  // The last step is at most 2:1 at a DCT scale.
   const std::uint32_t w = std::max<std::uint32_t>(1, r.width * max_edge / from);
   const std::uint32_t h = std::max<std::uint32_t>(1, r.height * max_edge / from);
-  std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4u);
-  for (std::uint32_t y = 0; y < h; ++y) {
-    const std::uint32_t y0 = y * r.height / h, y1 = std::max(y0 + 1, (y + 1) * r.height / h);
-    for (std::uint32_t x = 0; x < w; ++x) {
-      const std::uint32_t x0 = x * r.width / w, x1 = std::max(x0 + 1, (x + 1) * r.width / w);
-      std::uint32_t sum[3] = {0, 0, 0};
-      for (std::uint32_t sy = y0; sy < y1; ++sy) {
-        const std::uint8_t* p = r.rgba.data() + (static_cast<std::size_t>(sy) * r.width + x0) * 4u;
-        for (std::uint32_t sx = x0; sx < x1; ++sx, p += 4) {
-          sum[0] += p[0];
-          sum[1] += p[1];
-          sum[2] += p[2];
-        }
-      }
-      const std::uint32_t n = (x1 - x0) * (y1 - y0);
-      std::uint8_t* d = out.data() + (static_cast<std::size_t>(y) * w + x) * 4u;
-      d[0] = static_cast<std::uint8_t>((sum[0] + n / 2) / n);
-      d[1] = static_cast<std::uint8_t>((sum[1] + n / 2) / n);
-      d[2] = static_cast<std::uint8_t>((sum[2] + n / 2) / n);
-      d[3] = 255;
-    }
+  return codec::encode_jpeg_rgba(box_average(r.rgba, r.width, 0, 0, r.width, r.height, w, h), w, h,
+                                 static_cast<int>(quality));
+}
+
+result<std::vector<std::uint8_t>> jpeg_face_crop(std::span<const std::uint8_t> jpeg, std::array<float, 4> box,
+                                                 std::uint32_t max_edge, std::uint32_t quality) {
+  if (max_edge == 0 || quality < 1 || quality > 100) return err(status::invalid_arg);
+  for (const float v : box) {
+    if (!std::isfinite(v)) return err(status::invalid_arg);
   }
-  return codec::encode_jpeg_rgba(out, w, h, static_cast<int>(quality));
+  if (box[2] <= 0 || box[3] <= 0) return err(status::invalid_arg);
+  MV_TRY(codec::raster r, codec::decode_jpeg(jpeg, nullptr, 1));
+  if (r.width == 0 || r.height == 0) return err(status::corrupt);
+  // As AIChrome's Thumbs.crop: the face's longer side times 1.6, squared, at
+  // most the picture's shorter side, moved (not shrunk) to stay inside it.
+  const double w = r.width, h = r.height;
+  const double cx = (box[0] + box[2] / 2.0) * w, cy = (box[1] + box[3] / 2.0) * h;
+  const double side = std::min(std::max(box[2] * w, box[3] * h) * 1.6, std::min(w, h));
+  const double x = std::clamp(cx - side / 2, 0.0, w - side), y = std::clamp(cy - side / 2, 0.0, h - side);
+  const auto px = static_cast<std::uint32_t>(std::lround(x)), py = static_cast<std::uint32_t>(std::lround(y));
+  const auto s = std::max<std::uint32_t>(
+      1, std::min({static_cast<std::uint32_t>(std::lround(side)), r.width - px, r.height - py}));
+  const std::uint32_t edge = std::min(s, max_edge);
+  return codec::encode_jpeg_rgba(box_average(r.rgba, r.width, px, py, s, s, edge, edge), edge, edge,
+                                 static_cast<int>(quality));
 }
 
 result<std::vector<std::uint8_t>> thumbnail_jpeg(const std::string& path, std::int64_t pts_ms) {
