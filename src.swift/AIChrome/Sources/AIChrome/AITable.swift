@@ -433,7 +433,13 @@ struct StatusLine: Equatable {
   init() {}
 
   init(_ s: mv_ai_status) {
+    let held = s.flags & MV_AI_STATUS_MODELS_HELD != 0
     let state = s.state
+    if held {
+      text = "Search and indexing have not started, so the models stay unloaded. Folders and these settings are saved."
+      idle = false
+      spinning = false
+    } else {
     switch state {
     case MV_AI_STATE_INDEXING.rawValue:
       // The line names the pass that is running: pictures first, then the
@@ -524,6 +530,7 @@ struct StatusLine: Equatable {
         text += " · " + (s.docs_total == 1 ? "1 document" : "\(countText(s.docs_total)) documents")
       }
       if s.cloud_files_left > 0 { text += " · \(countText(s.cloud_files_left)) only in iCloud Drive" }
+    }
     }
     // The ring follows the pass the line names.
     func fraction(_ done: UInt64, _ total: UInt64) -> Double {

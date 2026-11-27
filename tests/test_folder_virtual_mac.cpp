@@ -178,3 +178,51 @@ TEST_CASE("a new library photo is listed right after its source", "[shell][folde
   jobs.shutdown();
   mv::io::set_thumb_cache_dir_override("");
 }
+
+// docs/design/16 "Folder navigation": another computer's folder lists its folders
+// as tiles, by key, ahead of its files -- and a folder of folders alone (a
+// server's top) is a list too, not an empty one.
+TEST_CASE("a remote list carries its folders as tiles, with or without files", "[shell][folder][remote]") {
+  scratch_dir d("folder_virtual_remote");
+  fs::create_directories(d / "thumbs");
+  mv::io::set_thumb_cache_dir_override(utf8(d / "thumbs"));
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  mv::shell::folder_model folder;
+  auto sub = [](const char* key, const char* name) {
+    mv::io::subdir_entry s;
+    s.path_utf8 = key;
+    s.name_utf8 = name;
+    return s;
+  };
+  REQUIRE(folder.open_list("FamilyNas", {}, jobs,
+                           {sub("remote:0123456789abcdef/1111111111111111/", "Photos"),
+                            sub("remote:0123456789abcdef/2222222222222222/", "Backups")}));
+  auto listing = folder.snapshot();
+  CHECK(listing.is_list);
+  CHECK(listing.title == "FamilyNas");
+  CHECK(listing.items.empty());
+  REQUIRE(listing.subdirs.size() == 2);
+  CHECK(listing.subdirs[0].path_utf8 == "remote:0123456789abcdef/1111111111111111/");
+  CHECK(listing.subdirs[0].name_utf8 == "Photos");
+  CHECK(listing.subdirs[1].name_utf8 == "Backups");
+  CHECK(folder.subfolders().size() == 2);
+
+  // Folders and files together: both kept, the folders as given.
+  mv::shell::folder_model::list_entry f;
+  f.path_utf8 = "remote:0123456789abcdef/1111111111111111/IMG_1.JPG";
+  f.is_virtual = true;
+  f.name_utf8 = "IMG_1.JPG";
+  REQUIRE(folder.open_list("Photos", {f}, jobs, {sub("remote:0123456789abcdef/1111111111111111/2024/", "2024")}));
+  listing = folder.snapshot();
+  REQUIRE(listing.items.size() == 1);
+  REQUIRE(listing.subdirs.size() == 1);
+  CHECK(listing.subdirs[0].name_utf8 == "2024");
+
+  // A search's result list has no folders.
+  REQUIRE(folder.open_list("Results", {f}, jobs));
+  CHECK(folder.snapshot().subdirs.empty());
+  folder.close();
+  jobs.shutdown();
+  mv::io::set_thumb_cache_dir_override("");
+}

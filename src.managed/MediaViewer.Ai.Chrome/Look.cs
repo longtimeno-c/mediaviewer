@@ -334,6 +334,8 @@ internal sealed class Look
     public static string StatusLine(in MvAiStatus s)
     {
         if ((s.Flags & MvAiStatus.FlagNoModels) != 0) return "The search models are missing. Reinstall local search in Settings.";
+        if ((s.Flags & MvAiStatus.FlagModelsHeld) != 0)
+            return "Search and indexing have not started, so the models stay unloaded. Folders and these settings are saved.";
         // #482: the models download before anything indexes with them; while
         // the old tier still indexes, the line names that and the pill's detail
         // the download (StatusPill.Detail).

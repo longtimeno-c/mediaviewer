@@ -124,3 +124,13 @@ enum PathBarMode: Equatable {
     return remoteFolder.isEmpty ? .results(listTitle) : .trail
   }
 }
+
+/// What a folder tile is called: the host's name for it when it has one (another
+/// computer's folder is a `remote:` key, whose parts are ids), else its path's last part.
+enum FolderLabel {
+  static func of(path: String, hostName: String?) -> String {
+    if let hostName, !hostName.isEmpty { return hostName }
+    let leaf = URL(fileURLWithPath: path).lastPathComponent
+    return leaf.isEmpty ? path : leaf
+  }
+}

@@ -88,7 +88,34 @@ class target {
     (void)rel;
     return err(status::unsupported_format);
   }
+  // Makes the folder `rel` (and any missing above it); there already is fine.
+  // status::unsupported_format: a service without mkdir; status::invalid_arg: a file has that
+  // name, or the service will not take it; status::permission_denied: not this phone's to change.
+  [[nodiscard]] virtual expected make_folder(const std::string& root, const std::string& rel) {
+    (void)root;
+    (void)rel;
+    return err(status::unsupported_format);
+  }
 };
+
+// ---- where in the folder --------------------------------------------------------------------
+
+// Where a phone backs up: a backup folder's id, or the id and a subfolder inside it,
+// "<id>/Tristan", so the people sharing one backup folder each have their own (a family NAS).
+// The subfolder is a safe relative path (no "..", no hidden or absolute part): a destination
+// never leaves its backup folder. Its storage limit, trash and ledger copies stay the backup
+// folder's; the phone's ledger keeps rows per destination.
+struct destination {
+  std::string root;  // the backup folder's id
+  std::string sub;   // "" for the folder itself
+};
+[[nodiscard]] std::optional<destination> parse_destination(std::string_view dest);
+// The folders directly inside a destination, by name, sorted; hidden ones never.
+[[nodiscard]] result<std::vector<std::string>> subfolders(target& t, std::string_view dest);
+// Makes the folder `name` inside `dest` (there already is fine) and gives its destination. A
+// service without mkdir still gets the destination: the first backup makes the folder.
+// status::invalid_arg: a name that is not one plain folder name.
+[[nodiscard]] result<std::string> make_subfolder(target& t, std::string_view dest, std::string_view name);
 
 [[nodiscard]] std::unique_ptr<target> link_target(link_session& link);
 
@@ -214,7 +241,7 @@ struct status_report {
 
 struct options {
   std::string library_id;
-  std::string root;              // the backup folder's id
+  std::string root;              // the destination: a backup folder's id, or "<id>/<subfolder>"
   layout folders = layout::year_month;
   std::string scratch_dir;       // one resource at a time is exported here
   int ledger_copy_every = 50;
@@ -248,7 +275,11 @@ class engine {
   void trash_deleted(const cancel_flag* cancel);
   void copy_ledger();
 
+  // "/"-joined under the destination's subfolder.
+  [[nodiscard]] std::string in_dest(const std::string& rel) const;
+
   options o_;
+  destination d_;  // o_.root parsed; root empty when it is not a destination (run: no_folder)
   target& t_;
   source& s_;
   ledger& l_;

@@ -93,6 +93,8 @@ final class LocalSearchStore: ObservableObject {
   /// Installed and verified, waiting unloaded for the first search (issue
   /// #292, docs/design/17 "Starting on demand"): nothing of the pack runs yet.
   @Published private(set) var onDemand = false
+  /// Settings' held attach: the wait line says Opening, not Starting.
+  @Published private(set) var opening = false
   @Published private(set) var loadError = ""
   /// The same, in words (mv_addon2_load_reason): Settings' status line.
   @Published private(set) var loadReason = ""
@@ -462,20 +464,34 @@ final class LocalSearchStore: ObservableObject {
   /// Core, and is dropped with a note if Core does not install.
   /// Settings opened: what is installed, and in a later window its reader
   /// (mv_addon2_ai_wake; at most every 10 s), so the pack's view shows. The
-  /// first window's pack is not started by Settings opening (issue #292): its
-  /// row offers Start now (wake()) until the first search.
+  /// first window's pack is attached by its own page (manage()), not by
+  /// Settings opening.
   func settingsShown() {
     refresh()
     probe()
     if elsewhere { _ = mv_addon2_ai_wake() }
   }
 
-  /// Settings' Start now: the pack that waited since launch loads, and its own
-  /// view (compute, folders, People) follows once it attaches.
+  /// Local search's page is on screen: attach the pack without the towers so
+  /// folders and settings show (issue #292, 2026-11-14). A load that failed is
+  /// not asked for again by the page appearing, only by Try again (`retry`).
+  func manage(retry: Bool = false) {
+    guard !elsewhere, !loaded, !loading, retry || loadError.isEmpty else { return }
+    if mv_addon2_ai_manage() {
+      loading = true
+      onDemand = false
+      opening = mv_addon2_ai_opening()
+    }
+  }
+
+  /// Settings' Start indexing (or the first search): the pack that waited since
+  /// launch loads, and its own view (compute, folders, People) follows once it
+  /// attaches.
   func wake() {
     if mv_addon2_ai_wake() {
       loading = true
       onDemand = false
+      opening = false
     }
   }
 
@@ -485,6 +501,7 @@ final class LocalSearchStore: ObservableObject {
     if mv_addon2_loading("ai") {
       loading = true
       onDemand = false
+      opening = false
     }
   }
 
@@ -670,6 +687,7 @@ final class LocalSearchStore: ObservableObject {
     if !elsewhere {
       loading = true
       onDemand = false
+      opening = false
     }
     return true
   }
@@ -692,11 +710,17 @@ struct LocalSearchSection: View {
   var body: some View {
     if store.supported {
       content
-        .onAppear { if settings.visible { store.settingsShown() } }
+        .onAppear { if settings.visible { shown() } }
         .onChange(of: settings.visible) { _, visible in
-          if visible { store.settingsShown() }
+          if visible { shown() }
         }
     }
+  }
+
+  /// This page came on screen: what is installed, then the pack itself.
+  private func shown() {
+    store.settingsShown()
+    store.manage()
   }
 
   private var content: some View {
@@ -761,23 +785,22 @@ struct LocalSearchSection: View {
       // Loading the pack takes seconds (it verifies its files): the shared
       // progress line, not a spinner (docs/design/20 "Craft rules").
       startingLine
-    } else if store.onDemand {
-      // Issue #292: nothing of the pack runs until the first search; its own
-      // settings (compute, folders, People) need it running.
-      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
-        Text("Local search starts the first time you search. Start it now to see its folders and settings.")
-          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-          .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: 0)
-        Button("Start now") { store.wake() }
-      }
     } else if store.coreInstalled && !store.loaded && !store.loadError.isEmpty {
       // The reason, as the command bar's alert says it (addons_mac.mm load_reason).
-      Text("Local search couldn't start. "
-           + (store.loadReason.isEmpty ? "Something went wrong (\(store.loadError))." : store.loadReason))
-        .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-        .fixedSize(horizontal: false, vertical: true)
-        .textSelection(.enabled)
+      // Before the on-demand case: a pack that failed to load still waits on
+      // demand, and attaching it again by itself would loop.
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
+        Text("Local search couldn't start. "
+             + (store.loadReason.isEmpty ? "Something went wrong (\(store.loadError))." : store.loadReason))
+          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+        Spacer(minLength: 0)
+        if store.onDemand { Button("Try again") { store.manage(retry: true) } }
+      }
+    } else if store.onDemand {
+      // Known to wait on demand only after this page appeared: attach now.
+      Color.clear.frame(height: 0).onAppear { if settings.visible { store.manage() } }
     }
     // The pack's own management view: compute, precision, folders, index,
     // People. Owned by AI.bundle; rebuilt when the chrome is re-attached.
@@ -1029,7 +1052,7 @@ struct LocalSearchSection: View {
   /// "Starting Local search…" on the calm sweep: a wait of seconds, said once.
   /// The Windows twin is WaitLine.
   private var startingLine: some View {
-    ProgressLine(verb: "Starting Local search", fraction: nil)
+    ProgressLine(verb: store.opening ? "Opening Local search" : "Starting Local search", fraction: nil)
       .frame(maxWidth: 320, alignment: .leading)
       .transition(.opacity)
   }

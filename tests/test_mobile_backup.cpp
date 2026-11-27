@@ -612,6 +612,133 @@ TEST_CASE("backup: a photo deleted from Photos goes into the folder's trash, and
                                    [](const std::string&) { return std::uint64_t{1} << 40; });
     check_deletions(*target, nas, bk::kSampleFolderId);
   }
+  SECTION("in a person's subfolder, on the server and on the phone") {
+    nas n;
+    n.start();
+    const key32 device = random_key();
+    n.pair(device);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    check_deletions(*target, n.backup, kBackupRoot + "/Family/Tristan");
+    CHECK(fs::exists(n.backup / serve::kTrashFolder));  // the backup folder's own trash
+    temp_root phone;
+    const fs::path sample = phone.root / "sample-nas";
+    auto local = bk::local_target(sample.string(), "0123456789abcdef", bk::kSampleLimit,
+                                  [](const std::string&) { return std::uint64_t{1} << 40; });
+    check_deletions(*local, sample, std::string(bk::kSampleFolderId) + "/Tristan");
+  }
+}
+
+// The family NAS: one backup folder, a subfolder for each person's phone.
+TEST_CASE("backup: each person backs up into their own subfolder of one backup folder", "[mobile-link]") {
+  CHECK(bk::parse_destination(kBackupRoot)->sub.empty());
+  CHECK(bk::parse_destination(kBackupRoot + "/iPhone/Tristan")->sub == "iPhone/Tristan");
+  CHECK(bk::parse_destination(kBackupRoot + "/iPhone/Tristan")->root == kBackupRoot);
+  for (const std::string& bad : std::vector<std::string>{"", "/Tristan", "/", kBackupRoot + "/", kBackupRoot + "/..", kBackupRoot + "/../x",
+                                kBackupRoot + "/a/../../x", kBackupRoot + "/" + serve::kTrashFolder,
+                                kBackupRoot + "/" + serve::kBackupMetaFolder + "/x", kBackupRoot + "/a//b"}) {
+    CHECK_FALSE(bk::parse_destination(bad));
+  }
+
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  fs::create_directories(scratch);
+  const key32 tristan = random_key(), sam = random_key();
+
+  SECTION("on the server: made, listed, filled, each apart; the limit is the whole folder's") {
+    nas n;
+    n.start();
+    n.pair(tristan);
+    n.pair(sam);
+    mob::link_session link_t(n.config(tristan)), link_s(n.config(sam));
+    mob::route_report report;
+    REQUIRE(link_t.connect(report));
+    REQUIRE(link_s.connect(report));
+    auto target_t = bk::link_target(link_t);
+    auto target_s = bk::link_target(link_s);
+
+    auto made = bk::make_subfolder(*target_t, kBackupRoot, "Tristan");
+    REQUIRE(made);
+    CHECK(*made == kBackupRoot + "/Tristan");
+    CHECK(fs::is_directory(n.backup / "Tristan"));
+    CHECK(bk::make_subfolder(*target_t, kBackupRoot, "Tristan"));  // there already is fine
+    auto sams = bk::make_subfolder(*target_s, kBackupRoot, "Sam");
+    REQUIRE(sams);
+    for (const std::string bad : {"", "..", ".", ".hidden", "a/b", "a\\b", "trailing."}) {
+      auto refused = bk::make_subfolder(*target_t, kBackupRoot, bad);
+      REQUIRE_FALSE(refused);
+      CHECK(refused.error() == mv::status::invalid_arg);
+    }
+    write_file(n.backup / "a file", "x");
+    auto onto_file = bk::make_subfolder(*target_t, kBackupRoot, "a file");
+    REQUIRE_FALSE(onto_file);
+    CHECK(onto_file.error() == mv::status::invalid_arg);
+    auto listed = bk::subfolders(*target_s, kBackupRoot);
+    REQUIRE(listed);
+    CHECK(*listed == std::vector<std::string>{"Sam", "Tristan"});  // no meta folder, no trash, no file
+    auto deeper = bk::make_subfolder(*target_t, *made, "iPhone 16");
+    REQUIRE(deeper);
+    CHECK(*deeper == kBackupRoot + "/Tristan/iPhone 16");
+    CHECK(*bk::subfolders(*target_t, *made) == std::vector<std::string>{"iPhone 16"});
+
+    camera_roll roll_t(phone.root / "roll-t", scratch, 8, 3), roll_s(phone.root / "roll-s", scratch, 5, 4);
+    auto ledger_t = bk::ledger::open((phone.root / "ledger-t.db").string());
+    auto ledger_s = bk::ledger::open((phone.root / "ledger-s.db").string());
+    REQUIRE(ledger_t);
+    REQUIRE(ledger_s);
+    CHECK(run_once(*target_t, roll_t, **ledger_t, scratch, 0, 2.0, *made).now == bk::state::done);
+    CHECK(run_once(*target_s, roll_s, **ledger_s, scratch, 0, 2.0, *sams).now == bk::state::done);
+    CHECK(files_under(n.backup / "Tristan").size() == roll_t.resource_count());
+    CHECK(files_under(n.backup / "Sam").size() == roll_s.resource_count());
+    for (const auto& r : (*ledger_t)->all(*made)) CHECK(r.rel.rfind("Tristan/", 0) == 0);
+    // Rows are per destination: the folder itself, or another subfolder, is backed up afresh.
+    CHECK((*ledger_t)->size(kBackupRoot) == 0);
+    CHECK(run_once(*target_t, roll_t, **ledger_t, scratch, 0, 2.0, *deeper).now == bk::state::done);
+    CHECK(files_under(n.backup / "Tristan" / "iPhone 16").size() == roll_t.resource_count());
+    // A reinstall finds its rows in the backup folder's meta folder and copies nothing again.
+    REQUIRE((*ledger_t)->clear());
+    const auto again = run_once(*target_t, roll_t, **ledger_t, scratch, 0, 2.0, *deeper);
+    CHECK(again.now == bk::state::done);
+    CHECK(again.copied == 0);
+
+    // A destination that would leave the folder is no folder; nothing is written anywhere.
+    const auto before = files_under(n.tmp.root);
+    CHECK(run_once(*target_t, roll_t, **ledger_t, scratch, 0, 2.0, kBackupRoot + "/../data").now == bk::state::no_folder);
+    CHECK(run_once(*target_t, roll_t, **ledger_t, scratch, 0, 2.0, "ffffffffffffffff/Tristan").now == bk::state::no_folder);
+    CHECK(files_under(n.tmp.root).size() == before.size());
+  }
+  SECTION("the backup folder's storage limit counts every person's subfolder") {
+    nas n;
+    n.limit = 600 * 1024;
+    n.start();
+    n.pair(tristan);
+    mob::link_session link(n.config(tristan));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto target = bk::link_target(link);
+    write_file(n.backup / "Sam" / "big.bin", std::string(400 * 1024, 's'));
+    camera_roll roll(phone.root / "roll", scratch, 12, 7);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    CHECK(run_once(*target, roll, **ledger, scratch, 0, 2.0, kBackupRoot + "/Tristan").now == bk::state::limit);
+    std::uint64_t total = 0;
+    for (const auto& [rel, bytes] : files_under(n.backup)) total += bytes.size();
+    CHECK(total <= 600 * 1024);
+  }
+  SECTION("in the sample library's folder on the phone (the demo)") {
+    auto target = bk::local_target((phone.root / "sample-nas").string(), "0123456789abcdef", bk::kSampleLimit,
+                                   [](const std::string&) { return std::uint64_t{1} << 40; });
+    auto made = bk::make_subfolder(*target, bk::kSampleFolderId, "Tristan");
+    REQUIRE(made);
+    CHECK(*bk::subfolders(*target, bk::kSampleFolderId) == std::vector<std::string>{"Tristan"});
+    camera_roll roll(phone.root / "roll", scratch, 6, 9);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    CHECK(run_once(*target, roll, **ledger, scratch, 0, 2.0, *made).now == bk::state::done);
+    CHECK(files_under(phone.root / "sample-nas" / "Tristan").size() == roll.resource_count());
+  }
 }
 
 // From the review of trash-on-delete: what must never be moved.
@@ -874,6 +1001,25 @@ TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]
   mv_backup_space space{};
   CHECK(mv_backup_space_of(b, kBackupRoot.c_str(), &space) == MV_LINK_OK);
   CHECK(space.used > 0);
+
+  // A person's own subfolder: made, listed, backed up to; never one outside the folder.
+  const auto names = [](void* c, const char* name) { static_cast<std::vector<std::string>*>(c)->push_back(name); };
+  std::vector<std::string> made;
+  CHECK(mv_backup_make_folder(b, kBackupRoot.c_str(), "Tristan", names, &made) == MV_LINK_OK);
+  REQUIRE(made == std::vector<std::string>{kBackupRoot + "/Tristan"});
+  CHECK(mv_backup_make_folder(b, kBackupRoot.c_str(), "../Tristan", names, &made) == MV_LINK_INVALID);
+  CHECK(mv_backup_make_folder(b, kBackupRoot.c_str(), ".hidden", names, &made) == MV_LINK_INVALID);
+  std::vector<std::string> inside;
+  CHECK(mv_backup_subfolders(b, kBackupRoot.c_str(), names, &inside) == MV_LINK_OK);
+  CHECK(std::find(inside.begin(), inside.end(), "Tristan") != inside.end());
+  CHECK(mv_backup_run(b, made[0].c_str(), 5, nullptr, exporter, status, &ctx, &final_state) == MV_LINK_OK);
+  CHECK(final_state == MV_BACKUP_DONE);
+  CHECK(files_under(n.backup / "Tristan").size() == roll.resource_count());
+  CHECK(mv_backup_space_of(b, made[0].c_str(), &space) == MV_LINK_OK);
+  const std::string escaping = kBackupRoot + "/../elsewhere";
+  CHECK(mv_backup_run(b, escaping.c_str(), 5, nullptr, exporter, status, &ctx, &final_state) == MV_LINK_INVALID);
+  CHECK(mv_backup_subfolders(b, escaping.c_str(), names, &inside) == MV_LINK_INVALID);
+  CHECK(mv_backup_space_of(b, escaping.c_str(), &space) == MV_LINK_INVALID);
   mv_backup_close(b);
   mv_link_shut_down(link);
   mv_link_close(link);

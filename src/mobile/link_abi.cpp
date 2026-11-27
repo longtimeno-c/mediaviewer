@@ -1258,12 +1258,34 @@ int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx) {
 int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out) {
   return catch_all([&]() -> int32_t {
     if (!b || !folder_id || !out) return MV_LINK_INVALID;
-    auto s = b->target->space(folder_id);
+    const auto dest = backup::parse_destination(folder_id);
+    if (!dest) return MV_LINK_INVALID;
+    auto s = b->target->space(dest->root);
     if (!s) return backup_status_of(s.error());
     out->limit = s->limit;
     out->used = s->used;
     out->room = s->room;
     return s->has_space ? MV_LINK_OK : MV_LINK_DENIED;
+  });
+}
+
+int32_t mv_backup_subfolders(mv_backup* b, const char* folder_id, mv_backup_name_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !fn) return MV_LINK_INVALID;
+    auto names = backup::subfolders(*b->target, folder_id);
+    if (!names) return names.error() == status::invalid_arg ? MV_LINK_INVALID : backup_status_of(names.error());
+    for (const auto& n : *names) fn(ctx, n.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_make_folder(mv_backup* b, const char* folder_id, const char* name, mv_backup_name_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !name || !fn) return MV_LINK_INVALID;
+    auto made = backup::make_subfolder(*b->target, folder_id, name);
+    if (!made) return made.error() == status::invalid_arg ? MV_LINK_INVALID : backup_status_of(made.error());
+    fn(ctx, made->c_str());
+    return MV_LINK_OK;
   });
 }
 
@@ -1315,6 +1337,7 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
                       mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx, int32_t* state_out) {
   return catch_all([&]() -> int32_t {
     if (!b || !folder_id || !export_fn || !state_out || !backup::valid_layout(layout)) return MV_LINK_INVALID;
+    if (!backup::parse_destination(folder_id)) return MV_LINK_INVALID;
     std::lock_guard run(b->run_m);
     backup::options o;
     o.library_id = b->library_id;

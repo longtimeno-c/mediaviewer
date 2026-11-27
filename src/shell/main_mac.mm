@@ -684,6 +684,13 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
                 select:(std::size_t)select
                gallery:(BOOL)gallery;
+// A list with folder tiles ahead of its items (another computer's folder); it may
+// hold folders alone.
+- (BOOL)openListTitled:(const std::string&)title
+               entries:(std::vector<mv::shell::folder_model::list_entry>)entries
+            subfolders:(std::vector<mv::io::subdir_entry>)subfolders
+                select:(std::size_t)select
+               gallery:(BOOL)gallery;
 // The real file behind an item: the path itself, or what a Photos key resolved
 // to ("" while unresolved or when only a preview stands in).
 - (std::string)fileForEntry:(const mv::io::dir_entry&)entry;
@@ -817,6 +824,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // tile (-1 = on the images).
 - (NSInteger)subfolderCount;
 - (BOOL)subfolderPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
+- (BOOL)subfolderNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
 - (void)openSubfolderAtIndex:(NSInteger)index;
 - (void)requestFolderSummaryAtIndex:(NSInteger)index;
 - (NSInteger)crumbCount;
@@ -1461,6 +1469,10 @@ extern "C" int32_t mv_chrome_subfolder_count(void) {
 extern "C" bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t out_buf_size) {
   if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
   return [g_chrome_app subfolderPathAtIndex:index into:out_buf size:out_buf_size] == YES;
+}
+extern "C" bool mv_chrome_subfolder_name(int32_t index, char* out_buf, int32_t out_buf_size) {
+  if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
+  return [g_chrome_app subfolderNameAtIndex:index into:out_buf size:out_buf_size] == YES;
 }
 extern "C" void mv_chrome_open_subfolder(int32_t index) {
   if (g_chrome_app) [g_chrome_app openSubfolderAtIndex:index];
@@ -5682,6 +5694,11 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 // goes through -openEntryPaths:failed:, which starts a new trail.
 - (BOOL)openPath:(const char*)utf8_path navigation:(BOOL)navigation {
   if (!utf8_path || !*utf8_path) return NO;
+  // A folder tile of another computer's folder: listed over the network.
+  if (mv::remote::is_key(utf8_path)) {
+    [self openRemoteFolder:utf8_path];
+    return YES;
+  }
   [self openDir:utf8_path select:std::string() navigation:navigation];
   return YES;
 }
@@ -6052,6 +6069,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     }
   }
   if (revealed) [self setGalleryVisible:YES];
+  // Another computer's folder of folders alone: the keyboard starts on its first tile.
+  if (_listOpen && !revealed && _items.empty() && !_subdirs.empty() && _folderCursor < 0) _folderCursor = 0;
   [self refreshSiblings];
 }
 
@@ -7364,6 +7383,12 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
   return MvCopyUtf8(_subdirs[static_cast<std::size_t>(index)].path_utf8, buf, size);
 }
 
+// A tile's name: a remote folder's key names nothing a person knows.
+- (BOOL)subfolderNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return NO;
+  return MvCopyUtf8(_subdirs[static_cast<std::size_t>(index)].name_utf8, buf, size);
+}
+
 - (void)openSubfolderAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return;
   const std::string path = _subdirs[static_cast<std::size_t>(index)].path_utf8;
@@ -7377,6 +7402,9 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 - (void)requestFolderSummaryAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return;
   const std::string dir = _subdirs[static_cast<std::size_t>(index)].path_utf8;
+  // Another computer's folder: no count or cover (each would be a listing over
+  // the network); the tile is a plain folder.
+  if (mv::remote::is_key(dir)) return;
   mv::shell::folder_model* folder = &_folder;
   auto deliver = [](std::string dir_path, bool ok, std::uint32_t media, std::uint32_t subs,
                     int32_t flags, std::string thumb) {
@@ -7645,6 +7673,9 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     if (_remoteFolderKey.empty()) return p;
     p.dir = _remoteFolderKey;
     if (const mv::io::dir_entry* e = [self currentEntry]) p.item = e->path_utf8;
+    if (_galleryVisible && _folderCursor >= 0 && static_cast<std::size_t>(_folderCursor) < _subdirs.size()) {
+      p.folder = _subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8;
+    }
     return p;
   }
   p.dir = _currentDir;
@@ -7876,6 +7907,32 @@ static mv::shell::remote_ops MvRemoteOps() {
   [self publish];
 }
 
+// A remote listing as the gallery shows it: its folders as tiles (by key, the
+// service's order), then its files as virtual items; `select` is `want`'s index.
+static void MvRemoteListParts(const mv::remote::listing& l, const std::string& want,
+                              std::vector<mv::shell::folder_model::list_entry>& entries,
+                              std::vector<mv::io::subdir_entry>& folders, std::size_t& select) {
+  select = 0;
+  folders.reserve(l.folders.size());
+  for (const auto& f : l.folders) {
+    mv::io::subdir_entry d;
+    d.path_utf8 = f.key;
+    d.name_utf8 = f.name;
+    folders.push_back(std::move(d));
+  }
+  entries.reserve(l.files.size());
+  for (const auto& f : l.files) {
+    if (f.key == want) select = entries.size();
+    mv::shell::folder_model::list_entry e;
+    e.path_utf8 = f.key;
+    e.is_virtual = true;
+    e.name_utf8 = f.name;
+    e.mtime_unix = f.mtime;
+    e.size = f.size;
+    entries.push_back(std::move(e));
+  }
+}
+
 // The remote folder on screen, listed again after a change made here, without the
 // "Opening…" notice and on the item that was selected (else the first).
 - (void)relistRemoteFolder {
@@ -7885,9 +7942,10 @@ static mv::shell::remote_ops MvRemoteOps() {
   const std::string key = _remoteFolderKey;
   const mv::io::dir_entry* cur = [self currentEntry];
   const std::string selected = cur ? cur->path_utf8 : std::string();
+  const std::string tile = [self herePlace].folder;  // the folder tile the keyboard is on
   const std::uint64_t open_seq = _remoteOpenSeq;
   MvLabApp* __weak weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, selected, open_seq](const mv::job_context&) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, selected, tile, open_seq](const mv::job_context&) -> mv::status {
     auto listed = lib->list(key, /*person=*/true);
     auto out = std::make_shared<std::optional<mv::remote::listing>>();
     if (listed) *out = std::move(listed).value();
@@ -7895,25 +7953,22 @@ static mv::shell::remote_ops MvRemoteOps() {
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf || !*out || open_seq != strongSelf->_remoteOpenSeq || strongSelf->_remoteFolderKey != key) return;
       const mv::remote::listing& l = **out;
-      if (l.files.empty()) {
+      if (l.files.empty() && l.folders.empty()) {
         [strongSelf openRemoteFolder:key];  // nothing left to show: as opening it says
         return;
       }
       std::vector<mv::shell::folder_model::list_entry> entries;
+      std::vector<mv::io::subdir_entry> folders;
       std::size_t select = 0;
-      for (const auto& f : l.files) {
-        if (f.key == selected) select = entries.size();
-        mv::shell::folder_model::list_entry e;
-        e.path_utf8 = f.key;
-        e.is_virtual = true;
-        e.name_utf8 = f.name;
-        e.mtime_unix = f.mtime;
-        e.size = f.size;
-        entries.push_back(std::move(e));
-      }
+      MvRemoteListParts(l, selected, entries, folders, select);
       const std::string title = l.title.empty() ? MvPlaceName(key) : l.title;
-      if ([strongSelf openListTitled:title entries:std::move(entries) select:select gallery:strongSelf->_galleryVisible]) {
+      if ([strongSelf openListTitled:title
+                             entries:std::move(entries)
+                          subfolders:std::move(folders)
+                              select:select
+                             gallery:strongSelf->_galleryVisible]) {
         strongSelf->_remoteFolderKey = key;
+        strongSelf->_revealChild = tile;
       }
     });
     return mv::status::ok;
@@ -15627,7 +15682,15 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
                 select:(std::size_t)select
                gallery:(BOOL)gallery {
-  if (entries.empty()) return NO;
+  return [self openListTitled:title entries:std::move(entries) subfolders:{} select:select gallery:gallery];
+}
+
+- (BOOL)openListTitled:(const std::string&)title
+               entries:(std::vector<mv::shell::folder_model::list_entry>)entries
+            subfolders:(std::vector<mv::io::subdir_entry>)subfolders
+                select:(std::size_t)select
+               gallery:(BOOL)gallery {
+  if (entries.empty() && subfolders.empty()) return NO;
   [self photosListEnding];
   if (!_listOpen) _listReturnDir = _currentDir;
   _listOpen = YES;
@@ -15663,8 +15726,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   std::atomic<std::uint64_t>* open_generation = &_openGeneration;
   std::mutex* open_mutex = &_folderOpenMutex;
   _jobs.submit_at(mv::background_generation,
-                  [folder, jobs, title, entries = std::move(entries), my_generation,
-                   open_generation, open_mutex](const mv::job_context&) mutable -> mv::status {
+                  [folder, jobs, title, entries = std::move(entries), subfolders = std::move(subfolders),
+                   my_generation, open_generation, open_mutex](const mv::job_context&) mutable -> mv::status {
                     std::lock_guard<std::mutex> lock(*open_mutex);
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
@@ -15707,7 +15770,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                         return mv::status::not_found;
                       }
                     }
-                    auto opened = folder->open_list(title, std::move(entries), *jobs);
+                    auto opened = folder->open_list(title, std::move(entries), *jobs, std::move(subfolders));
                     if (!opened) {
                       dispatch_async(dispatch_get_main_queue(), ^{
                         NSBeep();
@@ -16192,6 +16255,17 @@ class remote_clip_source final : public mv::player::byte_source {
     NSBeep();
     return;
   }
+  // The folder tile it lands on: the one Back / Forward left it on, or, going up,
+  // the folder it comes from.
+  std::string reveal;
+  if (_historyMove) {
+    reveal = _historyReveal;
+  } else if (const std::string from = [self remoteShown]; !from.empty() && from != key) {
+    const auto chain = mv::remote::key_chain(from);
+    for (std::size_t i = 0; i + 1 < chain.size(); ++i) {
+      if (chain[i] == key) reveal = chain[i + 1];
+    }
+  }
   // Back / Forward: leaving the place on screen for this folder.
   if (!_historyMove) {
     const mv::shell::browse_place here = [self herePlace];
@@ -16205,7 +16279,7 @@ class remote_clip_source final : public mv::player::byte_source {
   const std::uint64_t listing_seq = _listingGeneration;
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, server = k->server, opening, open_seq,
-                                              listing_seq](const mv::job_context&) -> mv::status {
+                                              listing_seq, reveal](const mv::job_context&) -> mv::status {
     auto listed = lib->list(key, /*person=*/true);
     const auto srv = lib->server(server);
     const std::string server_name = srv ? srv->name : std::string();
@@ -16227,35 +16301,34 @@ class remote_clip_source final : public mv::player::byte_source {
       const mv::remote::listing& l = **out;
       if (l.files.empty()) {
         // A server's top (its pin on the welcome card) with one named folder
-        // is that folder: open it, rather than say where it is.
+        // is that folder: open it, rather than show one tile.
         const auto top = mv::remote::parse_key(key);
         if (!l.stale && top && top->root.empty() && l.folders.size() == 1 && !l.folders[0].offline) {
           [strongSelf openRemoteFolder:l.folders[0].key];
           return;
         }
-        if (!l.stale && !l.folders.empty()) [strongSelf setTreeVisible:YES];
-        [strongSelf noticeShow:l.stale ? mv::remote::stale_words(server_name)
-                               : l.folders.empty() ? std::string("This folder is empty.")
-                                                   : std::string("No photos or videos here. Its folders are in the Folders pane.")];
+      }
+      // docs/design/16 "Folder navigation": its folders are tiles ahead of its
+      // photos, as a folder here has; only a folder with neither says so.
+      if (l.files.empty() && l.folders.empty()) {
+        [strongSelf noticeShow:l.stale ? mv::remote::stale_words(server_name) : std::string("This folder is empty.")];
         return;
       }
       std::vector<mv::shell::folder_model::list_entry> entries;
-      entries.reserve(l.files.size());
+      std::vector<mv::io::subdir_entry> folders;
       std::size_t select = 0;
-      for (const auto& f : l.files) {
-        if (f.key == strongSelf->_remoteSelectWant) select = entries.size();  // Back lands on it
-        mv::shell::folder_model::list_entry e;
-        e.path_utf8 = f.key;
-        e.is_virtual = true;
-        e.name_utf8 = f.name;
-        e.mtime_unix = f.mtime;
-        e.size = f.size;
-        entries.push_back(std::move(e));
-      }
+      MvRemoteListParts(l, strongSelf->_remoteSelectWant, entries, folders, select);
       const std::string title = l.title.empty() ? server_name : l.title;
       strongSelf->_remoteSelectWant.clear();
-      if (![strongSelf openListTitled:title entries:std::move(entries) select:select gallery:YES]) return;
+      if (![strongSelf openListTitled:title
+                              entries:std::move(entries)
+                           subfolders:std::move(folders)
+                               select:select
+                              gallery:YES]) {
+        return;
+      }
       strongSelf->_remoteFolderKey = key;
+      strongSelf->_revealChild = reveal;
       if (l.stale) [strongSelf noticeShow:mv::remote::stale_words(server_name)];
     });
     return mv::status::ok;
@@ -17418,7 +17491,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
       mv::shell::share_takes_folder(_galleryVisible, static_cast<int>(_folderCursor),
                                     static_cast<int>(_subdirs.size()), !_galleryRange.empty(),
                                     static_cast<std::int32_t>(clicked)) &&
-      !mv::shell::photos::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8);
+      !mv::shell::photos::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8) &&
+      !mv::remote::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8);
   const std::vector<std::string> files =
       folder ? std::vector<std::string>{_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8}
              : [self shareFilesForClicked:clicked];
