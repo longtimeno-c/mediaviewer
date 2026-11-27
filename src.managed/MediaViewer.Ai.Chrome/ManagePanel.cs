@@ -994,9 +994,23 @@ internal sealed partial class ManagePanel
         chrome.Host.Post(() => ShowIndexConfirm());
         _ = Task.Run(() =>
         {
+            bool cleared = true;
             try { _api.ClearIndex(); }
-            catch (MediaViewerException) { }
-            chrome.Host.Post(() => chrome.ReadStatus());
+            catch (MediaViewerException) { cleared = false; }
+            chrome.Host.Post(() =>
+            {
+                // Said, not swallowed: the indexer did not stop in time, or an
+                // import holds the index (the Mac's line, ManagementView).
+                if (!cleared && !_confirmClear)
+                {
+                    TextBlock note = _look.Text("The index could not be cleared. Try again in a moment.", 12);
+                    note.TextWrapping = TextWrapping.Wrap;
+                    note.Margin = new Thickness(12, 0, 12, 10);
+                    _indexConfirm.Children.Clear();
+                    _indexConfirm.Children.Add(note);
+                }
+                chrome.ReadStatus();
+            });
         });
     }
 

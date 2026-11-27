@@ -462,15 +462,22 @@ final class LocalSearchStore: ObservableObject {
   /// Queues the piece and returns at once; the queue runs one install at a
   /// time, Core first. A piece clicked before Core is installed waits for
   /// Core, and is dropped with a note if Core does not install.
-  /// Settings opened: attach the pack without the towers so folders and
-  /// settings show (issue #292, 2026-11-14). A later window still wakes its
-  /// reader.
+  /// Settings opened: what is installed, and in a later window its reader
+  /// (mv_addon2_ai_wake; at most every 10 s), so the pack's view shows. The
+  /// first window's pack is attached by its own page (manage()), not by
+  /// Settings opening.
   func settingsShown() {
     refresh()
     probe()
-    if elsewhere {
-      _ = mv_addon2_ai_wake()
-    } else if !loaded, mv_addon2_ai_manage() {
+    if elsewhere { _ = mv_addon2_ai_wake() }
+  }
+
+  /// Local search's page is on screen: attach the pack without the towers so
+  /// folders and settings show (issue #292, 2026-11-14). A load that failed is
+  /// not asked for again by the page appearing, only by Try again (`retry`).
+  func manage(retry: Bool = false) {
+    guard !elsewhere, !loaded, !loading, retry || loadError.isEmpty else { return }
+    if mv_addon2_ai_manage() {
       loading = true
       onDemand = false
       opening = mv_addon2_ai_opening()
@@ -703,11 +710,17 @@ struct LocalSearchSection: View {
   var body: some View {
     if store.supported {
       content
-        .onAppear { if settings.visible { store.settingsShown() } }
+        .onAppear { if settings.visible { shown() } }
         .onChange(of: settings.visible) { _, visible in
-          if visible { store.settingsShown() }
+          if visible { shown() }
         }
     }
+  }
+
+  /// This page came on screen: what is installed, then the pack itself.
+  private func shown() {
+    store.settingsShown()
+    store.manage()
   }
 
   private var content: some View {
@@ -772,16 +785,22 @@ struct LocalSearchSection: View {
       // Loading the pack takes seconds (it verifies its files): the shared
       // progress line, not a spinner (docs/design/20 "Craft rules").
       startingLine
-    } else if store.onDemand {
-      // Should not stay: settingsShown starts a held attach.
-      Color.clear.onAppear { store.settingsShown() }
     } else if store.coreInstalled && !store.loaded && !store.loadError.isEmpty {
       // The reason, as the command bar's alert says it (addons_mac.mm load_reason).
-      Text("Local search couldn't start. "
-           + (store.loadReason.isEmpty ? "Something went wrong (\(store.loadError))." : store.loadReason))
-        .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-        .fixedSize(horizontal: false, vertical: true)
-        .textSelection(.enabled)
+      // Before the on-demand case: a pack that failed to load still waits on
+      // demand, and attaching it again by itself would loop.
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
+        Text("Local search couldn't start. "
+             + (store.loadReason.isEmpty ? "Something went wrong (\(store.loadError))." : store.loadReason))
+          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+        Spacer(minLength: 0)
+        if store.onDemand { Button("Try again") { store.manage(retry: true) } }
+      }
+    } else if store.onDemand {
+      // Known to wait on demand only after this page appeared: attach now.
+      Color.clear.frame(height: 0).onAppear { if settings.visible { store.manage() } }
     }
     // The pack's own management view: compute, precision, folders, index,
     // People. Owned by AI.bundle; rebuilt when the chrome is re-attached.

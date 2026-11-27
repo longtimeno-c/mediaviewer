@@ -460,6 +460,7 @@ public static partial class IslandHost
                 DispatcherQueueControllerTryEnqueue(() =>
                 {
                     slot.Busy = false;
+                    if (slot == AiSlot && hold) _aiHeldAttachFailed = true;
                     bool asked = slot == AiSlot && _searchOpenPending;
                     if (reader && ex is MediaViewerException { Status: MvStatus.NotFound })
                     {
@@ -543,7 +544,11 @@ public static partial class IslandHost
             chrome.Attach(new AddonHost(slot), table);
             slot.Chrome = chrome;
             slot.State = slot.State with { Loaded = true };
-            if (slot == AiSlot) _aiReaderEmptyAt = 0;
+            if (slot == AiSlot)
+            {
+                _aiReaderEmptyAt = 0;
+                _aiHeldAttachFailed = false;
+            }
             ClearAddonAlert(slot);
             // Import is 0 / 1 on the wire (Milestone G), the AI pack 2 / 3.
             Send(Command.AddonState, slot == ImportSlot ? 1 : 3);
@@ -561,6 +566,7 @@ public static partial class IslandHost
             // methods it came from to a handled report, so it names where it threw.
             LogInstall(slot, "start", ex);
             CrashCapture.Handled($"addon attach ({slot.Id})", ex);
+            if (slot == AiSlot && _aiModelsHeldLoad) _aiHeldAttachFailed = true;
             slot.Failure = MediaViewer.Shared.InstallFailure.NotStarted;
             string why = $"Its window could not start. Restart MediaViewer; if it happens again, use {MediaViewer.Shared.InstallWords.Reinstall} in Settings → {SettingsSection(slot)}.";
             SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");

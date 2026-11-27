@@ -829,6 +829,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     // Issue #299: Resume on the launch notice or a root's row (0: all).
     if (x < 0) return err(status::invalid_arg);
     (void)unhold(static_cast<std::int64_t>(x));
+    request_models();  // Resume asks for the work, held towers or not
     return {};
   }
   if (key == "battery_override") {
@@ -1458,8 +1459,13 @@ bool engine::wait_viewer_quiet() {
 }
 
 void engine::request_models() {
-  if (!options_.defer_models) return;
-  if (models_requested_.exchange(true)) return;
+  if (!options_.defer_models || models_requested_.load()) return;
+  {
+    // Under the lock: control_loop tests the flag under it before it sleeps,
+    // so a request between that test and the sleep is not lost.
+    std::lock_guard lock(control_m_);
+    if (models_requested_.exchange(true)) return;
+  }
   control_cv_.notify_all();
 }
 
@@ -1471,9 +1477,10 @@ void engine::wait_for_models() {
   if (!options_.defer_models) return;
   request_models();
   std::unique_lock lock(control_m_);
-  control_cv_.wait(lock, [this] {
-    return stopping_.load() || models_ready_.load() || models_failed_.load() || catalogue_ready_.load();
-  });
+  // Timed: stop() sets stopping_ without this lock, and it joins this thread.
+  while (!stopping_ && !models_ready_ && !models_failed_ && !catalogue_ready_) {
+    control_cv_.wait_for(lock, std::chrono::milliseconds(200));
+  }
 }
 
 void engine::load_models() {
@@ -1481,10 +1488,15 @@ void engine::load_models() {
   // open (the swap below); only a first load (or one after a failure) has
   // nothing to answer with. The indexer waits either way (loading_).
   loading_ = true;
+  // A search that asked for the towers waits on this (wait_for_models). Under
+  // the lock, or the wake can land between its test and its sleep.
   struct wake_search {
-    std::condition_variable* cv;
-    ~wake_search() { cv->notify_all(); }
-  } wake{&control_cv_};
+    engine* e;
+    ~wake_search() {
+      { std::lock_guard lock(e->control_m_); }
+      e->control_cv_.notify_all();
+    }
+  } wake{this};
   struct done_loading {
     std::atomic<bool>* flag;
     ~done_loading() { *flag = false; }
@@ -2540,7 +2552,8 @@ void engine::control_loop() {
     post(MV_ADDON_EVENT_AI_STATUS);
     {
       std::unique_lock lock(control_m_);
-      control_cv_.wait(lock, [this] { return stopping_.load() || models_requested_.load(); });
+      // Timed: stop() sets stopping_ without this lock, and it joins this thread.
+      while (!stopping_ && !models_requested_) control_cv_.wait_for(lock, std::chrono::milliseconds(200));
     }
     if (stopping_) return;
     bool chosen = false;
@@ -4087,21 +4100,21 @@ thread_local int g_busy_depth = 0;
 bool engine::wait_turn(bool needs_models) {
   while (!stopping_) {
     if (clearing_ || transferring_) {
-      bool abandon = false;
-      {
-        std::unique_lock lock(work_m_);
-        if (g_busy_depth > 0) {
-          if (busy_workers_ > 0) --busy_workers_;
-          g_busy_depth = 0;
-          abandon = true;
-          work_cv_.notify_all();
-        }
-        work_cv_.wait_for(lock, std::chrono::milliseconds(200), [this] {
-          return stopping_.load() || (!clearing_.load() && !transferring_.load());
-        });
+      // A worker inside a job parks here and stops counting as busy, so Clear
+      // need not wait for a job that is itself waiting for Clear. It stays
+      // parked until the wipe is over (the rows it would write to are going),
+      // then gives the job up: its assets may be gone.
+      std::unique_lock lock(work_m_);
+      const bool abandon = g_busy_depth > 0;
+      if (abandon) {
+        if (busy_workers_ > 0) --busy_workers_;
+        g_busy_depth = 0;
+        work_cv_.notify_all();
       }
-      if (stopping_) return false;
-      if (abandon) return false;  // this job is over; the worker thread stays
+      while (!stopping_ && (clearing_ || transferring_)) {
+        work_cv_.wait_for(lock, std::chrono::milliseconds(200));
+      }
+      if (stopping_ || abandon) return false;  // the worker thread stays
       continue;
     }
     const bool models_wait = needs_models && (!models_ready_ || loading_ || upgrading());
@@ -5429,6 +5442,7 @@ expected engine::root_set_documents(std::int64_t id, std::uint32_t docs) {
 expected engine::root_rescan(std::int64_t id) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   (void)unhold(id);  // asking for a walk is asking for the work (issue #299)
+  request_models();  // ... and for the towers Settings left closed
   {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(id);
@@ -5551,7 +5565,8 @@ void engine::note_folder_opened(const std::string& dir) {
 expected engine::clear_index() {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
-  clearing_ = true;
+  // Off the UI thread now, so a second Clear can arrive while one runs.
+  if (clearing_.exchange(true)) return err(status::busy);
   work_cv_.notify_all();
   bool idle = false;
   for (int i = 0; i < 1500; ++i) {  // ~30 s: workers abandon in-job waits
@@ -5650,6 +5665,9 @@ result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<
                                            std::uint32_t flags) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader runs no jobs
   if (dest.empty()) return err(status::invalid_arg);
+  // The control loop runs the job, and it sleeps while the towers are held.
+  // Before transfer_m_: the order is control_m_ -> transfer_m_.
+  request_models();
   std::lock_guard lock(transfer_m_);
   if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
   transfer_job job;
@@ -5679,6 +5697,7 @@ result<std::uint64_t> engine::import_index(const std::string& file, const std::s
     job.map.emplace_back(*id, *path);
   }
   if (job.map.empty()) return err(status::invalid_arg);
+  request_models();  // as export_index
   std::lock_guard lock(transfer_m_);
   if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
   job.id = next_transfer_++;
@@ -8776,6 +8795,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
 }
 
 std::string engine::suggest_json(const std::string& text) {
+  request_models();  // typing in the search field: the towers open before Enter
   std::vector<query::person_name> names;
   {
     std::lock_guard lock(models_m_);
@@ -8942,6 +8962,7 @@ constexpr float kPoseMatch = 0.22f;
 }  // namespace
 
 result<std::string> engine::eyes_json(const std::string& path, const std::vector<std::string>& candidates) {
+  request_models();  // an Edit tool needs People: the host reads again while it loads
   std::shared_ptr<face_analyzer> model;
   {
     std::lock_guard lock(models_m_);
@@ -9113,6 +9134,7 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
 }
 
 result<std::string> engine::faces_json(const rgb_frame& img, const rgb_frame* other) {
+  request_models();  // an Edit tool needs People: the host reads again while it loads
   std::shared_ptr<face_analyzer> model;
   {
     std::lock_guard lock(models_m_);

@@ -2317,6 +2317,41 @@ TEST_CASE("settings attach without models: folders and settings work until start
   CHECK_FALSE(r.search("red").empty());
 }
 
+TEST_CASE("held models: the first search opens the towers and indexing follows", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; }, kSettleMs));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  // Asked before anything is indexed: it finds nothing, and it is what starts the work.
+  (void)r.search("red");
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) == 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
+TEST_CASE("held models: asking for work opens the towers", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  const auto held = [&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; };
+  REQUIRE(wait_for(held, kSettleMs));
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(held());
+  SECTION("Resume (the launch notice, a folder's row)") { REQUIRE(r.eng->set_setting("resume_root", "0")); }
+  SECTION("Rescan") { REQUIRE(r.eng->root_rescan(*root)); }
+  SECTION("typing in the search field") { (void)r.eng->suggest_json("re"); }
+  SECTION("an export, which the control loop runs") {
+    // Renamed into place when the job ends: held, it never ran.
+    REQUIRE(r.eng->export_index(utf8(r.dir / "held.mvindex"), {}, 0));
+    CHECK(wait_for([&] { return fs::exists(r.dir / "held.mvindex"); }, kSettleMs));
+  }
+  REQUIRE(wait_for([&] { return !held(); }, kSettleMs));  // the status is a snapshot
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
 constexpr const char* kSchemaNow = "12";
 

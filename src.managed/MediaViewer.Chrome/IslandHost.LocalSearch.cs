@@ -85,6 +85,9 @@ public static partial class IslandHost
     // Settings asked for a held attach: the wait line and pill say Opening,
     // not Starting (the towers stay closed).
     private static bool _aiModelsHeldLoad;
+    // That attach failed (the alert and the row say why). Settings does not ask
+    // again by itself: every refresh of its panel would start another load.
+    private static bool _aiHeldAttachFailed;
 
     // The first search after launch, or Settings' Start indexing: the pack loads.
     // `open`: its panel opens once it attaches. True when a load is on its way.
@@ -884,8 +887,26 @@ public static partial class IslandHost
         }
         if (AiOnDemand())
         {
-            LoadAddon(AiSlot, holdModels: true);
-            _localSearchPanel.Children.Add(WaitLine("Opening Local search", 320));
+            // Only while its page is the one on screen: this panel is built with
+            // the rest of Settings and refreshed while another page, or nothing
+            // of Settings, shows (OpenAddonPage refreshes it when it opens).
+            if (!_settingsVisible || _addonPage != LocalSearchPageId) return;
+            if (!_aiHeldAttachFailed)
+            {
+                // A load that starts redraws this panel itself, with the wait
+                // line above (LoadAddon → RefreshLocalSearch): nothing to add here.
+                LoadAddon(AiSlot, holdModels: true);
+                if (AiSlot.Busy) return;
+            }
+            _localSearchPanel.Children.Add(WrappedLabel(
+                "Local search did not open, so its folders and settings are not shown."));
+            Button again = SettingsButton("Try again", () =>
+            {
+                _aiHeldAttachFailed = false;
+                RefreshLocalSearch();
+            });
+            again.HorizontalAlignment = HorizontalAlignment.Left;
+            _localSearchPanel.Children.Add(again);
             return;
         }
         if (SearchChrome is ISearchChrome search)

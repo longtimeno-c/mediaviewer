@@ -421,9 +421,12 @@ and retract it before unload (unload waits for walks). Stale or removed → `MV_
   `mv_addon2_ai_on_demand`); the first search loads it and indexing runs for the session (held roots
   excepted). Settings → Local search attaches the pack without opening the towers
   (`mv_ai_hold_models` / Mac `mv_addon2_ai_manage`, status `MV_AI_STATUS_MODELS_HELD`): the pack's
-  own panel (folders, compute, People, the tier picker…) works while models stay unloaded; the
-  first search or **Start indexing** (`set_setting` `"start"`) opens them. Installing Core loads at
-  once (issue #292, amended 2026-11-14). Readers in later windows
+  own panel (folders, compute, People, the tier picker…) works while models stay unloaded. The
+  attach happens when that page is on screen, not when Settings opens, and a failed one is retried
+  only by **Try again**. The first search (typing counts), **Start indexing** (`set_setting`
+  `"start"`), Resume, Rescan, an index export or import and the Edit tools' face reads open the
+  towers (`engine::request_models`); adding a folder or changing a setting does not. Installing
+  Core loads at once (issue #292, amended 2026-11-14). Readers in later windows
   and the Final Cut Pro agent are on demand too ([18](18-import.md) "One host process",
   [23](23-nle-search.md)).
 - **Loading** models waits for a quiet viewer (LOADING, `yield_reason` VIEWER); pictures first, then

@@ -598,7 +598,9 @@ class engine {
   // threads
   void control_loop();
   // Settings attached with defer_models: open the towers and start workers.
-  // Search and set_setting "start" call it. Idempotent.
+  // Whatever asks for work calls it: a search (and typing one), set_setting
+  // "start" and "resume_root", Rescan, an export or import, the Edit tools'
+  // face reads. Folders and settings do not. Idempotent, never waits.
   void request_models();
   // defer_models, not yet requested, towers still closed.
   [[nodiscard]] bool models_held() const noexcept;

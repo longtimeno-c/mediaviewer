@@ -308,6 +308,8 @@ public static partial class IslandHost
         FillAddonPageStorage(id);
         _settingsScroll.Content = _addonPageView;
         RefreshAddonList();  // the title
+        // Local search's page attaches its pack, models held, now that it shows.
+        if (id == LocalSearchPageId && AiOnDemand()) RefreshLocalSearch();
         _settingsScroll.ChangeView(null, 0, null, disableAnimation: true);
         SyncAddonSettingsScreen();
         _dispatcher?.DispatcherQueue.TryEnqueue(() => _addonPageBack?.Focus(FocusState.Programmatic));
