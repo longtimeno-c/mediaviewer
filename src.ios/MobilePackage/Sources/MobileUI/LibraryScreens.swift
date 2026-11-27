@@ -287,8 +287,7 @@ enum PersonIcon {
   /// can be someone else.
   @MainActor
   static func cached(for person: Person, in images: ImageLadder) -> UIImage? {
-    if let face = images.cachedFace(for: person) { return face }
-    return person.hasFace ? nil : images.cachedImage(for: person.face.id)
+    person.hasFace ? images.cachedFace(for: person) : images.cachedImage(for: person.face.id)
   }
 
   static func image(for person: Person, in images: ImageLadder) async -> UIImage? {

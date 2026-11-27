@@ -128,19 +128,20 @@ final class LocalCatalogueTests: XCTestCase {
   func testAPersonsFaceIsTheirOwnCoverNotTheirPhoto() async throws {
     let (location, _, _) = try library()
     let catalogue = LocalCatalogue(location: location)
+    let images = catalogue.images  // one ladder, as the app keeps (LiveServices)
     let people = try await catalogue.library.people()
     let anna = try XCTUnwrap(people.first)
     XCTAssertEqual(anna.name, "Anna")
     XCTAssertTrue(anna.hasFace)
-    XCTAssertNil(catalogue.images.cachedFace(for: anna))
-    let face = await catalogue.images.face(for: anna)
+    XCTAssertNil(images.cachedFace(for: anna))
+    let face = await images.face(for: anna)
     XCTAssertEqual(face?.size, CGSize(width: 32, height: 48))  // the crop the desktop sent
-    let photo = await catalogue.images.thumbnail(for: anna.face)
+    let photo = await images.thumbnail(for: anna.face)
     XCTAssertEqual(photo?.size, CGSize(width: 48, height: 32))  // not the photo's tile
-    XCTAssertNotNil(catalogue.images.cachedFace(for: anna))
+    XCTAssertNotNil(images.cachedFace(for: anna))
     // An older desktop's catalogue sends no face: nothing is asked of it.
     let older = Person(id: anna.id, name: anna.name, itemCount: anna.itemCount, face: anna.face, hasFace: false)
-    let none = await catalogue.images.face(for: older)
+    let none = await images.face(for: older)
     XCTAssertNil(none)
   }
 
