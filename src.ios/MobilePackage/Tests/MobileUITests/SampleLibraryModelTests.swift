@@ -77,6 +77,47 @@ final class SampleLibraryModelTests: XCTestCase {
     XCTAssertNil(BackupFolderPick.kept(nil, in: [], current: a))
   }
 
+  /// A family on one server: each person backs up into their own folder inside the backup folder.
+  /// That pick lives as long as its backup folder does, and is never a path out of it.
+  func testTheFolderChooserKeepsAPersonsFolderInsideABackupFolder() {
+    let a = BackupFolder(id: "a", label: "4.iPhone", writable: true)
+    let b = BackupFolder(id: "b", label: "Family backup", writable: true)
+    let bLocked = BackupFolder(id: "b", label: "Family backup", writable: false)
+    let tristan = try! XCTUnwrap(a.child(named: "  Tristan "))
+    XCTAssertEqual(tristan.id, "a/Tristan")
+    XCTAssertEqual(tristan.label, "4.iPhone/Tristan")
+    XCTAssertEqual(tristan.rootID, "a")
+    XCTAssertEqual(tristan.name, "Tristan")
+    let phone = try! XCTUnwrap(tristan.child(named: "iPhone 16"))
+    XCTAssertEqual(phone.id, "a/Tristan/iPhone 16")
+    XCTAssertEqual(phone.rootID, "a")
+    XCTAssertEqual(a.rootID, "a")
+
+    XCTAssertEqual(BackupFolderPick.kept(tristan, in: [a, b], current: nil), tristan)
+    XCTAssertEqual(BackupFolderPick.kept(nil, in: [a, b], current: phone), phone)  // the folder in use
+    XCTAssertEqual(BackupFolderPick.kept(tristan, in: nil, current: nil), tristan)  // held while asking
+    let samInB = try! XCTUnwrap(b.child(named: "Sam"))
+    XCTAssertNil(BackupFolderPick.kept(samInB, in: [a, bLocked], current: nil))  // its folder no longer writable
+    XCTAssertEqual(BackupFolderPick.kept(samInB, in: [a], current: tristan), tristan)  // its folder gone
+    // The backup folder renamed on the server: picking the folder itself takes its new name.
+    let renamed = BackupFolder(id: "a", label: "iPhones", writable: true)
+    XCTAssertEqual(BackupFolderPick.kept(a, in: [renamed], current: nil)?.label, "iPhones")
+  }
+
+  /// New Folder takes only a name the server takes: one plain folder name, never a path out of the
+  /// backup folder, a hidden one or one Windows cannot keep.
+  func testNewFolderTakesOnlyAPlainFolderName() {
+    XCTAssertEqual(BackupFolder.folderName(" Tristan "), "Tristan")
+    XCTAssertEqual(BackupFolder.folderName("Ana María"), "Ana María")
+    XCTAssertEqual(BackupFolder.folderName("iPhone 16 (old)"), "iPhone 16 (old)")
+    XCTAssertEqual(BackupFolder.folderName("console"), "console")
+    for bad in ["", "   ", ".", "..", "../Sam", "a/b", "a\\b", ".hidden", "trailing.", "C:", "what?", "con", "NUL.txt",
+                "com1", "LPT9", "a\u{0}b", "tab\there", String(repeating: "x", count: 256)] {
+      XCTAssertNil(BackupFolder.folderName(bad), bad)
+      XCTAssertNil(BackupFolder(id: "a", label: "A", writable: true).child(named: bad), bad)
+    }
+  }
+
   /// An offline folder joins the top level after its own folders, once; one already listed stays.
   func testOfflineFoldersJoinTheTopLevel() {
     let own = [Folder(id: "a", name: "Photos", itemCount: 3, hasSubfolders: true)]

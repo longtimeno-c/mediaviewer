@@ -709,6 +709,18 @@ final class FixtureBackup: BackupService, @unchecked Sendable {
     return [Self.nas, BackupFolder(id: "d4d4d4d4d4d4d4d4", label: "Family backup", writable: false)]
   }
   func requestPhotosAccess() async -> Bool { true }
+  /// Folders made in the chooser, by the folder they are in.
+  private var made: [String: [String]] = ["c3c3c3c3c3c3c3c3": ["Sam", "Tristan"]]
+  func subfolders(of folder: BackupFolder) async throws -> [BackupFolder] {
+    lock.withLock { made[folder.id] ?? [] }.sorted().compactMap { folder.child(named: $0) }
+  }
+  func makeFolder(named name: String, in folder: BackupFolder) async throws -> BackupFolder {
+    guard let child = folder.child(named: name) else { throw BackupFolderRefused() }
+    lock.withLock {
+      if !(made[folder.id] ?? []).contains(child.name) { made[folder.id, default: []].append(child.name) }
+    }
+    return child
+  }
   func choose(folder: BackupFolder, layout: BackupLayout) async {
     change { $0.folder = folder; $0.layout = layout; $0.state = .off }
   }

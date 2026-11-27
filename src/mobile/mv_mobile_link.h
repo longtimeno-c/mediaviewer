@@ -447,8 +447,19 @@ typedef struct mv_backup_space {
   uint64_t used;
   uint64_t room;  /* what may still be written: the limit or the NAS's free space, whichever is less */
 } mv_backup_space;
-/* BLOCKS. */
+/* BLOCKS. folder_id may be a destination (below): the space is its backup folder's. */
 int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out);
+
+/* A destination is a backup folder's id, or "<id>/<subfolder>" (a path inside it), so the people
+ * sharing one backup folder each back up to their own. Wherever these functions and mv_backup_run
+ * take a folder_id, a destination will do; one that would leave its backup folder is MV_LINK_INVALID. */
+typedef void (*mv_backup_name_fn)(void* ctx, const char* name);
+/* BLOCKS. The folders directly inside a destination, by name. MV_LINK_NOT_FOUND: not made yet. */
+int32_t mv_backup_subfolders(mv_backup* b, const char* folder_id, mv_backup_name_fn fn, void* ctx);
+/* BLOCKS. Makes the folder `name` inside the destination (there already is fine) and gives the new
+ * destination through fn. MV_LINK_INVALID: not one plain folder name, or a file has that name;
+ * MV_LINK_DENIED: this phone may not change that folder. */
+int32_t mv_backup_make_folder(mv_backup* b, const char* folder_id, const char* name, mv_backup_name_fn fn, void* ctx);
 
 /* The photos to back up, newest first. MV_LINK_INVALID for no resources, a name that is a path, or a
  * year outside 1900-9999. resources_json: [{"kind":"photo|video|live_video|raw|other","name":"IMG_0412.HEIC"}].
