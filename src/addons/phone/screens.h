@@ -34,18 +34,19 @@ namespace mv::phone::card {
 enum class computer : std::uint8_t { mac, pc, other };
 
 // This computer -> Drives (docs/plans/self-host-drives.md §6): what the card
-// holds while the person picks drives and a way to use them.
+// holds while the person picks what the drives are for, then the drives.
 struct drives_state {
   bool open = false;
-  std::vector<std::string> picked;  // drive ids, in the listing's order
+  std::string purpose;              // "" not chosen yet; "copy" (back up), "share", "combine"
+  std::vector<std::string> picked;  // drive ids, in the listing's order (share and combine)
   std::string choice;               // "" none; "separate", "mirror", ...
   std::string label;                // the combined drive's name
   std::vector<std::pair<std::string, std::string>> typed;  // drive id -> the name typed
   std::string replacing;            // a set's id
   std::string replace_with, replace_typed;
   std::string asked;                // "combine" | "replace" | "copy" until its outcome shows
-  std::string copy_from;            // Keep a copy: the picked drive copied from ("": the one with most on it)
-  std::string copy_drawn;           // the drive the Keep a copy row last showed as copied from ("": no row)
+  std::string copy_from, copy_to;   // Back up: the drives chosen ("": the tree's default)
+  std::string copy_drawn, copy_to_drawn;  // the pair the tree last showed ("": none to offer)
 };
 
 // This computer -> Users (docs/plans/self-host-users-smb.md §8).

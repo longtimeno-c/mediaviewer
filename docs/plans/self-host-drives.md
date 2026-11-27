@@ -11,7 +11,9 @@ them and combines them** into one volume that the host then shares (`host share`
 
 Shown side by side, each with the space it gives (worked out from the picked drives' sizes), what a
 dead drive costs, and its speed. Mirror is marked as the one for photos; Stripe carries a warning;
-none is hidden.
+none is hidden. Since 2026-11-27 (owner: the step was hard to follow) the card asks first what the
+drives are for, and these come under its third answer, Combine drives; Separate is its second,
+Share drives as they are; the first is Back up a drive ([keep a copy](self-host-drives-keep-a-copy.md)).
 
 | Choice | Space you get | If one drive dies | Speed |
 |---|---|---|---|
@@ -125,7 +127,9 @@ driftwire host drives replace SET [--confirm-stdin]
 
 ## 6. The card (Mac and Windows halves)
 
-"This computer" gets a **Drives** step when two or more drives are picked: the five rows side by side
+"This computer" gets a **Drives** step. Set up drives asks "What are the drives for?": Back up a
+drive (recommended, nothing erased), Share drives as they are (Separate, nothing erased), or Combine
+drives (erases). Combine drives shows the drives to pick, then the erasing rows side by side
 (the same `options_for` words, from `host drives choices --json`), the "not a backup" line, then for a
 combined choice each drive's facts and a field to type its name; Combine runs `host drives combine …
 --confirm-stdin`, which brings up the OS's administrator prompt. The status row shows each set's health.

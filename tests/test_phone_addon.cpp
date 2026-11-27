@@ -864,7 +864,7 @@ TEST_CASE("phone access: every typed drive name must match its drive, and the co
   CHECK_FALSE(valid_user_name(std::string(21, 'a')));
 }
 
-TEST_CASE("phone access: the drives step offers the five ways, erases only what was named", "[phone-addon]") {
+TEST_CASE("phone access: the drives step asks what they are for; combining erases only what was named", "[phone-addon]") {
   screen c(mv::phone::card::computer::mac);
   std::string tree = c.build(kDrivesState, kNow);
   require_valid(tree);
@@ -874,8 +874,20 @@ TEST_CASE("phone access: the drives step offers the five ways, erases only what 
   auto r = c.on_event("dr_open", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives"})J");
+  // First the question, with no drives or RAID words yet.
   tree = c.build(kDrivesState, kNow);
   require_valid(tree);
+  CHECK(tree.find("What are the drives for?") != std::string::npos);
+  CHECK(tree.find("Back up a drive") != std::string::npos);
+  CHECK(tree.find("Share drives as they are") != std::string::npos);
+  CHECK(tree.find("Erases the drives") != std::string::npos);
+  CHECK(tree.find("RAID is not a backup.") == std::string::npos);
+  CHECK(tree.find(screen::row_id("dk", "2")) == std::string::npos);
+
+  (void)c.on_event("dr_for_combine", kClick, "", kNow);
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("What are the drives for?") == std::string::npos);
   CHECK(tree.find("Can't be erased: it holds this computer's system") != std::string::npos);
   // Picked out of order, asked in the list's order.
   r = c.on_event(screen::row_id("dk", "3") + "_pick", kChange, "true", kNow);
@@ -890,6 +902,7 @@ TEST_CASE("phone access: the drives step offers the five ways, erases only what 
   CHECK(tree.find("For photos") != std::string::npos);
   CHECK(tree.find("Risky") != std::string::npos);
   CHECK(tree.find("Needs 3 or more drives.") != std::string::npos);
+  CHECK(tree.find("Choose Separate") == std::string::npos);  // that is Share drives as they are
   // Parity is not offered: choosing it does nothing.
   (void)c.on_event("dropt_parity", kClick, "", kNow);
   CHECK(c.on_event("dr_combine", kClick, "", kNow).empty());
@@ -905,9 +918,17 @@ TEST_CASE("phone access: the drives step offers the five ways, erases only what 
   r = c.on_event("dr_combine", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_combine","choice":"mirror","ids":["2","3"],"label":"Photos","names":["Untitled (2)","Photos B"]})J");
-  // Separate erases nothing and sends no names.
+
+  // Back, then Share drives as they are: no erase words, nothing typed, no names sent.
+  (void)c.on_event("dr_back", kClick, "", kNow);
+  CHECK(c.build(kDrivesState, kNow).find("What are the drives for?") != std::string::npos);
+  (void)c.on_event("dr_for_share", kClick, "", kNow);
+  CHECK(c.on_event("dr_share", kClick, "", kNow).empty());  // nothing picked
   (void)c.on_event(screen::row_id("dk", "2") + "_pick", kChange, "true", kNow);
-  (void)c.on_event("dropt_separate", kClick, "", kNow);
+  tree = c.build(kDrivesState, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Can't be erased") == std::string::npos);
+  CHECK(tree.find("RAID is not a backup.") == std::string::npos);
   r = c.on_event("dr_share", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_combine","choice":"separate","ids":["2"]})J");
@@ -924,7 +945,7 @@ TEST_CASE("phone access: the drives step offers the five ways, erases only what 
   CHECK(r[0] == R"J({"do":"host_drives_replace","set":"Photos","ids":["2"],"name":"Untitled (2)"})J");
 }
 
-// Keep a copy: two drives, one full of photos, one nearly empty (as on 2026-11-23: a 4 TB
+// Back up a drive: two drives, one full of photos, one nearly empty (as on 2026-11-23: a 4 TB
 // drive with 1.2 TB on it, its new twin with 231 MB).
 const char* kCopyState = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
   "host":{"installed":true,"set_up":true,"running":true,"service_port":7878},
@@ -940,60 +961,113 @@ const char* kCopyKept = R"J({"folder":"/x","claimed":true,"nas_passphrase":"set"
   "host":{"installed":true,"set_up":true,"running":true,"service_port":7878},
   "drives":{"os":"windows","pool_ok":true,"disks":[],"sets":[],
    "copies":[{"label":"Family Media","to_name":"Family Media Copy","from_id":"5","to_id":"4","state":"copying",
-              "line":"Copy on \u201cFamily Media Copy\u201d: copying, 1,204 files (420 GB) left"}]}})J";
+              "line":"Copy on “Family Media Copy”: copying, 1,204 files (420 GB) left"}]}})J";
 
-TEST_CASE("phone access: keep a copy of a full drive on another, nothing erased and nothing typed", "[phone-addon]") {
+std::string replaced(std::string s, const std::string& what, const std::string& with) {
+  s.replace(s.find(what), what.size(), with);
+  return s;
+}
+
+TEST_CASE("phone access: back up a full drive onto another, nothing erased and nothing typed", "[phone-addon]") {
   screen c(mv::phone::card::computer::pc);
   (void)c.build(kCopyState, kNow);
   (void)c.on_event("dr_open", kClick, "", kNow);
   std::string tree = c.build(kCopyState, kNow);
-  CHECK(tree.find("Keep a copy") == std::string::npos);  // nothing picked yet
-  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
-  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  CHECK(tree.find("Start backing up") == std::string::npos);  // not chosen yet
+  CHECK(c.on_event("dr_keep_go", kClick, "", kNow).empty());
+  (void)c.on_event("dr_for_copy", kClick, "", kNow);
   tree = c.build(kCopyState, kNow);
   require_valid(tree);
   // The full drive is the one copied from, though it can't be erased (that is the point).
-  CHECK(tree.find("Keep a copy (nothing on \xE2\x80\x9C" "Family Media\xE2\x80\x9D is erased)") != std::string::npos);
-  CHECK(tree.find("Recommended") != std::string::npos);
+  CHECK(tree.find("It is only read, never changed.") != std::string::npos);
   CHECK(tree.find("Fits: 1.2 TB onto 4 TB free.") != std::string::npos);
+  CHECK(tree.find("stay in the copy's Recycle Bin for 30 days") != std::string::npos);
   CHECK(tree.find("to erase it") == std::string::npos);  // no name to type
+  CHECK(tree.find("Can't be erased") == std::string::npos);
   auto r = c.on_event("dr_keep_go", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
 
   // The other way round can be chosen; going back sends the first way again.
-  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
-  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  (void)c.on_event("dr_for_copy", kClick, "", kNow);
   (void)c.build(kCopyState, kNow);
   (void)c.on_event("dr_keep_from", kChange, quoted("4"), kNow);
   tree = c.build(kCopyState, kNow);
-  CHECK(tree.find("Keep a copy (nothing on \xE2\x80\x9C" "Family Media Copy\xE2\x80\x9D is erased)") != std::string::npos);
   CHECK(tree.find("Fits: 231 MB onto 2.8 TB free.") != std::string::npos);
   (void)c.on_event("dr_keep_from", kChange, quoted("5"), kNow);
+  (void)c.build(kCopyState, kNow);
   r = c.on_event("dr_keep_go", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
 
-  // A copy drive too small: said with both numbers.
-  std::string small = kCopyState;
-  small.replace(small.find("3999000000000"), 13, "500000000000");
-  small.replace(small.find("\"4 TB\""), 6, "\"500 GB\"");
-  (void)c.on_event(screen::row_id("dk", "4") + "_pick", kChange, "true", kNow);
-  (void)c.on_event(screen::row_id("dk", "5") + "_pick", kChange, "true", kNow);
+  // A copy drive too small: said with both numbers, and Start backing up can't be pressed.
+  std::string small = replaced(replaced(kCopyState, "3999000000000", "500000000000"), "\"4 TB\"", "\"500 GB\"");
+  (void)c.on_event("dr_for_copy", kClick, "", kNow);
   tree = c.build(small, kNow);
   CHECK(tree.find("Doesn't fit: Family Media has 1.2 TB on it, Family Media Copy has 500 GB free.") != std::string::npos);
+  CHECK(tree.find(R"J("id":"dr_keep_go","label":"Start backing up","style":"primary","help":"Back up Family Media onto Family Media Copy","disabled":true)J") !=
+        std::string::npos);
 
-  // A copy kept: its own row says how it stands, and stops with one click (the files stay).
-  screen k(mv::phone::card::computer::pc);
-  (void)k.build(kCopyKept, kNow);
-  (void)k.on_event("dr_open", kClick, "", kNow);
-  tree = k.build(kCopyKept, kNow);
+  // Three drives: onto the one with most room unless another is chosen.
+  const std::string three = replaced(kCopyState, "\"disks\":[",
+                                     R"J("disks":[{"id":"6","name":"Spare","facts":"x","used":0,"free":8000000000000,
+                                        "mounted":true,"used_words":"0 KB","free_words":"8 TB"},)J");
+  screen t(mv::phone::card::computer::pc);
+  (void)t.build(three, kNow);
+  (void)t.on_event("dr_open", kClick, "", kNow);
+  (void)t.on_event("dr_for_copy", kClick, "", kNow);
+  (void)t.build(three, kNow);
+  r = t.on_event("dr_keep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","6"]})J");
+  (void)t.on_event("dr_for_copy", kClick, "", kNow);
+  (void)t.build(three, kNow);
+  (void)t.on_event("dr_keep_to", kChange, quoted("4"), kNow);
+  (void)t.build(three, kNow);
+  r = t.on_event("dr_keep_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"J({"do":"host_drives_copy","ids":["5","4"]})J");
+
+  // Drives already in a copy aren't offered again: with one left there is nothing to copy onto.
+  const std::string one_left = replaced(three, "\"copies\":[]", R"J("copies":[{"label":"Family Media",
+     "to_name":"Family Media Copy","from_id":"5","to_id":"4","state":"up_to_date","line":"x"}])J");
+  (void)t.on_event("dr_for_copy", kClick, "", kNow);
+  tree = t.build(one_left, kNow);
   require_valid(tree);
-  CHECK(tree.find("Copy of Family Media") != std::string::npos);
-  CHECK(tree.find("copying, 1,204 files (420 GB) left") != std::string::npos);
-  r = k.on_event(screen::row_id("cp", "Family Media") + "_stop", kClick, "", kNow);
+  CHECK(tree.find("Connect a second drive") != std::string::npos);
+  CHECK(t.on_event("dr_keep_go", kClick, "", kNow).empty());
+}
+
+TEST_CASE("phone access: a kept copy says plainly how it stands, and is paused while the server is off", "[phone-addon]") {
+  screen k(mv::phone::card::computer::pc);
+  std::string tree = k.build(kCopyKept, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Family Media \xE2\x86\x92 Family Media Copy") != std::string::npos);
+  CHECK(tree.find("Copying, 1,204 files (420 GB) left") != std::string::npos);
+  CHECK(tree.find("Changes are copied every 15 minutes while the server is on.") != std::string::npos);
+  CHECK(tree.find("Copy on ") == std::string::npos);
+  auto r = k.on_event(screen::row_id("cp", "Family Media") + "_stop", kClick, "", kNow);
   REQUIRE(r.size() == 1);
   CHECK(r[0] == R"J({"do":"host_drives_copy_stop","label":"Family Media"})J");
+
+  // The server off: paused, with what the copy last said.
+  const std::string off = replaced(kCopyKept, "\"running\":true", "\"running\":false");
+  tree = k.build(off, kNow);
+  CHECK(tree.find("Paused: the server is off, so nothing is copied. Last check: Copying, 1,204 files") != std::string::npos);
+  // Never started: paused, and nothing about a last check.
+  const std::string never = replaced(replaced(off, "\"copying\"", "\"waiting\""),
+                                     "copying, 1,204 files (420 GB) left", "starts when the server runs");
+  tree = k.build(never, kNow);
+  CHECK(tree.find("Paused: the server is off, so nothing is copied.") != std::string::npos);
+  CHECK(tree.find("Last check") == std::string::npos);
+  CHECK(tree.find("starts when the server runs") == std::string::npos);
+  // The server on, the copy not started yet.
+  tree = k.build(replaced(never, "\"running\":false", "\"running\":true"), kNow);
+  CHECK(tree.find("Starting\xE2\x80\xA6") != std::string::npos);
+
+  // The Mac's word for the bin.
+  screen m(mv::phone::card::computer::mac);
+  CHECK(m.build(kCopyKept, kNow).find("stay in the copy's Trash for 30 days") != std::string::npos);
 }
 
 TEST_CASE("phone access: users ask for the admin first, and a password is sent once and never shown", "[phone-addon]") {

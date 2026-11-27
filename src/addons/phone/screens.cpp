@@ -570,49 +570,121 @@ std::string joined(const std::vector<std::string>& v, const char* sep) {
   return out;
 }
 
-// This computer -> Drives (PhoneDrivesView.swift as it stood on 2026-11-14): the
-// sets' health and Replace a drive, then the drives and the five ways to use
-// them, offered equally, with "RAID is not a backup" above them. A combined
-// choice erases: each drive's name is typed before Erase and combine is enabled
-// (the program checks the names again; the OS asks for an administrator).
-// Keep a copy (docs/plans/self-host-drives-keep-a-copy.md §1): with two drives
-// picked, copy the one with data onto the other and keep it up to date. Nothing
-// is erased, so no name is typed. Comes before the five choices, as recommended.
-void keep_copy_rows(writer& w, const drives_listing& l, drives_state& d, bool idle) {
-  d.copy_drawn.clear();
-  if (d.picked.size() != 2) return;
-  std::vector<const disk_row*> two;
-  for (const std::string& id : d.picked) {
-    for (const disk_row& k : l.disks) {
-      if (k.id == id) two.push_back(&k);
-    }
-  }
-  if (two.size() != 2) return;
+// This computer -> Drives: the copies kept and the sets' health (Replace a
+// drive) always show. Set up drives asks first what the drives are for, in
+// plain words, then shows only that choice's rows:
+//   Back up a drive (Keep a copy, docs/plans/self-host-drives-keep-a-copy.md):
+//     one drive copied onto another and kept up to date. Nothing is erased, so
+//     no name is typed. Recommended, so first.
+//   Share drives as they are (the program's Separate): each its own folder.
+//   Combine drives: the RAID ways under "RAID is not a backup". Each drive's
+//     name is typed before Erase and combine is enabled (the program checks the
+//     names again; the OS asks for an administrator).
+bool in_a_copy(const drives_listing& l, const std::string& id) {
   for (const copy_row& c : l.copies) {
-    for (const disk_row* k : two) {
-      if (k->id == c.from_id || k->id == c.to_id) return;  // one of them is in a copy already: its row says so
+    if (c.from_id == id || c.to_id == id) return true;
+  }
+  return false;
+}
+
+// A kept copy's row: how it stands first ("Up to date", "Paused: …"), then what
+// it does. The program's line ("Copy on “X”: copying, …") gives the details;
+// with the server off nothing copies, whatever the copy's state last was.
+std::string copy_detail(const copy_row& c, bool running, bool mac) {
+  std::string said = c.line;
+  const std::string prefix = "Copy on \xE2\x80\x9C" + c.to_name + "\xE2\x80\x9D: ";
+  if (said.rfind(prefix, 0) == 0) said.erase(0, prefix.size());
+  if (!said.empty() && said[0] >= 'a' && said[0] <= 'z') said[0] = static_cast<char>(said[0] - 'a' + 'A');
+  std::string state;
+  if (!running) {
+    state = "Paused: the server is off, so nothing is copied.";
+    if (c.state != "waiting" && !said.empty()) state += " Last check: " + said;
+  } else if (c.state == "waiting") {
+    state = "Starting\xE2\x80\xA6";
+  } else {
+    state = said;
+  }
+  return state + "\nChanges are copied every 15 minutes while the server is on. Files deleted or saved over stay in "
+                 "the copy's " +
+         std::string(mac ? "Trash" : "Recycle Bin") + " for 30 days.";
+}
+
+// The first question: what the drives are for.
+void purpose_cards(writer& w, bool idle) {
+  struct purpose {
+    const char *id, *title, *tag, *what, *help;
+  };
+  static const purpose kPurposes[] = {
+      {"dr_for_copy", "Back up a drive", "Recommended",
+       "Keeps a copy of one drive on another, up to date. Nothing is erased.",
+       "Copy one drive onto another and keep it up to date"},
+      {"dr_for_share", "Share drives as they are", nullptr,
+       "Each drive becomes its own folder for your phone. Nothing is erased.", "Share each drive as it is"},
+      {"dr_for_combine", "Combine drives", "Erases the drives",
+       "Makes one drive from two or more (RAID: mirror, stripe, parity). Everything on them is erased.",
+       "Erase two or more drives and combine them into one"},
+  };
+  text(w, "dr_for_t", "What are the drives for?", "heading");
+  stack(w, "dr_for", 8, "horizontal");
+  for (const purpose& p : kPurposes) {
+    stack(w, std::string(p.id) + "_card", 6, "vertical", "card");
+    text(w, std::string(p.id) + "_t", p.title, "heading");
+    if (p.tag) text(w, std::string(p.id) + "_tag", p.tag, "caption");
+    text(w, std::string(p.id) + "_what", p.what, "secondary");
+    button(w, p.id, "Choose", !idle, "plain", p.help);
+    end(w);
+  }
+  end(w);
+}
+
+// Back up a drive: which drive, onto which, whether it fits, Start backing up.
+void backup_rows(writer& w, const drives_listing& l, drives_state& d, bool idle, bool mac) {
+  d.copy_drawn.clear();
+  d.copy_to_drawn.clear();
+  std::vector<const disk_row*> disks;
+  for (const disk_row& k : l.disks) {
+    if (!in_a_copy(l, k.id)) disks.push_back(&k);
+  }
+  if (disks.size() < 2) {
+    row(w, "dr_keep_none", "Connect a second drive",
+        "A backup needs the drive with your photos and another to copy onto. Connect them, then choose Check again.");
+    button(w, "dr_check", "Check again", !idle);
+    end_row(w);
+    return;
+  }
+  // Unchosen: the drive with most on it, onto the one with most room.
+  const disk_row* from = nullptr;
+  for (const disk_row* k : disks) {
+    if (k->id == d.copy_from) from = k;
+  }
+  if (!from) {
+    from = disks[0];
+    for (const disk_row* k : disks) {
+      if (k->used > from->used) from = k;
     }
   }
-  const disk_row* from = two[0]->used >= two[1]->used ? two[0] : two[1];
-  if (two[0]->id == d.copy_from) from = two[0];
-  if (two[1]->id == d.copy_from) from = two[1];
-  const disk_row* to = from == two[0] ? two[1] : two[0];
+  const disk_row* to = nullptr;
+  for (const disk_row* k : disks) {
+    if (k != from && k->id == d.copy_to) to = k;
+  }
+  if (!to) {
+    for (const disk_row* k : disks) {
+      if (k != from && (!to || k->free > to->free)) to = k;
+    }
+  }
   d.copy_drawn = from->id;
-  const std::string q_from = "\xE2\x80\x9C" + from->name + "\xE2\x80\x9D";
-  stack(w, "dr_keep_card", 6, "vertical", "card");
-  text(w, "dr_keep_t", "Keep a copy (nothing on " + q_from + " is erased)", "heading");
-  text(w, "dr_keep_rec", "Recommended", "caption");
-  text(w, "dr_keep_what",
-       "Copies everything on " + from->name + " to " + to->name + ", then keeps the copy up to date while the server runs. "
-       "Files deleted or saved over on " + from->name + " stay in the copy's Recycle Bin for 30 days.",
-       "secondary");
-  text(w, "dr_keep_not_mirror",
-       "Not a mirror: if " + from->name + " dies, the copy has everything but the last few minutes. "
-       "Files already on " + to->name + " are left alone.",
-       "secondary");
-  std::vector<option> dirs{{from->id, "Copy " + from->name + " onto " + to->name},
-                           {to->id, "Copy " + to->name + " onto " + from->name}};
-  choice(w, "dr_keep_from", "Copy from", dirs, from->id, !idle);
+  d.copy_to_drawn = to->id;
+  std::vector<option> froms, tos;
+  for (const disk_row* k : disks) {
+    froms.push_back({k->id, k->name});
+    if (k != from) tos.push_back({k->id, k->name});
+  }
+  row(w, "dr_keep_from_row", "Back up", "The drive with your photos. It is only read, never changed.");
+  choice(w, "dr_keep_from", "Back up", froms, from->id, !idle);
+  end_row(w);
+  row(w, "dr_keep_to_row", "Onto", "Files already on it are left alone.");
+  choice(w, "dr_keep_to", "Onto", tos, to->id, !idle);
+  end_row(w);
   const bool mounted = from->mounted && to->mounted;
   const bool fits = from->used <= to->free;
   std::string why;
@@ -624,18 +696,37 @@ void keep_copy_rows(writer& w, const drives_listing& l, drives_state& d, bool id
     why = "Fits: " + from->used_words + " onto " + to->free_words + " free.";
   }
   text(w, "dr_keep_fit", why, "secondary");
-  button(w, "dr_keep_go", "Start copying", !idle || !mounted || !fits, "primary",
-         "Keep a copy of " + from->name + " on " + to->name);
-  end(w);
+  text(w, "dr_keep_what",
+       "Everything on " + from->name + " is copied to " + to->name +
+           ", then changes are copied every 15 minutes while the server is on. Files deleted or saved over on " +
+           from->name + " stay in the copy's " + (mac ? "Trash" : "Recycle Bin") + " for 30 days. If " + from->name +
+           " stops working, the copy has everything up to its last check.",
+       "secondary");
+  button(w, "dr_keep_go", "Start backing up", !idle || !mounted || !fits, "primary",
+         "Back up " + from->name + " onto " + to->name);
+}
+
+// Share and Combine: the drives to use, each picked with a switch.
+void disk_toggles(writer& w, const drives_listing& l, const drives_state& d, bool idle, bool erasing) {
+  for (const disk_row& k : l.disks) {
+    const std::string id = row_hash("dk", k.id);
+    row(w, id, k.name, erasing && !k.refused.empty() ? k.facts + "\nCan't be erased: " + k.refused : k.facts);
+    const bool on = std::find(d.picked.begin(), d.picked.end(), k.id) != d.picked.end();
+    toggle(w, id + "_pick", k.name, on, !idle);
+    end_row(w);
+  }
 }
 
 void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std::string& me) {
   const bool idle = !busy;
+  const bool mac = me == "this Mac";
   if (s.drives) {
+    const bool running = s.host && s.host->running;
     for (const copy_row& c : s.drives->copies) {
       const std::string id = row_hash("cp", c.label);
-      row(w, id, "Copy of " + c.label, c.line);
-      button(w, id + "_stop", "Stop keeping a copy", !idle, "plain", "Stop keeping a copy of " + c.label);
+      row(w, id, c.label + " \xE2\x86\x92 " + c.to_name, copy_detail(c, running, mac));
+      button(w, id + "_stop", "Stop backing up", !idle, "plain",
+             "Stop backing up " + c.label + ". What is on " + c.to_name + " stays there.");
       end_row(w);
     }
     for (const set_row& set : s.drives->sets) {
@@ -678,9 +769,8 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
     }
   }
   if (!d.open) {
-    row(w, "drives", "Drives for your server", "Share each drive as it is, or erase two or more and combine them into one.");
-    sym_button(w, "dr_open", "Use two or more drives\xE2\x80\xA6", "drive", !idle, "plain",
-               "Choose drives on " + me + " for the server");
+    row(w, "drives", "Drives for your server", "Back up a drive onto another, share more drives, or combine them.");
+    sym_button(w, "dr_open", "Set up drives\xE2\x80\xA6", "drive", !idle, "plain", "Choose drives on " + me + " for the server");
     end_row(w);
   } else if (s.drives) {
     const drives_listing& l = *s.drives;
@@ -689,76 +779,79 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
       row(w, "dr_error", "Couldn't list the drives", l.error);
       button(w, "dr_check", "Check again", !idle);
       end_row(w);
-    }
-    for (const disk_row& k : l.disks) {
-      const std::string id = row_hash("dk", k.id);
-      row(w, id, k.name, k.refused.empty() ? k.facts : k.facts + "\nCan't be erased: " + k.refused);
-      const bool on = std::find(d.picked.begin(), d.picked.end(), k.id) != d.picked.end();
-      toggle(w, id + "_pick", k.name, on, !idle);
-      end_row(w);
-    }
-    if (l.disks.empty() && l.error.empty()) {
+    } else if (l.disks.empty()) {
       row(w, "dr_none", "No other drives", "No drives besides " + me + "'s own. Connect the drives and choose Check again.");
       button(w, "dr_check", "Check again", !idle);
       end_row(w);
-    }
-    keep_copy_rows(w, l, d, idle);
-    if (!d.picked.empty() && s.choices) {
-      text(w, "dr_not_backup", s.choices->not_a_backup, "heading");
-      stack(w, "dr_options", 8, "horizontal");
-      for (const drive_option& o : s.choices->options) {
-        const std::string id = "dropt_" + o.choice;
-        stack(w, id + "_card", 6, "vertical", "card");
-        text(w, id + "_t", o.title + (d.choice == o.choice ? " \xC2\xB7 chosen" : ""), "heading");
-        if (o.recommended) text(w, id + "_rec", "For photos", "caption");
-        if (o.warning) text(w, id + "_warn", "Risky", "caption");
-        if (o.offered) {
-          text(w, id + "_space", o.space_words, "secondary");
-          text(w, id + "_dead", "If one dies: " + o.dead_words, "secondary");
-          text(w, id + "_speed", o.speed_words, "secondary");
-        } else {
-          text(w, id + "_why", o.why_not, "secondary");
+    } else if (d.purpose.empty()) {
+      purpose_cards(w, idle);
+    } else if (d.purpose == "copy") {
+      text(w, "dr_purpose_t", "Back up a drive", "heading");
+      backup_rows(w, l, d, idle, mac);
+    } else if (d.purpose == "share") {
+      text(w, "dr_purpose_t", "Share drives as they are", "heading");
+      disk_toggles(w, l, d, idle, false);
+      bool offered = false;
+      if (s.choices) {
+        for (const drive_option& o : s.choices->options) offered |= o.choice == "separate" && o.offered;
+      }
+      row(w, "dr_share_row", "Share the drives picked", "Nothing is erased. Each drive becomes its own folder for your phone.");
+      button(w, "dr_share", "Share", !idle || d.picked.empty() || !offered, "primary", "Share each picked drive as it is");
+      end_row(w);
+    } else {
+      text(w, "dr_purpose_t", "Combine drives", "heading");
+      disk_toggles(w, l, d, idle, true);
+      if (!d.picked.empty() && s.choices) {
+        text(w, "dr_not_backup", s.choices->not_a_backup, "secondary");
+        stack(w, "dr_options", 8, "horizontal");
+        for (const drive_option& o : s.choices->options) {
+          if (!o.erases()) continue;  // Separate is Share drives as they are
+          const std::string id = "dropt_" + o.choice;
+          stack(w, id + "_card", 6, "vertical", "card");
+          text(w, id + "_t", o.title + (d.choice == o.choice ? " \xC2\xB7 chosen" : ""), "heading");
+          if (o.recommended) text(w, id + "_rec", "For photos", "caption");
+          if (o.warning) text(w, id + "_warn", "Risky", "caption");
+          if (o.offered) {
+            text(w, id + "_space", o.space_words, "secondary");
+            text(w, id + "_dead", "If one dies: " + o.dead_words, "secondary");
+            text(w, id + "_speed", o.speed_words, "secondary");
+          } else {
+            text(w, id + "_why", o.why_not, "secondary");
+          }
+          button(w, id, "Choose " + o.title, !o.offered || !idle, d.choice == o.choice ? "primary" : "plain",
+                 o.offered ? o.title : o.title + ", not available: " + o.why_not);
+          end(w);
         }
-        button(w, id, "Choose " + o.title, !o.offered || !idle, d.choice == o.choice ? "primary" : "plain",
-               o.offered ? o.title : o.title + ", not available: " + o.why_not);
         end(w);
       }
-      end(w);
-    }
-    const drive_option* chosen = nullptr;
-    if (!d.picked.empty() && s.choices) {
-      for (const drive_option& o : s.choices->options) {
-        if (o.choice == d.choice && o.offered) chosen = &o;
-      }
-    }
-    if (chosen) {
-      std::vector<const disk_row*> disks;
-      for (const std::string& id : d.picked) {
-        for (const disk_row& k : l.disks) {
-          if (k.id == id) disks.push_back(&k);
+      const drive_option* chosen = nullptr;
+      if (!d.picked.empty() && s.choices) {
+        for (const drive_option& o : s.choices->options) {
+          if (o.choice == d.choice && o.offered && o.erases()) chosen = &o;
         }
       }
-      if (!chosen->erases()) {
-        row(w, "dr_share_row", "Share each drive as it is", "Nothing is erased. Each drive becomes its own folder for your phone.");
-        button(w, "dr_share", "Share", !idle, "primary", "Share each picked drive as it is");
-        end_row(w);
-      } else {
+      if (chosen) {
         std::vector<std::string> refused;
-        for (const disk_row* k : disks) {
-          if (!k->refused.empty()) refused.push_back(k->name + " can't be erased: " + k->refused);
+        for (const std::string& id : d.picked) {
+          for (const disk_row& k : l.disks) {
+            if (k.id == id && !k.refused.empty()) refused.push_back(k.name + " can't be erased: " + k.refused);
+          }
         }
         row(w, "dr_label_row", "Name of the combined drive", "1 to 27 letters, digits, spaces, - or _. It is shared under this name.");
         field(w, "dr_label", "Name of the combined drive", d.label, "Photos");
         end_row(w);
-        for (const disk_row* k : disks) {
-          const std::string id = row_hash("dt", k->id);
-          row(w, id + "_row", k->name, k->facts);
-          field(w, id, "Type " + k->name + " to erase it", typed_for(d, k->id),
-                "Type \xE2\x80\x9C" + k->name + "\xE2\x80\x9D to erase it");
-          end_row(w);
+        for (const std::string& pid : d.picked) {
+          for (const disk_row& k : l.disks) {
+            if (k.id != pid) continue;
+            const std::string id = row_hash("dt", k.id);
+            row(w, id + "_row", k.name, k.facts);
+            field(w, id, "Type " + k.name + " to erase it", typed_for(d, k.id),
+                  "Type \xE2\x80\x9C" + k.name + "\xE2\x80\x9D to erase it");
+            end_row(w);
+          }
         }
         row(w, "dr_combine_row", chosen->title + ": erase and combine",
-            refused.empty() ? "Everything on these drives is erased. " + std::string(me == "this Mac" ? "macOS" : "Windows") +
+            refused.empty() ? "Everything on these drives is erased. " + std::string(mac ? "macOS" : "Windows") +
                                   " asks for an administrator once."
                             : joined(refused, "\n"));
         button(w, "dr_combine", "Erase and combine", !idle || !refused.empty(), "destructive",
@@ -767,6 +860,7 @@ void drives_rows(writer& w, const view& s, drives_state& d, bool busy, const std
       }
     }
     stack(w, "dr_close_row", 8, "horizontal");
+    if (!d.purpose.empty()) button(w, "dr_back", "Back", !idle, "plain", "Back to what the drives are for");
     button(w, "dr_close", "Close", !idle, "plain", "Close the drives step");
     end(w);
   } else if (idle) {
@@ -1912,6 +2006,9 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       drives_.label = v;
     } else if (node == "dr_keep_from") {
       drives_.copy_from = v;
+      if (drives_.copy_to == v) drives_.copy_to.clear();  // the other one, as drawn next
+    } else if (node == "dr_keep_to") {
+      drives_.copy_to = v;
     } else if (node == "dr_rep_typed") {
       drives_.replace_typed = v;
     } else if (node == "dr_rep_pick") {
@@ -2171,11 +2268,15 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
     out.push_back(req("host_drives").done());
   } else if (node == "dr_check") {
     out.push_back(req("host_drives").done());
-  } else if (node == "dr_close") {
-    drives_.open = false;
+  } else if (node == "dr_close" || node == "dr_back" || node == "dr_for_copy" || node == "dr_for_share" ||
+             node == "dr_for_combine") {
+    if (node == "dr_close") drives_.open = false;
+    drives_.purpose = node.substr(0, 7) == "dr_for_" ? std::string(node.substr(7)) : std::string();
     drives_.picked.clear();
     drives_.choice.clear();
     drives_.typed.clear();
+    drives_.copy_from.clear();
+    drives_.copy_to.clear();
   } else if (node.substr(0, 6) == "dropt_") {
     const std::string c(node.substr(6));
     if (std::find(offered_.begin(), offered_.end(), c) != offered_.end()) {
@@ -2184,6 +2285,11 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       if (c != "separate" && drives_.label.empty()) drives_.label = "Photos";
     }
   } else if (node == "dr_share" || node == "dr_combine") {
+    // Share drives as they are is the program's Separate, when it offers it for the drives picked.
+    if (drives_.purpose == "share") {
+      drives_.choice.clear();
+      if (std::find(offered_.begin(), offered_.end(), "separate") != offered_.end()) drives_.choice = "separate";
+    }
     const bool erases = drives_.choice != "separate";
     std::vector<std::string> typed, names;
     for (const std::string& id : drives_.picked) {
@@ -2215,20 +2321,17 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       drives_.picked.clear();
     }
   } else if (node == "dr_keep_go") {
-    if (drives_.picked.size() == 2) {
-      // As drawn: the picked drive copied from, else the one with most on it (the tree's default).
-      std::string from = drives_.copy_from;
-      if (std::find(drives_.picked.begin(), drives_.picked.end(), from) == drives_.picked.end()) from = drives_.copy_drawn;
-      if (!from.empty()) {
-        const std::string to = drives_.picked[0] == from ? drives_.picked[1] : drives_.picked[0];
-        writer rw;
-        rw.begin_object().key("do").string("host_drives_copy").key("ids").begin_array().string(from).string(to).end_array();
-        out.push_back(rw.end_object().take());
-        drives_.asked = "copy";
-        drives_.choice.clear();
-        drives_.picked.clear();
-        drives_.copy_from.clear();
-      }
+    // As drawn: the drives chosen, else the tree's defaults (most on it, onto most room).
+    const std::string& from = drives_.copy_drawn;
+    const std::string& to = drives_.copy_to_drawn;
+    if (drives_.purpose == "copy" && !from.empty() && !to.empty() && from != to) {
+      writer rw;
+      rw.begin_object().key("do").string("host_drives_copy").key("ids").begin_array().string(from).string(to).end_array();
+      out.push_back(rw.end_object().take());
+      drives_.asked = "copy";
+      drives_.purpose.clear();
+      drives_.copy_from.clear();
+      drives_.copy_to.clear();
     }
   } else if (node.substr(0, 2) == "cp" && node.size() > 5 && node.substr(node.size() - 5) == "_stop") {
     for (const std::string& label : copy_labels_) {

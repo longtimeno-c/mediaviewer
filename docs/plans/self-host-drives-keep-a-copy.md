@@ -15,9 +15,13 @@ Written 2026-11-15 from the code at `49147a79`. It builds on [self-host-drives.m
   `copies.json` changes. It writes `copies-state.json`, which `host drives list --json` reads.
 - `host drives copy FROM TO` and `copy-stop FROM` (`"[host-drives]"`). Nothing is erased, so
   no name is typed. A drive with a marker is refused by `refusal_of()`.
-- The card's row (`phone/screens.cpp`, `"[phone-addon]"`): with two drives picked, "Keep a copy"
-  comes first and is marked Recommended, with Copy from, whether it fits, and Start copying.
-  Each copy kept gets a status row with Stop keeping a copy.
+- The card (`phone/screens.cpp`, `"[phone-addon]"`): Set up drives first asks what the drives
+  are for: **Back up a drive** (this, marked Recommended), Share drives as they are (Separate),
+  or Combine drives (the RAID ways, which erase). Back up a drive picks Back up and Onto (the
+  drive with most on it, onto the one with most room), says whether it fits, and has Start
+  backing up. Each copy kept gets a row, "Family Media → Family Media Copy", that leads with
+  how it stands in plain words ("Paused: the server is off, so nothing is copied", "Up to
+  date", "Copying, …") and has Stop backing up.
 
 Not built yet: changes are found by the 15-minute compare, not `io::tree_watch`; there is no
 background I/O priority; the monthly SHA-256 check; the Recycle Bin list, Restore and Empty;
@@ -55,15 +59,15 @@ Keep a copy is not RAID. Here's how it compares with a mirror, and it should say
 
 ## 1. What the person sees
 
-On the Drives step, when one picked drive has data and another has room, a new row comes first and
-is marked **Recommended**: **Keep a copy (nothing on "Photos" is erased)**. It shows:
+On the Drives step, **Back up a drive** is the first of the three answers to "What are the drives
+for?" and is marked **Recommended**. It shows:
 
 - what is on the full drive, the new drive's free space, and whether the copy fits;
 - "First copy: about N hours" (the size divided by a speed measured from the first 30 seconds of
   copying, then updated as it runs);
 - the "not the same as a mirror" lines from the table above, and the existing "RAID is not a backup" line.
 
-Then **Start copying**. The new drive is erased only if it can't be used as it is: it isn't formatted,
+Then **Start backing up**. The new drive is erased only if it can't be used as it is: it isn't formatted,
 or it's FAT32 (FAT32 can't hold a file over 4 GB). That erase goes through the existing guards in
 §3 of self-host-drives.md, with the drive's name typed. A drive that is already NTFS or exFAT and
 has room is used as it is, and anything already on it is left alone.
