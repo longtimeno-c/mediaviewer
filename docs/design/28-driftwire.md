@@ -327,9 +327,11 @@ A session above the link (`channel.h`); `transfer.h` just waits through rejoins.
   - **Away**: silence is counted only while the reader thread reads. The receiver holds
     `channel::away` while it waits on its verifier (room in the queue, or the last read-backs
     after `done`: a 15 GB file on a hard disk takes minutes), so the sender's unread pings are not
-    taken for a dead link; its own pings still go out. Dropping it restarts the clock. Not yet
-    covered: a wait for room long enough to fill the sender's socket for `kSilenceMs` (its
-    `SO_SNDTIMEO`) still drops the link on the sender's side, which then has to rejoin.
+    taken for a dead link; its own pings still go out. Dropping it restarts the clock. A long
+    wait for room fills the sender's socket (well before `kReplayBytes`): a TCP link's write
+    (`net_posix.cpp`, `net_win.cpp`) waits on a full send buffer in slices and fails only after
+    `kSilenceMs` with nothing sent **and nothing read** from the peer, so the receiver's pings
+    keep a blocked write (and the link) alive; a dead peer still ends it within `kSilenceMs`.
   - **Make before break**: Bluetooth → Wi-Fi when the peer appears there; next move waits **10 s**
     (`kSwitchHoldMs`).
   - **Flapping**: three rejoins in **10 s** end it.

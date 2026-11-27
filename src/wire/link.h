@@ -39,6 +39,9 @@ class link {
   // A TCP link whose small writes leave at once (TCP_NODELAY), as the socket
   // itself reports it; false for every other bearer.
   [[nodiscard]] virtual bool no_delay() const noexcept { return false; }
+  // Tests: a TCP link's write fails once its send buffer has stayed full and
+  // nothing was heard from the peer for this long (kSilenceMs).
+  virtual void set_stall_ms_for_tests(int /*ms*/) noexcept {}
 };
 
 // A link that says it is another bearer than its own (#472 PR 2: a TCP link
