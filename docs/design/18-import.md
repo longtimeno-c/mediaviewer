@@ -124,7 +124,7 @@ against `import.db`, uncached, to find rot); folders and shares as sources.
 Every first-party add-on (Import, the AI pack [17](17-local-ai-search.md), Places, Driftwire)
 uses this mechanism.
 
-- **Settings → Add-ons** is a short list: Import, Local search, Places, Driftwire, Enhance, Phone access, other own
+- **Settings → Add-ons** is a short list: Import, Local search, Places, Driftwire, Enhance, Phone access, VPN, other own
   add-ons, then **From other makers**. Each row is name + state (*Installed · 1.2.0*, *Update
   available · 1.3.0*, *Restart to finish updating*, *Not installed*, *Needs an update*,
   *Couldn't start*, *Installing…*). A row opens the add-on's page: actions (Install / Update to X

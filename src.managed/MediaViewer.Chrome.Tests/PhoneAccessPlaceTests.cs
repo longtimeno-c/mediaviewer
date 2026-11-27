@@ -16,7 +16,7 @@ public class PhoneAccessPlaceTests
     {
         string list = Chrome("IslandHost.AddonList.cs");
         Assert.Contains("list.Add(new(PhoneAccessId, \"Phone access\"", list);
-        Assert.Contains("r.Id != PhoneAccessId)", list);  // not listed twice
+        Assert.Contains("r.Id != PhoneAccessId &&", list);  // not listed twice
     }
 
     [Fact]
