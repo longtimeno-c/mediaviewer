@@ -27,6 +27,8 @@ struct sync_config {
   // A library.json with no catalogue is file mode (no_catalogue). Off for the sample library,
   // which always has one: anything else there is refused.
   bool file_mode = true;
+  // Connections the copy may use at once (remote_file::open_lane): 1 is the link alone.
+  int lanes = 4;
 };
 
 // On disk at <library_dir>/installed.json; the one record of what is here.
