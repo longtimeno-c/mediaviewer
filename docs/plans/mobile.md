@@ -977,6 +977,16 @@ at most 24 MB waits in memory ahead of it. No protocol change: each lane is an o
 service that says busy just leaves fewer. Bench: `mv_mobile_link_tests "[.phone-copy-bench]"`
 (`tests/tcp_path.h`, an emulated CUBIC path).
 
+**A newer generation mid-copy (2026-11-27):** a copy cut short used to be thrown away whole as soon
+as a newer generation was published, and nothing was taken from the installed generation, so every
+generation was a full download. On a slow link that took longer than the desktop's republishing
+(at most hourly while the library changes), the phone never installed anything newer and kept
+showing photos deleted on the server. Now `copy_catalogue` (under the library's copy lock; `check_catalogue` only counts it) carries into the new staging folder
+every file the new manifest names with the same name, size and SHA-256: whole files by hard link
+from an older staging folder or the installed generation, and an older `.part` by a move, resumed.
+A staging folder keeps its manifest as `plan.json` for this, removed before the swap. Every file is
+still hashed before it is installed. Test: `"sync: a generation published mid-copy*"`.
+
 Copy, verify, swap, resume, background task, first copy as a continued task on iOS 26, model copy,
 Wi-Fi by default.
 

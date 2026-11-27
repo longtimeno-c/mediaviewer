@@ -249,6 +249,122 @@ std::string find_root(remote_file& remote, const sync_config& c, sync_outcome& f
 
 bool safe_name(const std::string& name) { return driftwire::safe_relative(name) && name.find('/') == std::string::npos; }
 
+// The manifest a staging folder is copying, beside its files, so a newer generation can tell
+// which of them it shares. Taken out before the folder becomes a generation.
+constexpr const char* kStagingPlan = "plan.json";
+
+// A manifest's own files (not the models): name -> (size, sha256). Empty when it does not read.
+std::map<std::string, std::pair<std::uint64_t, std::string>> manifest_files(const fs::path& file) {
+  std::map<std::string, std::pair<std::uint64_t, std::string>> out;
+  std::ifstream f(file, std::ios::binary);
+  if (!f) return out;
+  const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (text.size() > kMaxManifestBytes) return out;
+  const auto doc = json::parse(text, 8);
+  const json::value* files = doc ? doc->find("files") : nullptr;
+  if (!files || files->k != json::kind::array) return out;
+  for (const json::value& v : files->a) {
+    const std::string* name = v.str("name");
+    const std::string* sha = v.str("sha256");
+    const auto size = v.integer("size");
+    if (name && sha && size && *size >= 0 && safe_name(*name)) out[*name] = {static_cast<std::uint64_t>(*size), *sha};
+  }
+  return out;
+}
+
+// A newer generation shares most of its files with the one before, or with a copy of it cut
+// short: a slow link must not start again from nothing each time the library changes, or it
+// never catches up and the phone keeps showing what the server no longer has. Every file of
+// `plan` the same (name, size, sha256) as a file already on the phone goes into `staging`: a
+// whole one from the installed generation or an older staging folder by a hard link (a copy
+// where links fail), a part one from an older staging folder by moving it, to be resumed. Only
+// what the manifests vouch for is taken, and every file is hashed again before it is installed.
+// `apply` false: nothing moves, and the bytes each file would bring are returned (by local_rel), for
+// a check, which runs beside a copy. Only the copy, which holds the library's copy lock, moves them.
+std::map<std::string, std::uint64_t> carry_over(const sync_config& c, const sync_plan& plan, const fs::path& staging,
+                                                bool apply) {
+  std::map<std::string, std::uint64_t> found;
+  std::error_code ec;
+  const fs::path library = c.library_dir;
+  struct source {
+    fs::path dir;
+    std::map<std::string, std::pair<std::uint64_t, std::string>> files;
+    bool staging = false;
+  };
+  std::vector<source> sources;
+  for (fs::directory_iterator it(library / "staging", ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->path() == staging) continue;
+    auto files = manifest_files(it->path() / kStagingPlan);
+    if (!files.empty()) sources.push_back({it->path(), std::move(files), true});
+  }
+  ec.clear();
+  if (const auto installed = read_installed(c.library_dir); installed && installed->library_id == c.library_id) {
+    const fs::path dir = library / "gen" / installed->dir;
+    auto files = manifest_files(dir / "manifest.json");
+    if (!files.empty()) sources.push_back({dir, std::move(files), false});
+  }
+  if (sources.empty()) return found;
+  for (const sync_file& f : plan.files) {
+    if (f.model) continue;  // content-named under models/, already shared
+    const fs::path to = staging / f.local_rel;
+    if (fs::file_size(to, ec) == f.size && !ec) continue;
+    ec.clear();
+    const fs::path to_part = to.string() + ".part";
+    const std::uint64_t have = fs::exists(to_part, ec) ? fs::file_size(to_part, ec) : 0;
+    ec.clear();
+    bool done = false;
+    for (const source& s : sources) {  // a whole file first
+      const auto it = s.files.find(f.local_rel);
+      if (it == s.files.end() || it->second != std::pair{f.size, f.sha256}) continue;
+      const fs::path from = s.dir / f.local_rel;
+      if (fs::file_size(from, ec) != f.size || ec) {
+        ec.clear();
+        continue;
+      }
+      if (!apply) {
+        found[f.local_rel] = f.size;
+        done = true;
+        break;
+      }
+      fs::create_hard_link(from, to, ec);
+      if (ec) {
+        ec.clear();
+        fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+      }
+      if (ec) {
+        ec.clear();
+        fs::remove(to, ec);
+        ec.clear();
+        continue;
+      }
+      fs::remove(to_part, ec);
+      ec.clear();
+      done = true;
+      break;
+    }
+    if (done) continue;
+    for (const source& s : sources) {  // else the longest part one
+      if (!s.staging) continue;
+      const auto it = s.files.find(f.local_rel);
+      if (it == s.files.end() || it->second != std::pair{f.size, f.sha256}) continue;
+      const fs::path from = s.dir / (f.local_rel + ".part");
+      const std::uint64_t size = fs::exists(from, ec) ? fs::file_size(from, ec) : 0;
+      if (ec || size <= have || size > f.size) {
+        ec.clear();
+        continue;
+      }
+      if (!apply) {
+        found[f.local_rel] = size;
+        break;
+      }
+      fs::rename(from, to_part, ec);
+      ec.clear();
+      break;
+    }
+  }
+  return found;
+}
+
 }  // namespace
 
 sync_plan check_catalogue(remote_file& remote, const sync_config& c) {
@@ -354,6 +470,8 @@ sync_plan check_catalogue(remote_file& remote, const sync_config& c) {
   // What is already here, so the size shown is what still has to move.
   std::error_code ec;
   const fs::path staging = fs::path(c.library_dir) / "staging" / gen_dir_name(plan.epoch, plan.generation);
+  // What an older copy, or the installed generation, already holds of this one: the copy takes it.
+  const auto carried = carry_over(c, plan, staging, false);
   for (const sync_file& f : plan.files) {
     plan.total_bytes += f.size;
     const fs::path done = f.model ? fs::path(c.library_dir) / f.local_rel : staging / f.local_rel;
@@ -362,9 +480,14 @@ sync_plan check_catalogue(remote_file& remote, const sync_config& c) {
       continue;
     }
     ec.clear();
+    std::uint64_t have = 0;
     const auto part = fs::file_size(fs::path(done.string() + ".part"), ec);
-    if (!ec && part <= f.size) plan.done_bytes += part;
+    if (!ec && part <= f.size) have = part;
     ec.clear();
+    if (!f.model) {
+      if (const auto it = carried.find(f.local_rel); it != carried.end()) have = std::max(have, it->second);
+    }
+    plan.done_bytes += have;
   }
   plan.outcome = sync_outcome::copy_available;
   return plan;
@@ -638,7 +761,9 @@ sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan
   }
   fs::create_directories(staging, ec);
   if (ec) return sync_outcome::no_space;
-  // A half-copied older generation is no use now.
+  if (!write_atomic(staging / kStagingPlan, plan.manifest_text)) return sync_outcome::no_space;
+  // What it shares with this one comes over (check_catalogue did so too); the rest is no use now.
+  (void)carry_over(c, plan, staging, true);
   for (fs::directory_iterator it(library / "staging", ec), end; !ec && it != end; it.increment(ec)) {
     if (it->path().filename() != name) {
       std::error_code e2;
@@ -728,6 +853,8 @@ sync_outcome copy_catalogue(remote_file& remote, const sync_config& c, sync_plan
     if (ec) return sync_outcome::no_space;
   }
   if (!write_atomic(staging / "manifest.json", plan.manifest_text)) return sync_outcome::no_space;
+  fs::remove(staging / kStagingPlan, ec);  // the generation's own manifest says it now
+  ec.clear();
 
   // The commit: one rename of the folder, then one of the record.
   fs::create_directories(gen_root, ec);
