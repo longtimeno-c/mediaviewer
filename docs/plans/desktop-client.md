@@ -78,13 +78,13 @@ folder (issue #617's pins, as `remote:<server id>`), named by the server with "P
 its place:
 - **Mac:** after File > Connect to a Server; the welcome card, the Dock menu and File > Open Recent
   list it, and the Folders pane opens if the welcome card is up. Opening the pin opens the
-  server's one named folder straight away; with several it shows the Folders pane.
+  server's one named folder straight away; with several, their tiles in the gallery.
 - **Windows:** after the tree's Connect to a server. The island sends `chrome_cmd_remote_changed`
   whenever `mv_remote_generation` moves; native reads `mv_remote_pair_state_json`'s `key` and
   `seq` to pin each pairing once, and drops the pin of a server no longer listed. The welcome card
   and Open > Recent folders list it; the jump list does not (its items start the exe with a disk
   path). Opening the pin lists the server's named folders on a worker (`mv_list_subdirectories`):
-  one opens straight away; with several, the folder tree shows them under the server's row.
+  one opens straight away; with several, the server's top opens with them as gallery tiles.
 
 Forget This Server unpins it; Unpin or the card's x drops the pin and leaves the server paired in
 the tree. Never treated as a disk path, so never forgotten for being away.

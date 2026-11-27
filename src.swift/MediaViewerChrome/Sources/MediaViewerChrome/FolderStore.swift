@@ -122,6 +122,8 @@ final class FolderStore: ObservableObject {
   @Published private(set) var galleryCellSize: CGFloat = 152
   /// Child folders of the open folder, as full paths (natural order).
   @Published private(set) var folders: [String] = []
+  /// Each tile's name from the host, by path (set with `folders`, before it).
+  private var folderNames: [String: String] = [:]
   /// Breadcrumb from the highest folder reached down to the one on screen.
   @Published private(set) var crumbs: [Crumb] = []
   @Published private(set) var canGoUp = false
@@ -379,11 +381,14 @@ final class FolderStore: ObservableObject {
   /// (and bumps the generation) after every navigation.
   private func reloadFolders() {
     var freshFolders: [String] = []
+    var freshNames: [String: String] = [:]
     for i in 0..<Int(mv_chrome_subfolder_count()) {
       if let path = Self.string({ mv_chrome_subfolder_path(Int32(i), $0, $1) }) {
         freshFolders.append(path)
+        freshNames[path] = Self.string({ mv_chrome_subfolder_name(Int32(i), $0, $1) })
       }
     }
+    if freshNames != folderNames { folderNames = freshNames }
     if freshFolders != folders {
       if folderIndices.count != freshFolders.count { folderIndices = Array(freshFolders.indices) }
       folders = freshFolders
@@ -410,10 +415,7 @@ final class FolderStore: ObservableObject {
     if up != canGoUp { canGoUp = up }
   }
 
-  func folderName(_ path: String) -> String {
-    let leaf = URL(fileURLWithPath: path).lastPathComponent
-    return leaf.isEmpty ? path : leaf
-  }
+  func folderName(_ path: String) -> String { FolderLabel.of(path: path, hostName: folderNames[path]) }
 
   func card(for path: String) -> FolderCard {
     if let existing = cards[path] { return existing }

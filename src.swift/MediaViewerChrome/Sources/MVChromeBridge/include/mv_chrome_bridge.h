@@ -296,6 +296,9 @@ void mv_chrome_restart_for_addons(void);
 int32_t mv_chrome_subfolder_count(void);
 // Copies the folder's full UTF-8 path; false if `index` is out of range.
 bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t out_buf_size);
+// Copies the folder's name as the tile shows it (another computer's folder is
+// a `remote:` key, not a path); false if `index` is out of range.
+bool mv_chrome_subfolder_name(int32_t index, char* out_buf, int32_t out_buf_size);
 // Navigates into the child folder (a fresh listing; the trail keeps its root).
 void mv_chrome_open_subfolder(int32_t index);
 // Asks for the tile's item count, folder count and cover thumbnail. Result via

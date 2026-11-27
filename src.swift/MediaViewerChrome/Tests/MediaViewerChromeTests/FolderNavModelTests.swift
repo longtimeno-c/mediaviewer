@@ -81,4 +81,13 @@ final class FolderNavModelTests: XCTestCase {
     XCTAssertEqual(PathBarMode.of(listTitle: "Photos", remoteFolder: "remote:0123456789abcdef/a1a1a1a1a1a1a1a1/"), .trail)
     XCTAssertEqual(PathBarMode.of(listTitle: "beach", remoteFolder: ""), .results("beach"))
   }
+
+  // Another computer's folder tile is a `remote:` key whose parts are ids: the
+  // host's name stands; a local folder without one is its path's last part.
+  func testFolderLabelPrefersTheHostsName() {
+    XCTAssertEqual(FolderLabel.of(path: "remote:0123456789abcdef/1111111111111111/", hostName: "Photos"), "Photos")
+    XCTAssertEqual(FolderLabel.of(path: "/Users/a/Trip 2", hostName: nil), "Trip 2")
+    XCTAssertEqual(FolderLabel.of(path: "/Users/a/Trip 2", hostName: ""), "Trip 2")
+    XCTAssertEqual(FolderLabel.of(path: "/", hostName: nil), "/")
+  }
 }

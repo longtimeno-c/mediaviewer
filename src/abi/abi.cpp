@@ -1419,6 +1419,9 @@ void submit_folder_summary(mv_session* session, uint32_t index) {
     auto& card = session->folder_subdirs[index];
     if (card.requested || card.loaded) return;
     card.requested = true;
+    // Another computer's folder: no count or cover (each a listing over the
+    // network); the tile stays a plain folder, asked for once.
+    if (mv::remote::is_key(card.path)) return;
     path = card.path;
     folder_gen = session->folder_generation.load(std::memory_order_relaxed);
   }
@@ -1916,6 +1919,17 @@ status open_remote_folder(mv_session* session, std::string key, uint64_t* out_jo
           std::lock_guard lock(session->folder_mutex);
           if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) return status::cancelled;
           session->folder_list_title = listed->title;
+          // docs/design/16 "Folder navigation": its folders are gallery tiles, as
+          // a folder on this disk has (the Folders pane is not the only way in).
+          std::vector<mv_session::folder_card> cards;
+          cards.reserve(listed->folders.size());
+          for (const auto& f : listed->folders) {
+            mv_session::folder_card card;
+            card.name = f.name;
+            card.path = f.key;
+            cards.push_back(std::move(card));
+          }
+          session->folder_subdirs = std::move(cards);
         }
         std::vector<mv::io::listed_item> items;
         items.reserve(listed->files.size());
