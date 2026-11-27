@@ -75,7 +75,8 @@ its files, titled with the folder's name, the gallery, filmstrip, marks and keys
 
 **Pinned with the folders too (owner 2026-11-18).** A server just paired is also pinned like a
 folder (issue #617's pins, as `remote:<server id>`), named by the server with "Paired server" as
-its place:
+its place. The pins list it before the folder pins, and the welcome card draws it with a server
+glyph in the top block, under iCloud Photos / OneDrive and above RECENT FOLDERS:
 - **Mac:** after File > Connect to a Server; the welcome card, the Dock menu and File > Open Recent
   list it, and the Folders pane opens if the welcome card is up. Opening the pin opens the
   server's one named folder straight away; with several it shows the Folders pane.

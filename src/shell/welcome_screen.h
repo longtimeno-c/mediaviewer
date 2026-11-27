@@ -91,7 +91,7 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
 
   const int want_rows = recents != nullptr ? recents->count : 0;
   const welcome_geometry g = layout_welcome(w, h, chrome, scale, want_rows, (1.0f - alpha) * 28.0f * scale,
-                                            recents != nullptr && recents->icloud);
+                                            recents != nullptr ? welcome_lead_rows(*recents) : 0);
   if (!g.fits) return;  // window too short: draw nothing rather than clip
   const float cx = w * 0.5f;
   const ImVec2 lo(g.lo_x, g.lo_y);
@@ -124,13 +124,13 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
   centred(text.keys, 13.0f * scale, cx, y, c_mute);
 
   if (g.rows <= 0) return;
-  // A hairline, the iCloud Photos library if it leads, then a quiet header and
+  // A hairline, the iCloud Photos library and paired servers if they lead, then a quiet header and
   // one row per folder. The hovered row gets a surface fill and an accent
   // edge so it reads as a button.
   const float rule_y = lo.y + (kWelcomeBaseH - 6.0f) * scale;
   bg->AddLine(ImVec2(lo.x + 24.0f * scale, rule_y), ImVec2(hi.x - 24.0f * scale, rule_y), c_edge,
               1.0f * scale);
-  if (g.rows > (g.lead ? 1 : 0)) {
+  if (g.rows > g.lead) {
     bg->AddText(font, 12.0f * scale, ImVec2(g.row_x0 + 10.0f * scale, g.folders_top - 20.0f * scale), c_mute,
                 "RECENT FOLDERS");
   }
@@ -144,7 +144,8 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       bg->AddRect(ImVec2(g.row_x0, top + 1.0f * scale), ImVec2(g.row_x1, top + g.row_h - 1.0f * scale),
                   c_hover, 8.0f * scale, 0, 1.0f * scale);
     }
-    const bool icloud_row = g.lead && i == 0;
+    const bool icloud_row = recents->icloud && i == 0 && g.lead > 0;
+    const bool server_row = !icloud_row && i < g.lead;
     const float fx = g.row_x0 + 10.0f * scale;
     const float fy = top + g.row_h * 0.5f - 6.0f * scale;
     if (icloud_row) {
@@ -155,6 +156,14 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       bg->AddCircleFilled(ImVec2(fx + 4.5f * scale, base_y - 4.0f * scale), 3.5f * scale, c_glyph);
       bg->AddCircleFilled(ImVec2(fx + 9.5f * scale, base_y - 6.5f * scale), 5.0f * scale, c_glyph);
       bg->AddCircleFilled(ImVec2(fx + 14.0f * scale, base_y - 4.5f * scale), 3.5f * scale, c_glyph);
+    } else if (server_row) {
+      // A server: two stacked drive bays, each with its light on the left.
+      for (int bay = 0; bay < 2; ++bay) {
+        const float by = fy - 1.0f * scale + static_cast<float>(bay) * 7.0f * scale;
+        bg->AddRectFilled(ImVec2(fx + 1.0f * scale, by), ImVec2(fx + 17.0f * scale, by + 6.0f * scale), c_glyph,
+                          1.5f * scale);
+        bg->AddCircleFilled(ImVec2(fx + 4.5f * scale, by + 3.0f * scale), 1.2f * scale, c_fill);
+      }
     } else {
       // A folder glyph: tab and body.
       bg->AddRectFilled(ImVec2(fx, fy), ImVec2(fx + 7.0f * scale, fy + 3.0f * scale), c_glyph, 1.0f * scale);
@@ -162,7 +171,7 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
                         2.0f * scale);
       // Issue #617: a pinned folder wears a pin on its corner, a title-colour
       // head ringed in the card's colour, so the top rows read as kept.
-      const int folder = i - (g.lead ? 1 : 0);
+      const int folder = i - g.lead;
       if (folder >= 0 && folder < recents->pinned) {
         const ImVec2 head(fx + 16.0f * scale, fy + 1.0f * scale);
         bg->AddCircleFilled(head, 4.5f * scale, c_fill);

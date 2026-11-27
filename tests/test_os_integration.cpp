@@ -333,3 +333,60 @@ TEST_CASE("the welcome card's rows are hit where they are drawn", "[shell][os]")
     CHECK(welcome_row_at(none, cx, 300.0f) == -1);
   }
 }
+
+TEST_CASE("a paired server leads the welcome card, under the cloud row, not in the recents", "[shell][os]") {
+  // The owner's case: iCloud Photos, a paired server pinned after a folder pin, then recents.
+  const std::vector<std::string> pinned = {"/Volumes/NAS/Photos", "remote:0123456789abcdef"};
+  const std::vector<std::string> recent = {"/Users/ana/Downloads", "/Users/ana/Dolomites"};
+  const std::vector<std::string> shown = pinned_then_recent(pinned, recent);
+  REQUIRE(shown == std::vector<std::string>{"remote:0123456789abcdef", "/Volumes/NAS/Photos",
+                                            "/Users/ana/Downloads", "/Users/ana/Dolomites"});
+
+  welcome_recents card;
+  fill_welcome_recents(shown, "/Users/ana", card, true, pinned.size());
+  REQUIRE(card.count == 5);
+  CHECK(card.icloud);
+  CHECK(card.servers == 1);
+  CHECK(card.pinned == 1);  // the folder pin only
+  CHECK(welcome_lead_rows(card) == 2);
+
+  const float w = 1600.0f, h = 1200.0f, chrome = 80.0f, scale = 2.0f, cx = w * 0.5f;
+  const welcome_geometry g = layout_welcome(w, h, chrome, scale, card.count, 0.0f, welcome_lead_rows(card));
+  REQUIRE(g.fits);
+  REQUIRE(g.rows == 5);
+  REQUIRE(g.lead == 2);
+  // The server's row sits right under iCloud's, both above the RECENT FOLDERS header.
+  CHECK(welcome_row_top(g, 1) == g.rows_top + g.row_h);
+  CHECK(welcome_row_top(g, 1) + g.row_h + 20.0f * scale <= g.folders_top);
+  CHECK(welcome_row_at(g, cx, g.rows_top + g.row_h * 1.5f) == 1);
+  CHECK(welcome_row_at(g, cx, g.rows_top + g.row_h * 2.0f + 1.0f) == -1);  // the header
+  // The first folder row under the header is the folder pin, not the server.
+  CHECK(welcome_row_top(g, 2) == g.folders_top);
+  CHECK(welcome_row_at(g, cx, g.folders_top + 1.0f) == 2);
+  CHECK(welcome_row_at(g, cx, g.folders_top + g.row_h * 2.5f) == 4);
+  CHECK(g.hi_y >= g.folders_top + 3.0f * g.row_h);
+
+  SECTION("with no cloud place the server leads alone") {
+    welcome_recents no_cloud;
+    fill_welcome_recents(shown, "/Users/ana", no_cloud, false, pinned.size());
+    CHECK(no_cloud.servers == 1);
+    CHECK(welcome_lead_rows(no_cloud) == 1);
+    const welcome_geometry one = layout_welcome(w, h, chrome, scale, no_cloud.count, 0.0f, 1);
+    CHECK(welcome_row_at(one, cx, one.rows_top + 1.0f) == 0);
+    CHECK(welcome_row_at(one, cx, one.folders_top + 1.0f) == 1);
+  }
+  SECTION("with no paired server nothing changes") {
+    const std::vector<std::string> folders_only = {"/Volumes/NAS/Photos"};
+    welcome_recents plain;
+    fill_welcome_recents(pinned_then_recent(folders_only, recent), "/Users/ana", plain, true, 1);
+    CHECK(plain.servers == 0);
+    CHECK(plain.pinned == 1);
+    CHECK(welcome_lead_rows(plain) == 1);
+  }
+  SECTION("a short window keeps the lead rows in order") {
+    const welcome_geometry tight = layout_welcome(w, 760.0f, chrome, scale, card.count, 0.0f, 2);
+    REQUIRE(tight.fits);
+    CHECK(tight.lead == std::min(tight.rows, 2));
+    CHECK(tight.hi_y - tight.lo_y <= 760.0f - chrome);
+  }
+}

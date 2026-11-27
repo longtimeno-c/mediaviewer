@@ -16949,7 +16949,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   }
   // A row index survives the refresh only if the rows did not move.
   if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud &&
-      next.pinned == _snap.recents.pinned) {
+      next.pinned == _snap.recents.pinned && next.servers == _snap.recents.servers) {
     next.hover = _snap.recents.hover;
     next.hover_remove = _snap.recents.hover_remove;
   }
@@ -16969,7 +16969,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
                                 static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count, 0.0f,
-                                _snap.recents.icloud);
+                                mv::shell::welcome_lead_rows(_snap.recents));
   const int row = mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
   // The iCloud row has no remove button.
   if (row >= 0 && onRemove && !(_snap.recents.icloud && row == 0)) {
