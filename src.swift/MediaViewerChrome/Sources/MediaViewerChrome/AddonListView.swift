@@ -170,9 +170,12 @@ struct AddonsSection: View {
                           phoneOffer.offer?.version.flatMap { v in AddonChannel.isNewer(v, than: r.version) ? v : nil }
                         },
                         restart: restarting("Phone access"), busy: phone.busy || phoneOffer.phase != nil)))
+    list.append(Entry(id: SlotAddonOffer.vpnID, name: "VPN",
+                      line: slotLine(slots.rows.first { $0.id == SlotAddonOffer.vpnID },
+                                     SlotAddonOffer.channel(id: SlotAddonOffer.vpnID, name: "VPN"), "VPN")))
     let rest = slots.rows.filter {
       $0.id != "places" && $0.id != DriftwireStore.addonID && $0.id != SlotAddonOffer.enhanceID
-        && $0.id != PhoneAccessStore.addonID
+        && $0.id != PhoneAccessStore.addonID && $0.id != SlotAddonOffer.vpnID
     }
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     for row in rest {
@@ -211,6 +214,9 @@ struct AddonsSection: View {
     guard !mv_addon2_elsewhere() else { return }
     if SlotAddonOffer.enhanceSupported && !slots.rows.contains(where: { $0.id == SlotAddonOffer.enhanceID }) {
       SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance").probe()
+    }
+    if !slots.rows.contains(where: { $0.id == SlotAddonOffer.vpnID }) {
+      SlotAddonOffer.channel(id: SlotAddonOffer.vpnID, name: "VPN").probe()
     }
     for row in slots.rows where row.id != "places" {
       SlotAddonOffer.channel(id: row.id, name: row.name).probe()
@@ -272,6 +278,7 @@ struct AddonPageView: View {
     case DriftwireStore.addonID: return "Driftwire"
     case SlotAddonOffer.enhanceID: return "Enhance"
     case PhoneAccessStore.addonID: return "Phone access"
+    case SlotAddonOffer.vpnID: return "VPN"
     default: return installed.rows.first { $0.id == id }?.name ?? id
     }
   }
