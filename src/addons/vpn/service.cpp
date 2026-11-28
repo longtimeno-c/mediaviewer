@@ -360,7 +360,11 @@ void service::ask_phone_now() {
     v_.host_busy = v_.phone && doc->boolean("busy").value_or(false);
     v_.host_domain = s("domain");
     v_.host_domain_line = s("domain_line");
-    if (v_.phone) v_.host_error = s("error");
+    // A poll never wipes what the form said; an error of Phone access's own still shows.
+    if (v_.phone && (!v_.host_error_ours || !s("error").empty())) {
+      v_.host_error = s("error");
+      v_.host_error_ours = false;
+    }
     busy = v_.host_busy;
   }
   if (answer) {
@@ -928,6 +932,10 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
   if (node == "domain_name" && kind == kChange && text) {
     std::lock_guard lock(m_);
     v_.domain_typed = *text;
+    if (v_.host_error_ours) {  // typing again: what the form said has done its job
+      v_.host_error.clear();
+      v_.host_error_ours = false;
+    }
     return;
   }
   if ((node == "domain_change" || node == "domain_cancel") && kind == kClick) {
@@ -948,11 +956,13 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
       domain = node == "domain_clear" ? std::string("none") : trim(v_.domain_typed);
       if (domain.empty()) {
         v_.host_error = "Type your domain, like vpn.example.com.";
+        v_.host_error_ours = true;
       } else {
         v_.domain_open = false;
         v_.domain_typed.clear();
         v_.host_busy = true;
         v_.host_error.clear();
+        v_.host_error_ours = false;
       }
     }
     if (!domain.empty()) {

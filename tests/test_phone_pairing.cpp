@@ -3135,11 +3135,9 @@ TEST_CASE("phone pairing: a person's role is every device of theirs' role", "[ph
   const auto row_of = [&](const key32& k) {
     auto list = mac.d->refresh_devices();
     REQUIRE(list);
-    for (const auto& r : *list) {
-      if (r.key == public_of(k)) return r;
-    }
-    FAIL("not listed");
-    return desk::device_row{};
+    const auto it = std::find_if(list->begin(), list->end(), [&](const desk::device_row& r) { return r.key == public_of(k); });
+    REQUIRE(it != list->end());
+    return *it;
   };
   CHECK_FALSE(row_of(laptop).backup);  // a computer starts as "can view files"
 
