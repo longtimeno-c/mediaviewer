@@ -27,6 +27,9 @@ namespace mv::mobile {
 class thumb_cache {
  public:
   using done_fn = std::function<void(result<std::vector<std::uint8_t>>)>;
+  // Reads at once: tiles far apart (a filtered view, a fast scroll) are a round trip each, so
+  // more than two in flight (it was two, about 13 a second over a relay).
+  static constexpr int kWorkers = 6;
 
   thumb_cache(std::string dir, std::uint64_t capacity_bytes, remote_file& remote);
   ~thumb_cache();
@@ -66,7 +69,8 @@ class thumb_cache {
   std::string root_;
   std::vector<std::shared_ptr<want>> queue_;
   std::map<std::string, std::shared_ptr<want>> by_key_;  // queued and in flight, for dedupe
-  std::thread worker_a_, worker_b_;
+  std::vector<std::thread> workers_;
+  std::once_flag scan_once_;  // the cache folder is read once, before any worker writes a tile
 
   bool scanned_ = false;
   std::list<std::pair<std::string, std::uint64_t>> lru_;  // newest first

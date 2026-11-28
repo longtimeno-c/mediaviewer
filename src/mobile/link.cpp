@@ -34,6 +34,10 @@ constexpr int kConvertStallMs = 60000;  // a converted segment's first bytes: be
 // The relay starts this long after the direct routes (Driftwire's own race
 // delay), so a working direct path always wins and costs the relay nothing.
 constexpr int kRelayDelayMs = 1500;
+// ...unless the last link was relayed (direct SYNs dropped where the phone is now): then a
+// reconnect waits only this, still long enough for a direct route that now works (home again)
+// to win first.
+constexpr int kRelayAgainMs = 300;
 // A read's window: what the service may send before the phone's credit comes back. A viewer or a
 // seek keeps it small, so a seek's bytes are never far behind; a whole-file pull takes the most
 // the service allows, since a window covers at most one round trip (1 MB is ~30 MB/s at 20 ms).
@@ -143,17 +147,18 @@ struct race_state {
 // timeout, so it owns everything it touches (a value and a shared_ptr).
 template <typename T, typename Work>
 result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_flag* cancel,
-               std::vector<route_failure>& failures, route_report& report, Work work) {
+               std::vector<route_failure>& failures, route_report& report, Work work,
+               int relay_delay_ms = kRelayDelayMs) {
   auto st = std::make_shared<race_state<T>>();
   st->running = static_cast<int>(targets.size());
   const auto started = clock::now();
   for (const target& t : targets) {
-    std::thread([st, t, work, started, timeout_ms]() mutable {
+    std::thread([st, t, work, started, timeout_ms, relay_delay_ms]() mutable {
       if (t.relay) {
         // Last: only when the direct routes have not answered by now, or
         // at once when every one of them has already failed.
         std::unique_lock lock(st->m);
-        st->cv.wait_until(lock, started + std::chrono::milliseconds(kRelayDelayMs),
+        st->cv.wait_until(lock, started + std::chrono::milliseconds(relay_delay_ms),
                           [&] { return st->over || st->winner || st->running <= 1; });
         if (st->over || st->winner) {
           --st->running;
@@ -173,7 +178,7 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
         }
       }
       for (const auto& a : addresses) {
-        std::thread([st, t, a, work, started, timeout_ms]() mutable {
+        std::thread([st, t, a, work, started, timeout_ms, relay_delay_ms]() mutable {
           const auto finish = [&](std::optional<route_problem> problem) {
             std::lock_guard lock(st->m);
             if (problem && !st->over) st->failures.push_back({t.text, *problem});
@@ -197,7 +202,7 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
           }
           if (t.relay) {
             // Joined to this phone's waiter; the handshake past it is end to end.
-            const int left = timeout_ms + kRelayDelayMs -
+            const int left = timeout_ms + relay_delay_ms -
                              static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started).count());
             auto joined = dw::relay::join(std::make_unique<shared_hop>(l), t.token, std::max(500, left), [st] {
               std::lock_guard lock(st->m);
@@ -242,7 +247,7 @@ result<T> race(const std::vector<target>& targets, int timeout_ms, const cancel_
   }
   // The relay starts late: it gets the whole time after its start, not what is left of it.
   const bool relayed = std::any_of(targets.begin(), targets.end(), [](const target& t) { return t.relay; });
-  const auto until = clock::now() + std::chrono::milliseconds(timeout_ms + (relayed ? kRelayDelayMs : 0));
+  const auto until = clock::now() + std::chrono::milliseconds(timeout_ms + (relayed ? relay_delay_ms : 0));
   std::unique_lock lock(st->m);
   while (!st->winner && st->running > 0 && clock::now() < until) {
     if (cancel && cancel->stopped()) break;
@@ -355,13 +360,19 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
   const auto targets = targets_of(config_);
   if (targets.empty()) return err(status::invalid_arg);
   const auto opts = options_for(config_);
+  bool was_relayed = false;
+  {
+    std::lock_guard lock(m_);
+    was_relayed = last_report_.relayed;
+  }
   auto c = race<std::shared_ptr<serve::client>>(
       targets, timeout_ms, cancel, report.failures, report,
       [opts](std::shared_ptr<dw::link> l, serve::refusal& why) -> result<std::shared_ptr<serve::client>> {
         auto opened = serve::client::open(std::move(l), opts, &why);
         if (!opened) return err(opened.error());
         return std::shared_ptr<serve::client>(std::move(*opened));
-      });
+      },
+      was_relayed ? kRelayAgainMs : kRelayDelayMs);
   if (!c) {
     for (const auto& f : report.failures) {
       if (f.problem == route_problem::wrong_service || f.problem == route_problem::not_paired ||

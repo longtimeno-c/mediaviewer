@@ -1329,6 +1329,7 @@ TEST_CASE("sync: a generation published mid-copy keeps what is the same, fetches
 namespace {
 struct fake_packs final : mob::remote_file {
   std::atomic<int> reads{0};
+  int at_gate = 0, most_at_gate = 0;  // under m
   std::string pack = std::string(1 << 20, 'a');
   std::mutex m;
   std::condition_variable cv;
@@ -1340,7 +1341,10 @@ struct fake_packs final : mob::remote_file {
                           const mob::byte_sink& sink, const mob::cancel_flag*, bool) override {
     {
       std::unique_lock lock(m);
+      most_at_gate = std::max(most_at_gate, ++at_gate);
+      cv.notify_all();
       cv.wait(lock, [this] { return gate_open; });
+      --at_gate;
     }
     reads.fetch_add(1);
     (void)sink(at, std::span(reinterpret_cast<const std::uint8_t*>(pack.data()) + at, length));
@@ -1399,10 +1403,17 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
   }
   std::atomic<int> told{0};
   std::atomic<bool> cancelled{false};
-  // Two in flight hold the workers at the gate; the third waits in the queue and is cancelled.
-  (void)cache.request(want(900000, 1000), 0, [](auto) {});
-  (void)cache.request(want(950000, 1000), 0, [](auto) {});
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // kWorkers in flight (far apart: none merge) hold every worker at the gate; one more waits in
+  // the queue and is cancelled. Tiles apart are read at once, not two at a time as before.
+  for (int i = 0; i < mob::thumb_cache::kWorkers; ++i) {
+    (void)cache.request(want(800000 + static_cast<std::uint64_t>(i) * 40000, 1000), 0, [](auto) {});
+  }
+  {
+    std::unique_lock lock(remote.m);
+    REQUIRE(remote.cv.wait_for(lock, std::chrono::seconds(5),
+                               [&] { return remote.at_gate == mob::thumb_cache::kWorkers; }));
+  }
+  CHECK(mob::thumb_cache::kWorkers > 2);
   auto waiting = cache.request(want(700000, 1000), 1, [&](mv::result<std::vector<std::uint8_t>> r) {
     ++told;
     cancelled = !r && r.error() == mv::status::cancelled;
@@ -2512,6 +2523,44 @@ TEST_CASE("link race: with no direct route, the phone gets in through its own re
   mob::link_session st(stranger);
   mob::route_report none;
   CHECK_FALSE(st.connect(none, nullptr, 4000));
+}
+
+TEST_CASE("link race: once in through the relay, a reconnect does not wait out the relay's delay again",
+          "[mobile-link]") {
+  // Where the phone is, direct SYNs vanish (no refusal): each connect waited the relay's whole
+  // 1.5 s before trying it. Before this, every reconnect did again.
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const std::string relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  auto silent = dw::net::listen(true);  // takes the connection and never says a word
+  REQUIRE(silent);
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:" + std::to_string((*silent)->port());
+  c.public_name = c.local;
+  c.relay = relay;
+  // The service's waiter at the relay (registered a moment after it starts, again after each use).
+  const auto waiter_there = [&] {
+    for (int i = 0; i < 500; ++i) {
+      if (rendezvous->snapshot().waiting >= 1) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  };
+  REQUIRE(waiter_there());
+  mob::link_session s(c);
+  mob::route_report report;
+  auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(s.connect(report, nullptr, 6000));
+  CHECK(report.relayed);
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(1500));  // the relay waited its turn
+  // The service registers its waiter again; the link is lost and made again.
+  REQUIRE(waiter_there());
+  t0 = std::chrono::steady_clock::now();
+  REQUIRE(s.reconnect(report, nullptr, 6000));
+  CHECK(report.relayed);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1200));
+  REQUIRE(s.roots());
 }
 
 TEST_CASE("pairing: a new code is never redeemed through the relay", "[mobile-link]") {
