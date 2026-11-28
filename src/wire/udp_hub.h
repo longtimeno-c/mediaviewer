@@ -32,6 +32,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -55,6 +56,9 @@ inline constexpr std::size_t kStreamPayload = 1200;
 // authenticated while the handshake runs over it, so it cannot make this
 // side hold more).
 inline constexpr std::size_t kStreamMaxRx = 16u * 1024 * 1024;
+// A stream someone else opened (on_open) holds this much until link::peer_proven: its sender
+// is anyone who can write a source address, and nothing has answered it yet.
+inline constexpr std::size_t kStreamUnprovenRx = 64u * 1024;
 
 class udp_hub : public std::enable_shared_from_this<udp_hub> {
  public:
@@ -85,6 +89,13 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   // running: after on_dht(nullptr) returns, the old handler is not called.
   void on_dht(datagram_fn fn);
   void on_probe(probe_fn fn);
+  // A stream someone else opens (the phone service: a phone that moves its session onto UDP).
+  // The first data packet of an id this hub has no stream for, on the main socket, makes one to
+  // its sender and hands it here; the handler owns it (dropping it closes it). Nothing about the
+  // sender is known yet: what runs over the link authenticates it, as over an accepted TCP one,
+  // and until it calls link::peer_proven the stream holds kStreamUnprovenRx at most.
+  using open_fn = std::function<void(std::unique_ptr<link>, const net::endpoint& from)>;
+  void on_open(open_fn fn);
   // A reliable stream to `peer`, both sides with the same `id` (the sender
   // picks it during punching). Packets for it from anyone else are dropped.
   // `learn`: the peer is whoever sends the first packet of this id (the
@@ -96,6 +107,8 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   void stop() noexcept;
   // The tests: drop this many in a thousand of the stream packets sent.
   void test_loss(int permille) noexcept { loss_.store(permille); }
+  // The tests: the timer's passes so far (it waits while nothing is in flight).
+  [[nodiscard]] std::uint64_t timer_passes_for_test() const noexcept { return timer_passes_.load(); }
   // What a stream's sender did so far (#529: the stream bench); nullopt once
   // it is gone.
   struct stream_stats {
@@ -119,6 +132,7 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   void take(std::span<const std::uint8_t> d, const net::endpoint& from, std::uint32_t sock_id,
             const std::shared_ptr<net::udp_socket>& sock);
   expected send_on(net::udp_socket& sock, std::span<const std::uint8_t> datagram, const net::endpoint& to);
+  void kick() noexcept;  // the timer has work again
 
   std::shared_ptr<net::udp_socket> sock_;  // the main socket, id 0
   std::uint16_t port_ = 0;
@@ -128,12 +142,18 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   std::mutex calling_m_;                                       // held while a handler runs
   datagram_fn dht_;                                            // under m_
   probe_fn probe_;                                             // under m_
+  open_fn open_;                                               // under m_
   std::map<std::uint32_t, std::shared_ptr<net::udp_socket>> extras_;  // under m_
   std::uint32_t next_extra_ = 1;                               // under m_
   std::atomic<bool> has_extras_{false};
   std::map<std::uint32_t, std::weak_ptr<stream_state>> streams_;  // under m_
   std::atomic<bool> stop_{false};
   std::atomic<int> loss_{0};
+  // The timer sleeps while no stream has anything in flight or an ack owed (timer_loop).
+  std::mutex timer_m_;
+  std::condition_variable timer_cv_;
+  std::atomic<bool> timer_idle_{false};
+  std::atomic<std::uint64_t> timer_passes_{0};
   std::thread reader_, timer_;
 };
 

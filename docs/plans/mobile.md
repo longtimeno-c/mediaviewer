@@ -984,6 +984,11 @@ at most 24 MB waits in memory ahead of it. No protocol change: each lane is an o
 service that says busy just leaves fewer. Bench: `mv_mobile_link_tests "[.phone-copy-bench]"`
 (`tests/tcp_path.h`, an emulated CUBIC path).
 
+**Over UDP (2026-11-28):** a direct session moves onto Driftwire's UDP stream (BBR: loss costs one
+packet sent again, not half the rate) when the service's caps offer it, so every read, not only the
+copy, keeps the line's speed on a long path; such a session opens no lanes. Lanes stay for TCP
+(older services, a network that drops UDP). docs/design/28 "Sessions over UDP".
+
 **A newer generation mid-copy (2026-11-27):** a copy cut short used to be thrown away whole as soon
 as a newer generation was published, and nothing was taken from the installed generation, so every
 generation was a full download. On a slow link that took longer than the desktop's republishing

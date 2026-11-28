@@ -246,6 +246,8 @@ struct rig {
 
   std::string photos_label = "Photos";
   std::string relay_address;  // the person's own relay, for start(): the service waits there
+  // options::udp: off here, so `served` and `path` see every byte; the UDP tests turn it on.
+  bool udp = false;
 
   // `publish_first` false: the share as the desktop leaves it when the folder is chosen and no
   // catalogue has been published yet (library.json only: file mode).
@@ -282,6 +284,7 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.cfg.relay = relay_address;
+    o.udp = udp;
     o.make_listener = [sent = served, path = path]() -> std::unique_ptr<dw::net::listener> {
       auto l = dw::net::listen_internet(0, true, 32);
       REQUIRE(l);
@@ -2579,6 +2582,94 @@ TEST_CASE("link: a copy's lane is a session of its own on a direct route, none t
   REQUIRE(connect_relayed(relayed, report));
   REQUIRE(report.relayed);
   CHECK(relayed.open_lane(nullptr) == nullptr);
+}
+
+// A rig whose service also takes sessions over UDP (options::udp).
+void with_udp(rig& r) {
+  r.srv.reset();
+  r.udp = true;
+  r.start();
+}
+
+std::string read_pic(mob::link_session& s) {
+  std::string got;
+  const bool ok = static_cast<bool>(s.read_range("a1a1a1a1a1a1a1a1", "2024/pic.bin", 0, UINT64_MAX,
+                                                 [&](std::uint64_t, std::span<const std::uint8_t> b) {
+                                                   got.append(reinterpret_cast<const char*>(b.data()), b.size());
+                                                   return true;
+                                                 },
+                                                 nullptr, true));
+  return ok ? got : std::string();
+}
+
+TEST_CASE("link udp: a direct session moves onto UDP, reads there, and opens no lanes", "[mobile-link]") {
+  rig r;
+  with_udp(r);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  CHECK_FALSE(rep.udp);  // TCP first, always: the move happens behind it
+  REQUIRE(s.udp_settled_for_test());
+  REQUIRE(s.connect(rep));
+  CHECK(rep.udp);
+  CHECK(read_pic(s) == std::string(70000, 'p'));
+  CHECK(r.srv->stats().udp == 1);
+  CHECK(s.open_lane(nullptr) == nullptr);  // one stream that keeps its speed: no lanes beside it
+}
+
+TEST_CASE("link udp: a service that offers none, or a phone with it off, stays on TCP", "[mobile-link]") {
+  {
+    rig r;  // udp off
+    r.pair_now();
+    mob::link_session s(r.config());
+    mob::route_report rep;
+    REQUIRE(s.connect(rep));
+    CHECK_FALSE(s.udp_settled_for_test());
+    CHECK(read_pic(s) == std::string(70000, 'p'));
+  }
+  rig r;
+  with_udp(r);
+  r.pair_now();
+  auto c = r.config();
+  c.udp = false;
+  mob::link_session s(c);
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  CHECK_FALSE(s.udp_settled_for_test());
+  CHECK(read_pic(s) == std::string(70000, 'p'));
+  CHECK(r.srv->stats().udp == 0);
+}
+
+TEST_CASE("link udp: a UDP session lost soon after the move leaves the next one on TCP", "[mobile-link]") {
+  rig r;
+  with_udp(r);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  REQUIRE(s.udp_settled_for_test());
+  s.drop_for_test();  // as an io error on the UDP client
+  REQUIRE(s.connect(rep));
+  CHECK_FALSE(rep.udp);
+  CHECK_FALSE(s.udp_settled_for_test());  // held: no second try
+  CHECK(read_pic(s) == std::string(70000, 'p'));
+  CHECK(r.srv->stats().udp == 1);
+}
+
+TEST_CASE("link udp: a UDP session that died idle also leaves the next one on TCP", "[mobile-link]") {
+  rig r;
+  with_udp(r);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  REQUIRE(s.udp_settled_for_test());
+  s.close_live_for_test();  // nothing was reading: connect finds it closed
+  REQUIRE(s.connect(rep));
+  CHECK_FALSE(rep.udp);
+  CHECK_FALSE(s.udp_settled_for_test());  // held, as after a drop
+  CHECK(r.srv->stats().udp == 1);
 }
 
 TEST_CASE("upgrade: the relay says what it sees of a connection", "[phone-upgrade]") {
