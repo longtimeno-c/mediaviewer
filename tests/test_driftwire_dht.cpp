@@ -342,26 +342,49 @@ TEST_CASE("driftwire dht: a stream opened to the hub holds 64 KB until its peer 
   std::mutex m;
   std::condition_variable cv;
   std::unique_ptr<sp::link> opened;
+  std::vector<std::unique_ptr<sp::link>> markers;  // under m: the streams that only mark a point
   h.b->on_open([&](std::unique_ptr<sp::link> l, const sp::net::endpoint&) {
     std::lock_guard lock(m);
-    opened = std::move(l);
+    if (!opened) opened = std::move(l);
+    else markers.push_back(std::move(l));
     cv.notify_all();
   });
   // Sent blind, as a spoofer would: data packets that ignore every ack and window.
   constexpr std::size_t kPayload = 1000;
   constexpr std::uint32_t kId = 0x7a7a;
   std::uint32_t seq = 0;
+  const auto packet = [&](std::uint32_t id, std::uint32_t at) {
+    std::vector<std::uint8_t> d(10 + kPayload, static_cast<std::uint8_t>(at));
+    d[0] = sp::kStream;
+    d[1] = 1;  // data
+    for (int b = 0; b < 4; ++b) {
+      d[2 + b] = static_cast<std::uint8_t>(id >> (8 * b));  // little-endian, as the hub writes
+      d[6 + b] = static_cast<std::uint8_t>(at >> (8 * b));
+    }
+    return d;
+  };
+  // The hub takes its socket's datagrams in order, so once it has opened the stream a marker
+  // starts, it has taken everything sent before it. Nothing is read until then: a reader that
+  // drained the stream while packets still arrived would make room for all of them.
+  std::uint32_t next_marker = 0x7b00;
+  const auto wait_taken = [&] {
+    std::unique_lock lock(m);
+    const std::size_t had = markers.size();
+    for (int tries = 0; tries < 50 && markers.size() == had; ++tries) {  // a marker the socket dropped is sent again
+      lock.unlock();
+      REQUIRE(h.a->send(packet(next_marker++, 0), h.at_b()));
+      lock.lock();
+      cv.wait_for(lock, std::chrono::milliseconds(200), [&] { return markers.size() > had; });
+    }
+    REQUIRE(markers.size() > had);
+  };
+  // A few at a time, each lot taken before the next, so the socket's own buffer never drops one.
   const auto send_packets = [&](int n) {
     for (int i = 0; i < n; ++i, ++seq) {
-      std::vector<std::uint8_t> d(10 + kPayload, static_cast<std::uint8_t>(seq));
-      d[0] = sp::kStream;
-      d[1] = 1;  // data
-      for (int b = 0; b < 4; ++b) {
-        d[2 + b] = static_cast<std::uint8_t>(kId >> (8 * b));  // little-endian, as the hub writes
-        d[6 + b] = static_cast<std::uint8_t>(seq >> (8 * b));
-      }
-      REQUIRE(h.a->send(d, h.at_b()));
+      REQUIRE(h.a->send(packet(kId, seq), h.at_b()));
+      if (i % 32 == 31) wait_taken();
     }
+    wait_taken();
   };
   const auto take_all = [&] {
     std::size_t total = 0;
