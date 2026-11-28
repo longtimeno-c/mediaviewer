@@ -496,6 +496,9 @@ namespace {
 // held for `hold`, from the first, with both sides' session limit without a
 // sign of life cut to `limit_ms`: a big file on a slow disk, made short.
 // `stall_ms` > 0 cuts the sender's socket write limit (kSilenceMs) to it.
+// `quiet` > 0: the hold ends once the sender has moved no data for that long
+// (it is stuck in a write or waiting for replay room), not `hold` after the
+// first check, so a slow machine's setup cannot use up the hold.
 struct held_checks {
   sp::transfer_result sent, got;
   bool held = false;
@@ -504,14 +507,17 @@ struct held_checks {
   std::uint64_t room_ns = 0;     // and waiting for room in its replay
 };
 held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& files, const fs::path& dest,
-                                      int limit_ms, std::chrono::milliseconds hold, int stall_ms = 0) {
+                                      int limit_ms, std::chrono::milliseconds hold, int stall_ms = 0,
+                                      std::chrono::milliseconds quiet = {}) {
+  using clock = std::chrono::steady_clock;
   auto [a, b] = channel_pair(stall_ms);
   a->set_rejoin_ms_for_tests(limit_ms);
   b->set_rejoin_ms_for_tests(limit_ms);
   sp::stage_times tx;
   held_checks out;
   std::mutex m;
-  std::optional<std::chrono::steady_clock::time_point> until;
+  std::optional<clock::time_point> until;
+  clock::time_point last_moved = clock::now();  // under m
   std::thread receiver([&, &b = b] {
     const auto reading = std::this_thread::get_id();
     auto offer = sp::read_offer(*b, 10000);
@@ -519,21 +525,36 @@ held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& file
     sp::hooks h;
     h.yield = [&] {
       if (std::this_thread::get_id() == reading) return;  // the link reader's own yield
-      std::chrono::steady_clock::time_point end;
-      {
-        std::lock_guard lock(m);
-        if (!until) until = std::chrono::steady_clock::now() + hold;
-        end = *until;
-        out.held = true;
-      }
       // The slow disk: elapsed time is the point here, so no event stands in
       // for it. Only a hold past the limit matters; a longer one is the same.
-      std::this_thread::sleep_until(end);
+      for (;;) {
+        clock::time_point end;
+        {
+          std::lock_guard lock(m);
+          if (!until) until = clock::now() + hold;
+          out.held = true;
+          // With `quiet`, `until` is only a cap: the hold ends sooner once the
+          // sender has been still for `quiet`.
+          end = quiet.count() > 0 ? std::min(*until, last_moved + quiet) : *until;
+          // One hold: once it ends, later checks run at once.
+          if (clock::now() >= end) {
+            until = std::min(*until, end);
+            return;
+          }
+        }
+        std::this_thread::sleep_until(end);
+      }
     };
     out.got = sp::receive_files(*b, *offer, utf8(dest), h);
   });
   sp::hooks sending;
   sending.stages = &tx;
+  if (quiet.count() > 0) {
+    sending.progress = [&](std::uint64_t, std::uint32_t) {
+      std::lock_guard lock(m);
+      last_moved = clock::now();
+    };
+  }
   out.sent = sp::send_files(*a, files, sending, {});
   receiver.join();
   out.rejoins = a->rejoins() + b->rejoins();
@@ -594,7 +615,10 @@ TEST_CASE("driftwire: a sender whose socket stays full while the receiver checks
     files.push_back({utf8(src / name), name, 4u * 1024 * 1024, 0, {}});
   }
 
-  const auto r = transfer_with_held_checks(files, dest, kStallMs, std::chrono::milliseconds(5 * kStallMs / 2), kStallMs);
+  // Held until the sender has been stuck for 5/4 of the limit (at most 30 s),
+  // however long a slow machine takes to fill the socket first.
+  const auto r = transfer_with_held_checks(files, dest, kStallMs, std::chrono::seconds(30), kStallMs,
+                                           std::chrono::milliseconds(5 * kStallMs / 4));
   CHECK(r.held);
   constexpr std::uint64_t kStallNs = std::uint64_t{kStallMs} * 1000000;
 #if defined(_WIN32)
