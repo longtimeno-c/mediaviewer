@@ -545,7 +545,9 @@ catalogues). `serve_caps` reports `features`, passphrase state and a limited pho
 `serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan `docs/plans/mobile.md`
 §7.2, M2b. Headless: a paired phone lists and reads named folders through one forwarded port. No
 DHT, mapping or beacon, except that under `driftwire host` its router keeper (`host_ports.h`) holds
-the host's own ports while it runs (decision log, 2026-11-14).
+the host's own ports while it runs (decision log, 2026-11-14): the service's for UDP too, at the
+outside port TCP got (`port_wanted::udp`; a UDP forward the router puts elsewhere is given back,
+as a phone dials the TCP route's port), so its sessions over UDP reach it from outside.
 
 ```
 driftwire serve [--data DIR]              the service: DIR/serve.json, DIR/secrets

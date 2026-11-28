@@ -130,6 +130,8 @@ NAT64), and in the relay line for the laptop.
 
 ### 5.1 Ports
 Two TCP ports at most: the service's (7878 by default, `serve.json`) and, with the VPN on, the relay's.
+The service's is mapped for UDP as well, at the same outside port (its sessions over UDP; the status
+line says "UDP too" or "not UDP").
 With the TLS look (on by default with the VPN, [vpn-stealth](vpn-stealth.md)), only the look's port is
 mapped, at outside 443, or 8443 when the router's 443 is someone else's (`mapping` never takes over a
 port already forwarded). Nothing else: never SMB, never RDP.

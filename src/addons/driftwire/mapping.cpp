@@ -19,7 +19,11 @@ using clock = std::chrono::steady_clock;
 
 constexpr std::uint8_t kPcpVersion = 2;
 constexpr std::uint8_t kPcpMap = 1;
-constexpr std::uint8_t kTcp = 6;
+constexpr std::uint8_t kTcp = 6, kUdp = 17;  // PCP's and the pinhole's protocol numbers
+// NAT-PMP's opcode (RFC 6886 §3.3: 1 UDP, 2 TCP; the answer adds 128) and UPnP's word.
+std::uint8_t pcp_protocol(bool udp) { return udp ? kUdp : kTcp; }
+std::uint8_t nat_pmp_op(bool udp) { return udp ? 1 : 2; }
+const char* upnp_protocol(bool udp) { return udp ? "UDP" : "TCP"; }
 constexpr std::size_t kMaxHttp = 64 * 1024;
 constexpr const char* kDescription = "MediaViewer Driftwire";
 
@@ -217,9 +221,10 @@ const char* method_name(method m) noexcept {
 
 // ---- parsers ------------------------------------------------------------------------------
 
-std::optional<pcp_answer> parse_pcp_map(std::span<const std::uint8_t> r, const std::array<std::uint8_t, 12>& nonce) {
+std::optional<pcp_answer> parse_pcp_map(std::span<const std::uint8_t> r, const std::array<std::uint8_t, 12>& nonce,
+                                        bool udp) {
   if (r.size() < 60 || r[0] != kPcpVersion || r[1] != (0x80 | kPcpMap)) return std::nullopt;
-  if (std::memcmp(r.data() + 24, nonce.data(), 12) != 0 || r[36] != kTcp) return std::nullopt;
+  if (std::memcmp(r.data() + 24, nonce.data(), 12) != 0 || r[36] != pcp_protocol(udp)) return std::nullopt;
   pcp_answer a;
   a.result = r[3];
   a.lifetime = get32(r.data() + 4);
@@ -228,8 +233,8 @@ std::optional<pcp_answer> parse_pcp_map(std::span<const std::uint8_t> r, const s
   return a;
 }
 
-std::optional<nat_pmp_answer> parse_nat_pmp_map(std::span<const std::uint8_t> r) {
-  if (r.size() < 16 || r[0] != 0 || r[1] != 128 + 2) return std::nullopt;
+std::optional<nat_pmp_answer> parse_nat_pmp_map(std::span<const std::uint8_t> r, bool udp) {
+  if (r.size() < 16 || r[0] != 0 || r[1] != 128 + nat_pmp_op(udp)) return std::nullopt;
   nat_pmp_answer a;
   a.result = get16(r.data() + 2);
   a.external_port = get16(r.data() + 10);
@@ -379,27 +384,37 @@ mapper::mapper(options o) : opts_(std::move(o)) {
 }
 
 std::optional<mapped> mapper::map_tcp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s) {
+  return map(internal_port, external_port, lifetime_s, false);
+}
+
+std::optional<mapped> mapper::map_udp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s) {
+  return map(internal_port, external_port, lifetime_s, true);
+}
+
+std::optional<mapped> mapper::map(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s, bool udp) {
   if (!gateway_ || !me_) {
     notes_.emplace_back("no router found to ask for a port");
     return std::nullopt;
   }
-  if (auto m = try_pcp(internal_port, external_port, lifetime_s)) return m;
+  if (auto m = try_pcp(internal_port, external_port, lifetime_s, udp)) return m;
   if (cancelled()) return std::nullopt;
-  if (auto m = try_nat_pmp(internal_port, external_port, lifetime_s)) return m;
+  if (auto m = try_nat_pmp(internal_port, external_port, lifetime_s, udp)) return m;
   if (cancelled()) return std::nullopt;
-  return try_upnp(internal_port, external_port, lifetime_s);
+  return try_upnp(internal_port, external_port, lifetime_s, udp);
 }
 
-std::optional<mapped> mapper::try_pcp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s) {
+std::optional<mapped> mapper::try_pcp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s,
+                                      bool udp) {
   mapped m;
   m.how = method::pcp;
   m.internal_port = internal_port;
+  m.udp = udp;
   randombytes_buf(m.pcp_nonce.data(), m.pcp_nonce.size());
   std::vector<std::uint8_t> req = {kPcpVersion, kPcpMap, 0, 0};
   put32(req, static_cast<std::uint32_t>(lifetime_s));
   put_mapped(req, *me_);
   req.insert(req.end(), m.pcp_nonce.begin(), m.pcp_nonce.end());
-  req.push_back(kTcp);
+  req.push_back(pcp_protocol(m.udp));
   req.insert(req.end(), 3, 0);
   put16(req, internal_port);
   put16(req, external_port);
@@ -409,7 +424,7 @@ std::optional<mapped> mapper::try_pcp(std::uint16_t internal_port, std::uint16_t
   (void)ask_gateway(gw, req, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
     // A NAT-PMP-only router answers a PCP request with version 0: not PCP.
     if (r.size() >= 2 && r[0] == 0) return true;
-    got = parse_pcp_map(r, m.pcp_nonce);
+    got = parse_pcp_map(r, m.pcp_nonce, m.udp);
     return got.has_value();
   });
   if (!got) {
@@ -432,7 +447,8 @@ std::optional<mapped> mapper::try_pcp(std::uint16_t internal_port, std::uint16_t
   return m;
 }
 
-std::optional<mapped> mapper::try_nat_pmp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s) {
+std::optional<mapped> mapper::try_nat_pmp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s,
+                                          bool udp) {
   const net::endpoint gw{net::address_text(*gateway_), opts_.gateway_port};
   std::optional<net::address> outside;
   const std::uint8_t ask_address[2] = {0, 0};
@@ -445,13 +461,13 @@ std::optional<mapped> mapper::try_nat_pmp(std::uint16_t internal_port, std::uint
     return std::nullopt;
   }
   last_outside_ = outside;
-  std::vector<std::uint8_t> req = {0, 2, 0, 0};
+  std::vector<std::uint8_t> req = {0, nat_pmp_op(udp), 0, 0};
   put16(req, internal_port);
   put16(req, external_port);
   put32(req, static_cast<std::uint32_t>(lifetime_s));
   std::optional<nat_pmp_answer> got;
   (void)ask_gateway(gw, req, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
-    got = parse_nat_pmp_map(r);
+    got = parse_nat_pmp_map(r, udp);
     return got.has_value();
   });
   if (!got || got->result != 0 || got->external_port == 0) {
@@ -461,6 +477,7 @@ std::optional<mapped> mapper::try_nat_pmp(std::uint16_t internal_port, std::uint
   mapped m;
   m.how = method::nat_pmp;
   m.internal_port = internal_port;
+  m.udp = udp;
   if (!net::is_public(*outside)) {
     behind_nat_ = true;
     notes_.emplace_back("NAT-PMP: the router's outside address is not public (another NAT beyond it)");
@@ -508,7 +525,8 @@ std::optional<mapper::upnp_device> mapper::find_upnp() {
   return std::nullopt;
 }
 
-std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s) {
+std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s,
+                                       bool udp) {
   const auto dev = find_upnp();
   if (!dev) {
     notes_.emplace_back("UPnP: no gateway answered");
@@ -533,7 +551,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
   // the person's own forward, and remove() then delete it).
   bool taken = false;
   if (auto e = soap(*gateway_, dev->control, dev->service, "GetSpecificPortMappingEntry",
-                    {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(want)}, {"NewProtocol", "TCP"}},
+                    {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(want)}, {"NewProtocol", upnp_protocol(udp)}},
                     opts_.timeout_ms);
       e && e->status == 200) {
     taken = xml_value(e->body, "NewInternalClient") != net::address_text(*me_) ||
@@ -542,7 +560,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
   auto r = taken ? std::nullopt : soap(*gateway_, dev->control, dev->service, "AddPortMapping",
                 {{"NewRemoteHost", ""},
                  {"NewExternalPort", std::to_string(want)},
-                 {"NewProtocol", "TCP"},
+                 {"NewProtocol", upnp_protocol(udp)},
                  {"NewInternalPort", std::to_string(internal_port)},
                  {"NewInternalClient", net::address_text(*me_)},
                  {"NewEnabled", "1"},
@@ -555,7 +573,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
     auto any = soap(*gateway_, dev->control, dev->service, "AddAnyPortMapping",
                     {{"NewRemoteHost", ""},
                      {"NewExternalPort", std::to_string(want)},
-                     {"NewProtocol", "TCP"},
+                     {"NewProtocol", upnp_protocol(udp)},
                      {"NewInternalPort", std::to_string(internal_port)},
                      {"NewInternalClient", net::address_text(*me_)},
                      {"NewEnabled", "1"},
@@ -576,6 +594,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
   mapped m;
   m.how = method::upnp;
   m.internal_port = internal_port;
+  m.udp = udp;
   m.external = {net::address_text(*outside), got};
   m.upnp_control = dev->control;
   m.upnp_service = dev->service;
@@ -583,7 +602,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
   return m;
 }
 
-std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_t port, int lifetime_s) {
+std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_t port, int lifetime_s, bool udp) {
   if (!local.v6 || !net::is_public(local)) return std::nullopt;
   const auto dev = find_upnp();
   if (!dev || dev->fw_service.empty()) {
@@ -595,7 +614,7 @@ std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_
                  {"RemotePort", "0"},
                  {"InternalClient", net::address_text(local)},
                  {"InternalPort", std::to_string(port)},
-                 {"Protocol", "6"},
+                 {"Protocol", udp ? "17" : "6"},
                  {"LeaseTime", std::to_string(lifetime_s)}},
                 opts_.timeout_ms);
   const auto id = r && r->status == 200 ? xml_value(r->body, "UniqueID") : std::nullopt;
@@ -644,7 +663,8 @@ std::optional<net::address> mapper::outside_v4() {
 bool mapper::ours(const mapped& m) {
   if (!gateway_ || !me_ || m.how != method::upnp || m.pinhole) return false;
   auto e = soap(*gateway_, m.upnp_control, m.upnp_service, "GetSpecificPortMappingEntry",
-                {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(m.external.port)}, {"NewProtocol", "TCP"}},
+                {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(m.external.port)},
+                 {"NewProtocol", upnp_protocol(m.udp)}},
                 opts_.timeout_ms);
   return e && e->status == 200 && xml_value(e->body, "NewInternalClient") == net::address_text(*me_) &&
          xml_value(e->body, "NewPortMappingDescription") == kDescription;
@@ -660,26 +680,26 @@ bool mapper::renew(const mapped& m, int lifetime_s) {
       put32(req, static_cast<std::uint32_t>(lifetime_s));
       put_mapped(req, *me_);
       req.insert(req.end(), m.pcp_nonce.begin(), m.pcp_nonce.end());
-      req.push_back(kTcp);
+      req.push_back(pcp_protocol(m.udp));
       req.insert(req.end(), 3, 0);
       put16(req, m.internal_port);
       put16(req, m.external.port);
       put_mapped(req, net::address{});
       std::optional<pcp_answer> got;
       (void)ask_gateway(gw, req, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
-        got = parse_pcp_map(r, m.pcp_nonce);
+        got = parse_pcp_map(r, m.pcp_nonce, m.udp);
         return got.has_value();
       });
       return got && got->result == 0 && got->external_port == m.external.port;
     }
     case method::nat_pmp: {
-      std::vector<std::uint8_t> req = {0, 2, 0, 0};
+      std::vector<std::uint8_t> req = {0, nat_pmp_op(m.udp), 0, 0};
       put16(req, m.internal_port);
       put16(req, m.external.port);
       put32(req, static_cast<std::uint32_t>(lifetime_s));
       std::optional<nat_pmp_answer> got;
       (void)ask_gateway(gw, req, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
-        got = parse_nat_pmp_map(r);
+        got = parse_nat_pmp_map(r, m.udp);
         return got.has_value();
       });
       return got && got->result == 0 && got->external_port == m.external.port;
@@ -694,7 +714,7 @@ bool mapper::renew(const mapped& m, int lifetime_s) {
         r = soap(*gateway_, m.upnp_control, m.upnp_service, "AddPortMapping",
                  {{"NewRemoteHost", ""},
                   {"NewExternalPort", std::to_string(m.external.port)},
-                  {"NewProtocol", "TCP"},
+                  {"NewProtocol", upnp_protocol(m.udp)},
                   {"NewInternalPort", std::to_string(m.internal_port)},
                   {"NewInternalClient", net::address_text(*me_)},
                   {"NewEnabled", "1"},
@@ -721,22 +741,22 @@ void mapper::remove(const mapped& m) {
       put32(req, 0);  // lifetime 0: delete
       put_mapped(req, *me_);
       req.insert(req.end(), m.pcp_nonce.begin(), m.pcp_nonce.end());
-      req.push_back(kTcp);
+      req.push_back(pcp_protocol(m.udp));
       req.insert(req.end(), 3, 0);
       put16(req, m.internal_port);
       put16(req, 0);
       put_mapped(req, net::address{});
       (void)ask_gateway(gw, req, quick, nullptr,
-                        [&](std::span<const std::uint8_t> r) { return parse_pcp_map(r, m.pcp_nonce).has_value(); });
+                        [&](std::span<const std::uint8_t> r) { return parse_pcp_map(r, m.pcp_nonce, m.udp).has_value(); });
       break;
     }
     case method::nat_pmp: {
-      std::vector<std::uint8_t> req = {0, 2, 0, 0};
+      std::vector<std::uint8_t> req = {0, nat_pmp_op(m.udp), 0, 0};
       put16(req, m.internal_port);
       put16(req, 0);
       put32(req, 0);
       (void)ask_gateway(gw, req, quick, nullptr,
-                        [&](std::span<const std::uint8_t> r) { return parse_nat_pmp_map(r).has_value(); });
+                        [&](std::span<const std::uint8_t> r) { return parse_nat_pmp_map(r, m.udp).has_value(); });
       break;
     }
     case method::upnp:
@@ -744,7 +764,8 @@ void mapper::remove(const mapped& m) {
         (void)soap(*gateway_, m.upnp_control, m.upnp_service, "DeletePinhole", {{"UniqueID", m.pinhole_id}}, quick);
       } else {
         (void)soap(*gateway_, m.upnp_control, m.upnp_service, "DeletePortMapping",
-                   {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(m.external.port)}, {"NewProtocol", "TCP"}},
+                   {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(m.external.port)},
+                    {"NewProtocol", upnp_protocol(m.udp)}},
                    quick);
       }
       break;
@@ -820,13 +841,13 @@ bool digits(std::string_view s) {
 }  // namespace
 
 std::string ledger_text(const net::address& gateway, const std::vector<mapped>& held) {
-  // "gw <address>", then a line a mapping: how, internal port, external
+  // "gw <address>", then a line a mapping ("m" TCP, "u" UDP): how, internal port, external
   // address and port, pinhole, PCP nonce, UPnP control, service, pinhole id
   // ("-" for none). Nothing in it has a space (the control URL and service
   // type were checked when they were read).
   std::string s = "gw " + net::address_text(gateway) + "\n";
   for (const auto& m : held) {
-    s += "m " + std::to_string(static_cast<int>(m.how)) + " " + std::to_string(m.internal_port) + " " +
+    s += std::string(m.udp ? "u " : "m ") + std::to_string(static_cast<int>(m.how)) + " " + std::to_string(m.internal_port) + " " +
          m.external.address + " " + std::to_string(m.external.port) + " " + (m.pinhole ? "1" : "0") + " " +
          hex_of(m.pcp_nonce) + " " + (m.upnp_control.empty() ? "-" : m.upnp_control) + " " +
          (m.upnp_service.empty() ? "-" : m.upnp_service) + " " + (m.pinhole_id.empty() ? "-" : m.pinhole_id) + "\n";
@@ -843,10 +864,11 @@ std::optional<std::pair<net::address, std::vector<mapped>>> parse_ledger(std::st
   if (!gw) return std::nullopt;
   std::vector<mapped> out;
   while (in >> word) {
-    if (word != "m" || out.size() >= 16) return std::nullopt;
+    if ((word != "m" && word != "u") || out.size() >= 16) return std::nullopt;
     std::string how, internal, ext_addr, ext_port, hole, nonce, control, service, id;
     if (!(in >> how >> internal >> ext_addr >> ext_port >> hole >> nonce >> control >> service >> id)) return std::nullopt;
     mapped m;
+    m.udp = word == "u";
     if (how.size() != 1 || how[0] < '1' || how[0] > '3' || !digits(internal) || !digits(ext_port) ||
         (hole != "0" && hole != "1") || !unhex(nonce, m.pcp_nonce) || !net::parse_address(ext_addr)) {
       return std::nullopt;
