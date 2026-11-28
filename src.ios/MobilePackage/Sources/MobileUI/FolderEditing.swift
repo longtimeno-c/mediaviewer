@@ -1,73 +1,17 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // A folder's page, changed from the phone (LibraryChanges.swift): an Add menu and Select in its bar,
-// a bar of Move, Rename and Delete under what is chosen, the same three on a long press, and the
-// files being sent. Only where this phone may change files (FolderPage.changeable).
+// a bar of Move, Rename and Delete under what is chosen (a tile held starts Select with it chosen,
+// as in Photos), and the files being sent. Only where this phone may change files (FolderPage.changeable).
 import MobileKit
 import PhotosUI
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// What a long press on a tile can do, handed down to the tiles of a page that can be changed.
-struct FolderActions {
-  enum Command {
-    case rename(FolderEntry)
-    case move([FolderEntry])
-    case delete([FolderEntry])
-  }
-
-  /// A command chosen in the menu: asked once the menu has gone (an alert, dialog or sheet shown
-  /// while the menu is still closing is closed with it).
-  let chose: (Command) -> Void
-}
-
-/// The system's context menu, still on screen while it closes.
-@MainActor
-enum ContextMenuGone {
-  /// Returns on the first frame the menu's view has left every window (at most a second or so).
-  static func wait() async {
-    for _ in 0..<90 where shown() {
-      await withCheckedContinuation { (next: CheckedContinuation<Void, Never>) in
-        let link = FrameWaiter(next)
-        link.start()
-      }
-    }
-  }
-
-  private static func shown() -> Bool {
-    let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
-    return windows.contains { window in
-      window.subviews.contains { String(describing: type(of: $0)).contains("ContextMenu") }
-    }
-  }
-
-  /// Resumes once, on the next display frame.
-  private final class FrameWaiter: NSObject {
-    private var next: CheckedContinuation<Void, Never>?
-    private var link: CADisplayLink?
-
-    init(_ next: CheckedContinuation<Void, Never>) { self.next = next }
-
-    func start() {
-      let link = CADisplayLink(target: self, selector: #selector(frame))
-      link.add(to: .main, forMode: .common)
-      self.link = link
-    }
-
-    @objc private func frame() {
-      link?.invalidate()
-      link = nil
-      next?.resume()
-      next = nil
-    }
-  }
-}
-
 extension EnvironmentValues {
   /// The page the tiles are on, when this phone may change it: in Select mode a tap chooses.
   @Entry var editingPage: FolderPage? = nil
-  @Entry var folderActions: FolderActions? = nil
 }
 
 struct FolderEditing: ViewModifier {
@@ -91,7 +35,6 @@ struct FolderEditing: ViewModifier {
     let editable = page.changeable
     content
       .environment(\.editingPage, editable ? page : nil)
-      .environment(\.folderActions, editable ? actions : nil)
       .navigationTitle(page.selecting ? ChangeCopy.selected(page.selected.count) : page.title)
       .navigationBarBackButtonHidden(page.selecting)
       .toolbar(page.selecting ? .hidden : .automatic, for: .tabBar)
@@ -172,27 +115,6 @@ struct FolderEditing: ViewModifier {
       }
   }
 
-  /// A long press's commands, run as soon as the menu has left the window: an alert, dialog or sheet
-  /// shown while it is still closing is closed with it.
-  private var actions: FolderActions {
-    FolderActions(chose: { command in
-      Task { @MainActor in
-        await ContextMenuGone.wait()
-        run(command)
-      }
-    })
-  }
-
-  private func run(_ command: FolderActions.Command) {
-    switch command {
-    case .rename(let entry): startRename(entry)
-    case .move(let entries): moving = MoveRequest(entries: entries, from: page.folder)
-    case .delete(let entries):
-      deleting = entries
-      confirmingDelete = true
-    }
-  }
-
   private func createFolder() {
     let name = newName
     Task { await model.library.makeFolder(named: name, in: page) }
@@ -243,17 +165,18 @@ struct FolderEditing: ViewModifier {
   }
 }
 
-/// The tile's part in Select mode and its long press: a check over it, and the three commands.
+/// The tile's part in Select mode: a check over it, and holding it starts Select with it chosen
+/// (as Photos does; Move, Rename and Delete are then on the bar).
 struct Choosable: ViewModifier {
   let entry: FolderEntry
   /// Where the check sits on the tile.
   var corner: Alignment = .topTrailing
   @Environment(\.editingPage) private var page
-  @Environment(\.folderActions) private var actions
   @Environment(AppModel.self) private var model
 
   func body(content: Content) -> some View {
     let chosen = page?.selected.contains(entry.id) == true
+    let holdable = page != nil && page?.selecting != true
     content
       .overlay(alignment: corner) {
         if page?.selecting == true {
@@ -267,16 +190,30 @@ struct Choosable: ViewModifier {
         }
       }
       .accessibilityAddTraits(chosen ? .isSelected : [])
-      .contextMenu {
-        if let actions, page?.selecting != true {
-          // One change at a time on a page: the menu waits as the bar does.
-          let busy = page?.changing == true
-          Button { actions.chose(.rename(entry)) } label: { Label("Rename", systemImage: "pencil") }.disabled(busy)
-          Button { actions.chose(.move([entry])) } label: { Label("Move", systemImage: "folder") }.disabled(busy)
-          Button(role: .destructive) { actions.chose(.delete([entry])) } label: { Label("Delete", systemImage: "trash") }
-            .disabled(busy)
-        }
+      // Beside the tile's own tap, which still comes when the finger lifts (LibraryModel.tapped).
+      .simultaneousGesture(LongPressGesture(minimumDuration: 0.4).onEnded { _ in hold() }, including: holdable ? .all : .subviews)
+      .accessibilityActions {
+        if holdable { Button("Select") { hold(lifting: false) } }
       }
+  }
+
+  private func hold(lifting: Bool = true) {
+    guard let page, !page.selecting else { return }
+    if lifting { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+    model.library.startSelecting(holding: entry.id, on: page, lifting: lifting)
+  }
+}
+
+/// On a scroll view of tiles: a hold followed by a drag never lifts on its tile, so the tap the
+/// hold would pass over is not coming.
+struct DropsHold: ViewModifier {
+  @Environment(\.editingPage) private var page
+  @Environment(AppModel.self) private var model
+
+  func body(content: Content) -> some View {
+    content.onScrollPhaseChange { _, phase in
+      if phase != .idle, let page, page.held != nil { model.library.dropHold(on: page) }
+    }
   }
 }
 
@@ -284,6 +221,8 @@ extension View {
   func choosable(_ entry: FolderEntry, corner: Alignment = .topTrailing) -> some View {
     modifier(Choosable(entry: entry, corner: corner))
   }
+
+  func dropsHold() -> some View { modifier(DropsHold()) }
 }
 
 /// A tap on a tile: in Select mode it chooses; otherwise `open`.
@@ -294,7 +233,7 @@ struct TileTap {
 
   func run(_ entry: FolderEntry, open: () -> Void) {
     if let page, page.selecting {
-      model.library.toggle(entry.id, on: page)
+      model.library.tapped(entry.id, on: page)
     } else {
       open()
     }

@@ -94,6 +94,7 @@ struct FolderScreen: View {
         }
         .padding(.bottom, 16)
       }
+      .dropsHold()
       .background(Theme.ground)
       .transition(.opacity)
     } else if page.sections.isEmpty {

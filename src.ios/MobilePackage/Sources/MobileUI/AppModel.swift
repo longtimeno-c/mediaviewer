@@ -603,6 +603,8 @@ public final class FolderPage: Identifiable, Hashable {
   public internal(set) var selecting = false
   /// The ids (FolderEntry.id) chosen.
   public internal(set) var selected: Set<String> = []
+  /// The tile whose hold started Select: the tap its lift brings chooses nothing more.
+  @ObservationIgnored var held: String?
   @ObservationIgnored var entriesSignature = 0
   /// Why the last change here was refused, on a card at the top of the page.
   public internal(set) var changeFailure: String?

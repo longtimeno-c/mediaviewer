@@ -115,6 +115,11 @@ void no_inherit(SOCKET s) noexcept {
   (void)::SetHandleInformation(reinterpret_cast<HANDLE>(s), HANDLE_FLAG_INHERIT, 0);
 }
 
+std::int64_t steady_ns() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 class tcp_link final : public link {
  public:
   // Non-blocking (socket_events), waited on in slices: Windows' shutdown()
@@ -150,9 +155,7 @@ class tcp_link final : public link {
 
   expected write_all(std::span<const std::uint8_t> bytes) override {
     std::size_t sent = 0;
-    // A stalled write is a dropped link: the channel pings, so a healthy
-    // receiver never leaves the send buffer full this long.
-    auto stalled_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(kSilenceMs);
+    std::int64_t moved = steady_ns();
     while (sent < bytes.size()) {
       if (down_.load()) return err(status::cancelled);
       const int want = static_cast<int>(std::min<std::size_t>(bytes.size() - sent, 1u << 20));
@@ -160,13 +163,18 @@ class tcp_link final : public link {
       if (n == SOCKET_ERROR) {
         const int e = ::WSAGetLastError();
         if (e != WSAEWOULDBLOCK) return err(down_.load() ? status::cancelled : status::io);
-        // Full: wait for room in slices, so shutdown() is noticed.
-        if (std::chrono::steady_clock::now() >= stalled_at) return err(status::timeout);
+        // Full: wait for room in slices, so shutdown() is noticed. A dead
+        // peer: nothing moved and nothing heard for the stall limit. A peer
+        // still heard from (its pings) is alive and only slow to read: a
+        // Driftwire receiver waiting on its disk.
+        if (steady_ns() - std::max(moved, heard_ns_.load()) >= std::int64_t{stall_ms_.load()} * 1000000) {
+          return err(status::timeout);
+        }
         if (events_.wait(FD_WRITE, 100) < 0) return err(status::io);
         continue;
       }
       sent += static_cast<std::size_t>(n);
-      stalled_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(kSilenceMs);
+      moved = steady_ns();
     }
     return {};
   }
@@ -180,7 +188,10 @@ class tcp_link final : public link {
       if (down_.load()) return err(status::cancelled);
       const int want = static_cast<int>(std::min<std::size_t>(into.size(), 1u << 20));
       const int n = ::recv(s_, reinterpret_cast<char*>(into.data()), want, 0);
-      if (n != SOCKET_ERROR) return static_cast<std::size_t>(n);
+      if (n != SOCKET_ERROR) {
+        if (n > 0) heard_ns_.store(steady_ns());
+        return static_cast<std::size_t>(n);
+      }
       if (::WSAGetLastError() != WSAEWOULDBLOCK) return err(down_.load() ? status::cancelled : status::io);
       // Nothing yet: wait.
       int slice = 100;
@@ -208,10 +219,14 @@ class tcp_link final : public link {
     return ::getsockopt(s_, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char*>(&on), &len) == 0 && on != FALSE;
   }
 
+  void set_stall_ms_for_tests(int ms) noexcept override { stall_ms_.store(ms); }
+
  private:
   SOCKET s_;
   socket_events events_;
   std::atomic<bool> down_{false};
+  std::atomic<std::int64_t> heard_ns_{0};  // steady clock: the last byte read from the peer
+  std::atomic<int> stall_ms_{kSilenceMs};
 };
 
 address address_of(const sockaddr* sa) noexcept;  // below
