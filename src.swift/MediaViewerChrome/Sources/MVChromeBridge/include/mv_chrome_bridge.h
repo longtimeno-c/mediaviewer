@@ -560,6 +560,14 @@ int32_t mv_chrome_remote_open_key(char* buf, int32_t size);
 void mv_chrome_remote_pair(const char* code_utf8);
 void mv_chrome_remote_connect(void);
 void mv_chrome_remote_forget(const char* server_key_utf8);
+// docs/plans/desktop-client.md §6a: a paired server's SMB shares in the Finder. `auto`: whether
+// they mount by themselves when the server answers at home (on by default); `mount` mounts now,
+// showing the OS's sign-in if it has none saved; `unmount` takes every server share away.
+// [main-thread]
+bool mv_chrome_lan_share_auto(void);
+void mv_chrome_set_lan_share_auto(bool on);
+void mv_chrome_lan_share_mount(void);
+void mv_chrome_lan_share_unmount(void);
 
 // docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
 // the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW

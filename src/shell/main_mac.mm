@@ -146,10 +146,12 @@
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
 #include "shell/photos_items_mac.h"
+#include "remote/lan_share.h"
 #include "remote/library.h"
 #include "image/thumb.h"
 #include "player/poster.h"
 #include "shell/photos_backup.h"
+#include "shell/lan_share_mac.h"
 #include "shell/photos_backup_mac.h"
 #include "shell/photos_backup_library.h"
 #include "shell/photos_backup_server.h"
@@ -705,6 +707,11 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)connectToServerCode:(const std::string&)code;
 - (void)connectToServerFromMenu:(id)sender;
 - (std::string)remoteOpenKey;
+// docs/plans/desktop-client.md §6a: a paired server's SMB shares in the Finder, at home.
+- (void)lanShareMountServer:(const std::string&)serverId asked:(BOOL)asked;
+- (void)mountServerSharesFromMenu:(id)sender;
+- (void)unmountServerSharesFromMenu:(id)sender;
+- (void)unmountServerShares;
 
 // Fullscreen (F11 / F) and slideshow (F5), docs/design/16's Browse and Slideshow
 // tables. No video on Mac yet (PR 19), so slideshow is a plain interval
@@ -1995,6 +2002,32 @@ extern "C" void mv_chrome_remote_forget(const char* server_key_utf8) {
   }
   [g_chrome_app forgetFolder:mv::remote::server_key(id)];  // its pin on the card, if it has one
   std::thread([lib, id] { (void)lib->forget(id); }).detach();
+}
+// docs/plans/desktop-client.md §6a: Settings' "Mount shares in the Finder at home". [main-thread]
+static NSString* const kLanShareAutoDefault = @"mv.lanShare.autoMount";
+
+// On by default (owner, 2026-11-27): it only mounts with a sign-in the Keychain already has.
+static bool MvLanShareAuto() {
+  NSUserDefaults* d = [NSUserDefaults standardUserDefaults];
+  return [d objectForKey:kLanShareAutoDefault] == nil || [d boolForKey:kLanShareAutoDefault];
+}
+
+extern "C" bool mv_chrome_lan_share_auto(void) { return MvLanShareAuto(); }
+extern "C" void mv_chrome_set_lan_share_auto(bool on) {
+  [[NSUserDefaults standardUserDefaults] setBool:on forKey:kLanShareAutoDefault];
+  // Turned on at home: mount now rather than at the next connect.
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (on && lib && g_chrome_app) {
+    for (const auto& s : lib->servers()) {
+      if (s.state == mv::remote::reach::online) [g_chrome_app lanShareMountServer:s.id asked:NO];
+    }
+  }
+}
+extern "C" void mv_chrome_lan_share_mount(void) {
+  if (g_chrome_app) [g_chrome_app mountServerSharesFromMenu:nil];
+}
+extern "C" void mv_chrome_lan_share_unmount(void) {
+  if (g_chrome_app) [g_chrome_app unmountServerShares];
 }
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
   (void)mv::shell::crash::note_native_call();
@@ -4125,6 +4158,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
+  // Servers whose shares are being mounted now (main thread): a connect while one runs adds none.
+  std::set<std::string> _lanShareBusy;
   BOOL _photosBackupRecorded;
   // The running backup or check holds Import's mv.import.1 table.
   BOOL _photosBackupUsesIndex;
@@ -8417,6 +8452,10 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     return YES;
   }
 #endif
+  if (item.action == @selector(mountServerSharesFromMenu:) || item.action == @selector(unmountServerSharesFromMenu:)) {
+    mv::remote::library* lib = mv::remote::library::shared();
+    return lib && !lib->servers().empty();
+  }
   if (item.action != @selector(menuAction:)) return YES;
   const NSInteger tag = item.tag;
   if (tag >= kMenuSortName && tag <= kMenuSortDateTaken) {
@@ -8624,6 +8663,15 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   NSMenuItem* connect = [file addItemWithTitle:@"Connect to a Server…" action:@selector(connectToServerFromMenu:)
                                  keyEquivalent:@""];
   connect.target = self;
+  // desktop-client.md §6a: the share in the Finder. Mounting also happens by itself at home (Settings).
+  NSMenuItem* mountShares = [file addItemWithTitle:@"Mount Server Shares in Finder"
+                                            action:@selector(mountServerSharesFromMenu:)
+                                     keyEquivalent:@""];
+  mountShares.target = self;
+  NSMenuItem* unmountShares = [file addItemWithTitle:@"Unmount Server Shares"
+                                              action:@selector(unmountServerSharesFromMenu:)
+                                       keyEquivalent:@""];
+  unmountShares.target = self;
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
   _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
   _openRecentMenu.delegate = self;
@@ -16221,6 +16269,13 @@ class remote_clip_source final : public mv::player::byte_source {
       if (!poster) return mv::err(poster.error());
       return mv::image::encode_thumb_rgba(poster->rgba, poster->width, poster->height);
     };
+    // desktop-client.md §6a: a server that answers mounts its shares in the Finder, when at home and on in Settings.
+    c.on_online = [weakSelf](const std::string& server_id) {
+      const std::string sid = server_id;  // the block keeps its own copy
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf lanShareMountServer:sid asked:NO];
+      });
+    };
     auto lib = std::make_unique<mv::remote::library>(std::move(c));
     (void)lib->load();  // a damaged servers.json lists nothing; pairing again rewrites it
     mv::remote::library::install(std::move(lib));
@@ -16475,6 +16530,110 @@ class remote_clip_source final : public mv::player::byte_source {
   if ([alert runModal] != NSAlertFirstButtonReturn) return;
   NSString* text = field.stringValue ?: @"";
   [self connectToServerCode:std::string(text.UTF8String)];
+}
+
+// ---- docs/plans/desktop-client.md §6a: a paired server's shares in the Finder ----------
+
+// `asked`: the person chose File > Mount Server Shares in Finder, so the OS's sign-in may show and
+// every outcome is said. Otherwise (a connect) it is silent unless something was mounted or failed.
+- (void)lanShareMountServer:(const std::string&)serverId asked:(BOOL)asked {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib || serverId.empty()) return;
+  if (!asked && !MvLanShareAuto()) return;
+  if (!_lanShareBusy.insert(serverId).second) return;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, serverId, asked](const mv::job_context&) -> mv::status {
+    namespace ls = mv::remote::lan_share;
+    auto info = lib->server(serverId);
+    const std::string name = info ? info->name : std::string();
+    // The named folders, from the server itself (a connect, if there is no live link).
+    auto listed = lib->list(mv::remote::server_key(serverId), /*person=*/asked == YES);
+    std::string problem;
+    ls::plan plan;
+    if (!listed) {
+      problem = mv::remote::open_problem_words(listed.error(), info ? info->state : mv::remote::reach::unknown, name);
+    } else if (listed->stale) {
+      problem = mv::remote::open_problem_words(mv::status::io, mv::remote::reach::unreachable, name);
+    } else {
+      ls::input in;
+      for (const auto& f : listed->folders) {
+        if (!f.offline) in.labels.push_back(f.name);
+      }
+      if (auto route = lib->last_route(serverId)) {
+        in.address = route->address;
+        in.over_internet = route->over_internet;
+        in.relayed = route->relayed;
+      }
+      in.already = mv::shell::lan_share_mac::mounted_now();
+      plan = ls::plan_mounts(in);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      if (plan.urls.empty()) {
+        s->_lanShareBusy.erase(serverId);
+        const std::string words = !problem.empty() ? problem : ls::skip_words(name, plan.why);
+        if (asked && !words.empty()) [s noticeShow:words];
+        return;
+      }
+      mv::shell::lan_share_mac::mount(plan.urls, asked == YES, [weakSelf, serverId, name](ls::outcome o) {
+        MvLabApp* t = weakSelf;
+        if (!t) return;
+        t->_lanShareBusy.erase(serverId);
+        if (std::string words = ls::notice_words(name, o); !words.empty()) [t noticeShow:words];
+      });
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)mountServerSharesFromMenu:(id)sender {
+  (void)sender;
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) return;
+  for (const auto& s : lib->servers()) [self lanShareMountServer:s.id asked:YES];
+}
+
+- (void)unmountServerSharesFromMenu:(id)sender {
+  (void)sender;
+  [self unmountServerShares];
+}
+
+// Every SMB volume of each paired server's LAN host: the one it was reached at this run and
+// the one it keeps (they differ after its address changed). Other volumes are never touched.
+- (void)unmountServerShares {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) return;
+  std::set<std::string> hosts;
+  for (const auto& s : lib->servers()) {
+    if (auto route = lib->last_route(s.id)) {
+      if (auto h = mv::remote::lan_share::lan_host(route->address); !h.empty()) hosts.insert(h);
+    }
+    if (auto h = mv::remote::lan_share::lan_host(s.local); !h.empty()) hosts.insert(h);
+  }
+  if (hosts.empty()) {
+    [self noticeShow:"No server shares are mounted."];
+    return;
+  }
+  auto tally = std::make_shared<std::pair<int, int>>(0, 0);
+  auto left = std::make_shared<std::size_t>(hosts.size());
+  MvLabApp* __weak weakSelf = self;
+  for (const auto& host : hosts) {
+    mv::shell::lan_share_mac::unmount(host, [weakSelf, tally, left](int ok, int failed) {
+      tally->first += ok;
+      tally->second += failed;
+      if (--*left != 0) return;
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      if (tally->second > 0) {
+        [s noticeShow:"A server share is still in use, so it stayed mounted. Close what is open on it and try again."];
+      } else if (tally->first == 0) {
+        [s noticeShow:"No server shares are mounted."];
+      } else {
+        [s noticeShow:tally->first == 1 ? "Unmounted the server's share." : "Unmounted the server's shares."];
+      }
+    });
+  }
 }
 
 // Pairing is the code alone (owner call 2): no password. The fingerprint is

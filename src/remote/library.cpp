@@ -190,6 +190,7 @@ struct library::server_rt {
   // writable roots were read since the last connect that changed the role.
   std::atomic<bool> changes{false};
   std::atomic<bool> rights_known{false};
+  std::optional<route_seen> route;  // under the library's m_: the latest connect's
 
   ~server_rt() {
     sodium_memzero(device_key.data(), device_key.size());
@@ -444,6 +445,7 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   if (!kept) return err(status::internal);
   s->link = make_link(cfg_, s->local, s->public_name, s->relay, s->identity, s->access_key, s->device_key);
   s->state = reach::online;  // it just answered
+  s->route = route_seen{report.address, report.over_internet, report.relayed};
   std::shared_ptr<server_rt> old;
   {
     std::lock_guard saving(save_m_);
@@ -458,6 +460,7 @@ result<std::string> library::pair(std::string_view code_text, std::int64_t now_u
   }
   if (old && old->link) old->link->shut_down();
   gen_.fetch_add(1, std::memory_order_acq_rel);
+  if (cfg_.on_online) cfg_.on_online(s->id);
   return s->id;
 }
 
@@ -513,7 +516,9 @@ std::vector<server_info> library::servers() const {
   std::vector<server_info> out;
   std::lock_guard lock(m_);
   out.reserve(servers_.size());
-  for (const auto& [id, s] : servers_) out.push_back({id, s->name, s->state.load(), s->paired_unix, role_word(s->role.load())});
+  for (const auto& [id, s] : servers_) {
+    out.push_back({id, s->name, s->state.load(), s->paired_unix, role_word(s->role.load()), s->local});
+  }
   std::sort(out.begin(), out.end(), [](const server_info& a, const server_info& b) { return less_name(a.name, b.name); });
   return out;
 }
@@ -521,7 +526,15 @@ std::vector<server_info> library::servers() const {
 std::optional<server_info> library::server(std::string_view id) const {
   auto s = find(id);
   if (!s) return std::nullopt;
-  return server_info{s->id, s->name, s->state.load(), s->paired_unix, role_word(s->role.load())};
+  std::lock_guard lock(m_);  // `local` changes under m_ (keep_addresses)
+  return server_info{s->id, s->name, s->state.load(), s->paired_unix, role_word(s->role.load()), s->local};
+}
+
+std::optional<route_seen> library::last_route(std::string_view id) const {
+  auto s = find(id);
+  if (!s) return std::nullopt;
+  std::lock_guard lock(m_);
+  return s->route;
 }
 
 std::shared_ptr<library::server_rt> library::find(std::string_view id) const {
@@ -597,7 +610,13 @@ expected library::connect(server_rt& s, bool person, const mobile::cancel_flag* 
       gen_.fetch_add(1, std::memory_order_acq_rel);  // the rows say what it may do
     }
     keep_addresses(s);
+    {
+      std::lock_guard lock(m_);
+      s.route = route_seen{report.address, report.over_internet, report.relayed};
+    }
+    const bool came = s.state.load() != reach::online;
     set_state(s, reach::online);
+    if (came && cfg_.on_online) cfg_.on_online(s.id);
     return {};
   }
   switch (done.error()) {
