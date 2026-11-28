@@ -61,7 +61,8 @@ struct desk {
 [[nodiscard]] bool load(secrets::store& store, std::vector<desk>& out);
 [[nodiscard]] bool save(secrets::store& store, const std::vector<desk>& list);
 
-// A computer paired: listed (again, if it was going). True when the list changed.
+// A computer paired: listed (again, if it was going). True when the list changed. Not listed
+// when another listed computer already has its account's name (account_for is 4 bytes of the key).
 bool add(std::vector<desk>& list, const key32& key);
 // A computer unpaired: marked gone if its account was made, dropped if it never was.
 bool remove(std::vector<desk>& list, const key32& key);

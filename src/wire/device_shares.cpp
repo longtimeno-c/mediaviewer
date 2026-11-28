@@ -135,6 +135,12 @@ bool add(std::vector<desk>& list, const key32& key) {
   desk d;
   d.key = key;
   d.account = account_for(key);
+  // Another computer's key starts with the same bytes: never two computers on one account (one
+  // would get the other's rights, and unpairing either would take both logins away). This one
+  // has no account of its own; it still opens the folders in the app.
+  for (const auto& other : list) {
+    if (other.account == d.account) return false;
+  }
   list.push_back(std::move(d));
   return true;
 }

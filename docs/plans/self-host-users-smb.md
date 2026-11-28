@@ -292,7 +292,14 @@ of the share, and the card's one list is **Phones and computers**.
 - **Its account:** a computer that pairs (`pair_msg::kind = desktop`) is listed in the store item
   `device_shares` (`wire/device_shares.h`), with an OS account named `mv-` plus the first 4 bytes of its key in hex,
   a 32-character random password nobody types, and the role and folders last applied. A computer
-  unpaired is marked `gone`.
+  unpaired is marked `gone` (by the card's Remove and by `driftwire serve revoke`). A second
+  computer whose key starts with the same 4 bytes gets no account: two computers never share one.
+- **An account never outlives its pairing:** the step also takes away the account of a computer
+  that is no longer on either device list (whatever dropped it), and of one whose timed access
+  has ended. The ended one stays listed as never made, so extending it makes a new account with
+  a new password; until the step has run, its row says `"share":"waiting"` (then `"ended"`), so
+  the card offers **Finish…**. A computer removed outright is no longer on the card: its account
+  goes at the next step anyone runs (`driftwire serve revoke` says so).
 - **Made by the same step:** `driftwire host users apply` adds the computers to the request as
   users (`cli::desk_users`). It generates the password for a new account, sends none for one
   already made, and removes a gone one's account. After the step, it saves the password and what was
@@ -316,6 +323,7 @@ Today the card that edits the list is the host's own.
 
 **Tests:** `[device-shares]` (the store, names, when the step runs, a pairing's role and folders),
 `[host-users]` "a paired computer gets its own account…" (made, kept, changed, taken away),
+"a computer's account goes when its access ends…" and "a device revoked from the command line…",
 `[phone-pairing]` "a paired computer is a user…" (listed, renamed, its login at home only, a
 role change makes it wait, unpaired), and `[phone-addon]` "a computer is a user…" (the card).
 

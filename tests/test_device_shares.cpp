@@ -145,3 +145,22 @@ TEST_CASE("people: a person has a role and devices; a device belongs to one pers
   CHECK(people::remove(folk, "ANNA"));
   CHECK(folk.size() == 1);
 }
+
+TEST_CASE("device shares: two computers never share one account", "[device-shares]") {
+  // account_for is the key's first 4 bytes: a second key that starts the same gets no account
+  // of its own, so it can never be given the first one's rights or take its login away.
+  ds::key32 a{}, b{};
+  a.fill(0x42);
+  b.fill(0x42);
+  b[31] = 0x01;
+  REQUIRE(ds::account_for(a) == ds::account_for(b));
+  std::vector<ds::desk> list;
+  CHECK(ds::add(list, a));
+  CHECK_FALSE(ds::add(list, b));
+  REQUIRE(list.size() == 1);
+  CHECK(list[0].key == a);
+  CHECK(ds::find(list, b) == nullptr);
+  // Unpairing the one without an account leaves the other's alone.
+  CHECK_FALSE(ds::remove(list, b));
+  CHECK_FALSE(list[0].gone);
+}

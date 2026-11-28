@@ -34,6 +34,7 @@
 #include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/host_smb.h"
 #include "wire/device_shares.h"
+#include "wire/people.h"
 #include "wire/known.h"
 #include "wire/secrets.h"
 #include "wire/share_users.h"
@@ -75,12 +76,18 @@ struct share_state {
 // ---- each paired computer's own account (self-host-users-smb.md §12) -------------------------
 // The computers' share users, as the step is asked for them: one per listed computer still
 // paired (on `unlimited` or `limited`), named its account, with its pairing's role and
-// folders. A computer listed but no longer paired is left out (the service marks it gone at
-// revoke). `gone`: the accounts of the ones unpairing, to take away.
+// folders. `gone`: the accounts to take away: the ones unpairing (the service marks them at
+// revoke), and any other whose computer may no longer come in at `now`, so an account never
+// outlives its pairing: one no longer on either list (dropped by another path), or whose
+// timed access has ended (made again if it is extended).
+// Devices revoked outside the service (`driftwire serve revoke`), as the app's Remove leaves
+// them: a computer's account is marked to go at the next elevated step (dropped at once if never
+// made), and the device belongs to nobody. True when an account now waits for that step.
+bool note_revoked(secrets::store& store, const std::vector<std::array<std::uint8_t, 32>>& devices);
 [[nodiscard]] std::vector<su::user> desk_users(const std::vector<serve::device_shares::desk>& desks,
                                                const std::vector<known::device>& unlimited,
                                                const std::vector<serve::grants::grant>& limited,
-                                               const std::vector<serve::root_config>& roots,
+                                               const std::vector<serve::root_config>& roots, std::int64_t now,
                                                std::vector<std::string>& gone);
 
 // ---- running it (the tests give their own env) ----------------------------------------------

@@ -94,7 +94,8 @@ std::string user_line(const su::user& u) {
 std::vector<su::user> desk_users(const std::vector<serve::device_shares::desk>& desks,
                                  const std::vector<known::device>& unlimited,
                                  const std::vector<serve::grants::grant>& limited,
-                                 const std::vector<serve::root_config>& roots, std::vector<std::string>& gone) {
+                                 const std::vector<serve::root_config>& roots, std::int64_t now,
+                                 std::vector<std::string>& gone) {
   namespace ds = serve::device_shares;
   std::vector<su::user> out;
   for (const auto& d : desks) {
@@ -104,7 +105,11 @@ std::vector<su::user> desk_users(const std::vector<serve::device_shares::desk>& 
     }
     const bool full = std::any_of(unlimited.begin(), unlimited.end(), [&](const auto& u) { return u.key == d.key; });
     const auto g = std::find_if(limited.begin(), limited.end(), [&](const auto& x) { return x.key == d.key; });
-    if (!full && g == limited.end()) continue;
+    if (!full && (g == limited.end() || g->expired(now))) {
+      // No longer let in: an account the step made goes with the access.
+      if (d.applied != 0) gone.push_back(d.account);
+      continue;
+    }
     std::vector<serve::root_config> shared;
     for (const auto& r : roots) {
       if (r.label != serve::kCatalogueLabel) shared.push_back(r);
@@ -118,6 +123,28 @@ std::vector<su::user> desk_users(const std::vector<serve::device_shares::desk>& 
     out.push_back(std::move(u));
   }
   return out;
+}
+
+bool note_revoked(secrets::store& store, const std::vector<std::array<std::uint8_t, 32>>& devices) {
+  namespace ds = serve::device_shares;
+  bool account_waits = false;
+  std::vector<ds::desk> desks;
+  if (ds::load(store, desks)) {
+    bool changed = false;
+    for (const auto& k : devices) {
+      const auto* d = ds::find(desks, k);
+      account_waits = account_waits || (d && !d->gone && d->applied != 0);
+      changed = ds::remove(desks, k) || changed;
+    }
+    if (changed) (void)ds::save(store, desks);
+  }
+  std::vector<serve::people::person> folk;
+  if (serve::people::load(store, folk)) {
+    bool changed = false;
+    for (const auto& k : devices) changed = serve::people::forget_device(folk, k) || changed;
+    if (changed) (void)serve::people::save(store, folk);
+  }
+  return account_waits;
 }
 
 // ---- the command's words ---------------------------------------------------------------------
@@ -167,6 +194,10 @@ std::string parse_users_command(const args& a, users_command& out) {
   if (!out.name.empty() && !su::valid_name(out.name)) {
     return "a user's name is 1 to 20 of a-z, 0-9, '.', '_' or '-', starting with a letter, and not one the system "
            "keeps (admin, guest, root, ...)";
+  }
+  // A paired computer's own account (device_shares::account_for) is never a person's.
+  if (out.verb == users_verb::add && out.name.rfind("mv-", 0) == 0) {
+    return "names starting with mv- are kept for paired computers' own accounts";
   }
   return {};
 }
@@ -321,7 +352,7 @@ int apply_now(const host_layout& l, secrets::store& store, users_env& env, std::
     (void)serve::grants::load(store, limited);
     const auto cfg = host_files::config(l, env.any_port);
     auto mine = desk_users(desks, known::load(store), limited,
-                           cfg ? cfg->roots : std::vector<serve::root_config>{}, desk_removed);
+                           cfg ? cfg->roots : std::vector<serve::root_config>{}, env.now(), desk_removed);
     for (auto& u : mine) {
       desk_names.push_back(u.name);
       const auto* d = [&]() -> const ds::desk* {
@@ -414,10 +445,30 @@ int apply_now(const host_layout& l, secrets::store& store, users_env& env, std::
           d.applied = t;
         }
       }
-      // Gone ones whose account the step took away (or never had): dropped.
+      // The accounts the step took away (or never had). An entry whose computer is unpaired goes
+      // with it. One still paired (timed access that ended, or paired again while the step ran)
+      // stays, as never made: its old login is gone, and the next step makes it a new one.
+      const auto paired = known::load(store);
+      std::vector<serve::grants::grant> timed;
+      (void)serve::grants::load(store, timed);
+      const auto still_paired = [&](const ds::desk& d) {
+        return std::any_of(paired.begin(), paired.end(), [&](const auto& u) { return u.key == d.key; }) ||
+               std::any_of(timed.begin(), timed.end(), [&](const auto& g) { return g.key == d.key; });
+      };
+      const auto taken = [&](const ds::desk& d) {
+        return answer->ok && std::find(r.remove.begin(), r.remove.end(), d.account) != r.remove.end();
+      };
+      for (auto& d : now_desks) {
+        if (d.gone || !taken(d) || !still_paired(d)) continue;
+        sodium_memzero(d.password.data(), d.password.size());
+        d.password.clear();
+        d.role.clear();
+        d.folders.reset();
+        d.applied = 0;
+      }
       std::erase_if(now_desks, [&](const ds::desk& d) {
-        if (!d.gone) return false;
-        return std::find(r.remove.begin(), r.remove.end(), d.account) != r.remove.end() && answer->ok;
+        if (d.gone) return taken(d);
+        return !still_paired(d) && (taken(d) || d.applied == 0);
       });
       (void)ds::save(store, now_desks);
     }

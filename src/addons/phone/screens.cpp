@@ -30,7 +30,7 @@ struct phone_row {
   bool limited = false, expired = false, guest = false, backup = true;
   std::int64_t expires = 0;
   bool desktop = false;  // a computer: its own share account (self-host-users-smb.md §12)
-  std::string share = {};  // "ready", "waiting" or ""
+  std::string share = {};  // "ready", "waiting", "ended" (timed access over, no account left) or ""
   std::string person = {};  // who it belongs to (§13); "" nobody
 };
 struct person_row {

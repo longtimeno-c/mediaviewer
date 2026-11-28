@@ -2483,6 +2483,9 @@ std::string server::state::desk_word(const std::array<std::uint8_t, 32>& key, co
   if (!device_shares::load(*store, list)) return {};
   const auto* d = device_shares::find(list, key);
   if (!d || d->gone) return {};
+  // Timed access that ended: an account the step made waits to be taken away (the computer still
+  // has its password); one never made has nothing to wait for until the access is extended.
+  if (acc.g && acc.g->expired(now())) return d->applied != 0 ? "waiting" : "ended";
   const auto w = want_of(acc);
   return device_shares::waiting(*d, w.role, w.folders) ? "waiting" : "ready";
 }

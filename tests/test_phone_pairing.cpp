@@ -3170,3 +3170,65 @@ TEST_CASE("phone pairing: a person's role is every device of theirs' role", "[ph
   REQUIRE(listed);
   CHECK(listed->find("\"devices\":[]") != std::string::npos);
 }
+
+TEST_CASE("phone pairing: a computer whose time ran out waits for its account to be taken away", "[phone-pairing]") {
+  namespace ds = mv::driftwire::serve::device_shares;
+  namespace grants = mv::driftwire::serve::grants;
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 laptop = random_key();
+  {
+    serve::client::options o;
+    o.access_key = n.access;
+    o.device_key = laptop;
+    o.service_key = n.identity;
+    o.id = "cccccccccccccccc";
+    o.name = "desktop";
+    o.pair_code = p->code;
+    o.device_name = "Guest's laptop";
+    o.device_kind = serve::kDeviceDesktop;
+    REQUIRE(serve::client::open(n.connect(), o));
+  }
+  // The step made its account; its access is timed.
+  std::vector<ds::desk> desks;
+  REQUIRE(ds::load(*n.store, desks));
+  REQUIRE(desks.size() == 1);
+  desks[0].password = "a-password-nobody-types-0123456789";
+  desks[0].role = "view";
+  desks[0].applied = 1;
+  REQUIRE(ds::save(*n.store, desks));
+  std::vector<grants::grant> limited;
+  REQUIRE(grants::load(*n.store, limited));
+  REQUIRE(limited.size() == 1);
+  const std::int64_t t0 = 1'763'130'000;
+  limited[0].expires = t0 + 3600;
+  REQUIRE(grants::save(*n.store, limited));
+  n.fake_now = t0;
+  auto list = mac.d->refresh_devices();
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].share == "ready");
+
+  // Ended: the account (and the password the computer holds) is still on the server until the
+  // step takes it away, so the card's "Finish…" row shows.
+  n.fake_now = t0 + 3601;
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].expired);
+  CHECK((*list)[0].desktop);
+  CHECK((*list)[0].share == "waiting");
+
+  // Taken away (as `driftwire host users apply` leaves it): nothing waits until it is extended.
+  desks[0].password.clear();
+  desks[0].role.clear();
+  desks[0].applied = 0;
+  REQUIRE(ds::save(*n.store, desks));
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  CHECK((*list)[0].desktop);
+  CHECK((*list)[0].share == "ended");
+}
