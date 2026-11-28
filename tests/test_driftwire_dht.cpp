@@ -7,6 +7,8 @@
 
 #include <sodium.h>
 
+#include <condition_variable>
+
 #include "addons/driftwire/bencode.h"
 #include "addons/driftwire/dht_item.h"
 #include "wire/known.h"
@@ -157,7 +159,7 @@ TEST_CASE("driftwire dht: an item is sealed to the code, padded, and refused whe
 
 // ---- one UDP socket: the DHT, the probes, the reliable stream ------------------------------------
 
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 #if defined(__APPLE__)
 #include <netinet/in.h>
@@ -287,6 +289,82 @@ TEST_CASE("driftwire dht: protocol 2 opens and carries a session over the UDP st
     REQUIRE((*server)->receive(m, 5000));
     CHECK(m.body == chunk);
   }
+}
+
+TEST_CASE("driftwire dht: a stream someone opens to the hub is handed to on_open, and carries both ways",
+          "[driftwire]") {
+  hub_pair h;
+  std::mutex m;
+  std::condition_variable cv;
+  std::unique_ptr<sp::link> opened;
+  sp::net::endpoint from;
+  h.b->on_open([&](std::unique_ptr<sp::link> l, const sp::net::endpoint& who) {
+    std::lock_guard lock(m);
+    opened = std::move(l);
+    from = who;
+    cv.notify_all();
+  });
+  auto sa = h.a->stream(h.at_b(), 0x5150);
+  const auto hello = pattern(5000, 7);  // more than one packet
+  REQUIRE(sa->write_all(hello));
+  {
+    std::unique_lock lock(m);
+    REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&] { return opened != nullptr; }));
+  }
+  CHECK(from.port == h.a->port());
+  std::vector<std::uint8_t> got, buf(8192);
+  while (got.size() < hello.size()) {
+    auto n = opened->read_some(buf, 5000);
+    REQUIRE(n);
+    got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+  }
+  CHECK(got == hello);
+  const auto back = pattern(3000, 9);
+  REQUIRE(opened->write_all(back));
+  got.clear();
+  while (got.size() < back.size()) {
+    auto n = sa->read_some(buf, 5000);
+    REQUIRE(n);
+    got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+  }
+  CHECK(got == back);
+
+  // With no handler, a stranger's stream is dropped as before.
+  h.b->on_open(nullptr);
+  auto other = h.a->stream(h.at_b(), 0x6160);
+  REQUIRE(other->write_all(hello));
+  CHECK_FALSE(other->read_some(buf, 300));
+}
+
+TEST_CASE("driftwire dht: the hub's timer waits while nothing is in flight, and wakes for the next write",
+          "[driftwire]") {
+  hub_pair h;
+  std::shared_ptr<sp::link> la(h.a->stream(h.at_b(), 9)), lb(h.b->stream(h.at_a(), 9));
+  const auto data = pattern(20000, 5);
+  std::vector<std::uint8_t> buf(32768), got;
+  const auto send_and_take = [&] {
+    REQUIRE(la->write_all(data));
+    got.clear();
+    while (got.size() < data.size()) {
+      auto n = lb->read_some(buf, 5000);
+      REQUIRE(n);
+      got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+    }
+    CHECK(got == data);
+  };
+  send_and_take();
+  // Once every packet is acknowledged both timers go quiet: over 400 ms a timer ticking every
+  // 5 ms would make ~80 passes; waiting, it makes a handful (the last acks, then its 1 s wait).
+  const auto quiet = [&] {
+    const auto a0 = h.a->timer_passes_for_test(), b0 = h.b->timer_passes_for_test();
+    CHECK_FALSE(lb->read_some(buf, 400));  // nothing comes: 400 ms of an idle stream
+    return std::max(h.a->timer_passes_for_test() - a0, h.b->timer_passes_for_test() - b0);
+  };
+  std::uint64_t passes = quiet();
+  for (int i = 0; i < 3 && passes > 10; ++i) passes = quiet();  // the first may still hold the last acks
+  CHECK(passes <= 10);
+  // And the next write after the quiet goes through at once, acks and all.
+  send_and_take();
 }
 
 TEST_CASE("driftwire dht: the hub hands KRPC and probes to their handlers, and drops strangers' stream packets",

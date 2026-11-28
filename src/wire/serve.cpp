@@ -30,6 +30,7 @@
 #include "wire/owner_pass.h"
 #include "wire/serve_backup.h"
 #include "wire/share_users.h"
+#include "wire/udp_hub.h"
 #include "core/json.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
@@ -138,6 +139,7 @@ struct conn {
   bool relayed = false;
   // The device whose waiter it came through: only that device's handshake goes on.
   std::array<std::uint8_t, 32> relay_device{};
+  bool udp = false;  // over a UDP stream (options::udp)
   std::chrono::steady_clock::time_point born = std::chrono::steady_clock::now();
   bool pending_released = false;  // the connection's thread's own
   // 0: its hello has not all arrived; 1: it has, the handshake is running;
@@ -332,6 +334,7 @@ struct server::state {
   std::array<std::uint8_t, 32> identity{}, access_key{};
   std::array<std::uint8_t, 32> identity_public{};  // what clients pin, and sign over
   std::unique_ptr<net::listener> listen;
+  std::shared_ptr<udp_hub> udp;  // options::udp: sessions over UDP streams, on the same port number
   std::uint16_t port = 0;
   std::atomic<bool> stopping{false};
   source_limit limits{30, std::chrono::minutes(1), kLimitSources};
@@ -415,6 +418,7 @@ struct server::state {
   std::list<punch> punches;  // under punch_m
   std::map<std::array<std::uint8_t, 32>, clock::time_point> punch_last;  // under punch_m: each device's last ask
   std::atomic<std::uint64_t> n_punched{0};
+  std::atomic<std::uint64_t> n_udp{0};
   std::optional<std::pair<end_code, std::string>> upgrade(conn& c, std::uint32_t id, std::string_view request);
   std::vector<candidate> gather_candidates(net::tcp_rendezvous& rz);
   void stop_punches();
@@ -484,7 +488,7 @@ struct server::state {
   // Takes a connection in through the limits, as the listener does (relayed:
   // keyed by its device token, never the service's own network).
   void admit(std::unique_ptr<link> l, const std::string& source, const std::string& block, const net::address& from,
-             bool relayed, const std::array<std::uint8_t, 32>& relay_device = {});
+             bool relayed, const std::array<std::uint8_t, 32>& relay_device = {}, bool over_udp = false);
   void stop_waiters();
   void relay_loop();
   void wait_at_relay(waiter& w, const std::string& relay_key);
@@ -1933,6 +1937,10 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       extra += (extra.empty() ? "" : ",") + a.substr(1, a.size() - 2);
     }
   }
+  if (udp) {
+    // Every paired session's: the port that takes sessions over UDP too (caps_msg::udp).
+    extra += (extra.empty() ? "" : ",") + std::string("\"") + kCapsUdp + "\":" + std::to_string(udp->port());
+  }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
     // Nothing in common (one side too old). The answer said so.
@@ -2131,6 +2139,7 @@ void server::state::serve_connection(conn* c) {
   }
   n_sessions.fetch_add(1);
   if (c->source.starts_with("punch:")) n_punched.fetch_add(1);  // moved: counted once its session is up
+  if (c->udp) n_udp.fetch_add(1);
   session(*c, std::move(hello));
   {
     std::lock_guard lock(c->m);
@@ -2213,7 +2222,8 @@ void server::state::accept_loop() {
 }
 
 void server::state::admit(std::unique_ptr<link> accepted, const std::string& source, const std::string& block,
-                          const net::address& from, bool relayed, const std::array<std::uint8_t, 32>& relay_device) {
+                          const net::address& from, bool relayed, const std::array<std::uint8_t, 32>& relay_device,
+                          bool over_udp) {
   {
     // The global bucket and the eviction were the listener's alone; relayed
     // connections come in on the waiters' threads too.
@@ -2256,6 +2266,7 @@ void server::state::admit(std::unique_ptr<link> accepted, const std::string& sou
     c->l = std::shared_ptr<link>(std::move(accepted));
     c->relayed = relayed;
     c->relay_device = relay_device;
+    c->udp = over_udp;
     c->source = source;
     c->block = block;
     c->from = from;
@@ -3521,6 +3532,18 @@ result<std::unique_ptr<server>> server::start(const options& o) {
     st.listen = std::move(*l);
   }
   st.port = st.listen->port();
+  if (o.udp && !o.lan_only) {
+    // The same port number over UDP; one another program holds leaves TCP alone, as before.
+    if (auto hub = udp_hub::open(st.port, o.loopback_only)) {
+      st.udp = std::move(*hub);
+      st.udp->on_open([&st](std::unique_ptr<link> l, const net::endpoint& from) {
+        const auto a = net::parse_address(from.address);
+        if (!a || st.stopping.load()) return;  // dropped: the stream closes
+        st.n_accepted.fetch_add(1);
+        st.admit(std::move(l), source_of(*a), block_of(*a), *a, false, {}, true);
+      });
+    }
+  }
   // Everything a session or the relay thread reads, set before either starts.
   st.relay_connect = o.relay_connect;
   st.before_gather = o.before_gather;
@@ -3562,6 +3585,7 @@ counters server::stats() const noexcept {
   c.expired = st_->n_expired.load();
   c.relayed = st_->n_relayed.load();
   c.punched = st_->n_punched.load();
+  c.udp = st_->n_udp.load();
   return c;
 }
 
@@ -3985,6 +4009,7 @@ void server::stop() noexcept {
   if (!st_ || st_->stopping.exchange(true)) return;
   st_->watch_cv.notify_all();
   if (st_->listen) st_->listen->shutdown();  // a start that failed has none
+  if (st_->udp) st_->udp->on_open(nullptr);  // no new stream; the ones running end below
   if (st_->acceptor.joinable()) st_->acceptor.join();
   if (st_->watcher.joinable()) st_->watcher.join();
   {
@@ -4015,6 +4040,7 @@ void server::stop() noexcept {
   for (auto& c : all) {
     if (c->t.joinable()) c->t.join();
   }
+  if (st_->udp) st_->udp->stop();
 }
 
 server::~server() { stop(); }

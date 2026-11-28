@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 #include <sodium.h>
 
@@ -735,6 +735,10 @@ udp_hub::~udp_hub() { stop(); }
 void udp_hub::stop() noexcept {
   if (stop_.exchange(true)) return;
   if (sock_) sock_->shutdown();
+  {
+    std::lock_guard lock(timer_m_);
+    timer_cv_.notify_all();
+  }
   if (reader_.joinable()) reader_.join();
   if (timer_.joinable()) timer_.join();
   std::map<std::uint32_t, std::weak_ptr<stream_state>> all;
@@ -773,9 +777,18 @@ expected udp_hub::send_on(net::udp_socket& sock, std::span<const std::uint8_t> d
   if (stop_.load()) return err(status::cancelled);
   if (const int loss = loss_.load(); loss > 0 && !datagram.empty() && datagram[0] == kStream &&
                                      static_cast<int>(randombytes_uniform(1000)) < loss) {
+    kick();
     return {};  // the tests' lossy network
   }
+  if (!datagram.empty() && datagram[0] == kStream) kick();
   return sock.send_to(datagram, to);
+}
+
+void udp_hub::kick() noexcept {
+  if (!timer_idle_.load()) return;
+  std::lock_guard lock(timer_m_);
+  timer_idle_.store(false);
+  timer_cv_.notify_one();
 }
 
 std::vector<std::uint32_t> udp_hub::open_extras(int n) {
@@ -822,6 +835,12 @@ void udp_hub::on_probe(probe_fn fn) {
   std::lock_guard calling(calling_m_);
   std::lock_guard lock(m_);
   probe_ = std::move(fn);
+}
+
+void udp_hub::on_open(open_fn fn) {
+  std::lock_guard calling(calling_m_);
+  std::lock_guard lock(m_);
+  open_ = std::move(fn);
 }
 
 std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id, bool learn, std::uint32_t sock) {
@@ -932,9 +951,27 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
   if (d[0] != kStream || d.size() < kHead) return;
   const std::uint32_t id = get32(d.data() + 2);
   std::shared_ptr<stream_state> s;
+  open_fn opener;
   {
     std::lock_guard lock(m_);
     if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+    if (!s) opener = open_;
+  }
+  // Someone opening a stream to this hub: its first data packet, on the main socket.
+  if (!s && opener && sock_id == 0 && d[1] == kData && get32(d.data() + 6) == 0) {
+    std::lock_guard calling(calling_m_);
+    {
+      std::lock_guard lock(m_);
+      opener = open_;  // set again meanwhile: the one set now
+    }
+    if (opener) {
+      auto l = stream(from, id);
+      {
+        std::lock_guard lock(m_);
+        if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+      }
+      opener(std::move(l), from);
+    }
   }
   if (!s) return;
   std::lock_guard l(s->m);
@@ -944,6 +981,7 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
     s->learn = false;
   }
   if (s->down || s->sock != sock || s->peer.address != from.address || s->peer.port != from.port) return;
+  kick();  // an ack now owed, or a flight moved on: the timer has work
   const std::uint8_t type = d[1];
   if (type == kData && d.size() <= kHead + kStreamPayload) {
     s->on_data(get32(d.data() + 6), d.subspan(kHead), false);
@@ -958,7 +996,10 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
 
 void udp_hub::timer_loop() {
   while (!stop_.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // Marked idle before the pass: a packet sent or taken meanwhile (kick) clears it, so the
+    // wait below cannot miss work that came during the pass.
+    timer_idle_.store(true);
+    timer_passes_.fetch_add(1);
     std::vector<std::shared_ptr<stream_state>> live;
     {
       std::lock_guard lock(m_);
@@ -972,10 +1013,23 @@ void udp_hub::timer_loop() {
       }
     }
     const auto now = clock::now();
+    bool busy = false;
     for (auto& s : live) {
       std::lock_guard l(s->m);
-      if (!s->down) s->tick(now);
+      if (s->down) continue;
+      s->tick(now);
+      busy = busy || !s->inflight.empty() || s->ack_due != clock::time_point{};
     }
+    if (busy) {
+      timer_idle_.store(false);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+    // Nothing in flight and no ack owed: nothing to time. A phone's link sits like this for
+    // hours, so the wait is long, until a packet goes or comes (kick) or the hub stops.
+    std::unique_lock lock(timer_m_);
+    timer_cv_.wait_for(lock, std::chrono::seconds(1), [&] { return !timer_idle_.load() || stop_.load(); });
+    timer_idle_.store(false);
   }
 }
 

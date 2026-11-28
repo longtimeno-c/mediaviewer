@@ -21,6 +21,7 @@
 #include "wire/serve.h"
 #include "wire/serve_backup.h"
 #include "wire/serve_client.h"
+#include "wire/udp_hub.h"
 #include "io/content_hash.h"
 
 #if !defined(_WIN32)
@@ -105,6 +106,7 @@ struct service_fixture {
   int per_source_pending = 2;
   int max_pending = 16;
   int max_sessions = 8;
+  bool udp = true;  // options::udp
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
   std::function<std::string()> storage;  // options::storage (the host's drives keeper)
   std::shared_ptr<serve::convert::service> converter;  // options::converter
@@ -174,6 +176,7 @@ struct service_fixture {
     o.per_block_pending = per_source_pending * 2;
     o.max_pending = max_pending;
     o.max_sessions = max_sessions;
+    o.udp = udp;
     o.make_listener = make_listener;
     o.storage = storage;
     o.converter = converter;
@@ -603,6 +606,63 @@ TEST_CASE("serve: a handshake that stalls after the reply gives its slot back so
   INFO(ms << " ms");
   CHECK(ms >= 1000);
   CHECK(ms <= 3500);
+}
+
+// A phone's session over UDP (options::udp): what link_session::try_udp opens.
+std::unique_ptr<serve::client> open_over_udp(service_fixture& s, sp::udp_hub& hub, std::uint16_t port,
+                                             std::optional<key32> device = {}, serve::refusal* why = nullptr) {
+  std::shared_ptr<sp::link> l(hub.stream({"127.0.0.1", port}, randombytes_random()));
+  auto c = serve::client::open(l, s.client_options(device), why);
+  return c ? std::move(*c) : nullptr;
+}
+
+TEST_CASE("serve udp: a session over a UDP stream, on the port the caps name, reads a file whole",
+          "[driftwire-serve]") {
+  service_fixture s;
+  const std::size_t size = 3 * 1024 * 1024 + 123;
+  write_file(s.library / "clip.bin", marker(0, size));
+  const auto port = s.open_client()->caps().udp;  // said over TCP
+  REQUIRE(port == s.srv->port());
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  auto c = open_over_udp(s, **hub, port);
+  REQUIRE(c);
+  CHECK(c->caps().udp == port);
+  auto r = c->read_range(kRootA, "clip.bin", 0, size, serve::kMaxStreamCredit, true);
+  REQUIRE(r);
+  CHECK(read_all(**r) == marker(0, size));
+  CHECK((*r)->code() == serve::end_code::ok);
+  CHECK(s.srv->stats().udp == 1);
+}
+
+TEST_CASE("serve udp: a read over a lossy UDP stream arrives whole", "[driftwire-serve]") {
+  service_fixture s;
+  const std::size_t size = 1024 * 1024;
+  write_file(s.library / "lossy.bin", marker(7, size));
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  (*hub)->test_loss(30);  // 3 % of what the phone sends: the handshake, requests, acks
+  auto c = open_over_udp(s, **hub, s.srv->port());
+  REQUIRE(c);
+  auto r = c->read_range(kRootA, "lossy.bin", 0, size, serve::kMaxStreamCredit, true);
+  REQUIRE(r);
+  CHECK(read_all(**r) == marker(7, size));
+}
+
+TEST_CASE("serve udp: over UDP a stranger is refused as over TCP, and a service with it off offers none",
+          "[driftwire-serve]") {
+  service_fixture s;
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(open_over_udp(s, **hub, s.srv->port(), random_key(), &why));
+  CHECK(why == serve::refusal::not_paired);
+  CHECK(s.srv->stats().udp == 0);
+
+  s.srv.reset();
+  s.udp = false;
+  s.start(10000);
+  CHECK(s.open_client()->caps().udp == 0);
 }
 
 TEST_CASE("serve: a burst is admitted up to the session limit", "[driftwire-serve]") {

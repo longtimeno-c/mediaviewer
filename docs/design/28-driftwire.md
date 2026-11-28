@@ -380,7 +380,7 @@ internet**, off by default (off: no listener, mapping or socket). (`internet.*`,
 
 With **Find each other over the internet (public DHT)** (opt-in) the code is **four words** and both
 meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.*`, `dht.*`,
-`meet.*`, `udp_hub.*`, `bencode.*`, `sha1.*`.)
+`meet.*`, `src/wire/udp_hub.*`, `bencode.*`, `sha1.*`.)
 
 - **Words**: BIP-39 English (`wordlist.inc`), 44 bits, whole or first four letters. Argon2id
   (256 MiB) → Ed25519 key, content key, salt base, CPace password. Salt includes the UTC hour; in an
@@ -410,7 +410,9 @@ meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.
   RACK and tail-loss probe (RFC 8985, simplified), BBR v1 simplified with BBR v2's loss exit and
   inflight cap, RTO floor 200 ms, 16 MiB window (`kStreamMaxRx`); untrusted input bounded. Bench:
   `mv_import_tests "[.driftwire-stream-bench]"`, `tests/driftwire_path.h`,
-  `docs/perf/driftwire-stream.jsonl`.
+  `docs/perf/driftwire-stream.jsonl`. In `src/wire` (the phone service uses it too, below). The
+  hub's timer ticks every 5 ms only while a stream has packets in flight or an ack owed; otherwise
+  it waits (≤ 1 s) for the next packet, so an idle phone link costs no wakeups.
 - Then CPace on the words' password and `Noise_XXhfs+psk0`, as a direct code.
 
 ## Wi-Fi → internet (#472 PR 5)
@@ -596,6 +598,19 @@ a kept one) and races them next time; the desktop's `remote::library` saves them
 the phone (`mv_link_addresses_now`) to its Keychain record. The handshake pins the service's key, so a
 changed address cannot lead to another server. Older clients ignore the field; an older service
 sends none and nothing changes. `driftwire host pair` (the CLI's own host path) does not set them yet.
+
+**Sessions over UDP (2026-11-28).** One TCP connection on a long path with some loss runs far below
+the line (CUBIC halves on each loss: ~0.5–1 MB/s at 150 ms and 0.1 %). So the service
+(`options::udp`, on except for the LAN-only nearby one) also opens a `udp_hub` on its TCP port's
+number; `udp_hub::on_open` hands it each stream a stranger opens (the first data packet of an unknown
+id), and the stream goes through the same `admit()` limits and handshake as an accepted TCP link
+(`counters::udp` counts them). Every paired session's caps say `"udp":<port>`. The phone connects
+over TCP as before; on a direct route (not relayed, not punched) whose caps name a UDP port,
+`link_session`'s upgrade thread opens one UDP stream to the same address, runs the handshake and
+swaps it in as the live client (reads on the TCP one finish there; `route_report::udp`). One try per
+TCP client; a UDP client lost within 2 min leaves the next ones on TCP for 10 min (a network that
+lets the handshake through, then drops UDP). A UDP session opens no lanes. The router still needs
+the port open for UDP: the host's mapping asks for TCP only so far.
 
 **Paths.** Root id + relative path; absolute paths never sent or logged. `safe_relative`, then
 `io::stat_beneath`, `list_beneath`, `file_reader::open_beneath` walk part by part from the root's

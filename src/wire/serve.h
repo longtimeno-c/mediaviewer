@@ -110,6 +110,7 @@ struct counters {
   std::uint64_t expired = 0;           // limited devices refused or cut because their time was up
   std::uint64_t relayed = 0;           // connections that came through the relay
   std::uint64_t punched = 0;           // direct paths a relayed phone moved to (nas-relay.md §9)
+  std::uint64_t udp = 0;               // sessions over a UDP stream (options::udp)
 };
 
 // The fuzz harness: one session's handling of what an admitted client sends,
@@ -128,6 +129,10 @@ class server {
     int per_minute = 30;              // connections per address (a /64 for IPv6); a /48 gets four times this
     int per_source_pending = 2;       // handshakes in progress per address (a /64 for IPv6)
     int per_block_pending = 4;        // and per IPv6 /48
+    // Sessions over UDP as well (udp_hub's stream, on the TCP port's number; caps say so): on a
+    // long path with some loss one stream keeps the line's speed, where TCP halves on each loss.
+    // Same admission and handshake as TCP. Never for the LAN-only service. A port taken: TCP only.
+    bool udp = true;
     // The tests: a listener of their own instead of the configured port.
     std::function<std::unique_ptr<net::listener>()> make_listener;
     // Who may do what (docs/design/28 "Claiming and pairing").

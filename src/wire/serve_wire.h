@@ -210,8 +210,12 @@ struct caps_msg {
   // an empty one; the Noise handshake pins the service's key, so an address can only ever lead
   // back to this service.
   std::string local, public_name, relay;
+  // The UDP port that also takes sessions (kCapsUdp, over udp_hub's stream): 0 from a service that
+  // takes none, or one older than that. The same address as the TCP route the session came by.
+  std::uint16_t udp = 0;
 };
 inline constexpr const char* kCapsRole = "role";
+inline constexpr const char* kCapsUdp = "udp";
 inline constexpr const char* kCapsAddresses = "addresses";  // {"local","public","relay"}, each optional
 // The longest address a caps or serve.json carries.
 inline constexpr std::size_t kMaxAddressBytes = 255;  // as the pairing code's

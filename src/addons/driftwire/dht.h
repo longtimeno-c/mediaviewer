@@ -45,7 +45,7 @@
 
 #include "addons/driftwire/bencode.h"
 #include "addons/driftwire/dht_item.h"
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 namespace mv::driftwire::dht {
 

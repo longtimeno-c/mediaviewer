@@ -184,6 +184,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     take("public", c.public_name);
     take("relay", c.relay);
   }
+  if (const auto u = doc->integer(kCapsUdp); u && *u > 0 && *u <= 65535) c.udp = static_cast<std::uint16_t>(*u);
   return c;
 }
 
