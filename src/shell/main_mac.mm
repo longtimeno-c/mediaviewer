@@ -146,10 +146,12 @@
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
 #include "shell/photos_items_mac.h"
+#include "remote/lan_share.h"
 #include "remote/library.h"
 #include "image/thumb.h"
 #include "player/poster.h"
 #include "shell/photos_backup.h"
+#include "shell/lan_share_mac.h"
 #include "shell/photos_backup_mac.h"
 #include "shell/photos_backup_library.h"
 #include "shell/photos_backup_server.h"
@@ -684,6 +686,13 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
                 select:(std::size_t)select
                gallery:(BOOL)gallery;
+// A list with folder tiles ahead of its items (another computer's folder); it may
+// hold folders alone.
+- (BOOL)openListTitled:(const std::string&)title
+               entries:(std::vector<mv::shell::folder_model::list_entry>)entries
+            subfolders:(std::vector<mv::io::subdir_entry>)subfolders
+                select:(std::size_t)select
+               gallery:(BOOL)gallery;
 // The real file behind an item: the path itself, or what a Photos key resolved
 // to ("" while unresolved or when only a preview stands in).
 - (std::string)fileForEntry:(const mv::io::dir_entry&)entry;
@@ -698,6 +707,11 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)connectToServerCode:(const std::string&)code;
 - (void)connectToServerFromMenu:(id)sender;
 - (std::string)remoteOpenKey;
+// docs/plans/desktop-client.md §6a: a paired server's SMB shares in the Finder, at home.
+- (void)lanShareMountServer:(const std::string&)serverId asked:(BOOL)asked;
+- (void)mountServerSharesFromMenu:(id)sender;
+- (void)unmountServerSharesFromMenu:(id)sender;
+- (void)unmountServerShares;
 
 // Fullscreen (F11 / F) and slideshow (F5), docs/design/16's Browse and Slideshow
 // tables. No video on Mac yet (PR 19), so slideshow is a plain interval
@@ -817,6 +831,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // tile (-1 = on the images).
 - (NSInteger)subfolderCount;
 - (BOOL)subfolderPathAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
+- (BOOL)subfolderNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
 - (void)openSubfolderAtIndex:(NSInteger)index;
 - (void)requestFolderSummaryAtIndex:(NSInteger)index;
 - (NSInteger)crumbCount;
@@ -1462,6 +1477,10 @@ extern "C" bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t o
   if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
   return [g_chrome_app subfolderPathAtIndex:index into:out_buf size:out_buf_size] == YES;
 }
+extern "C" bool mv_chrome_subfolder_name(int32_t index, char* out_buf, int32_t out_buf_size) {
+  if (!g_chrome_app || !out_buf || out_buf_size <= 0) return false;
+  return [g_chrome_app subfolderNameAtIndex:index into:out_buf size:out_buf_size] == YES;
+}
 extern "C" void mv_chrome_open_subfolder(int32_t index) {
   if (g_chrome_app) [g_chrome_app openSubfolderAtIndex:index];
 }
@@ -1983,6 +2002,32 @@ extern "C" void mv_chrome_remote_forget(const char* server_key_utf8) {
   }
   [g_chrome_app forgetFolder:mv::remote::server_key(id)];  // its pin on the card, if it has one
   std::thread([lib, id] { (void)lib->forget(id); }).detach();
+}
+// docs/plans/desktop-client.md §6a: Settings' "Mount shares in the Finder at home". [main-thread]
+static NSString* const kLanShareAutoDefault = @"mv.lanShare.autoMount";
+
+// On by default (owner, 2026-11-27): it only mounts with a sign-in the Keychain already has.
+static bool MvLanShareAuto() {
+  NSUserDefaults* d = [NSUserDefaults standardUserDefaults];
+  return [d objectForKey:kLanShareAutoDefault] == nil || [d boolForKey:kLanShareAutoDefault];
+}
+
+extern "C" bool mv_chrome_lan_share_auto(void) { return MvLanShareAuto(); }
+extern "C" void mv_chrome_set_lan_share_auto(bool on) {
+  [[NSUserDefaults standardUserDefaults] setBool:on forKey:kLanShareAutoDefault];
+  // Turned on at home: mount now rather than at the next connect.
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (on && lib && g_chrome_app) {
+    for (const auto& s : lib->servers()) {
+      if (s.state == mv::remote::reach::online) [g_chrome_app lanShareMountServer:s.id asked:NO];
+    }
+  }
+}
+extern "C" void mv_chrome_lan_share_mount(void) {
+  if (g_chrome_app) [g_chrome_app mountServerSharesFromMenu:nil];
+}
+extern "C" void mv_chrome_lan_share_unmount(void) {
+  if (g_chrome_app) [g_chrome_app unmountServerShares];
 }
 extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
   (void)mv::shell::crash::note_native_call();
@@ -4113,6 +4158,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
+  // Servers whose shares are being mounted now (main thread): a connect while one runs adds none.
+  std::set<std::string> _lanShareBusy;
   BOOL _photosBackupRecorded;
   // The running backup or check holds Import's mv.import.1 table.
   BOOL _photosBackupUsesIndex;
@@ -5682,6 +5729,11 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 // goes through -openEntryPaths:failed:, which starts a new trail.
 - (BOOL)openPath:(const char*)utf8_path navigation:(BOOL)navigation {
   if (!utf8_path || !*utf8_path) return NO;
+  // A folder tile of another computer's folder: listed over the network.
+  if (mv::remote::is_key(utf8_path)) {
+    [self openRemoteFolder:utf8_path];
+    return YES;
+  }
   [self openDir:utf8_path select:std::string() navigation:navigation];
   return YES;
 }
@@ -6052,6 +6104,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     }
   }
   if (revealed) [self setGalleryVisible:YES];
+  // Another computer's folder of folders alone: the keyboard starts on its first tile.
+  if (_listOpen && !revealed && _items.empty() && !_subdirs.empty() && _folderCursor < 0) _folderCursor = 0;
   [self refreshSiblings];
 }
 
@@ -7364,6 +7418,12 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
   return MvCopyUtf8(_subdirs[static_cast<std::size_t>(index)].path_utf8, buf, size);
 }
 
+// A tile's name: a remote folder's key names nothing a person knows.
+- (BOOL)subfolderNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size {
+  if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return NO;
+  return MvCopyUtf8(_subdirs[static_cast<std::size_t>(index)].name_utf8, buf, size);
+}
+
 - (void)openSubfolderAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return;
   const std::string path = _subdirs[static_cast<std::size_t>(index)].path_utf8;
@@ -7377,6 +7437,9 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 - (void)requestFolderSummaryAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _subdirs.size()) return;
   const std::string dir = _subdirs[static_cast<std::size_t>(index)].path_utf8;
+  // Another computer's folder: no count or cover (each would be a listing over
+  // the network); the tile is a plain folder.
+  if (mv::remote::is_key(dir)) return;
   mv::shell::folder_model* folder = &_folder;
   auto deliver = [](std::string dir_path, bool ok, std::uint32_t media, std::uint32_t subs,
                     int32_t flags, std::string thumb) {
@@ -7645,6 +7708,9 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     if (_remoteFolderKey.empty()) return p;
     p.dir = _remoteFolderKey;
     if (const mv::io::dir_entry* e = [self currentEntry]) p.item = e->path_utf8;
+    if (_galleryVisible && _folderCursor >= 0 && static_cast<std::size_t>(_folderCursor) < _subdirs.size()) {
+      p.folder = _subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8;
+    }
     return p;
   }
   p.dir = _currentDir;
@@ -7876,6 +7942,32 @@ static mv::shell::remote_ops MvRemoteOps() {
   [self publish];
 }
 
+// A remote listing as the gallery shows it: its folders as tiles (by key, the
+// service's order), then its files as virtual items; `select` is `want`'s index.
+static void MvRemoteListParts(const mv::remote::listing& l, const std::string& want,
+                              std::vector<mv::shell::folder_model::list_entry>& entries,
+                              std::vector<mv::io::subdir_entry>& folders, std::size_t& select) {
+  select = 0;
+  folders.reserve(l.folders.size());
+  for (const auto& f : l.folders) {
+    mv::io::subdir_entry d;
+    d.path_utf8 = f.key;
+    d.name_utf8 = f.name;
+    folders.push_back(std::move(d));
+  }
+  entries.reserve(l.files.size());
+  for (const auto& f : l.files) {
+    if (f.key == want) select = entries.size();
+    mv::shell::folder_model::list_entry e;
+    e.path_utf8 = f.key;
+    e.is_virtual = true;
+    e.name_utf8 = f.name;
+    e.mtime_unix = f.mtime;
+    e.size = f.size;
+    entries.push_back(std::move(e));
+  }
+}
+
 // The remote folder on screen, listed again after a change made here, without the
 // "Opening…" notice and on the item that was selected (else the first).
 - (void)relistRemoteFolder {
@@ -7885,9 +7977,10 @@ static mv::shell::remote_ops MvRemoteOps() {
   const std::string key = _remoteFolderKey;
   const mv::io::dir_entry* cur = [self currentEntry];
   const std::string selected = cur ? cur->path_utf8 : std::string();
+  const std::string tile = [self herePlace].folder;  // the folder tile the keyboard is on
   const std::uint64_t open_seq = _remoteOpenSeq;
   MvLabApp* __weak weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, selected, open_seq](const mv::job_context&) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, selected, tile, open_seq](const mv::job_context&) -> mv::status {
     auto listed = lib->list(key, /*person=*/true);
     auto out = std::make_shared<std::optional<mv::remote::listing>>();
     if (listed) *out = std::move(listed).value();
@@ -7895,25 +7988,22 @@ static mv::shell::remote_ops MvRemoteOps() {
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf || !*out || open_seq != strongSelf->_remoteOpenSeq || strongSelf->_remoteFolderKey != key) return;
       const mv::remote::listing& l = **out;
-      if (l.files.empty()) {
+      if (l.files.empty() && l.folders.empty()) {
         [strongSelf openRemoteFolder:key];  // nothing left to show: as opening it says
         return;
       }
       std::vector<mv::shell::folder_model::list_entry> entries;
+      std::vector<mv::io::subdir_entry> folders;
       std::size_t select = 0;
-      for (const auto& f : l.files) {
-        if (f.key == selected) select = entries.size();
-        mv::shell::folder_model::list_entry e;
-        e.path_utf8 = f.key;
-        e.is_virtual = true;
-        e.name_utf8 = f.name;
-        e.mtime_unix = f.mtime;
-        e.size = f.size;
-        entries.push_back(std::move(e));
-      }
+      MvRemoteListParts(l, selected, entries, folders, select);
       const std::string title = l.title.empty() ? MvPlaceName(key) : l.title;
-      if ([strongSelf openListTitled:title entries:std::move(entries) select:select gallery:strongSelf->_galleryVisible]) {
+      if ([strongSelf openListTitled:title
+                             entries:std::move(entries)
+                          subfolders:std::move(folders)
+                              select:select
+                             gallery:strongSelf->_galleryVisible]) {
         strongSelf->_remoteFolderKey = key;
+        strongSelf->_revealChild = tile;
       }
     });
     return mv::status::ok;
@@ -8362,6 +8452,10 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     return YES;
   }
 #endif
+  if (item.action == @selector(mountServerSharesFromMenu:) || item.action == @selector(unmountServerSharesFromMenu:)) {
+    mv::remote::library* lib = mv::remote::library::shared();
+    return lib && !lib->servers().empty();
+  }
   if (item.action != @selector(menuAction:)) return YES;
   const NSInteger tag = item.tag;
   if (tag >= kMenuSortName && tag <= kMenuSortDateTaken) {
@@ -8569,6 +8663,15 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   NSMenuItem* connect = [file addItemWithTitle:@"Connect to a Server…" action:@selector(connectToServerFromMenu:)
                                  keyEquivalent:@""];
   connect.target = self;
+  // desktop-client.md §6a: the share in the Finder. Mounting also happens by itself at home (Settings).
+  NSMenuItem* mountShares = [file addItemWithTitle:@"Mount Server Shares in Finder"
+                                            action:@selector(mountServerSharesFromMenu:)
+                                     keyEquivalent:@""];
+  mountShares.target = self;
+  NSMenuItem* unmountShares = [file addItemWithTitle:@"Unmount Server Shares"
+                                              action:@selector(unmountServerSharesFromMenu:)
+                                       keyEquivalent:@""];
+  unmountShares.target = self;
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
   _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
   _openRecentMenu.delegate = self;
@@ -15627,7 +15730,15 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
                 select:(std::size_t)select
                gallery:(BOOL)gallery {
-  if (entries.empty()) return NO;
+  return [self openListTitled:title entries:std::move(entries) subfolders:{} select:select gallery:gallery];
+}
+
+- (BOOL)openListTitled:(const std::string&)title
+               entries:(std::vector<mv::shell::folder_model::list_entry>)entries
+            subfolders:(std::vector<mv::io::subdir_entry>)subfolders
+                select:(std::size_t)select
+               gallery:(BOOL)gallery {
+  if (entries.empty() && subfolders.empty()) return NO;
   [self photosListEnding];
   if (!_listOpen) _listReturnDir = _currentDir;
   _listOpen = YES;
@@ -15663,8 +15774,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   std::atomic<std::uint64_t>* open_generation = &_openGeneration;
   std::mutex* open_mutex = &_folderOpenMutex;
   _jobs.submit_at(mv::background_generation,
-                  [folder, jobs, title, entries = std::move(entries), my_generation,
-                   open_generation, open_mutex](const mv::job_context&) mutable -> mv::status {
+                  [folder, jobs, title, entries = std::move(entries), subfolders = std::move(subfolders),
+                   my_generation, open_generation, open_mutex](const mv::job_context&) mutable -> mv::status {
                     std::lock_guard<std::mutex> lock(*open_mutex);
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
@@ -15707,7 +15818,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                         return mv::status::not_found;
                       }
                     }
-                    auto opened = folder->open_list(title, std::move(entries), *jobs);
+                    auto opened = folder->open_list(title, std::move(entries), *jobs, std::move(subfolders));
                     if (!opened) {
                       dispatch_async(dispatch_get_main_queue(), ^{
                         NSBeep();
@@ -16158,6 +16269,13 @@ class remote_clip_source final : public mv::player::byte_source {
       if (!poster) return mv::err(poster.error());
       return mv::image::encode_thumb_rgba(poster->rgba, poster->width, poster->height);
     };
+    // desktop-client.md §6a: a server that answers mounts its shares in the Finder, when at home and on in Settings.
+    c.on_online = [weakSelf](const std::string& server_id) {
+      const std::string sid = server_id;  // the block keeps its own copy
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf lanShareMountServer:sid asked:NO];
+      });
+    };
     auto lib = std::make_unique<mv::remote::library>(std::move(c));
     (void)lib->load();  // a damaged servers.json lists nothing; pairing again rewrites it
     mv::remote::library::install(std::move(lib));
@@ -16192,6 +16310,17 @@ class remote_clip_source final : public mv::player::byte_source {
     NSBeep();
     return;
   }
+  // The folder tile it lands on: the one Back / Forward left it on, or, going up,
+  // the folder it comes from.
+  std::string reveal;
+  if (_historyMove) {
+    reveal = _historyReveal;
+  } else if (const std::string from = [self remoteShown]; !from.empty() && from != key) {
+    const auto chain = mv::remote::key_chain(from);
+    for (std::size_t i = 0; i + 1 < chain.size(); ++i) {
+      if (chain[i] == key) reveal = chain[i + 1];
+    }
+  }
   // Back / Forward: leaving the place on screen for this folder.
   if (!_historyMove) {
     const mv::shell::browse_place here = [self herePlace];
@@ -16205,7 +16334,7 @@ class remote_clip_source final : public mv::player::byte_source {
   const std::uint64_t listing_seq = _listingGeneration;
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf, lib, key, server = k->server, opening, open_seq,
-                                              listing_seq](const mv::job_context&) -> mv::status {
+                                              listing_seq, reveal](const mv::job_context&) -> mv::status {
     auto listed = lib->list(key, /*person=*/true);
     const auto srv = lib->server(server);
     const std::string server_name = srv ? srv->name : std::string();
@@ -16227,35 +16356,34 @@ class remote_clip_source final : public mv::player::byte_source {
       const mv::remote::listing& l = **out;
       if (l.files.empty()) {
         // A server's top (its pin on the welcome card) with one named folder
-        // is that folder: open it, rather than say where it is.
+        // is that folder: open it, rather than show one tile.
         const auto top = mv::remote::parse_key(key);
         if (!l.stale && top && top->root.empty() && l.folders.size() == 1 && !l.folders[0].offline) {
           [strongSelf openRemoteFolder:l.folders[0].key];
           return;
         }
-        if (!l.stale && !l.folders.empty()) [strongSelf setTreeVisible:YES];
-        [strongSelf noticeShow:l.stale ? mv::remote::stale_words(server_name)
-                               : l.folders.empty() ? std::string("This folder is empty.")
-                                                   : std::string("No photos or videos here. Its folders are in the Folders pane.")];
+      }
+      // docs/design/16 "Folder navigation": its folders are tiles ahead of its
+      // photos, as a folder here has; only a folder with neither says so.
+      if (l.files.empty() && l.folders.empty()) {
+        [strongSelf noticeShow:l.stale ? mv::remote::stale_words(server_name) : std::string("This folder is empty.")];
         return;
       }
       std::vector<mv::shell::folder_model::list_entry> entries;
-      entries.reserve(l.files.size());
+      std::vector<mv::io::subdir_entry> folders;
       std::size_t select = 0;
-      for (const auto& f : l.files) {
-        if (f.key == strongSelf->_remoteSelectWant) select = entries.size();  // Back lands on it
-        mv::shell::folder_model::list_entry e;
-        e.path_utf8 = f.key;
-        e.is_virtual = true;
-        e.name_utf8 = f.name;
-        e.mtime_unix = f.mtime;
-        e.size = f.size;
-        entries.push_back(std::move(e));
-      }
+      MvRemoteListParts(l, strongSelf->_remoteSelectWant, entries, folders, select);
       const std::string title = l.title.empty() ? server_name : l.title;
       strongSelf->_remoteSelectWant.clear();
-      if (![strongSelf openListTitled:title entries:std::move(entries) select:select gallery:YES]) return;
+      if (![strongSelf openListTitled:title
+                              entries:std::move(entries)
+                           subfolders:std::move(folders)
+                               select:select
+                              gallery:YES]) {
+        return;
+      }
       strongSelf->_remoteFolderKey = key;
+      strongSelf->_revealChild = reveal;
       if (l.stale) [strongSelf noticeShow:mv::remote::stale_words(server_name)];
     });
     return mv::status::ok;
@@ -16402,6 +16530,110 @@ class remote_clip_source final : public mv::player::byte_source {
   if ([alert runModal] != NSAlertFirstButtonReturn) return;
   NSString* text = field.stringValue ?: @"";
   [self connectToServerCode:std::string(text.UTF8String)];
+}
+
+// ---- docs/plans/desktop-client.md §6a: a paired server's shares in the Finder ----------
+
+// `asked`: the person chose File > Mount Server Shares in Finder, so the OS's sign-in may show and
+// every outcome is said. Otherwise (a connect) it is silent unless something was mounted or failed.
+- (void)lanShareMountServer:(const std::string&)serverId asked:(BOOL)asked {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib || serverId.empty()) return;
+  if (!asked && !MvLanShareAuto()) return;
+  if (!_lanShareBusy.insert(serverId).second) return;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, lib, serverId, asked](const mv::job_context&) -> mv::status {
+    namespace ls = mv::remote::lan_share;
+    auto info = lib->server(serverId);
+    const std::string name = info ? info->name : std::string();
+    // The named folders, from the server itself (a connect, if there is no live link).
+    auto listed = lib->list(mv::remote::server_key(serverId), /*person=*/asked == YES);
+    std::string problem;
+    ls::plan plan;
+    if (!listed) {
+      problem = mv::remote::open_problem_words(listed.error(), info ? info->state : mv::remote::reach::unknown, name);
+    } else if (listed->stale) {
+      problem = mv::remote::open_problem_words(mv::status::io, mv::remote::reach::unreachable, name);
+    } else {
+      ls::input in;
+      for (const auto& f : listed->folders) {
+        if (!f.offline) in.labels.push_back(f.name);
+      }
+      if (auto route = lib->last_route(serverId)) {
+        in.address = route->address;
+        in.over_internet = route->over_internet;
+        in.relayed = route->relayed;
+      }
+      in.already = mv::shell::lan_share_mac::mounted_now();
+      plan = ls::plan_mounts(in);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      if (plan.urls.empty()) {
+        s->_lanShareBusy.erase(serverId);
+        const std::string words = !problem.empty() ? problem : ls::skip_words(name, plan.why);
+        if (asked && !words.empty()) [s noticeShow:words];
+        return;
+      }
+      mv::shell::lan_share_mac::mount(plan.urls, asked == YES, [weakSelf, serverId, name](ls::outcome o) {
+        MvLabApp* t = weakSelf;
+        if (!t) return;
+        t->_lanShareBusy.erase(serverId);
+        if (std::string words = ls::notice_words(name, o); !words.empty()) [t noticeShow:words];
+      });
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)mountServerSharesFromMenu:(id)sender {
+  (void)sender;
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) return;
+  for (const auto& s : lib->servers()) [self lanShareMountServer:s.id asked:YES];
+}
+
+- (void)unmountServerSharesFromMenu:(id)sender {
+  (void)sender;
+  [self unmountServerShares];
+}
+
+// Every SMB volume of each paired server's LAN host: the one it was reached at this run and
+// the one it keeps (they differ after its address changed). Other volumes are never touched.
+- (void)unmountServerShares {
+  mv::remote::library* lib = mv::remote::library::shared();
+  if (!lib) return;
+  std::set<std::string> hosts;
+  for (const auto& s : lib->servers()) {
+    if (auto route = lib->last_route(s.id)) {
+      if (auto h = mv::remote::lan_share::lan_host(route->address); !h.empty()) hosts.insert(h);
+    }
+    if (auto h = mv::remote::lan_share::lan_host(s.local); !h.empty()) hosts.insert(h);
+  }
+  if (hosts.empty()) {
+    [self noticeShow:"No server shares are mounted."];
+    return;
+  }
+  auto tally = std::make_shared<std::pair<int, int>>(0, 0);
+  auto left = std::make_shared<std::size_t>(hosts.size());
+  MvLabApp* __weak weakSelf = self;
+  for (const auto& host : hosts) {
+    mv::shell::lan_share_mac::unmount(host, [weakSelf, tally, left](int ok, int failed) {
+      tally->first += ok;
+      tally->second += failed;
+      if (--*left != 0) return;
+      MvLabApp* s = weakSelf;
+      if (!s) return;
+      if (tally->second > 0) {
+        [s noticeShow:"A server share is still in use, so it stayed mounted. Close what is open on it and try again."];
+      } else if (tally->first == 0) {
+        [s noticeShow:"No server shares are mounted."];
+      } else {
+        [s noticeShow:tally->first == 1 ? "Unmounted the server's share." : "Unmounted the server's shares."];
+      }
+    });
+  }
 }
 
 // Pairing is the code alone (owner call 2): no password. The fingerprint is
@@ -16949,7 +17181,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   }
   // A row index survives the refresh only if the rows did not move.
   if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud &&
-      next.pinned == _snap.recents.pinned) {
+      next.pinned == _snap.recents.pinned && next.servers == _snap.recents.servers) {
     next.hover = _snap.recents.hover;
     next.hover_remove = _snap.recents.hover_remove;
   }
@@ -16969,7 +17201,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
                                 static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count, 0.0f,
-                                _snap.recents.icloud);
+                                mv::shell::welcome_lead_rows(_snap.recents));
   const int row = mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
   // The iCloud row has no remove button.
   if (row >= 0 && onRemove && !(_snap.recents.icloud && row == 0)) {
@@ -17418,7 +17650,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
       mv::shell::share_takes_folder(_galleryVisible, static_cast<int>(_folderCursor),
                                     static_cast<int>(_subdirs.size()), !_galleryRange.empty(),
                                     static_cast<std::int32_t>(clicked)) &&
-      !mv::shell::photos::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8);
+      !mv::shell::photos::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8) &&
+      !mv::remote::is_key(_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8);
   const std::vector<std::string> files =
       folder ? std::vector<std::string>{_subdirs[static_cast<std::size_t>(_folderCursor)].path_utf8}
              : [self shareFilesForClicked:clicked];

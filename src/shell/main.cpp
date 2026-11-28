@@ -1035,7 +1035,7 @@ int welcome_row_at_pointer(const app_state* app, bool* on_remove = nullptr) noex
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
                                 static_cast<float>(in.chrome_height_px), scale, in.recents.count, 0.0f,
-                                in.recents.icloud);
+                                mv::shell::welcome_lead_rows(in.recents));
   const int row = mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
   // OneDrive's row has no remove button: it leaves when OneDrive does.
   if (row >= 0 && on_remove && !(in.recents.icloud && row == 0)) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
@@ -1173,8 +1173,9 @@ void open_folder(app_state* app, std::wstring_view wide_dir, std::wstring_view w
   if (mv::remote::is_key(dir)) {
     // 0.44 (docs/plans/desktop-client.md): another computer's folder is a list
     // from its server. No siblings or trail (nothing on this disk to walk);
-    // the folder tree keeps its pinned row lit.
-    app->reveal_child.clear();
+    // the folder tree keeps its pinned row lit. Back / Forward land on the
+    // folder tile they left.
+    app->reveal_child = app->history_move ? app->history_reveal : std::string();
     app->folder_find = false;
     app->folder_query.clear();
     app->list_title.clear();
@@ -10883,14 +10884,10 @@ void open_remote_top(app_state* app, const std::string& top) {
   }
 }
 
-// kMsgRemoteTop: one named folder opens; several, the folder tree shows them
-// under the server's row; none, or no answer, opens the top, which says why.
+// kMsgRemoteTop: one named folder opens; several, or none, or no answer, open
+// the top: its named folders as gallery tiles, or why there are none.
 void on_remote_top(app_state* app, std::unique_ptr<remote_top_result> r) {
   if (!app || !r || r->seq != app->remote_top_seq) return;  // another pin opened since
-  if (r->ok && r->folders.size() > 1) {
-    set_folder_tree(app, true);
-    return;
-  }
   const std::string& dir = r->ok && r->folders.size() == 1 ? r->folders[0] : r->top;
   app->mode = open_mode::folder;
   app->gallery_visible = false;

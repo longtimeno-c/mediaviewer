@@ -87,6 +87,28 @@ extension LibraryModel {
   public func setSelecting(_ on: Bool, on page: FolderPage) {
     page.selecting = on
     page.selected = []
+    page.held = nil
+  }
+
+  /// A tile held: Select starts with it chosen. The tap its finger lifting brings is not a toggle
+  /// (`lifting`: false for VoiceOver's Select, which brings none).
+  public func startSelecting(holding id: String, on page: FolderPage, lifting: Bool = true) {
+    guard page.changeable, !page.selecting else { return }
+    setSelecting(true, on: page)
+    page.selected = [id]
+    page.held = lifting ? id : nil
+  }
+
+  /// The page scrolled after a hold: that finger left the tile, so no tap from it is coming.
+  public func dropHold(on page: FolderPage) { page.held = nil }
+
+  /// A tile tapped in Select mode: it is chosen or no longer chosen, except the lift of the hold
+  /// that chose it.
+  public func tapped(_ id: String, on page: FolderPage) {
+    let held = page.held
+    page.held = nil
+    if held == id { return }
+    toggle(id, on: page)
   }
 
   public func toggle(_ id: String, on page: FolderPage) {

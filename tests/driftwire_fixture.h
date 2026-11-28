@@ -308,8 +308,11 @@ inline std::pair<std::unique_ptr<sp::link>, std::unique_ptr<sp::link>> loopback_
 }
 
 // Both ends of a channel, opened at once.
-inline std::pair<std::unique_ptr<sp::channel>, std::unique_ptr<sp::channel>> channel_pair() {
+// `stall_ms` > 0: the first side's write gives up after that long full and
+// silent, not kSilenceMs.
+inline std::pair<std::unique_ptr<sp::channel>, std::unique_ptr<sp::channel>> channel_pair(int stall_ms = 0) {
   auto [a, b] = loopback_pair();
+  if (stall_ms > 0) a->set_stall_ms_for_tests(stall_ms);
   mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
   std::thread t([&, link = std::move(b)]() mutable { server = sp::channel::open(std::move(link), false, "bbbbbbbbbbbbbbbb", "Bea"); });
   auto opened = sp::channel::open(std::move(a), true, "aaaaaaaaaaaaaaaa", "Ann");

@@ -273,7 +273,11 @@ runs unchanged: `meta`, `roots`, `assets`, `asset_text`, `progress`, `frames`, `
   column. `path_key`, `key_parent` and the `in:` filter keep working untouched.
 - **Places.** Each asset's place label is resolved at publish time and stored, because a phone
   with no Places provider would otherwise match nothing for `place:` (`engine.cpp:6935`).
-- **People.** Names and asset links only (call 7).
+- **People.** Names and asset links only (call 7): no embedding and no face box. Each person's
+  round icon travels as a picture instead (`faces.db` `covers`, 2026-11-27): their cover face in
+  the desktop's cover order, cut by the host's `jpeg_face_crop` from the JPEG-512 the desktop
+  cuts its own cover from, at most 320 px. A catalogue without it (an older desktop) shows the
+  middle of the person's photo, as before.
 - **Labels.** `labels.f32` travels too, and the read-only reader now loads it (2026-11-10). Without the file every row passes, as before.
 - **What the reader needs beyond the tables (audit, 2026-11-10; confirmed in the code):**
   - The file must be named `index.db` in the reader's data folder (`engine.cpp:195`), so the phone copies `catalog.db` to that name.
@@ -684,6 +688,7 @@ point is simply not done, and the next run does it again.
 | Same name and size already there | Hash the NAS file. If identical, record it and skip. This only helps in the same folder: the desktop's Photos backup does not do the same check and uses a different default layout, so running both into one tree can still make duplicates. |
 | Deleting | Never deletes from Photos. A photo deleted on the phone (Photos' persistent change history, full access only; never a photo merely missing from the listing, such as a hidden one) has its backed-up files moved into the backup folder's hidden trash on the next run, which only the owner empties (owner's call 2026-11-24; before, the NAS kept every copy). One put back from Recently Deleted is left alone. |
 | Storage limit | The service refuses writes past the limit set for the backup folder, and the screen says so |
+| A folder each | A family sharing one server: in "Back up to", the chevron beside a backup folder opens it, New Folder makes one inside (the service's `mkdir`; an older service's first backup makes it), and the phone backs up into the folder chosen, e.g. `iPhone/Tristan`. The phone's destination is `<backup folder id>/<path>` (`backup::parse_destination`): a safe relative path, never out of the folder. The storage limit and the trash stay the backup folder's, counting every person's folder; the ledger keeps rows per destination, so another folder is backed up afresh. The desktop's Phone access card adds only the backup folder; people's folders are made from the phone (or in Finder/Explorer). |
 | Foreground priority | Viewing and search come first (§8.2): backup uses its own lane and pauses while a photo is loading |
 
 **The screen says one thing:** "1,204 of 18,320 backed up · 17,116 to go", then the one progress
@@ -744,8 +749,9 @@ over: native PhotoKit, and streaming rather than staging originals.
 
 **Changing files (built 2026-11-22; service: `serve_client.h` "changing the shared folders").** On a
 folder's page, a device whose role lets it change files there gets Add (from Photos or Files), New
-Folder, and Select: a bar of Move, Rename (one item) and Delete under what is chosen, and the same
-three on a tile's long press. Move picks a destination among only the folders this phone may change.
+Folder, and Select: a bar of Move, Rename (one item) and Delete under what is chosen. Holding a
+tile starts Select with it chosen, as Photos does (2026-11-27; it replaced a long-press menu of the
+same three). Move picks a destination among only the folders this phone may change.
 Delete asks first and says the items go to the trash on the server, where they can be restored. A
 file being sent shows on its folder's page with its progress and a stop; it keeps going when the
 folder is left, and Try again carries on from where the server's copy ended (a dropped link is
@@ -962,6 +968,25 @@ the mobile-data reachability test, Keychain.
 ### M4 — Catalogue sync (iOS)
 
 **Built (2026-11-10):** copy, signature and manifest checks, swap, resume, the never-lower rule, Wi-Fi by default, `BGContinuedProcessingTask` for the first copy. Not proven: leaving the app during a copy (needs a device), and `BGProcessingTask` for automatic sync is not built.
+
+**Copy over lanes (2026-11-27):** over a long path one TCP connection's loss recovery caps the copy
+(CUBIC at 150 ms and 0.1 % loss: well under 1 MB/s, however fast the line), so a copy of 8 MB or more
+opens up to three more sessions to the service on the same direct route (`remote_file::open_lane`;
+none on a relayed or punched link) and fetches each big file as 2 MB segments, two reads per lane.
+Segments are written in order, so the `.part` stays a prefix of the file and a resume is unchanged;
+at most 24 MB waits in memory ahead of it. No protocol change: each lane is an ordinary session, and a
+service that says busy just leaves fewer. Bench: `mv_mobile_link_tests "[.phone-copy-bench]"`
+(`tests/tcp_path.h`, an emulated CUBIC path).
+
+**A newer generation mid-copy (2026-11-27):** a copy cut short used to be thrown away whole as soon
+as a newer generation was published, and nothing was taken from the installed generation, so every
+generation was a full download. On a slow link that took longer than the desktop's republishing
+(at most hourly while the library changes), the phone never installed anything newer and kept
+showing photos deleted on the server. Now `copy_catalogue` (under the library's copy lock; `check_catalogue` only counts it) carries into the new staging folder
+every file the new manifest names with the same name, size and SHA-256: whole files by hard link
+from an older staging folder or the installed generation, and an older `.part` by a move, resumed.
+A staging folder keeps its manifest as `plan.json` for this, removed before the swap. Every file is
+still hashed before it is installed. Test: `"sync: a generation published mid-copy*"`.
 
 Copy, verify, swap, resume, background task, first copy as a continued task on iOS 26, model copy,
 Wi-Fi by default.

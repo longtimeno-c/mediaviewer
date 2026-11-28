@@ -61,6 +61,10 @@ public protocol ImageLadder: Sendable {
   func placeholder(for item: MediaItem) async -> UIImage?
   /// A grid-sized picture.
   func thumbnail(for item: MediaItem) async -> UIImage?
+  /// The person's own face for their round icon, when the desktop sent one (`Person.hasFace`).
+  func face(for person: Person) async -> UIImage?
+  /// `face(for:)` when it is already in memory. Called on the main thread for first paint.
+  func cachedFace(for person: Person) -> UIImage?
   /// Each better picture as it arrives, in place of the last. Throws `MediaFailure` when the
   /// original will not come; whatever was already sent stays on screen.
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error>
@@ -73,6 +77,8 @@ public protocol ImageLadder: Sendable {
 
 public extension ImageLadder {
   func placeholder(for item: MediaItem) async -> UIImage? { nil }
+  func face(for person: Person) async -> UIImage? { nil }
+  func cachedFace(for person: Person) -> UIImage? { nil }
   func length(for item: MediaItem) async -> TimeInterval? { nil }
 }
 

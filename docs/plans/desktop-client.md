@@ -75,16 +75,17 @@ its files, titled with the folder's name, the gallery, filmstrip, marks and keys
 
 **Pinned with the folders too (owner 2026-11-18).** A server just paired is also pinned like a
 folder (issue #617's pins, as `remote:<server id>`), named by the server with "Paired server" as
-its place:
+its place. The pins list it before the folder pins, and the welcome card draws it with a server
+glyph in the top block, under iCloud Photos / OneDrive and above RECENT FOLDERS:
 - **Mac:** after File > Connect to a Server; the welcome card, the Dock menu and File > Open Recent
   list it, and the Folders pane opens if the welcome card is up. Opening the pin opens the
-  server's one named folder straight away; with several it shows the Folders pane.
+  server's one named folder straight away; with several, their tiles in the gallery.
 - **Windows:** after the tree's Connect to a server. The island sends `chrome_cmd_remote_changed`
   whenever `mv_remote_generation` moves; native reads `mv_remote_pair_state_json`'s `key` and
   `seq` to pin each pairing once, and drops the pin of a server no longer listed. The welcome card
   and Open > Recent folders list it; the jump list does not (its items start the exe with a disk
   path). Opening the pin lists the server's named folders on a worker (`mv_list_subdirectories`):
-  one opens straight away; with several, the folder tree shows them under the server's row.
+  one opens straight away; with several, the server's top opens with them as gallery tiles.
 
 Forget This Server unpins it; Unpin or the card's x drops the pin and leaves the server paired in
 the tree. Never treated as a disk path, so never forgotten for being away.
@@ -192,6 +193,43 @@ folder `writable` for it (never the Catalogue). Then, on both hosts:
 
 Not yet: downloading a whole remote folder, a copy between two servers, cancelling an upload on
 Windows (the core's add has no cancel handle there), and the server-side "restore from trash".
+
+## 6a. The share in the Finder (Mac) — built
+
+Owner's ask (2026-11-27): when the Mac reaches the paired server at home, its folders are also an
+ordinary SMB volume in the Finder, so other apps reach the files too. The host already makes one
+LAN-only SMB share per named folder, called `share_users::share_name(label)`, for the users an
+admin adds ([self-host-users-smb.md](self-host-users-smb.md)). The desktop only mounts them.
+Owner's calls, the same day:
+
+1. **Sign-in:** macOS's own dialog the first time, with its "Remember this password in my
+   keychain". MediaViewer never sees, keeps or logs the password. The pairing carries no SMB
+   account, because an SMB password is a share user's OS account.
+2. **On by default, silent:** when a server answers, its shares mount with the sign-in the
+   Keychain has (NetFS with `UIOption = NoUI`). Without one, the dialog is never shown on its own.
+   A notice says "…need a sign-in once: File > Mount Server Shares in Finder."
+3. **Every shared folder**, one volume each. A share already mounted is skipped (matched by host
+   and share name, without case; NetFS's `EEXIST` counts as mounted).
+4. **Away from home, nothing:** a mount needs the latest connect to have been on the server's LAN
+   route (not `over_internet`, not relayed) and the address to be a LAN one (RFC 1918, 169.254/16,
+   IPv6 ULA, `.local`). Shares already mounted are left to macOS.
+
+**Pieces.** `remote/lan_share.*` (portable, pure) decides: `lan_host`, `share_url`
+(`smb://192.168.0.79/Photos`), `parse_mounted_from` (the `statfs` "mounted from" text),
+`plan_mounts` and the notice words. `remote::library` says when a server comes online
+(`config::on_online`: at pairing, at the first connect of a run, and after it was unreachable) and how it
+was reached (`last_route`). `shell/lan_share_mac.mm` lists the SMB volumes (`getfsstat`,
+`MNT_NOWAIT`), mounts through `NetFSMountURLAsync` on its own queue, one share after another, and
+unmounts with `NSFileManager`'s asynchronous unmount. Nothing runs on the main thread's time.
+
+**Where.** Settings → Servers (shown once a server is paired): "Mount shares in the Finder at
+home" (the `mv.lanShare.autoMount` default), with Mount and Unmount. File → Mount Server Shares in
+Finder (the OS sign-in may show) and Unmount Server Shares (every SMB volume of a paired server's
+LAN host, nothing else). The server row's context menu has the same pair. Windows: not built
+(Explorer maps `\\PC\Photos` itself).
+
+**Tests.** `[lan-share]` (the decision, the URLs, the mount table, the words) and
+`[desktop-client]` "a desktop says when a server answers, and by which route" (loopback).
 
 ## 7. Not in this slice
 

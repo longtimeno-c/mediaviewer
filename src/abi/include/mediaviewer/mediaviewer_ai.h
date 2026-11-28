@@ -174,6 +174,10 @@ typedef enum mv_ai_scope {
 #define MV_AI_STATUS_FETCHING 2048u    /* models of the chosen tier are still arriving
                                           (fetch_state, fetch_done_bytes / _total_bytes):
                                           search opens once the picture tower is verified */
+#define MV_AI_STATUS_MODELS_HELD 4096u /* Settings attached the pack without opening the
+                                          towers (issue #292, 2026-11-14): folders and
+                                          settings are live; search and indexing wait for
+                                          the first search or Start indexing */
 
 /* The model downloader (#482 T3): mv_ai_status::fetch_state. */
 typedef enum mv_ai_fetch_state {

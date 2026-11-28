@@ -46,6 +46,10 @@ class stmt {
     return t ? std::string(t, static_cast<std::size_t>(sqlite3_column_bytes(s_, c))) : std::string();
   }
   [[nodiscard]] bool null(int c) const noexcept { return sqlite3_column_type(s_, c) == SQLITE_NULL; }
+  [[nodiscard]] std::vector<std::uint8_t> blob(int c) const {
+    const auto* p = static_cast<const std::uint8_t*>(sqlite3_column_blob(s_, c));
+    return p ? std::vector<std::uint8_t>(p, p + sqlite3_column_bytes(s_, c)) : std::vector<std::uint8_t>();
+  }
 
  private:
   sqlite3_stmt* s_ = nullptr;
@@ -186,6 +190,8 @@ result<std::unique_ptr<catalogue>> catalogue::open(const std::string& generation
   if (c->manifest_.files.count("faces.db")) {
     MV_TRY(sqlite3 * faces, open_immutable(generation_dir + "/faces.db"));
     c->faces_ = faces;
+    stmt t(faces, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'covers'");
+    c->covers_ = t.next();
   }
   if (c->manifest_.files.count("tiny.pack")) {
     c->tiny_ = file_map::open(generation_dir + "/tiny.pack");
@@ -359,10 +365,12 @@ result<std::vector<person>> catalogue::people() const {
   if (!faces_) return out;
   // The face a person is shown by: their highest-scoring face, the earliest
   // face id on a tie, so every run agrees.
-  stmt q(faces_,
-         "SELECT p.id, p.name, COUNT(DISTINCT f.asset_id),"
-         " (SELECT asset_id FROM faces WHERE person_id = p.id ORDER BY score DESC, id LIMIT 1)"
-         " FROM people p JOIN faces f ON f.person_id = p.id GROUP BY p.id ORDER BY p.name, p.id");
+  // Their own face is `covers` (person_face), where the desktop sent one.
+  stmt q(faces_, (std::string("SELECT p.id, p.name, COUNT(DISTINCT f.asset_id),"
+                              " (SELECT asset_id FROM faces WHERE person_id = p.id ORDER BY score DESC, id LIMIT 1), ") +
+                  (covers_ ? "EXISTS(SELECT 1 FROM covers WHERE person_id = p.id)" : "0") +
+                  " FROM people p JOIN faces f ON f.person_id = p.id GROUP BY p.id ORDER BY p.name, p.id")
+                     .c_str());
   if (!q.ok()) return err(status::corrupt);
   while (q.next()) {
     person p;
@@ -370,9 +378,25 @@ result<std::vector<person>> catalogue::people() const {
     p.name = q.text(1);
     p.items = static_cast<std::uint32_t>(q.i64(2));
     p.face_asset = q.i64(3);
+    p.has_face = q.i64(4) != 0;
     out.push_back(std::move(p));
   }
   return out;
+}
+
+result<std::vector<std::uint8_t>> catalogue::person_face(std::string_view key) const {
+  if (!faces_ || !covers_) return err(status::not_found);
+  const std::string text(key);
+  if (text.empty() || text.size() > 18) return err(status::invalid_arg);
+  std::int64_t id = 0;
+  for (const char c : text) {
+    if (c < '0' || c > '9') return err(status::invalid_arg);
+    id = id * 10 + (c - '0');
+  }
+  stmt q(faces_, "SELECT jpeg FROM covers WHERE person_id = ?1");
+  q.bind(1, id);
+  if (!q.next()) return err(status::not_found);
+  return q.blob(0);
 }
 
 std::uint32_t catalogue::people_count() const {

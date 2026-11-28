@@ -34,7 +34,9 @@ public enum BackupLayout: Int, CaseIterable, Hashable, Sendable {
   }
 }
 
-/// A backup folder the NAS offers. `writable` false: the service does not let this phone write there.
+/// A backup folder the NAS offers, or a folder inside one (each person on a shared NAS backs up
+/// to their own: "Phone backup/Tristan"). `id` is the core's destination: the backup folder's id,
+/// then "/" and the path inside it. `writable` false: the service does not let this phone write there.
 public struct BackupFolder: Hashable, Sendable, Identifiable {
   public let id: String
   public let label: String
@@ -44,6 +46,39 @@ public struct BackupFolder: Hashable, Sendable, Identifiable {
     self.id = id
     self.label = label
     self.writable = writable
+  }
+
+  /// The backup folder this is, or is inside.
+  public var rootID: String { id.split(separator: "/", maxSplits: 1).first.map(String.init) ?? id }
+  /// The last part of the label: the folder's own name.
+  public var name: String { label.split(separator: "/").last.map(String.init) ?? label }
+
+  /// The folder `name` inside this one; nil for a name that is not one plain folder name.
+  public func child(named name: String) -> BackupFolder? {
+    guard let clean = Self.folderName(name) else { return nil }
+    return BackupFolder(id: id + "/" + clean, label: label + "/" + clean, writable: writable)
+  }
+
+  /// `typed` as a new folder's name, trimmed; nil when the server would refuse it (the core's
+  /// driftwire::safe_relative for one part): empty, hidden (a leading "."), a path, a character
+  /// Windows cannot keep, a trailing "." or space, or longer than 255 bytes.
+  public static func folderName(_ typed: String) -> String? {
+    let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty, name.utf8.count <= 255, !name.hasPrefix("."), !name.hasSuffix("."), !name.hasSuffix(" ") else {
+      return nil
+    }
+    if name.contains(where: { "/\\:<>\"|?*".contains($0) }) { return nil }
+    if name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control || $0.properties.generalCategory == .format }) {
+      return nil
+    }
+    // A Windows device name is a device in every folder ("CON", "com1.txt").
+    var base = name.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).first.map { $0.lowercased() } ?? ""
+    while base.hasSuffix(" ") { base.removeLast() }
+    if ["con", "prn", "aux", "nul", "conin$", "conout$"].contains(base) { return nil }
+    if ["com", "lpt"].contains(String(base.prefix(3))), base.count == 4, let n = base.last, n.isASCII && n.isNumber || "¹²³".contains(n) {
+      return nil
+    }
+    return name
   }
 }
 
@@ -163,6 +198,11 @@ public protocol BackupService: TransferMonitor {
   /// Asks for Photos access if it was never asked; true once it is given (all or some).
   func requestPhotosAccess() async -> Bool
   func choose(folder: BackupFolder, layout: BackupLayout) async
+  /// The folders inside a backup folder (or a folder in one). Throws `BackupState`.
+  func subfolders(of folder: BackupFolder) async throws -> [BackupFolder]
+  /// Makes the folder `name` inside `folder` (there already is fine). Throws `BackupState`, or
+  /// `BackupFolderRefused` for a name the server will not take (a file has it).
+  func makeFolder(named name: String, in folder: BackupFolder) async throws -> BackupFolder
   func setAutomatic(_ on: Bool)
   func setAllowsSleep(_ on: Bool)
   /// Starts now. `overMobileData`: the person said so for this run.
@@ -195,6 +235,11 @@ public extension BackupService {
 
 extension BackupState: Error {}
 
+/// New Folder's name was refused: not a plain folder name, or a file already has it.
+public struct BackupFolderRefused: Error, Hashable, Sendable {
+  public init() {}
+}
+
 /// No backup: a build without one, or before the library is open.
 public struct NoBackup: BackupService {
   public init() {}
@@ -205,6 +250,10 @@ public struct NoBackup: BackupService {
   public func folders() async throws -> [BackupFolder] { [] }
   public func requestPhotosAccess() async -> Bool { false }
   public func choose(folder: BackupFolder, layout: BackupLayout) async {}
+  public func subfolders(of folder: BackupFolder) async throws -> [BackupFolder] { [] }
+  public func makeFolder(named name: String, in folder: BackupFolder) async throws -> BackupFolder {
+    throw BackupState.unreachable
+  }
   public func setAutomatic(_ on: Bool) {}
   public func setAllowsSleep(_ on: Bool) {}
   public func start(overMobileData: Bool) {}

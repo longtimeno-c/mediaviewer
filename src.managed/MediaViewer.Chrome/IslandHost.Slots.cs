@@ -1039,6 +1039,7 @@ public static partial class IslandHost
         if (row.Id == DriftwireId) return DriftwireSlot;
         if (row.Id == EnhanceId) return EnhanceSlot;
         if (row.Id == PhoneAccessId) return PhoneAccessSlot;
+        if (row.Id == VpnId) return VpnSlot;
         if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
         {
             slot = new AddonSlot(row.Id, row.Name, null, null);
@@ -1122,6 +1123,17 @@ public static partial class IslandHost
             (Border card, StackPanel body) = AddonCard("Phone access");
             BuildPhoneAccessOffer(body);
             _slotSettingsPanel.Children.Add(card);
+        }
+        // The VPN, offered with one click while it is not installed.
+        if (!VpnInstalled)
+        {
+            if (VpnSlot.Offer.Kind == OfferKind.Unknown) probe.Add(VpnSlot);
+            if (only == VpnId)
+            {
+                (Border card, StackPanel body) = AddonCard("VPN");
+                BuildVpnOffer(body);
+                _slotSettingsPanel.Children.Add(card);
+            }
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {

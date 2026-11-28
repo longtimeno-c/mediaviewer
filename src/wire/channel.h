@@ -261,6 +261,26 @@ class channel {
   void flush(int timeout_ms);
   // Any thread: every blocked call returns; the pinger stops.
   void shutdown() noexcept;
+  // The reader thread, while it waits on purpose and reads nothing (the
+  // Driftwire receiver waiting on its file checks): what the peer sends
+  // waits unread meanwhile, so the silence says nothing about the link.
+  // While one is held (protocol 2) the link is not taken for suspect and
+  // the session does not run out for want of a sign of life; pings still go
+  // out, so the peer sees this side alive. Dropping it restarts the clock:
+  // the next receive() reads what came, and a link that went down meanwhile
+  // has kRejoinMs from then to come back.
+  class away {
+   public:
+    explicit away(channel& ch) noexcept;
+    ~away();
+    away(const away&) = delete;
+    away& operator=(const away&) = delete;
+
+   private:
+    channel& ch_;
+  };
+  // Tests: the session's limit without a sign of life (kRejoinMs).
+  void set_rejoin_ms_for_tests(int ms) noexcept { rejoin_ms_.store(ms); }
   // #540, the benches: from now on the seal, the send, a wait for the
   // replay's room, the receive and the open add to `t` (null: stop).
   // Protocol 2 only.
@@ -411,6 +431,8 @@ class channel {
   std::deque<std::chrono::steady_clock::time_point> rejoined_at_;  // under link_m_
   std::atomic<std::int64_t> last_heard_ns_{0};     // steady_clock: the last byte from the peer, or a rejoin
   std::atomic<std::uint64_t> suspect_gen_{0};      // the link already reported suspect
+  std::atomic<int> away_{0};                       // away guards held by the reader thread
+  std::atomic<int> rejoin_ms_{kRejoinMs};
 
   // The resume secret (protocol 2): the psk of every rejoin of this session.
   // From the first handshake's Split; never leaves memory.

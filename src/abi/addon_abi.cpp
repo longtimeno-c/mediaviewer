@@ -53,6 +53,7 @@ namespace {
 using mv::status;
 
 std::atomic<bool> g_present_busy{false};
+std::atomic<uint32_t> g_ai_hold_models{0};
 
 struct loaded_entry {
   std::unique_ptr<mv::addon::loaded_addon> addon;
@@ -421,6 +422,10 @@ MV_API mv_status MV_CALL mv_adjust_faces_to(const char* path_utf8, int32_t fix, 
 
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
+}
+
+MV_API void MV_CALL mv_ai_hold_models(uint32_t hold) {
+  g_ai_hold_models.store(hold != 0 ? 1u : 0u, std::memory_order_release);
 }
 
 MV_API mv_status MV_CALL mv_volume_watch(mv_session_t session, uint32_t enable) {
@@ -884,7 +889,11 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
     svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
     svc.jpeg_shrink = &mv::addon::media::jpeg_shrink;     // the phone's catalogue
+    svc.jpeg_face_crop = &mv::addon::media::jpeg_face_crop;  // its People covers
     svc.thumbnail_make = &mv::addon::media::make_thumbnail_jpeg;
+    if (std::string_view(id) == "ai" && door == load_door::host) {
+      svc.ai_hold_models = g_ai_hold_models.exchange(0, std::memory_order_acq_rel) != 0;
+    }
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);

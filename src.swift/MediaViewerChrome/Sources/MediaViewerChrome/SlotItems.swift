@@ -320,6 +320,8 @@ final class SlotAddonOffer: ObservableObject {
   /// (its models run on ONNX Runtime, like Local search).
   static let enhanceID = "enhance"
   static let enhanceSupported = mv_addon2_supported("enhance")
+  /// The VPN (docs/plans/vpn-addon.md): offered on its page before it is installed.
+  static let vpnID = "vpn"
   private static var others: [String: SlotAddonOffer] = [:]
 
   /// The channel of an installed slot add-on, made once per id.
@@ -528,6 +530,15 @@ struct SlotAddonsSection: View {
       // Phone access, offered on its page while it is not installed.
       if only == PhoneAccessStore.addonID && !installed.rows.contains(where: { $0.id == PhoneAccessStore.addonID }) {
         PhoneAccessOffer()
+      }
+      // The VPN, offered with one click while it is not installed.
+      if shows(SlotAddonOffer.vpnID) && !installed.rows.contains(where: { $0.id == SlotAddonOffer.vpnID }) {
+        SlotAddonInstallOffer(offer: SlotAddonOffer.channel(id: SlotAddonOffer.vpnID, name: "VPN"),
+                              fallback: "Your own VPN, with no VPN company: away from home, send this Mac's traffic "
+                                + "through your home computer or your server, and use this Mac or your server as "
+                                + "your laptop's way out.") {
+          installed.reload()
+        }
       }
       ForEach(installed.rows.filter { $0.id != "places" && shows($0.id) }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {

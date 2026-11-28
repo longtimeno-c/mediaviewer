@@ -607,6 +607,63 @@ void link_session::shut_down() noexcept {
   disconnect();
   streams_cv_.notify_all();
   stop_upgrades(true);
+  std::vector<std::shared_ptr<link_session>> lanes;
+  {
+    std::lock_guard lock(m_);
+    for (auto& w : lanes_) {
+      if (auto l = w.lock()) lanes.push_back(std::move(l));
+    }
+    lanes_.clear();
+  }
+  for (auto& l : lanes) l->shut_down();
+}
+
+namespace {
+
+// What open_lane hands out: the copy owns the lane, the session that opened it can still shut it.
+class lane_handle final : public remote_file {
+ public:
+  explicit lane_handle(std::shared_ptr<link_session> s) : s_(std::move(s)) {}
+  result<std::vector<serve::root_info>> roots() override { return s_->roots(); }
+  result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
+    return s_->list(root, rel);
+  }
+  result<serve::stat_info> stat(const std::string& root, const std::string& rel) override { return s_->stat(root, rel); }
+  expected read_range(const std::string& root, const std::string& rel, std::uint64_t at, std::uint64_t length,
+                      const byte_sink& sink, const cancel_flag* cancel, bool bulk) override {
+    return s_->read_range(root, rel, at, length, sink, cancel, bulk);
+  }
+
+ private:
+  std::shared_ptr<link_session> s_;
+};
+
+}  // namespace
+
+std::unique_ptr<remote_file> link_session::open_lane(const cancel_flag* cancel) {
+  service_config c;
+  {
+    std::lock_guard lock(m_);
+    // Relayed: the relay holds one waiter per phone, and a second sender would only wait for it.
+    // Upgraded: the direct path was punched for this connection; the addresses may not answer.
+    if (shut_ || !live_ || live_->closed() || last_report_.relayed || last_report_.upgraded) return nullptr;
+    c = config_;
+  }
+  c.relay.clear();
+  c.upgrade = false;
+  auto lane = std::make_shared<link_session>(std::move(c));
+  route_report report;
+  if (!lane->connect(report, cancel)) return nullptr;
+  {
+    std::lock_guard lock(m_);
+    if (!shut_) {
+      std::erase_if(lanes_, [](const std::weak_ptr<link_session>& w) { return w.expired(); });
+      lanes_.push_back(lane);
+      return std::make_unique<lane_handle>(std::move(lane));
+    }
+  }
+  lane->shut_down();  // Forget came while it connected
+  return nullptr;
 }
 
 void link_session::disconnect() noexcept {

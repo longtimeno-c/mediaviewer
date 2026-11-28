@@ -296,6 +296,9 @@ void mv_chrome_restart_for_addons(void);
 int32_t mv_chrome_subfolder_count(void);
 // Copies the folder's full UTF-8 path; false if `index` is out of range.
 bool mv_chrome_subfolder_path(int32_t index, char* out_buf, int32_t out_buf_size);
+// Copies the folder's name as the tile shows it (another computer's folder is
+// a `remote:` key, not a path); false if `index` is out of range.
+bool mv_chrome_subfolder_name(int32_t index, char* out_buf, int32_t out_buf_size);
 // Navigates into the child folder (a fresh listing; the trail keeps its root).
 void mv_chrome_open_subfolder(int32_t index);
 // Asks for the tile's item count, folder count and cover thumbnail. Result via
@@ -557,6 +560,14 @@ int32_t mv_chrome_remote_open_key(char* buf, int32_t size);
 void mv_chrome_remote_pair(const char* code_utf8);
 void mv_chrome_remote_connect(void);
 void mv_chrome_remote_forget(const char* server_key_utf8);
+// docs/plans/desktop-client.md §6a: a paired server's SMB shares in the Finder. `auto`: whether
+// they mount by themselves when the server answers at home (on by default); `mount` mounts now,
+// showing the OS's sign-in if it has none saved; `unmount` takes every server share away.
+// [main-thread]
+bool mv_chrome_lan_share_auto(void);
+void mv_chrome_set_lan_share_auto(bool on);
+void mv_chrome_lan_share_mount(void);
+void mv_chrome_lan_share_unmount(void);
 
 // docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
 // the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW
@@ -871,6 +882,12 @@ bool mv_addon2_elsewhere(void);                                            // [m
 // unloaded, since launch -- or in such a window its reader, if it is due.
 // False when nothing is on its way. [main-thread]
 bool mv_addon2_ai_wake(void);
+// Settings → Local search: attach without opening the towers (issue #292,
+// 2026-11-14). A later window loads its reader. False when nothing is on
+// its way. [main-thread]
+bool mv_addon2_ai_manage(void);
+// The in-flight load is that Settings attach (pill: Opening, not Starting).
+bool mv_addon2_ai_opening(void);
 // Installed and verified at launch, not loaded, nothing on its way (issue
 // #292): the first search starts it, so the search icon offers it. [main-thread]
 bool mv_addon2_ai_on_demand(void);

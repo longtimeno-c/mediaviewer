@@ -119,6 +119,12 @@ public enum FailureCopy {
   public static let backupNoFolderAllowed =
     "Your server has no backup folder this phone may use. The owner can add one, or let this phone use one, in MediaViewer on their computer, under Phone access."
   public static let backupAskingForFolders = "Asking your server for its backup folders…"
+  /// A family sharing one server: each person's phone in a folder of its own (owner, 2026-11-27).
+  public static let backupOwnFolder =
+    "Sharing this server? Make a folder for each person, such as one with your name, and back this phone up into yours."
+  public static let backupFolderRefused =
+    "That name can't be used for a folder here. Try another: no leading dot, and none of / \\ : < > \" | ? *."
+  public static let backupFolderNotMade = "The folder couldn't be made. Check that your server is reachable and try again."
 
   /// What the folder chooser says above its list: nil while it is still asking (`folders` nil,
   /// no failure), so an answer not yet in is never shown as "no backup folder".

@@ -61,12 +61,12 @@ final class FolderChangeTests: XCTestCase {
     for _ in 0..<5 where !made.exists || made.frame.maxX > width { shelf.swipeLeft() }
     XCTAssertTrue(made.waitForExistence(timeout: 10), "The new folder is not on the page")
 
-    // Rename, from its long press: the dialog opens once the menu has gone. Return confirms it:
-    // XCUITest's tap on the Rename dialog's own button does not register (a tap by hand does, and
-    // Create's and Delete's do here), so the test confirms with the keyboard, as a person can.
+    // Rename, after holding it: the hold starts Select with it chosen, and Rename is on the bar.
+    // Return confirms it: XCUITest's tap on the Rename dialog's own button does not register (a tap
+    // by hand does, and Create's and Delete's do here), so the test confirms with the keyboard.
     made.press(forDuration: 1.0)
-    XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 5), "No Rename on a long press")
-    app.buttons["Rename"].tap()
+    XCTAssertTrue(app.navigationBars["1 selected"].waitForExistence(timeout: 5), "Holding the folder did not choose it")
+    app.toolbars.buttons["Rename"].tap()
     fill(app, "Porto")
     app.alerts.textFields.firstMatch.typeText("\n")
     let renamed = NSPredicate(format: "label BEGINSWITH 'Porto'")
@@ -82,13 +82,27 @@ final class FolderChangeTests: XCTestCase {
     expectation(for: NSPredicate(format: "label BEGINSWITH 'Porto 2026'"), evaluatedWith: made)
     waitForExpectations(timeout: 10)
 
-    // Select a photo, Move it into Porto: it leaves this page.
-    let photo = app.buttons.matching(gridTile).firstMatch
+    // Hold a photo: Select starts with it chosen, and the finger lifting does not unchoose it. A
+    // tap on another chooses that too, and a tap on it again lets it go.
+    let photos = app.buttons.matching(gridTile)
+    let photo = photos.element(boundBy: 0)
     XCTAssertTrue(photo.waitForExistence(timeout: 10))
     let photoID = photo.identifier
-    app.navigationBars.buttons["select"].tap()
+    XCTAssertTrue(photos.element(boundBy: 1).exists, "The page needs two photos")
+    let secondID = photos.element(boundBy: 1).identifier
+    app.buttons[photoID].press(forDuration: 1.0)
+    XCTAssertTrue(app.navigationBars["1 selected"].waitForExistence(timeout: 5), "Holding the photo did not choose it")
+    // The next tap on the held photo itself lets it go (the lift was the only tap passed over).
     app.buttons[photoID].tap()
-    XCTAssertTrue(app.navigationBars["1 selected"].waitForExistence(timeout: 5), "The photo was not chosen")
+    XCTAssertTrue(app.navigationBars["Select items"].waitForExistence(timeout: 5), "The first tap after the hold was lost")
+    app.buttons[photoID].tap()
+    XCTAssertTrue(app.navigationBars["1 selected"].waitForExistence(timeout: 5))
+    app.buttons[secondID].tap()
+    XCTAssertTrue(app.navigationBars["2 selected"].waitForExistence(timeout: 5), "A tap after the hold did not choose")
+    app.buttons[secondID].tap()
+    XCTAssertTrue(app.navigationBars["1 selected"].waitForExistence(timeout: 5), "A second tap did not let it go")
+    XCTAssertTrue(app.buttons[photoID].isSelected, "The held photo is not the one chosen")
+    // Move it into Porto: it leaves this page.
     app.toolbars.buttons["Move"].tap()
     XCTAssertTrue(app.navigationBars["Move to"].waitForExistence(timeout: 10), "Move did not open")
     let iphoneRow = app.buttons["move-to:iphone"].firstMatch

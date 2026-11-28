@@ -327,6 +327,9 @@ private struct RemoteServerRow: View {
         node.isExpanded = true
       }
       .contextMenu {
+        Button("Mount Shares in Finder") { mv_chrome_lan_share_mount() }
+        Button("Unmount Shares") { mv_chrome_lan_share_unmount() }
+        Divider()
         Button("Forget This Server") { server.key.withCString { mv_chrome_remote_forget($0) } }
       }
     }

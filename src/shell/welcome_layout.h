@@ -32,6 +32,11 @@ struct welcome_recents {
   // Issue #617: the first `pinned` folder rows (after the cloud row, if any)
   // are pinned folders, drawn with a pin; the rest are recents.
   std::uint8_t pinned = 0;
+  // The first `servers` rows after the cloud row are paired servers' pins
+  // (docs/plans/desktop-client.md): drawn with a server in the cloud row's
+  // block above the header, not as recent folders. `pinned` counts the
+  // folder pins after them.
+  std::uint8_t servers = 0;
   char label[kMax][96] = {};
   char where[kMax][192] = {};
 };
@@ -43,8 +48,8 @@ struct welcome_geometry {
   float folders_top = 0.0f;  // the first folder row's; the RECENT FOLDERS header sits above it
   float row_x0 = 0.0f, row_x1 = 0.0f;
   float row_h = 0.0f;
-  int rows = 0;       // how many rows fit (<= the count asked for), the lead row included
-  bool lead = false;  // row 0 is the iCloud Photos library, above the header
+  int rows = 0;  // how many rows fit (<= the count asked for), the lead rows included
+  int lead = 0;  // the first `lead` rows (the cloud place, paired servers) sit above the header
   bool fits = false;  // false: the window is too short for even the plain card
 };
 
@@ -56,13 +61,19 @@ inline constexpr float kWelcomeRowH = 32.0f;
 inline constexpr float kWelcomeRowsPad = 14.0f;   // below the last row
 inline constexpr float kWelcomeRemoveW = 30.0f;   // a row's remove button, at its right end
 
+// The rows that lead the card, above the RECENT FOLDERS header: the cloud
+// place and the paired servers.
+[[nodiscard]] inline int welcome_lead_rows(const welcome_recents& r) noexcept {
+  return (r.icloud ? 1 : 0) + r.servers;
+}
+
 // `chrome` is the command bar covering the top of the canvas; `lift` floats the
 // card up as it fades into the runner (draw_welcome's `alpha`). `lead`: the first
-// of `recent_count` rows is the iCloud Photos library, drawn on its own above
-// the RECENT FOLDERS header rather than as the first recent folder.
+// `lead` of `recent_count` rows (welcome_lead_rows) are drawn in their own block
+// above the RECENT FOLDERS header rather than as recent folders.
 [[nodiscard]] inline welcome_geometry layout_welcome(float w, float h, float chrome, float scale,
                                                      int recent_count, float lift = 0.0f,
-                                                     bool lead = false) noexcept {
+                                                     int lead = 0) noexcept {
   welcome_geometry g;
   if (w <= 0.0f || h <= chrome || scale <= 0.0f) return g;
   const float avail_h = h - chrome;
@@ -70,17 +81,21 @@ inline constexpr float kWelcomeRemoveW = 30.0f;   // a row's remove button, at i
   if (card_w <= 0.0f || kWelcomeBaseH * scale > avail_h) return g;
   // As many rows as fit with a margin; the rest wait in the Dock menu / jump list.
   int rows = std::clamp(recent_count, 0, welcome_recents::kMax);
-  lead = lead && rows > 0;
-  const int lead_rows = lead ? 1 : 0;
-  const float folders_top = lead ? kWelcomeLeadTop + kWelcomeRowH + kWelcomeHeaderH : kWelcomeRecentsTop;
+  lead = std::clamp(lead, 0, rows);
+  const float folders_top = lead > 0 ? kWelcomeLeadTop + static_cast<float>(lead) * kWelcomeRowH + kWelcomeHeaderH
+                                     : kWelcomeRecentsTop;
   const auto card_h_for = [&](int n) {
     if (n == 0) return kWelcomeBaseH * scale;
-    const int folders = n - lead_rows;
+    const int folders = n - lead;
     const float last = folders > 0 ? folders_top + static_cast<float>(folders) * kWelcomeRowH
-                                   : kWelcomeLeadTop + kWelcomeRowH;
+                                   : kWelcomeLeadTop + static_cast<float>(n) * kWelcomeRowH;
     return (last + kWelcomeRowsPad) * scale;
   };
-  while (rows > 0 && card_h_for(rows) > avail_h - 32.0f * scale) --rows;
+  // A short window drops the folders first, then the lead rows from the bottom.
+  while (rows > 0 && card_h_for(rows) > avail_h - 32.0f * scale) {
+    --rows;
+    lead = std::min(lead, rows);
+  }
   const float card_h = card_h_for(rows);
   const float cx = w * 0.5f;
   const float cy = chrome + avail_h * 0.5f - lift;
@@ -89,10 +104,10 @@ inline constexpr float kWelcomeRemoveW = 30.0f;   // a row's remove button, at i
   g.lo_y = cy - card_h * 0.5f;
   g.hi_y = cy + card_h * 0.5f;
   g.rows = rows;
-  g.lead = lead && rows > 0;
+  g.lead = lead;
   g.row_h = kWelcomeRowH * scale;
   g.folders_top = g.lo_y + folders_top * scale;
-  g.rows_top = g.lead ? g.lo_y + kWelcomeLeadTop * scale : g.folders_top;
+  g.rows_top = g.lead > 0 ? g.lo_y + kWelcomeLeadTop * scale : g.folders_top;
   g.row_x0 = g.lo_x + 14.0f * scale;
   g.row_x1 = g.hi_x - 14.0f * scale;
   g.fits = true;
@@ -101,17 +116,18 @@ inline constexpr float kWelcomeRemoveW = 30.0f;   // a row's remove button, at i
 
 // Row `i`'s top edge (0 <= i < g.rows).
 [[nodiscard]] inline float welcome_row_top(const welcome_geometry& g, int i) noexcept {
-  if (g.lead) return i == 0 ? g.rows_top : g.folders_top + static_cast<float>(i - 1) * g.row_h;
+  if (i < g.lead) return g.rows_top + static_cast<float>(i) * g.row_h;
+  if (g.lead > 0) return g.folders_top + static_cast<float>(i - g.lead) * g.row_h;
   return g.rows_top + static_cast<float>(i) * g.row_h;
 }
 
 // The row at (x, y) in the canvas's pixels, or -1.
 [[nodiscard]] inline int welcome_row_at(const welcome_geometry& g, float x, float y) noexcept {
   if (!g.fits || g.rows <= 0 || x < g.row_x0 || x >= g.row_x1 || y < g.rows_top) return -1;
-  if (g.lead) {
-    if (y < g.rows_top + g.row_h) return 0;
+  if (g.lead > 0) {
+    if (y < g.rows_top + static_cast<float>(g.lead) * g.row_h) return static_cast<int>((y - g.rows_top) / g.row_h);
     if (y < g.folders_top) return -1;  // the header between them
-    const int row = 1 + static_cast<int>((y - g.folders_top) / g.row_h);
+    const int row = g.lead + static_cast<int>((y - g.folders_top) / g.row_h);
     return row < g.rows ? row : -1;
   }
   const int row = static_cast<int>((y - g.rows_top) / g.row_h);

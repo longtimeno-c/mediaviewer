@@ -175,6 +175,9 @@ struct SampleChangesImages: ImageLadder {
     added(item) ? nil : await base.placeholder(for: item)
   }
 
+  func face(for person: Person) async -> UIImage? { await base.face(for: person) }
+  func cachedFace(for person: Person) -> UIImage? { base.cachedFace(for: person) }
+
   func thumbnail(for item: MediaItem) async -> UIImage? {
     guard let local = local(item) else { return await base.thumbnail(for: item) }
     let image = await Self.picture(of: local, longest: 384)

@@ -171,6 +171,8 @@ struct addon_slot {
   // first search or Settings (issue #292, docs/design/17 "Starting on
   // demand"): no runtime, no model sessions, no indexing threads until then.
   bool on_demand = false;
+  // This load is Settings without the towers (issue #292, 2026-11-14).
+  bool hold_models = false;
   // Issue #299 (docs/design/17 "Unfinished roots wait for Resume"): the roots
   // the pack's resume.json listed at launch, read without loading the pack,
   // for the bottom-right notice. Cleared when it is answered (Resume or
@@ -684,6 +686,7 @@ mv::addon::host_services ai_services() {
   svc.still_faces = &mv::addon::ai_faces_json;       // edit-refresh S10: Restore faces
   svc.still_extend = &mv::addon::media::still_extend;  // edit-refresh S6: Extend's frame
   svc.jpeg_shrink = &mv::addon::media::jpeg_shrink;     // the phone's catalogue
+  svc.jpeg_face_crop = &mv::addon::media::jpeg_face_crop;  // its People covers
   svc.thumbnail_make = &mv::addon::media::make_thumbnail_jpeg;
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
@@ -803,19 +806,23 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
 // (MV_AI_READER_ENTRY_SYMBOL): the same mv.ai.1 table over index.db opened
 // read-only, text towers only, no scans, catching up with the first window's
 // commits every few seconds. status::not_found from it: nothing indexed yet.
-bool start_ai_load() {
+bool start_ai_load(bool hold_models = false) {
   mac_addons& s = state();
   if (!ai_supported()) return false;
   if (s.ai.chrome || s.ai.loading) return true;
   if (!ensure_store()) return false;
   s.ai.loading = true;
+  s.ai.hold_models = hold_models && !s.reader;
   s.ai.error.clear();
   s.ai.reason.clear();
   const std::uint64_t seq = ++s.ai.load_seq;
   mv::addon::store* store = s.store.get();  // lives until exit
   const bool reader = s.reader;
+  const bool hold = s.ai.hold_models;
   dispatch_async(addon_queue(), ^{
-    auto loaded = mv::addon::loaded_addon::load(*store, "ai", ai_services(),
+    mv::addon::host_services svc = ai_services();
+    svc.ai_hold_models = hold;
+    auto loaded = mv::addon::loaded_addon::load(*store, "ai", std::move(svc),
                                                 reader ? MV_AI_READER_ENTRY_SYMBOL : MV_ADDON_ENTRY_SYMBOL);
     const mv::status st = loaded ? mv::status::ok : loaded.error();
     // Thread-local: read here, on the thread that loaded.
@@ -831,6 +838,7 @@ bool start_ai_load() {
         return;
       }
       sm.ai.loading = false;
+      sm.ai.hold_models = false;
       // Whatever came of it, said once it is settled (attached or not): a
       // waiting Faces read reads again (main_mac.mm kMvAiLoadEnded).
       struct load_ended {
@@ -1850,6 +1858,20 @@ extern "C" bool mv_addon2_elsewhere(void) { return state().reader; }
 // #292), or in a later window its reader if it is due (see reader_begin), so
 // Local search's own view can show. False when nothing is on its way.
 extern "C" bool mv_addon2_ai_wake(void) { return state().reader ? reader_begin() : ai_begin(); }
+
+// Settings → Local search: attach without opening the towers. A later window
+// still loads its reader. False when nothing is on its way.
+extern "C" bool mv_addon2_ai_manage(void) {
+  mac_addons& s = state();
+  if (s.reader) return reader_begin();
+  if (s.ai.chrome || s.ai.loading) return true;
+  return s.ai.on_demand && start_ai_load(true);
+}
+
+extern "C" bool mv_addon2_ai_opening(void) {
+  const mac_addons& s = state();
+  return s.ai.hold_models && s.ai.loading;
+}
 
 bool MvAddonsWakeAi() { return mv_addon2_ai_wake(); }
 

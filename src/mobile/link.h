@@ -50,6 +50,14 @@ class remote_file {
   [[nodiscard]] virtual expected read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                             std::uint64_t length, const byte_sink& sink,
                                             const cancel_flag* cancel = nullptr, bool bulk = false) = 0;
+  // Another connection to the same service, for a bulk copy to spread over (sync.cpp): over a long
+  // path each TCP connection's loss recovery caps its rate, so several move more than one. A
+  // remote that opens lanes also takes concurrent reads. nullptr: none to be had (the default; a
+  // relayed link, whose relay holds one waiter per phone; a service that said busy).
+  [[nodiscard]] virtual std::unique_ptr<remote_file> open_lane(const cancel_flag* cancel) {
+    (void)cancel;
+    return nullptr;
+  }
 };
 
 // "host:port"; a bracketed IPv6 literal is allowed. False when it is not one.
@@ -154,6 +162,9 @@ class link_session final : public remote_file {
   [[nodiscard]] expected read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                     std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel,
                                     bool bulk) override;
+  // A second session on the route this one is on (never through the relay, never upgraded); shut
+  // down with this one.
+  [[nodiscard]] std::unique_ptr<remote_file> open_lane(const cancel_flag* cancel) override;
 
   // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
   // folder's meta folder. status::unsupported_format: the service is from before 1.1.
@@ -226,6 +237,7 @@ class link_session final : public remote_file {
   std::shared_ptr<driftwire::serve::client> live_;
   route_report last_report_;  // under m_
   std::vector<std::weak_ptr<driftwire::serve::client>> retired_;  // under m_: swapped out, maybe still read
+  std::vector<std::weak_ptr<link_session>> lanes_;  // under m_: open_lane's, shut down with this one
 
   // The service ends any stream past kMaxStreams with "too many", and frees a slot a moment after
   // its end reaches us: one below that, and the rest wait here (or until cancelled or shut down).

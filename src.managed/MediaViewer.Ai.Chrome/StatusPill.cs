@@ -234,7 +234,8 @@ internal sealed class StatusPill
     public void Show(in MvAiStatus s)
     {
         _text.Text = Look.StatusLine(s);
-        bool idle = s.State == MvAiState.Idle && !Look.Fetching(s);  // #482: a download is work in hand
+        bool idle = s.State == MvAiState.Idle && !Look.Fetching(s)
+                    && (s.Flags & MvAiStatus.FlagModelsHeld) == 0;
         _ring.Root.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
         _done.Visibility = idle ? Visibility.Visible : Visibility.Collapsed;
         _ring.Set(idle ? -1 : Look.Progress(s), !idle && Look.Busy(s) && _look.Motion);

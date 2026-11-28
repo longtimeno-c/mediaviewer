@@ -275,26 +275,43 @@ private struct FolderChoice: View {
               .accessibilityIdentifier("backup.choose.again")
           }
           ForEach(list) { f in
-            Button {
-              folder = f
-            } label: {
-              HStack {
-                Image(systemName: folder?.id == f.id ? "checkmark.circle.fill" : "circle")
-                  .foregroundStyle(folder?.id == f.id ? Theme.accent : Theme.body)
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(f.label).font(.subheadline).foregroundStyle(Theme.title)
-                  if !f.writable {
-                    Text("Not allowed for this phone").font(.footnote).foregroundStyle(Theme.body)
+            HStack(spacing: 0) {
+              Button {
+                folder = f
+              } label: {
+                HStack {
+                  Image(systemName: folder?.rootID == f.id ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(folder?.rootID == f.id ? Theme.accent : Theme.body)
+                  VStack(alignment: .leading, spacing: 2) {
+                    Text(f.label).font(.subheadline).foregroundStyle(Theme.title)
+                    if !f.writable {
+                      Text("Not allowed for this phone").font(.footnote).foregroundStyle(Theme.body)
+                    } else if let folder, folder.rootID == f.id, folder.id != f.id {
+                      Text("In \(folder.label)").font(.footnote).foregroundStyle(Theme.body)
+                    }
                   }
+                  Spacer()
                 }
-                Spacer()
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
               }
-              .frame(minHeight: 44)
-              .contentShape(Rectangle())
+              .buttonStyle(TileButtonStyle())
+              .disabled(!f.writable)
+              .accessibilityIdentifier("backup.folder.\(f.label)")
+              if f.writable {
+                NavigationLink(value: f) {
+                  Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.body)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Folders in \(f.label)")
+                .accessibilityIdentifier("backup.open.\(f.label)")
+              }
             }
-            .buttonStyle(TileButtonStyle())
-            .disabled(!f.writable)
-            .accessibilityIdentifier("backup.folder.\(f.label)")
+          }
+          if list.contains(where: \.writable) {
+            Text(FailureCopy.backupOwnFolder).font(.footnote).foregroundStyle(Theme.body)
+              .fixedSize(horizontal: false, vertical: true)
           }
           if !list.isEmpty {
             Text("Folders").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.title).padding(.top, 8)
@@ -328,13 +345,13 @@ private struct FolderChoice: View {
       .toolbar {
         ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
         ToolbarItem(placement: .confirmationAction) {
-          Button("Done") {
-            if let folder { chosen(folder, pickedLayout) }
-            dismiss()
-          }
-          .disabled(folder == nil || folders == nil || failure != nil)
-          .accessibilityIdentifier("backup.choose.done")
+          Button("Done", action: finish)
+            .disabled(folder == nil || folders == nil || failure != nil)
+            .accessibilityIdentifier("backup.choose.done")
         }
+      }
+      .navigationDestination(for: BackupFolder.self) { inside in
+        InsideBackupFolder(folder: inside, selection: $folder, finish: finish)
       }
       .onChange(of: folders) { _, _ in
         folder = BackupFolderPick.kept(folder, in: folders, current: current)
@@ -347,18 +364,163 @@ private struct FolderChoice: View {
   }
 
   private var list: [BackupFolder] { folders ?? [] }
+
+  private func finish() {
+    if let folder { chosen(folder, pickedLayout) }
+    dismiss()
+  }
+}
+
+/// The folders inside a backup folder: back up here, into one of them, or into a New Folder (one
+/// for each person sharing the server). Deeper folders open the same way.
+private struct InsideBackupFolder: View {
+  @Environment(AppModel.self) private var model
+  let folder: BackupFolder
+  @Binding var selection: BackupFolder?
+  let finish: () -> Void
+  /// nil while asking.
+  @State private var inside: [BackupFolder]?
+  @State private var failure: String?
+  @State private var naming = false
+  @State private var typed = ""
+  @State private var making = false
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 12) {
+        pickRow(folder, title: "Back up to \(folder.name)")
+        if let inside {
+          if !inside.isEmpty {
+            Text("Folders in \(folder.name)").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.title).padding(.top, 8)
+          }
+          ForEach(inside) { f in
+            HStack(spacing: 0) {
+              pickRow(f, title: f.name)
+              NavigationLink(value: f) {
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.body)
+                  .frame(width: 44, height: 44)
+                  .contentShape(Rectangle())
+              }
+              .accessibilityLabel("Folders in \(f.name)")
+              .accessibilityIdentifier("backup.open.\(f.name)")
+            }
+          }
+        } else if failure == nil {
+          HStack(spacing: 8) {
+            ProgressView()
+            Text("Asking your server…").font(.subheadline).foregroundStyle(Theme.body)
+          }
+          .frame(minHeight: 44)
+        }
+        if let failure {
+          Text(failure).font(.footnote).foregroundStyle(Theme.title).fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("backup.inside.failure")
+        }
+        Button {
+          typed = ""
+          naming = true
+        } label: {
+          Label("New Folder", systemImage: "folder.badge.plus").font(.subheadline)
+        }
+        .foregroundStyle(Theme.accent)
+        .frame(minHeight: 44)
+        .disabled(making)
+        .keyboardShortcut("n", modifiers: [.command, .shift])
+        .accessibilityIdentifier("backup.newFolder")
+        Text(FailureCopy.backupOwnFolder).font(.footnote).foregroundStyle(Theme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(Theme.inset)
+    }
+    .background(Theme.ground)
+    .navigationTitle(folder.name)
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Done", action: finish)
+          .disabled(selection == nil)
+          .accessibilityIdentifier("backup.inside.done")
+      }
+    }
+    .task { await load() }
+    .alert("New Folder", isPresented: $naming) {
+      TextField("Name", text: $typed)
+        .textInputAutocapitalization(.words)
+        .accessibilityIdentifier("backup.newFolder.name")
+      Button("Cancel", role: .cancel) {}
+      Button("Make") { Task { await make() } }
+        .disabled(BackupFolder.folderName(typed) == nil)
+    } message: {
+      Text("Inside \(folder.label). Backups go into the folder you choose.")
+    }
+  }
+
+  private func pickRow(_ f: BackupFolder, title: String) -> some View {
+    Button {
+      selection = f
+    } label: {
+      HStack {
+        Image(systemName: selection?.id == f.id ? "checkmark.circle.fill" : "circle")
+          .foregroundStyle(selection?.id == f.id ? Theme.accent : Theme.body)
+        Text(title).font(.subheadline).foregroundStyle(Theme.title).lineLimit(2)
+        Spacer()
+      }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(TileButtonStyle())
+    .accessibilityIdentifier("backup.pick.\(f.label)")
+  }
+
+  private func load() async {
+    do {
+      inside = try await model.services.backup.subfolders(of: folder)
+      failure = nil
+    } catch let state as BackupState {
+      failure = FailureCopy.backupLine(for: state, sample: false) ?? FailureCopy.backupFolderNotMade
+    } catch {
+      failure = FailureCopy.backupFolderNotMade
+    }
+  }
+
+  private func make() async {
+    making = true
+    defer { making = false }
+    do {
+      let made = try await model.services.backup.makeFolder(named: typed, in: folder)
+      selection = made
+      failure = nil
+      var list = inside ?? []
+      if !list.contains(where: { $0.id == made.id }) { list.append(made) }
+      inside = list.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    } catch is BackupFolderRefused {
+      failure = FailureCopy.backupFolderRefused
+    } catch let state as BackupState {
+      failure = FailureCopy.backupLine(for: state, sample: false) ?? FailureCopy.backupFolderNotMade
+    } catch {
+      failure = FailureCopy.backupFolderNotMade
+    }
+  }
 }
 
 /// The chooser's selection after each answer: kept only while the server still offers it to this
 /// phone; otherwise the folder in use, or the only one this phone may write. While asking (no list)
 /// a pick is held as it is, to be checked against the answer; Done stays off until then.
+/// A folder inside a backup folder is kept while that backup folder is.
 enum BackupFolderPick {
   static func kept(_ selected: BackupFolder?, in folders: [BackupFolder]?, current: BackupFolder?) -> BackupFolder? {
     guard let folders else { return selected }
     let usable = folders.filter(\.writable)
-    if let selected, let still = usable.first(where: { $0.id == selected.id }) { return still }
-    if let current, let still = usable.first(where: { $0.id == current.id }) { return still }
+    if let selected, let still = within(selected, usable) { return still }
+    if let current, let still = within(current, usable) { return still }
     return usable.count == 1 && folders.count == 1 ? usable[0] : nil
+  }
+
+  /// `pick` as the server's answer has it: the backup folder itself (its label as named now), or
+  /// the folder inside it.
+  private static func within(_ pick: BackupFolder, _ usable: [BackupFolder]) -> BackupFolder? {
+    guard let root = usable.first(where: { $0.id == pick.rootID }) else { return nil }
+    return pick.id == root.id ? root : pick
   }
 }
 

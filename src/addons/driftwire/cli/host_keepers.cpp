@@ -43,6 +43,7 @@ class worker_keeper : public host_keeper {
       started_ = true;
       pending_ = ctx;
     }
+    wanted(ctx);
     thread_ = std::thread([this] { run(); });
   }
   void ports_changed(const keeper_context& ctx) noexcept final {
@@ -51,11 +52,15 @@ class worker_keeper : public host_keeper {
       if (!started_ || stopping_) return;
       pending_ = ctx;
     }
+    wanted(ctx);
     wcv_.notify_all();
   }
   void stop() noexcept final { stop_worker(); }
 
  protected:
+  // On the caller, before the worker hears of it: what the context asks for, so
+  // status_line never speaks of the one before. Never blocks.
+  virtual void wanted(const keeper_context& ctx) noexcept { (void)ctx; }
   // On the worker: the context changed (or the first one). May block.
   virtual void rebuild(const keeper_context& ctx) = 0;
   // On the worker, once, at the end: undo what it holds.
@@ -137,8 +142,9 @@ class ddns_keeper final : public worker_keeper {
   [[nodiscard]] std::string status_line() const override {
     std::lock_guard lock(m_);
     if (idle_test_) return "DuckDNS     not asked (the test build never reaches duckdns.org)";
-    if (sub_.empty()) return "DuckDNS     none: phones reach this computer at home only (driftwire host name duckdns)";
-    const std::string name = ddns::duckdns_name(sub_);
+    if (want_sub_.empty()) return "DuckDNS     none: phones reach this computer at home only (driftwire host name duckdns)";
+    const std::string name = ddns::duckdns_name(want_sub_);
+    if (!built_ || want_sub_ != sub_) return "DuckDNS     " + name + ", updating";  // the worker has not taken it yet
     if (!k_) {
       return "DuckDNS     " + name + (rebuilding_ ? ", updating" : ": no token kept (driftwire host name duckdns)");
     }
@@ -151,6 +157,10 @@ class ddns_keeper final : public worker_keeper {
   }
 
  protected:
+  void wanted(const keeper_context& ctx) noexcept override {
+    std::lock_guard lock(m_);
+    want_sub_ = ctx.ddns_subdomain;
+  }
   void rebuild(const keeper_context& ctx) override {
     if (ctx.loopback_only && !c_.on_loopback) {
       std::lock_guard lock(m_);
@@ -214,6 +224,7 @@ class ddns_keeper final : public worker_keeper {
   ddns_keeper_config c_;
   mutable std::mutex m_;
   std::unique_ptr<ddns::keeper> k_;  // under m_
+  std::string want_sub_;             // under m_: the newest context's name (wanted)
   std::string sub_;                  // under m_: what k_ was built from, and its token's hash
   std::array<std::uint8_t, 32> hash_{};
   bool have_token_ = false, built_ = false, idle_test_ = false, rebuilding_ = false;
@@ -254,6 +265,7 @@ class router_keeper final : public worker_keeper {
   [[nodiscard]] std::string status_line() const override {
     std::lock_guard lock(m_);
     if (idle_test_) return "router      not asked (the test build never asks a router)";
+    if (!seen_) return "router      not asked yet";  // the worker has not read the ports
     if (want_.empty()) return "router      nothing to open (no folder shared, VPN off)";
     if (!k_) return asking_ ? "router      asking it to open the ports" : "router      not asked yet";
     const host_ports::report r = k_->status();
@@ -295,7 +307,7 @@ class router_keeper final : public worker_keeper {
       std::lock_guard lock(m_);
       if (built_ && same_ports(want, want_)) return;
       if (built_) tries_ = 0;  // the ports changed: a fresh start (a retry clears built_ itself)
-      built_ = true;
+      built_ = seen_ = true;
       want_ = want;
       asking_ = !want.empty();
       retry_ = false;
@@ -361,7 +373,7 @@ class router_keeper final : public worker_keeper {
   mutable std::mutex m_;
   std::unique_ptr<host_ports::keeper> k_;      // under m_
   std::vector<host_ports::port_wanted> want_;  // under m_
-  bool built_ = false, asking_ = false, idle_test_ = false, retry_ = false;
+  bool built_ = false, seen_ = false, asking_ = false, idle_test_ = false, retry_ = false;
   int tries_ = 0;  // asks in a row that left a port closed
 };
 

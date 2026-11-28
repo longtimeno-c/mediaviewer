@@ -13,6 +13,7 @@
 // model files included. Moving the key to another desktop is catalog_chain.h.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -60,6 +61,12 @@ struct build_options {
   // generation.
   thumb_store* thumbs = nullptr;  // sealed; thumbs.idx, tiny.pack and its packs
   std::string faces_db;           // the live faces.db: names and asset links only
+  // A person's round cover, cut from their cover face's own picture (`path`,
+  // the moment `pts_ms` of a clip, < 0 a still) at `box` (0..1 of it), as the
+  // desktop's People covers are; unset or failing: that person has none.
+  std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms,
+                                                  const std::array<float, 4>& box)>
+      face_cover;
   // A label per GPS point, "" for none; not_found: nothing here can name one.
   std::function<result<std::vector<std::string>>(std::span<const std::pair<double, double>>)> place_labels;
   std::string model_spec;              // active_spec's text tower ...

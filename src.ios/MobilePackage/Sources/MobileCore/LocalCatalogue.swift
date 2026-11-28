@@ -273,7 +273,7 @@ private struct CoreLibrary: LibraryStore {
   func people() async throws -> [Person] {
     let g = try await catalogue.generation()
     return try peopleRows(g).map { row in
-      Person(id: row.id, name: row.name, itemCount: row.count, face: try itemFor(g, asset: row.face))
+      Person(id: row.id, name: row.name, itemCount: row.count, face: try itemFor(g, asset: row.face), hasFace: row.hasFace)
     }
   }
 
@@ -307,6 +307,7 @@ private struct PersonRow {
   let id, name: String
   let count: Int
   let face: Int64
+  let hasFace: Bool
 }
 
 private func peopleRows(_ g: Generation) throws -> [PersonRow] {
@@ -316,7 +317,7 @@ private func peopleRows(_ g: Generation) throws -> [PersonRow] {
       guard let user, let row, let key = row.pointee.key, let name = row.pointee.name else { return }
       user.assumingMemoryBound(to: [PersonRow].self).pointee.append(
         PersonRow(id: String(cString: key), name: String(cString: name),
-                  count: Int(row.pointee.item_count), face: row.pointee.face_asset_id))
+                  count: Int(row.pointee.item_count), face: row.pointee.face_asset_id, hasFace: row.pointee.has_face != 0))
     }, ptr)
   }
   guard status == MV_MOBILE_OK else { throw CatalogueOpenFailure.unreadable }
@@ -372,6 +373,37 @@ private final class CoreImages: ImageLadder, @unchecked Sendable {
     let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
     guard let cg = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else { return nil }
     return withExtendedLifetime(g) { UIImage(cgImage: cg) }
+  }
+
+  /// A person's face is their generation's too, under their key there.
+  private static func faceKey(_ person: Person) -> NSString { "\(person.face.id.catalogue)/face/\(person.id)" as NSString }
+
+  func cachedFace(for person: Person) -> UIImage? { cache.object(forKey: Self.faceKey(person)) }
+
+  func face(for person: Person) async -> UIImage? {
+    guard person.hasFace else { return nil }
+    let key = Self.faceKey(person)
+    if let hit = cache.object(forKey: key) { return hit }
+    guard let g = catalogue.generation(serial: person.face.id.catalogue), let image = Self.decodeFace(g, person.id) else {
+      return nil
+    }
+    let cost = (image.cgImage?.bytesPerRow ?? 256) * (image.cgImage?.height ?? 256)
+    cache.setObject(image, forKey: key, cost: cost)
+    return image
+  }
+
+  private static func decodeFace(_ g: Generation, _ key: String) -> UIImage? {
+    var data = Data()
+    let status = withUnsafeMutablePointer(to: &data) { ptr in
+      mv_mobile_library_person_face(g.raw, key, { user, bytes, length in
+        guard let user, let bytes else { return }
+        user.assumingMemoryBound(to: Data.self).pointee = Data(bytes: bytes, count: Int(length))
+      }, ptr)
+    }
+    guard status == MV_MOBILE_OK, let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
+    guard let cg = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else { return nil }
+    return UIImage(cgImage: cg)
   }
 
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error> {
