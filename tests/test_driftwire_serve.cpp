@@ -674,6 +674,28 @@ TEST_CASE("serve: one device's sessions stop at its own limit, and another devic
   CHECK(again);
 }
 
+TEST_CASE("serve: a connection turned away as busy gives its place back before it is told", "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = 2;
+  s.max_per_device = 1;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  auto first = serve::client::open(s.connect(), s.client_options());
+  REQUIRE(first);
+  // The first phone again, over its limit: through the handshake, then it never reads its
+  // refusal, so the service waits (kCancelWaitMs) to say it.
+  sp::channel_options co;
+  co.access_key = s.access;
+  co.static_key = s.device;
+  auto refused = sp::channel::open_library(s.connect(), "aaaaaaaaaaaaaaaa", "Phone", co);
+  REQUIRE(refused);
+  // Meanwhile the second phone takes the one place left: the refused one is not holding it.
+  auto other = serve::client::open(s.connect(), s.client_options(second));
+  CHECK(other);
+}
+
 TEST_CASE("serve: by default a phone copying over all its lanes leaves room for another phone",
           "[driftwire-serve]") {
   service_fixture s;

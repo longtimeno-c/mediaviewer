@@ -2121,15 +2121,22 @@ void server::state::serve_connection(conn* c) {
   struct slot {
     server::state& st;
     std::array<std::uint8_t, 32> device;
-    ~slot() {
+    bool holding = true;
+    void release() {
+      if (!holding) return;
+      holding = false;
       st.sessions.fetch_sub(1);
       std::lock_guard lock(st.device_sessions_m);
       if (const auto it = st.device_sessions.find(device); it != st.device_sessions.end() && --it->second <= 0) {
         st.device_sessions.erase(it);
       }
     }
+    ~slot() { release(); }
   } held{*this, *peer};
   if (before >= max_sessions || before_here >= max_per_device) {
+    // Given back before the refusal goes out: saying "busy" waits up to kCancelWaitMs, and a
+    // connection turned away must not take another's place meanwhile.
+    held.release();
     (void)opened->cancel(kCancelWaitMs, "busy");
     return;
   }
