@@ -121,7 +121,11 @@ struct BackupScreen: View {
             .fixedSize(horizontal: false, vertical: true)
         } else if backup.state == .checking && backup.total == 0 {
           Text("Checking what's already backed up…").font(.subheadline).foregroundStyle(Theme.title)
-          ProgressTrack(fraction: nil)
+          ProgressTrack(fraction: backup.listing.map(\.fraction))
+          if let listing = backup.listing, listing.of > 0 {
+            Text(listing.line).font(.footnote.monospacedDigit()).foregroundStyle(Theme.body)
+              .accessibilityIdentifier("backup.listing")
+          }
         } else {
           Text(backup.line)
             .font(.subheadline.monospacedDigit())
