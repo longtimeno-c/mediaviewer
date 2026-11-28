@@ -327,7 +327,8 @@ struct server::state {
 
   secrets::store* store = nullptr;
   bool loopback_only = false;
-  int max_sessions = 8;
+  int max_sessions = 32;
+  int max_per_device = 8;
   int max_pending = 16;
   int per_minute = 30;
 
@@ -344,6 +345,8 @@ struct server::state {
   int per_source_pending = 2, per_block_pending = 4;
 
   std::atomic<int> pending{0}, sessions{0};
+  std::mutex device_sessions_m;
+  std::map<std::array<std::uint8_t, 32>, int> device_sessions;  // under device_sessions_m: sessions per device
   std::mutex conns_m;
   std::list<std::shared_ptr<conn>> conns;  // under conns_m
   std::map<std::array<std::uint8_t, 32>, std::pair<std::uint64_t, std::uint64_t>> ended_usage;  // under conns_m: read, written
@@ -2117,12 +2120,31 @@ void server::state::serve_connection(conn* c) {
     c->grant = acc.a == access::live ? acc.g : std::nullopt;
   }
   const int before = sessions.fetch_add(1);
-  // Held to the end of this function, however it ends.
+  int before_here = 0;
+  {
+    std::lock_guard lock(device_sessions_m);
+    before_here = device_sessions[*peer]++;
+  }
+  // Both held to the end of this function, however it ends.
   struct slot {
-    std::atomic<int>& n;
-    ~slot() { n.fetch_sub(1); }
-  } held{sessions};
-  if (before >= max_sessions) {
+    server::state& st;
+    std::array<std::uint8_t, 32> device;
+    bool holding = true;
+    void release() {
+      if (!holding) return;
+      holding = false;
+      st.sessions.fetch_sub(1);
+      std::lock_guard lock(st.device_sessions_m);
+      if (const auto it = st.device_sessions.find(device); it != st.device_sessions.end() && --it->second <= 0) {
+        st.device_sessions.erase(it);
+      }
+    }
+    ~slot() { release(); }
+  } held{*this, *peer};
+  if (before >= max_sessions || before_here >= max_per_device) {
+    // Given back before the refusal goes out: saying "busy" waits up to kCancelWaitMs, and a
+    // connection turned away must not take another's place meanwhile.
+    held.release();
     (void)opened->cancel(kCancelWaitMs, "busy");
     return;
   }
@@ -3508,6 +3530,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
+  st.max_per_device = o.max_per_device;
   st.max_pending = o.max_pending;
   st.per_minute = o.per_minute;
   st.limits = source_limit(o.per_minute, std::chrono::minutes(1), kLimitSources);

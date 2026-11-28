@@ -107,6 +107,7 @@ struct service_fixture {
   int max_pending = 16;
   int max_sessions = 8;
   bool udp = true;  // options::udp
+  int max_per_device = 8;
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
   std::function<std::string()> storage;  // options::storage (the host's drives keeper)
   std::shared_ptr<serve::convert::service> converter;  // options::converter
@@ -177,6 +178,7 @@ struct service_fixture {
     o.max_pending = max_pending;
     o.max_sessions = max_sessions;
     o.udp = udp;
+    o.max_per_device = max_per_device;
     o.make_listener = make_listener;
     o.storage = storage;
     o.converter = converter;
@@ -687,6 +689,90 @@ TEST_CASE("serve: a burst is admitted up to the session limit", "[driftwire-serv
   auto ninth = serve::client::open(s.connect(), s.client_options(), &why);
   CHECK_FALSE(ninth);
   CHECK(why == serve::refusal::busy);
+}
+
+TEST_CASE("serve: one device's sessions stop at its own limit, and another device still gets in",
+          "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = 6;
+  s.max_per_device = 3;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+
+  std::vector<std::unique_ptr<serve::client>> first;
+  for (int i = 0; i < 3; ++i) {
+    auto c = serve::client::open(s.connect(), s.client_options());
+    REQUIRE(c);
+    first.push_back(std::move(*c));
+  }
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(serve::client::open(s.connect(), s.client_options(), &why));
+  CHECK(why == serve::refusal::busy);
+
+  // Three of six in use, all the first phone's: the second still has its own.
+  std::vector<std::unique_ptr<serve::client>> other;
+  for (int i = 0; i < 3; ++i) {
+    auto c = serve::client::open(s.connect(), s.client_options(second));
+    REQUIRE(c);
+    other.push_back(std::move(*c));
+  }
+  why = serve::refusal::none;
+  CHECK_FALSE(serve::client::open(s.connect(), s.client_options(second), &why));
+  CHECK(why == serve::refusal::busy);
+
+  // A session that ends gives its device's slot back.
+  first.front()->close();
+  first.erase(first.begin());
+  std::unique_ptr<serve::client> again;
+  for (int i = 0; i < 200 && !again; ++i) {  // the service sees the close a moment later
+    why = serve::refusal::none;
+    if (auto c = serve::client::open(s.connect(), s.client_options(), &why)) again = std::move(*c);
+    else REQUIRE(why == serve::refusal::busy);
+  }
+  CHECK(again);
+}
+
+TEST_CASE("serve: a connection turned away as busy gives its place back before it is told", "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = 2;
+  s.max_per_device = 1;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  auto first = serve::client::open(s.connect(), s.client_options());
+  REQUIRE(first);
+  // The first phone again, over its limit: through the handshake, then it never reads its
+  // refusal, so the service waits (kCancelWaitMs) to say it.
+  sp::channel_options co;
+  co.access_key = s.access;
+  co.static_key = s.device;
+  auto refused = sp::channel::open_library(s.connect(), "aaaaaaaaaaaaaaaa", "Phone", co);
+  REQUIRE(refused);
+  // Meanwhile the second phone takes the one place left: the refused one is not holding it.
+  auto other = serve::client::open(s.connect(), s.client_options(second));
+  CHECK(other);
+}
+
+TEST_CASE("serve: by default a phone copying over all its lanes leaves room for another phone",
+          "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = serve::server::options{}.max_sessions;
+  s.max_per_device = serve::server::options{}.max_per_device;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  std::vector<std::unique_ptr<serve::client>> kept;
+  for (int i = 0; i < 8; ++i) {  // more lanes than a copy opens today (sync_config::lanes)
+    auto c = serve::client::open(s.connect(), s.client_options());
+    REQUIRE(c);
+    kept.push_back(std::move(*c));
+  }
+  auto other = serve::client::open(s.connect(), s.client_options(second));
+  CHECK(other);
 }
 
 TEST_CASE("serve: a wrong prefix takes as long to close as a right one", "[driftwire-serve]") {
