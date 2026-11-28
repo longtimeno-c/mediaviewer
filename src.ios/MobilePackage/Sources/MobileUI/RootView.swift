@@ -19,6 +19,7 @@ public struct RootView: View {
       case .firstCopy: FirstCopyScreen().transition(.opacity)
       case .main: MainTabs().transition(.opacity)
       }
+      LockGround(lock: model.lock)
     }
     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.stage)
     .environment(model)
@@ -50,6 +51,7 @@ public struct RootView: View {
              : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your server changes.")
       }
     }
+    .background(LockCover(lock: model.lock))
     .task { await model.run() }
   }
 }

@@ -173,10 +173,12 @@ public final class AppModel {
   @ObservationIgnored private var wasSample: Bool
   public let library: LibraryModel
   public let search: SearchModel
+  /// The optional Face ID or passcode lock (AppLock.swift).
+  public let lock: AppLock
 
   private var dismissedNotices: Set<String> = []
 
-  public init(services: Services, scanner: ScanSurfaceProviding, demoVPN: DemoVPN = DemoVPN()) {
+  public init(services: Services, scanner: ScanSurfaceProviding, demoVPN: DemoVPN = DemoVPN(), lock: AppLock? = nil) {
     self.services = services
     self.scanner = scanner
     self.demoVPN = demoVPN
@@ -185,6 +187,7 @@ public final class AppModel {
     connection = now
     vpn = Self.vpnService(isSample: now.isSample, demo: demoVPN, real: services.vpn).current
     wasSample = now.isSample
+    self.lock = lock ?? AppLock(hasLibrary: now.hasLibrary)
     // A library paired but never copied (the app was killed mid-copy) goes back to the copy; one
     // with no catalogue on its NAS yet opens as its folders (file mode), and one whose access
     // ended opens on the ended card.
@@ -439,6 +442,7 @@ public final class AppModel {
       await services.connection.forget()
       await demoVPN.remove()
       showsVPN = false
+      lock.turnOff()
       UserDefaults.standard.removeObject(forKey: Self.epochKey)
       resetLibraryState()
       tab = .library
