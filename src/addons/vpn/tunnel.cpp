@@ -433,13 +433,19 @@ result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_
     bool closed_early = false;
     auto r = open_turn(host, port, said, remote, kind, closed_early);
     if (r || again || !closed_early) return r;
-    // Closed before a word, with more opening alongside (those open then,
-    // and those begun since) than an older server takes from one source:
-    // taken for that server's cap, kept to from now on, and this one tried
-    // again in turn.
-    std::lock_guard lock(m_);
-    if (crowd + static_cast<int>(starts_ - started) <= kOldOpensAtOnce + 1) return r;
-    cap_ = kOldOpensAtOnce;
+    // Closed before a word: tried once more, in turn. With more opening
+    // alongside (those open then, and those begun since) than an older server
+    // takes from one source, that is taken for the server's cap and kept to
+    // from now on. With few, the server may still be counting handshakes that
+    // have ended here (it lets one go a moment after its answer), so this one
+    // waits a moment first; a server that refuses everyone is only asked twice.
+    std::unique_lock lock(m_);
+    if (crowd + static_cast<int>(starts_ - started) > kOldOpensAtOnce + 1) {
+      cap_ = kOldOpensAtOnce;
+    } else {
+      turn_cv_.wait_for(lock, std::chrono::milliseconds(kRefusedAgainMs), [&] { return stopped_; });
+      if (stopped_) return err(status::cancelled);
+    }
   }
 }
 

@@ -55,6 +55,9 @@ inline constexpr int kMaxStreams = 128;
 // kOldOpensAtOnce for the rest of its life.
 inline constexpr int kOpensAtOnce = 12;
 inline constexpr int kOldOpensAtOnce = 3;
+// A forward the server closed before a word while few were opening is asked once more after
+// this long: the server may still count a handshake that has just ended here.
+inline constexpr int kRefusedAgainMs = 150;
 // A local client says its request within this.
 inline constexpr int kRequestMs = 10000;
 // An HTTP request head, at most.

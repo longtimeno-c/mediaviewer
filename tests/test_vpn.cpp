@@ -817,6 +817,39 @@ TEST_CASE("vpn: the dialer opens many forwards at once, and falls back for an ol
   }
 }
 
+// A relay that still counts a handshake this side has finished closes the next forward before
+// a word, though only one was opening. That open is asked once more, not given up.
+TEST_CASE("vpn: a forward the relay closes before a word is asked once more", "[vpn]") {
+  namespace tunnel = mv::driftwire::tunnel;
+  tcp_echo te;
+  udp_echo ue;
+  auto server = relay::server::start(relay_options(te.port(), ue.port()));
+  REQUIRE(server);
+  std::atomic<int> connects{0};
+  const auto dial = [&](int closed_first) {
+    connects = 0;
+    tunnel::dialer::options d;
+    d.relay = "127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey;
+    d.connect = [&connects, closed_first](const sp::net::endpoint& to, int timeout_ms) -> mv::result<std::unique_ptr<sp::link>> {
+      if (connects.fetch_add(1) < closed_first) {
+        auto [ours, theirs] = loopback_pair();
+        theirs.reset();  // the far end closes at once, saying nothing
+        return std::move(ours);
+      }
+      return sp::net::connect(to, timeout_ms);
+    };
+    auto dialer = tunnel::dialer::make(d);
+    REQUIRE(dialer);
+    relay::forward_answer said{};
+    auto s = (*dialer)->open("127.0.0.1", te.port(), said);
+    return s && said == relay::forward_answer::ok;
+  };
+  CHECK(dial(1));  // closed once: opened on the second ask
+  CHECK(connects.load() == 2);
+  CHECK_FALSE(dial(2));  // closed again: given up, asked twice and no more
+  CHECK(connects.load() == 2);
+}
+
 namespace {
 
 // The OS's interface, as a stand-in: a loopback pair per start.
