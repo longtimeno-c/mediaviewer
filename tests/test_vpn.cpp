@@ -717,6 +717,9 @@ TEST_CASE("vpn: every app's lookups share one DNS flow, each answer back to its 
   r->reset();
 }
 
+// Not on Windows: std::clock is wall time there (the C runtime's), not the process's CPU time, so
+// the second slept through always reads as one second "used" (as test_driftwire.cpp's CPU test).
+#if !defined(_WIN32)
 TEST_CASE("vpn: with the most lookups asked and none answered, the DNS flow waits, not spins", "[vpn]") {
   // Before this, 1024 lookups unanswered left the flow's thread spinning on its lock until they
   // expired (10 s): the wait's condition (a lookup queued) was already true.
@@ -748,6 +751,7 @@ TEST_CASE("vpn: with the most lookups asked and none answered, the DNS flow wait
   CHECK(cpu_s < 0.5);  // spinning, one core: about 1 s of the second
   r->reset();
 }
+#endif
 
 TEST_CASE("vpn: the dialer opens many forwards at once, and falls back for an older relay",
           "[vpn]") {
