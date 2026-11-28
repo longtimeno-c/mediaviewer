@@ -86,6 +86,7 @@ struct device_row {
   // the host's elevated step. "" for a phone, and from a service before this.
   bool desktop = false;
   std::string share = {};
+  std::string person = {};  // who it belongs to (self-host-users-smb.md §13); "" nobody
 };
 
 // The NAS's owner side (§3): what it can do and where the owner stands.
@@ -230,6 +231,9 @@ class desk {
   [[nodiscard]] expected set_phone_backup(const key32& key, bool on);
   // A device's nickname on the server's lists (serve_admin rename; no unlock).
   [[nodiscard]] expected rename(const key32& key, const std::string& name);
+  // The people devices belong to (§13): `verb` one of people, person_set, person_remove,
+  // device_person, with its fields; the service's answer (the list) as JSON.
+  [[nodiscard]] result<std::string> people(std::string_view verb, const std::string& request_json);
   [[nodiscard]] expected remove_root(const std::string& id);
 
   // The nearby service over `folder` (the Catalogue root) for the paired phones,

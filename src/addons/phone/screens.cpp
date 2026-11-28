@@ -31,6 +31,10 @@ struct phone_row {
   std::int64_t expires = 0;
   bool desktop = false;  // a computer: its own share account (self-host-users-smb.md §12)
   std::string share = {};  // "ready", "waiting" or ""
+  std::string person = {};  // who it belongs to (§13); "" nobody
+};
+struct person_row {
+  std::string name, role;
 };
 struct folder_row {
   std::string id, label, path;
@@ -105,6 +109,7 @@ struct view {
   bool claimed = false, reachable = true;
   std::string local, public_name, warning;
   std::vector<phone_row> phones;
+  std::vector<person_row> people;  // §13
   std::vector<folder_row> folders;
   std::string qr, qr_library, qr_fingerprint;
   std::int64_t qr_expires = 0, qr_for_s = 0;
@@ -198,7 +203,13 @@ view parse(std::string_view text) {
       p.backup = b_of(d, "backup", !p.guest);
       p.desktop = b_of(d, "desktop");
       p.share = s_of(d, "share");
+      p.person = s_of(d, "person");
       s.phones.push_back(std::move(p));
+    }
+  }
+  if (const json::value* v = o.find("people"); v && v->k == json::kind::array) {
+    for (const json::value& d : v->a) {
+      if (d.str("name")) s.people.push_back({*d.str("name"), s_of(d, "role")});
     }
   }
   if (const json::value* v = o.find("folders"); v && v->k == json::kind::array) {
@@ -1107,6 +1118,8 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   }
   phone_keys_.clear();
   phone_ends_.clear();
+  person_names_.clear();
+  for (const person_row& x : s.people) person_names_.push_back(x.name);
   server_here_ = s.host && s.host->set_up;
   if (!(server_here_ && s.claimed)) duck_change_ = false;
   phone_limited_.clear();
@@ -1484,7 +1497,42 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     end(w);
   };
 
+  // People (§13): set a person's access once, and every phone and computer of theirs has it, in
+  // the app and, at home, in Finder or Explorer.
+  const auto people_rows = [&] {
+    row(w, "people", "People",
+        "Give someone's phone and computers the same access at once: add them, then choose them under "
+        "Belongs to on each device.");
+    if (!adding_person_) sym_button(w, "people_add_open", "Add person\xE2\x80\xA6", "plus", busy, "plain", "Add a person");
+    end_row(w);
+    for (const person_row& x : s.people) {
+      const std::string id = row_hash("pe", x.name);
+      std::size_t n = 0;
+      for (const phone_row& p : s.phones) n += p.person == x.name ? 1 : 0;
+      const std::string detail = n == 0 ? "No devices yet: choose " + x.name + " under Belongs to on a device below."
+                                 : (n == 1 ? std::string("1 device") : std::to_string(n) + " devices") +
+                                       " \xC2\xB7 the same access in the app and, at home, in Finder or Explorer";
+      row(w, id, x.name, detail);
+      choice(w, id + "_role", "What " + x.name + "'s devices can do",
+             {{"view", "Can view files"}, {"change", "Can change files"}}, x.role, busy);
+      button(w, id + "_remove", "Remove", busy, "plain", "Remove " + x.name + "; their devices keep their access");
+      end_row(w);
+    }
+    if (adding_person_) {
+      stack(w, "people_add", 8, "vertical");
+      field(w, "pe_new_name", "Name", new_person_, "Tristan");
+      choice(w, "pe_new_role", "What their devices can do", {{"view", "Can view files"}, {"change", "Can change files"}},
+             new_person_role_);
+      stack(w, "people_add_buttons", 8, "horizontal");
+      button(w, "pe_new_cancel", "Cancel");
+      button(w, "pe_new_go", "Add", busy || trim(new_person_).empty(), "primary", "Add this person");
+      end(w);
+      end(w);
+    }
+  };
+
   const auto phone_rows = [&] {
+    people_rows();
     for (std::size_t i = 0; i < s.phones.size(); ++i) {
       const phone_row& p = s.phones[i];
       const std::string id = row_hash("ph", p.key);
@@ -1509,6 +1557,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
                                        : std::string());
         if (timed) detail += p.expired || p.expires <= now ? " \xC2\xB7 Expired" : " \xC2\xB7 Until " + weekday_clock(p.expires);
       }
+      if (!p.person.empty()) detail = p.person + "'s \xC2\xB7 " + (p.backup ? "Can change files" : "Can view files") + (p.desktop && p.share == "waiting" ? " \xC2\xB7 Its share at home waits for " + me + "'s administrator" : std::string());
       row(w, id, p.name, detail);
       // Extend offers only lengths that end later than the phone's end now.
       std::vector<option> opts{{"", timed ? "Extend\xE2\x80\xA6" : "Add a time limit\xE2\x80\xA6"}};
@@ -1518,7 +1567,14 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
       if (timed) opts.push_back({"unlimited", kUnlimited});
       choice(w, id + "_access", timed ? "Extend " + p.name + "'s access" : "Time limit for " + p.name, opts, "",
              busy || !s.has("passphrase"));
-      if (p.desktop) {
+      if (!s.people.empty()) {
+        std::vector<option> to{{"", "Nobody"}};
+        for (const person_row& x : s.people) to.push_back({x.name, x.name});
+        choice(w, id + "_person", "Who " + p.name + " belongs to", to, p.person, busy);
+      }
+      if (!p.person.empty()) {
+        // Its person's role is its role: changed on the person's row.
+      } else if (p.desktop) {
         choice(w, id + "_role", "What " + p.name + " can do",
                {{"view", "Can view files"}, {"change", "Can change files"}}, p.backup ? "change" : "view", busy);
       } else if (s.has("backup")) {
@@ -2128,7 +2184,17 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
           out.push_back(req("phone_backup").s("key", phone_keys_[i]).b("on", v == "change").done());
         } else if (rest == "_name") {
           rename_text_ = v;
+        } else if (rest == "_person") {
+          out.push_back(req("device_person").s("key", phone_keys_[i]).s("person", v).done());
         }
+      } else if (find_row(node, "pe", person_names_, i, rest)) {
+        if (rest == "_role" && (v == "view" || v == "change")) {
+          out.push_back(req("person_set").s("name", person_names_[i]).s("role", v).done());
+        }
+      } else if (node == "pe_new_name") {
+        new_person_ = v;
+      } else if (node == "pe_new_role" && (v == "view" || v == "change")) {
+        new_person_role_ = v;
       }
     }
     return out;
@@ -2478,6 +2544,17 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
         out.push_back(req("rename").s("key", phone_keys_[i]).s("name", trim(rename_text_)).done());
         renaming_.clear();
       }
+    } else if (find_row(node, "pe", person_names_, i, rest)) {
+      if (rest == "_remove") out.push_back(req("person_remove").s("name", person_names_[i]).done());
+    } else if (node == "people_add_open") {
+      adding_person_ = true;
+      new_person_.clear();
+      new_person_role_ = "change";
+    } else if (node == "pe_new_cancel") {
+      adding_person_ = false;
+    } else if (node == "pe_new_go" && !trim(new_person_).empty()) {
+      out.push_back(req("person_set").s("name", trim(new_person_)).s("role", new_person_role_).done());
+      adding_person_ = false;
     } else if (find_row(node, "fo", folder_ids_, i, rest)) {
       if (rest == "_stop") {
         out.push_back(req("remove_folder").s("id", folder_ids_[i]).done());

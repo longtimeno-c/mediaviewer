@@ -25,6 +25,7 @@
 #include "wire/channel.h"
 #include "wire/device_shares.h"
 #include "wire/grants.h"
+#include "wire/people.h"
 #include "wire/known.h"
 #include "wire/net.h"
 #include "wire/keys.h"
@@ -3008,10 +3009,13 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       std::erase_if(codes, [&](const waiting_code& w) { return w.deadline <= now; });
       waiting = !codes.empty() || redeeming > 0;
     }
+    std::vector<people::person> folk;
+    (void)people::load(*store, folk);  // unreadable: no one is named, the devices still listed
     json::writer w;
     w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
     for (const auto& d : known::load(*store)) {
       w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key));
+      if (const auto* p = people::owner_of(folk, d.key)) w.key("person").string(p->name);
       device_access acc;
       acc.a = access::full;
       if (const std::string share = desk_word(d.key, acc); !share.empty()) {
@@ -3021,6 +3025,80 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     }
     w.end_array().end_object();
     return {end_code::ok, w.take()};
+  }
+  // ---- people a device belongs to (self-host-users-smb.md §13) ----
+  // A person's role is every device of theirs' role: set through `grant {role}` for each, so
+  // "change" needs the unlock exactly as a device's own would.
+  const auto apply_role = [&](const std::array<std::uint8_t, 32>& key, const std::string& role) {
+    json::writer g;
+    g.begin_object().key("do").string("grant").key("key").string(key_hex(key)).key("role").string(role).end_object();
+    return admin(c, g.take());
+  };
+  const auto people_json = [](const std::vector<people::person>& folk) {
+    json::writer w;
+    w.begin_object().key("people").begin_array();
+    for (const auto& p : folk) {
+      w.begin_object().key("name").string(p.name).key("role").string(p.role).key("devices").begin_array();
+      for (const auto& d : p.devices) w.string(key_hex(d));
+      w.end_array().end_object();
+    }
+    w.end_array().end_object();
+    return w.take();
+  };
+  if (*what == "people") {
+    std::vector<people::person> folk;
+    if (!people::load(*store, folk)) return {end_code::error, {}};
+    return {end_code::ok, people_json(folk)};
+  }
+  if (*what == "person_set" || *what == "person_remove" || *what == "device_person") {
+    const std::string role = text("role");
+    if (*what == "person_set" && role == "change") {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    std::vector<people::person> folk;
+    std::vector<std::array<std::uint8_t, 32>> follow;  // devices whose role is now their person's
+    std::string their_role;
+    // The device's access, read before the lists' lock (access_of takes it).
+    const auto key = *what == "device_person" ? device_key() : std::nullopt;
+    const auto acc = key ? access_of(*key) : device_access{};
+    {
+      std::lock_guard lock(devices_m);
+      std::unique_ptr<net::instance_lock> held;
+      if (!may_change_devices(held)) return {end_code::error, {}};
+      if (!people::load(*store, folk)) return {end_code::error, {}};
+      if (*what == "person_set") {
+        const std::string why = people::set(folk, text("name"), role);
+        if (why == "too-many") return {end_code::too_many, {}};
+        if (!why.empty()) return {end_code::bad_request, {}};
+        if (const auto* p = people::find(folk, *people::clean_name(text("name")))) {
+          follow = p->devices;
+          their_role = p->role;
+        }
+      } else if (*what == "person_remove") {
+        if (!people::remove(folk, text("name"))) return {end_code::not_found, {}};
+      } else {
+        if (!key) return {end_code::bad_request, {}};
+        if (acc.a == access::none) return {end_code::not_found, {}};
+        const std::string to = text("person");
+        const std::string why = people::link(folk, *key, to);
+        if (why == "not-found") return {end_code::not_found, {}};
+        if (!why.empty()) return {end_code::too_many, {}};
+        if (!to.empty()) {
+          their_role = people::find(folk, to)->role;
+          // Taking a person's "change" adds access: the unlock, before anything is kept.
+          if (their_role == "change" && want_of(acc).role != "change") {
+            if (auto refused = needs_unlock(c)) return *refused;
+          }
+          follow.push_back(*key);
+        }
+      }
+      if (!people::save(*store, folk)) return {end_code::error, {}};
+    }
+    for (const auto& k : follow) {
+      if (access_of(k).a == access::none) continue;  // unpaired meanwhile
+      if (auto done = apply_role(k, their_role); done.first != end_code::ok) return done;
+    }
+    return {end_code::ok, people_json(folk)};
   }
   if (*what == "rename") {
     // {"key","name"}: a device's nickname on this server's lists. It adds no access: no unlock.
@@ -3071,6 +3149,9 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       if (device_shares::load(*store, desks) && device_shares::remove(desks, *key)) {
         (void)device_shares::save(*store, desks);
       }
+      // And it belongs to nobody any more (§13).
+      std::vector<people::person> folk;
+      if (people::load(*store, folk) && people::forget_device(folk, *key)) (void)people::save(*store, folk);
     }
     cut_unpaired();
     return {end_code::ok, "{}"};
@@ -3081,6 +3162,8 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     // lists them: a desktop from before this would serve them unlimited.
     std::vector<grants::grant> limited;
     if (!grants::load(*store, limited)) return {end_code::error, {}};
+    std::vector<people::person> folk;
+    (void)people::load(*store, folk);
     const auto t = now();
     json::writer w;
     w.begin_object().key("now").integer(t).key("grants").begin_array();
@@ -3094,6 +3177,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         for (const auto& r : *g.roots) w.string(r);
         w.end_array();
       }
+      if (const auto* p = people::owner_of(folk, g.key)) w.key("person").string(p->name);
       device_access acc;
       acc.a = access::live;
       acc.g = g;

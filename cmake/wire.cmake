@@ -106,6 +106,7 @@ add_library(mv_wire STATIC
   ${_W}/grants.cpp ${_W}/grants.h
   ${_W}/share_users.cpp ${_W}/share_users.h
   ${_W}/device_shares.cpp ${_W}/device_shares.h
+  ${_W}/people.cpp ${_W}/people.h
   ${_W}/serve.cpp ${_W}/serve.h
   ${_W}/serve_backup.cpp ${_W}/serve_backup.h
   ${_W}/serve_client.cpp ${_W}/serve_client.h

@@ -318,3 +318,36 @@ Today the card that edits the list is the host's own.
 `[host-users]` "a paired computer gets its own account…" (made, kept, changed, taken away),
 `[phone-pairing]` "a paired computer is a user…" (listed, renamed, its login at home only, a
 role change makes it wait, unpaired), and `[phone-addon]` "a computer is a user…" (the card).
+
+## 13. People own devices (owner's call, 2026-11-28) — built
+
+The owner wants their phone and laptop to change files both in the app and in Finder on the
+auto-mounted share. They asked for this as "link a user to a connected device, then set that user's permission". So
+a **person** is a name and a role, and each paired device **belongs to** at most one person. A device
+that belongs to someone has that person's role. It is set once, on the person's row, and reaches:
+
+- **the app:** every device's grant (`grant {role}`; "change" may write, move and delete);
+- **the share at home:** a computer's own account (§12) follows its grant, so the next
+  Finish… gives it the new rights.
+
+A device that belongs to nobody keeps a role of its own, as in §12. No password and no OS account:
+a person is a name on the server's lists (`people` in the store, `wire/people.h`). People who
+need their own sign-in are still the CLI's share users.
+
+- **Wire:** `serve_admin people` (read), `person_set {name, role}`, `person_remove {name}` and
+  `device_person {key, person}` ("" for nobody). Each answers the list. A role reaches the
+  devices through `grant {role}`, so "change" needs the unlock exactly as a device's own would.
+  A person removed leaves their devices with the access they had. An unpaired device belongs to
+  no one. The `devices` and `grants` listings say each device's `person`.
+- **Card** (Phone access → Phones and computers): a **People** row with **Add person…** (a name, and
+  what their devices can do, Can change files by default). Each person's row has their device
+  count, a role picker and Remove. Each device has a **Belongs to** picker (Nobody or a person).
+  A device that belongs to someone shows "Tristan's · Can change files" and has no role
+  control of its own.
+- **Setting up the owner's case:** Add person "Tristan" (Can change files), then choose Tristan
+  under Belongs to on the phone and on the laptop. If a computer's share waits, press Finish…
+  once on this PC.
+
+**Tests:** `[device-shares]` "people…" (the store), `[phone-pairing]` "a person's role is every
+device of theirs' role" (a phone and a computer, one change reaching both, nobody, unpaired),
+and `[phone-addon]` "people own devices…" (the card).

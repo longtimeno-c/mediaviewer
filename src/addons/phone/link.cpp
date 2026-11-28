@@ -684,10 +684,24 @@ void link::refresh(bool phones_only) {
           r.backup = v.boolean("backup").value_or(!r.guest);
           r.desktop = v.boolean("desktop").value_or(false);
           if (const std::string* sh = v.str("share")) r.share = *sh;
+          if (const std::string* pe = v.str("person")) r.person = *pe;
           rows.push_back(std::move(r));
         }
       }
+      // Whom they belong to (§13): a service from before people answers nothing, so none.
+      std::vector<person_row> folk;
+      if (auto pe = route("people", "{}")) {
+        const auto pdoc = json::parse(*pe, 5);
+        if (const json::value* pl = pdoc ? pdoc->find("people") : nullptr; pl && pl->k == json::kind::array) {
+          for (const json::value& v : pl->a) {
+            const std::string* name = v.str("name");
+            const std::string* role = v.str("role");
+            if (name && role) folk.push_back({*name, *role});
+          }
+        }
+      }
       std::lock_guard lock(m_);
+      v_.people = std::move(folk);
       v_.devices = std::move(rows);
       v_.reachable = doc && doc->boolean("reachable").value_or(false);
       v_.code_waiting = doc && doc->boolean("code_waiting").value_or(false);
@@ -1427,6 +1441,17 @@ void link::run(const std::string& request) {
     refresh();
     return;
   }
+  if (what == "person_set" || what == "person_remove" || what == "device_person") {
+    json::writer w;
+    w.begin_object();
+    for (const char* k : {"name", "role", "key", "person"}) {
+      if (doc->str(k)) w.key(k).string(text(k));
+    }
+    w.end_object();
+    if (auto r = route(what.c_str(), w.str()); !r) return fail_status(r.error());
+    refresh();
+    return;
+  }
   if (what == "rename") {
     json::writer w;
     w.begin_object().key("key").string(text("key")).key("name").string(text("name")).end_object();
@@ -1998,8 +2023,12 @@ std::string link::state_json() const {
     w.key("guest").boolean(d.guest).key("scoped").boolean(d.scoped);
     w.key("backup").boolean(d.backup);
     if (d.desktop) w.key("desktop").boolean(true).key("share").string(d.share);
+    if (!d.person.empty()) w.key("person").string(d.person);
     w.end_object();
   }
+  w.end_array();
+  w.key("people").begin_array();
+  for (const auto& p : v_.people) w.begin_object().key("name").string(p.name).key("role").string(p.role).end_object();
   w.end_array();
   // The NAS owner's side: its passphrase ("set", "none", "broken"; "" from a NAS
   // too old to say), what it can do, this desktop's unlock and any lockout.

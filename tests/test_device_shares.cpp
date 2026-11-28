@@ -101,3 +101,47 @@ TEST_CASE("device shares: a computer's role and folders are its pairing's", "[de
   REQUIRE(w.folders);
   CHECK(*w.folders == std::vector<std::string>{"Videos"});
 }
+
+// self-host-users-smb.md §13 (owner, 2026-11-28): people own devices; a device has its person's role.
+#include "wire/people.h"
+namespace people = mv::driftwire::serve::people;
+
+TEST_CASE("people: a person has a role and devices; a device belongs to one person at most", "[device-shares]") {
+  std::vector<people::person> folk;
+  CHECK(people::set(folk, "  Tristan ", "change").empty());
+  CHECK(people::set(folk, "tristan", "view").empty());  // the same person, by name without case
+  REQUIRE(folk.size() == 1);
+  CHECK(folk[0].name == "Tristan");
+  CHECK(folk[0].role == "view");
+  CHECK(people::set(folk, "", "view") == "bad-name");
+  CHECK(people::set(folk, "Anna", "admin") == "bad-role");
+  CHECK(people::set(folk, "Anna", "change").empty());
+  people::key32 phone{}, mac{};
+  phone.fill(1);
+  mac.fill(2);
+  CHECK(people::link(folk, phone, "Tristan").empty());
+  CHECK(people::link(folk, mac, "Tristan").empty());
+  CHECK(people::link(folk, mac, "Nobody here") == "not-found");
+  REQUIRE(people::owner_of(folk, mac));
+  CHECK(people::owner_of(folk, mac)->name == "Tristan");
+  // Moved to Anna: taken from Tristan.
+  CHECK(people::link(folk, mac, "Anna").empty());
+  CHECK(people::owner_of(folk, mac)->name == "Anna");
+  CHECK(people::find(folk, "Tristan")->devices.size() == 1);
+  // Read back whole; a device on two people is refused whole.
+  auto back = people::decode(people::encode(folk));
+  REQUIRE(back);
+  CHECK(back->size() == 2);
+  CHECK(people::owner_of(*back, phone)->name == "Tristan");
+  const std::string k(64, 'a');
+  CHECK_FALSE(people::decode(R"({"v":1,"people":[{"name":"A","role":"view","devices":[")" + k +
+                             R"("]},{"name":"B","role":"view","devices":[")" + k + R"("]}]})"));
+  CHECK_FALSE(people::decode(R"({"v":1,"people":[{"name":"A","role":"view","devices":[]},{"name":"a","role":"view","devices":[]}]})"));
+  // To nobody, then unpaired, then the person removed: devices go free, never with them.
+  CHECK(people::link(folk, phone, "").empty());
+  CHECK_FALSE(people::owner_of(folk, phone));
+  CHECK(people::forget_device(folk, mac));
+  CHECK_FALSE(people::forget_device(folk, mac));
+  CHECK(people::remove(folk, "ANNA"));
+  CHECK(folk.size() == 1);
+}

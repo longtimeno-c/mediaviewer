@@ -151,6 +151,10 @@ class link {
     bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
     bool desktop = false;  // a computer: its own share account (self-host-users-smb.md §12)
     std::string share = {};  // "ready", "waiting" or ""
+    std::string person = {};  // who it belongs to (self-host-users-smb.md §13)
+  };
+  struct person_row {
+    std::string name, role;  // role: "view" or "change"
   };
   struct folder_row {
     std::string id, label, path;
@@ -177,6 +181,7 @@ class link {
     bool claimed = false, reachable = true;
     std::string local, public_name, warning;
     std::vector<row> devices;
+    std::vector<person_row> people;  // §13: whom the devices belong to
     std::vector<folder_row> folders;
     std::string qr_url, qr_library, qr_fingerprint;
     std::int64_t qr_expires = 0;

@@ -134,6 +134,10 @@ class screen {
   bool relay_editing_ = false;
   // A device being renamed (its key) and the name typed (self-host-users-smb.md §12).
   std::string renaming_, rename_text_;
+  // People the devices belong to (self-host-users-smb.md §13): the Add person form.
+  bool adding_person_ = false;
+  std::string new_person_, new_person_role_ = "change";
+  std::vector<std::string> person_names_;  // from the last build, to map rows back
   std::string relay_address_, relay_key_;  // relay_key_ secure
   bool setup_open_ = false;
   std::string setup_kind_ = "this";  // "this", "synology", "other"

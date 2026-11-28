@@ -3107,3 +3107,68 @@ TEST_CASE("phone pairing: a paired computer is a user: renamed, its role set, it
   REQUIRE(desks.size() == 1);
   CHECK(desks[0].gone);
 }
+
+// self-host-users-smb.md §13 (owner, 2026-11-28): "link a user to a device, then set that user's
+// permission". A person's role reaches each of their devices, phone and computer alike; a device
+// moved to nobody keeps what it had; unpaired, it belongs to no one.
+TEST_CASE("phone pairing: a person's role is every device of theirs' role", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  const auto pair = [&](const key32& k, bool computer, const std::string& name) {
+    auto p = mac.d->start_pairing();
+    REQUIRE(p);
+    serve::client::options o;
+    o.access_key = n.access;
+    o.device_key = k;
+    o.service_key = n.identity;
+    o.id = "dddddddddddddddd";
+    o.name = "device";
+    o.pair_code = p->code;
+    o.device_name = name;
+    if (computer) o.device_kind = serve::kDeviceDesktop;
+    REQUIRE(serve::client::open(n.connect(), o));
+  };
+  const key32 phone = random_key(), laptop = random_key();
+  pair(phone, false, "iPhone");
+  pair(laptop, true, "MacBook Pro");
+  const auto row_of = [&](const key32& k) {
+    auto list = mac.d->refresh_devices();
+    REQUIRE(list);
+    for (const auto& r : *list) {
+      if (r.key == public_of(k)) return r;
+    }
+    FAIL("not listed");
+    return desk::device_row{};
+  };
+  CHECK_FALSE(row_of(laptop).backup);  // a computer starts as "can view files"
+
+  // Tristan can view files; both devices are his: both view.
+  auto r = mac.d->people("person_set", R"({"name":"Tristan","role":"view"})");
+  REQUIRE(r);
+  for (const key32* k : {&phone, &laptop}) {
+    REQUIRE(mac.d->people("device_person", "{\"key\":\"" + mv::driftwire::key_hex(public_of(*k)) + "\",\"person\":\"Tristan\"}"));
+  }
+  CHECK(row_of(phone).person == "Tristan");
+  CHECK(row_of(laptop).person == "Tristan");
+  CHECK_FALSE(row_of(phone).backup);
+  CHECK_FALSE(row_of(laptop).backup);
+  // One change on the person: both can change files, in the app and (the computer) on its share.
+  REQUIRE(mac.d->people("person_set", R"({"name":"Tristan","role":"change"})"));
+  CHECK(row_of(phone).backup);
+  CHECK(row_of(laptop).backup);
+  CHECK(row_of(laptop).share == "waiting");  // its account changes at the next step
+  auto listed = mac.d->people("people", "{}");
+  REQUIRE(listed);
+  CHECK(listed->find("\"name\":\"Tristan\",\"role\":\"change\"") != std::string::npos);
+  // A person who isn't there is refused; a device to nobody keeps its access.
+  CHECK_FALSE(mac.d->people("device_person", "{\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\",\"person\":\"Anna\"}"));
+  REQUIRE(mac.d->people("device_person", "{\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\",\"person\":\"\"}"));
+  CHECK(row_of(phone).person.empty());
+  CHECK(row_of(phone).backup);
+  // Unpaired: it belongs to no one.
+  REQUIRE(mac.d->revoke(public_of(laptop)));
+  listed = mac.d->people("people", "{}");
+  REQUIRE(listed);
+  CHECK(listed->find("\"devices\":[]") != std::string::npos);
+}

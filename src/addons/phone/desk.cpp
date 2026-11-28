@@ -656,6 +656,7 @@ result<std::vector<device_row>> desk::refresh_devices() {
     r.key = *parsed;
     r.desktop = v.boolean("desktop").value_or(false);
     if (const std::string* sh = v.str("share")) r.share = *sh;
+    if (const std::string* pe = v.str("person")) r.person = *pe;
     rows.push_back(std::move(r));
   }
   // The timed and scoped phones (§5), from a NAS that has them: `devices`
@@ -682,6 +683,7 @@ result<std::vector<device_row>> desk::refresh_devices() {
       r.backup = v.boolean("backup").value_or(!r.guest);
       r.desktop = v.boolean("desktop").value_or(false);
       if (const std::string* sh = v.str("share")) r.share = *sh;
+      if (const std::string* pe = v.str("person")) r.person = *pe;
       if (const json::value* roots = v.find("roots"); roots && roots->k == json::kind::array) {
         r.scoped = true;
         std::vector<std::string> ids;
@@ -959,6 +961,23 @@ expected desk::rename(const key32& key, const std::string& name) {
   return {};
 }
 
+result<std::string> desk::people(std::string_view verb, const std::string& request_json) {
+  if (verb != "people" && verb != "person_set" && verb != "person_remove" && verb != "device_person") {
+    return err(status::invalid_arg);
+  }
+  const auto doc = json::parse(request_json.empty() ? std::string_view("{}") : std::string_view(request_json), 3);
+  if (!doc || doc->k != json::kind::object) return err(status::invalid_arg);
+  json::writer w;
+  w.begin_object().key("do").string(verb);
+  for (const char* k : {"name", "role", "key", "person"}) {
+    if (const std::string* v = doc->str(k)) w.key(k).string(*v);
+  }
+  w.end_object();
+  std::lock_guard lock(st_->m);
+  st_->load();
+  return st_->ask(w.str());
+}
+
 std::string desk::last_refusal() {
   std::lock_guard lock(st_->m);
   return st_->refusal;
@@ -1067,6 +1086,7 @@ std::string devices_json(const std::vector<device_row>& rows, bool reachable, bo
     }
     w.key("backup").boolean(r.backup);
     if (r.desktop) w.key("desktop").boolean(true).key("share").string(r.share);
+    if (!r.person.empty()) w.key("person").string(r.person);
     w.end_object();
   }
   w.end_array().end_object();
@@ -1249,6 +1269,9 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     if (!key) return err(status::invalid_arg);
     MV_TRY_VOID(d.grant(*key, doc->integer("for_s").value_or(0)));
     return std::string("{}");
+  }
+  if (method == "people" || method == "person_set" || method == "person_remove" || method == "device_person") {
+    return d.people(method, std::string(request_json));
   }
   if (method == "rename") {
     const auto key = parse_key_hex(text("key"));
