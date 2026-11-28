@@ -505,6 +505,9 @@ struct held_checks {
   std::uint32_t rejoins = 0;     // either side's
   std::uint64_t send_ns = 0;     // the sender's time in its socket writes
   std::uint64_t room_ns = 0;     // and waiting for room in its replay
+  // The longest the sender moved no data, however it waited (a write, replay room, or send_m_
+  // held by a ping stuck in the same full socket, which neither stage counts).
+  std::uint64_t still_ns = 0;
 };
 held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& files, const fs::path& dest,
                                       int limit_ms, std::chrono::milliseconds hold, int stall_ms = 0,
@@ -549,12 +552,17 @@ held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& file
   });
   sp::hooks sending;
   sending.stages = &tx;
-  if (quiet.count() > 0) {
-    sending.progress = [&](std::uint64_t, std::uint32_t) {
-      std::lock_guard lock(m);
-      last_moved = clock::now();
-    };
-  }
+  bool moved_once = false;  // under m: the first gap is the setup's, not a stall
+  sending.progress = [&](std::uint64_t, std::uint32_t) {
+    std::lock_guard lock(m);
+    const auto now = clock::now();
+    if (moved_once) {
+      out.still_ns = std::max<std::uint64_t>(
+          out.still_ns, std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_moved).count());
+    }
+    moved_once = true;
+    last_moved = now;
+  };
   out.sent = sp::send_files(*a, files, sending, {});
   receiver.join();
   out.rejoins = a->rejoins() + b->rejoins();
@@ -621,13 +629,10 @@ TEST_CASE("driftwire: a sender whose socket stays full while the receiver checks
                                            std::chrono::milliseconds(5 * kStallMs / 4));
   CHECK(r.held);
   constexpr std::uint64_t kStallNs = std::uint64_t{kStallMs} * 1000000;
-#if defined(_WIN32)
-  // Windows' loopback buffers can grow past kReplayBytes; the sender then
-  // waits for replay room instead, which must also hold.
-  CHECK(r.send_ns + r.room_ns >= kStallNs);
-#else
-  CHECK(r.send_ns >= kStallNs);  // a write did wait past the limit
-#endif
+  // The sender was stuck past its write limit: in a write, waiting for replay room (Windows'
+  // loopback buffers can grow past kReplayBytes), or for send_m_ while a ping sat in the same full
+  // socket. Only how long it moved nothing matters here, not which of those it was.
+  CHECK(r.still_ns >= kStallNs);
   CHECK(r.got.how == sp::outcome::delivered);
   CHECK(r.sent.how == sp::outcome::delivered);
   CHECK(r.rejoins == 0);
