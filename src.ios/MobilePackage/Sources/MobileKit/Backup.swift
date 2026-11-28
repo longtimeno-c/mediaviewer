@@ -126,6 +126,21 @@ public struct BackupSpace: Hashable, Sendable {
   }
 }
 
+/// How far a run has looked through Photos before it knows what is left to back up.
+public struct BackupListing: Hashable, Sendable {
+  public let looked: Int
+  public let of: Int
+
+  public init(looked: Int, of: Int) {
+    self.looked = looked
+    self.of = of
+  }
+
+  public var fraction: Double { of > 0 ? min(1, Double(looked) / Double(of)) : 0 }
+  /// "Looked at 1,500 of 18,320 photos".
+  public var line: String { "Looked at \(looked.formatted()) of \(of.formatted()) photos" }
+}
+
 public struct BackupSnapshot: Hashable, Sendable {
   public var state: BackupState
   public var backedUp: Int
@@ -145,6 +160,8 @@ public struct BackupSnapshot: Hashable, Sendable {
   public var isSample: Bool
   public var failures: [BackupFailureRow]
   public var space: BackupSpace?
+  /// While a run looks through Photos (before `total` is known).
+  public var listing: BackupListing?
 
   public init(state: BackupState = .off, backedUp: Int = 0, total: Int = 0, currentName: String? = nil,
               currentFraction: Double = 0, folder: BackupFolder? = nil, layout: BackupLayout = .yearMonth,

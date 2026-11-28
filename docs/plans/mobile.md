@@ -669,7 +669,7 @@ backed up only when it has a row **and** the file is still on the NAS, checked w
 listing per folder, so a file someone deleted from the NAS is copied again. A copy of the ledger is
 written to `<folder>/.mediaviewer-phone-backup/<device id>/ledger.json` by temp file and rename,
 after every 50 files and at the end. A reinstall or a new phone restores from it.
-The ledger keys on `PHCloudIdentifier` where iCloud Photos provides one, because a `localIdentifier` is per-device and can change after a transfer to a new phone. Everything else falls back to name, size and hash. The NAS copy is found by library id, which the QR carries, because a new phone has a new device id. It is unsigned, so restoring it only saves re-copying and never counts a file as safe without the folder check.
+The ledger keys on `PHCloudIdentifier` where iCloud Photos provides one, because a `localIdentifier` is per-device and can change after a transfer to a new phone. Everything else falls back to name, size and hash. Asking Photos for those ids takes minutes on a big library, so each run reuses the last listing's (an asset's id never changes) and asks only about new photos and those without one; the listing goes in batches of 500, counted on the Backup screen and ended between two by a stop. The NAS copy is found by library id, which the QR carries, because a new phone has a new device id. It is unsigned, so restoring it only saves re-copying and never counts a file as safe without the folder check.
 
 **Copying,** the desktop's rule through the service: the phone sends the file and its hash, and
 the service writes `<name>.part`, flushes it, hashes what is on disk, and renames without
