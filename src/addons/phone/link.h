@@ -150,6 +150,12 @@ class link {
     bool limited = false, expired = false, guest = false, scoped = false;
     std::int64_t expires = 0;
     bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
+    bool desktop = false;  // a computer: its own share account (self-host-users-smb.md §12)
+    std::string share = {};  // "ready", "waiting" or ""
+    std::string person = {};  // who it belongs to (self-host-users-smb.md §13)
+  };
+  struct person_row {
+    std::string name, role;  // role: "view" or "change"
   };
   struct folder_row {
     std::string id, label, path;
@@ -176,6 +182,7 @@ class link {
     bool claimed = false, reachable = true;
     std::string local, public_name, warning;
     std::vector<row> devices;
+    std::vector<person_row> people;  // §13: whom the devices belong to
     std::vector<folder_row> folders;
     std::string qr_url, qr_library, qr_fingerprint;
     std::int64_t qr_expires = 0;
@@ -187,6 +194,7 @@ class link {
     std::int64_t code_left_until = 0;
     bool flags_unsaved = false, flags_dirty = false, pairing = false, flags_read = false;
     bool code_waiting = false;
+    std::int64_t shares_leaving = 0;  // removed computers' accounts still on the server (§12)
     std::int64_t pending = 0;
     double retry_s = 0;
     std::chrono::steady_clock::time_point retry_at{};

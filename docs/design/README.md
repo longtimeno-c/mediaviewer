@@ -4,8 +4,14 @@ How MediaViewer works today, one subsystem per doc. These replace the original `
 was retired on 2026-10-03 once it had been built; its full text is in git history
 (`git show 4da0f9c:plan/<file>`). Code comments cite these docs as `docs/design/NN §section`.
 
-Build, run and test recipes are in [../DEVELOPMENT.md](../DEVELOPMENT.md). Forward plans that are not
-built yet live in [../plans/](../plans/).
+Build, run and test recipes are in [../DEVELOPMENT.md](../DEVELOPMENT.md). Forward plans live in
+[../plans/](../plans/); many are partly built.
+
+Built features that so far are described only in plans: the iPhone app ([mobile](../plans/mobile.md)),
+phone access and self-hosting ([phone-access-addon](../plans/phone-access-addon.md),
+[self-hosted](../plans/self-hosted.md)), another computer's folders
+([desktop-client](../plans/desktop-client.md)) and the VPN ([vpn-addon](../plans/vpn-addon.md),
+[phone-vpn](../plans/phone-vpn.md)).
 
 Read only the doc for the area you are changing; several are long, so search them for the section you
 need. They describe the current design, not rules — when the design changes, update the doc.
@@ -28,7 +34,7 @@ as required reading.
 | [12-decision-log.md](12-decision-log.md) | Why current behaviour is the way it is, by topic and date |
 | [13-updates-and-telemetry.md](13-updates-and-telemetry.md) | Install, updates, crash reporting, telemetry, privacy |
 | [14-abi.md](14-abi.md) | The C ABI between the hosts and the core |
-| [15-platforms.md](15-platforms.md) | Windows and macOS hosts over one core |
+| [15-platforms.md](15-platforms.md) | Windows and macOS hosts over one core; the Linux host so far |
 | [16-commands.md](16-commands.md) | Command table, key router, modes, default key map |
 | [17-local-ai-search.md](17-local-ai-search.md) | Local AI search add-on |
 | [18-import.md](18-import.md) | Import add-on and how add-ons install |
@@ -38,8 +44,8 @@ as required reading.
 | [22-editor-addon.md](22-editor-addon.md) | The Editor add-on (not built) |
 | [23-nle-search.md](23-nle-search.md) | Local search inside Final Cut Pro; FCPXML export |
 | [24-transfer.md](24-transfer.md) | Network-speed verified copies |
-| [25-open-addons.md](25-open-addons.md) | Open add-ons: packages anyone can make and install from a file or a link, signed by their publisher; the contribution model (themes and scripts with commands built; settings, keymaps, screens, slots planned) |
+| [25-open-addons.md](25-open-addons.md) | Open add-ons: packages anyone can make and install from a file or a link, signed by their publisher; themes, keymaps, settings pages, Lua script commands, screens and slots |
 | [26-photos-library.md](26-photos-library.md) | The Mac Photos library as a folder, its backup, and upright clips (display matrix) |
 | [27-places.md](27-places.md) | Places: the offline reverse geocoder (`src/geo`), its place database, the label rule, and the Places add-on that carries them |
-| [29-enhance.md](29-enhance.md) | Enhance: a restored copy of the item on screen from a model downloaded on request; its sheet, its models' downloads, sound (built), photos and a clip's picture (not yet) |
 | [28-driftwire.md](28-driftwire.md) | Driftwire: sending files to a MediaViewer nearby over Wi-Fi or Bluetooth (code, accept, verified receive), and the gallery's range, drag-out and Share |
+| [29-enhance.md](29-enhance.md) | Enhance: a restored copy of a photo, a clip (picture and sound) or an audio file from a model downloaded on request; its sheet, the Enhance tab in Edit, Remove, Restore faces, Extend |

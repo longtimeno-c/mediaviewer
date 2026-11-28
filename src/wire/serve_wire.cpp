@@ -185,8 +185,19 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     take("public", c.public_name);
     take("relay", c.relay);
   }
+  if (const json::value* sh = doc->find(kCapsShare); sh && sh->k == json::kind::object) {
+    const std::string* u = sh->str("user");
+    const std::string* p = sh->str("password");
+    if (u && p && !u->empty() && u->size() <= 20 && !p->empty() && p->size() <= 256) {
+      c.share_user = *u;
+      c.share_password = *p;
+    }
+  }
+  if (const auto u = doc->integer(kCapsUdp); u && *u > 0 && *u <= 65535) c.udp = static_cast<std::uint16_t>(*u);
   return c;
 }
+
+caps_msg::~caps_msg() { sodium_memzero(share_password.data(), share_password.size()); }
 
 std::vector<std::uint8_t> encode_open(const open_request& r) {
   json::writer w;

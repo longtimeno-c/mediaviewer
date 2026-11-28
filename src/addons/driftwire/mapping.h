@@ -44,6 +44,7 @@ struct mapped {
   net::endpoint external;  // what a sender connects to
   std::uint16_t internal_port = 0;
   bool pinhole = false;    // an IPv6 pinhole, not a NAT mapping
+  bool udp = false;        // UDP, not TCP (map_udp, pinhole_v6's `udp`)
   // To remove it.
   std::array<std::uint8_t, 12> pcp_nonce{};
   std::string upnp_control;  // "http://192.168.1.1:5000/ctl/IPConn"
@@ -67,9 +68,12 @@ class mapper {
   // (0: any), for `lifetime_s`. nullopt when no protocol answered with a
   // public address; notes() says what each did.
   [[nodiscard]] std::optional<mapped> map_tcp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s);
+  // The same for UDP (the phone service's sessions over UDP take the TCP port's number).
+  [[nodiscard]] std::optional<mapped> map_udp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s);
   // An IPv6 pinhole for `local` (one of this machine's public IPv6
   // addresses), UPnP IGDv2 only.
-  [[nodiscard]] std::optional<mapped> pinhole_v6(const net::address& local, std::uint16_t port, int lifetime_s);
+  [[nodiscard]] std::optional<mapped> pinhole_v6(const net::address& local, std::uint16_t port, int lifetime_s,
+                                                 bool udp = false);
   // The lease asked again for `lifetime_s` (the same ports); false when the
   // router did not take it.
   [[nodiscard]] bool renew(const mapped& m, int lifetime_s);
@@ -101,10 +105,14 @@ class mapper {
     std::string control, service;          // the WAN connection service
     std::string fw_control, fw_service;    // IGDv2's IPv6 firewall, if any
   };
-  [[nodiscard]] std::optional<mapped> try_pcp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s);
+  [[nodiscard]] std::optional<mapped> map(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s,
+                                          bool udp);
+  [[nodiscard]] std::optional<mapped> try_pcp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s,
+                                              bool udp);
   [[nodiscard]] std::optional<mapped> try_nat_pmp(std::uint16_t internal_port, std::uint16_t external_port,
-                                                  int lifetime_s);
-  [[nodiscard]] std::optional<mapped> try_upnp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s);
+                                                  int lifetime_s, bool udp);
+  [[nodiscard]] std::optional<mapped> try_upnp(std::uint16_t internal_port, std::uint16_t external_port, int lifetime_s,
+                                               bool udp);
   [[nodiscard]] std::optional<upnp_device> find_upnp();
   [[nodiscard]] bool cancelled() const { return opts_.cancelled && opts_.cancelled(); }
 
@@ -158,14 +166,15 @@ struct pcp_answer {
   net::address external;
   std::uint32_t lifetime = 0;
 };
+// `udp`: the answer to a UDP request (PCP protocol 17, NAT-PMP opcode 1), else TCP's.
 [[nodiscard]] std::optional<pcp_answer> parse_pcp_map(std::span<const std::uint8_t> reply,
-                                                      const std::array<std::uint8_t, 12>& nonce);
+                                                      const std::array<std::uint8_t, 12>& nonce, bool udp = false);
 struct nat_pmp_answer {
   std::uint16_t result = 0;
   std::uint16_t external_port = 0;
   std::uint32_t lifetime = 0;
 };
-[[nodiscard]] std::optional<nat_pmp_answer> parse_nat_pmp_map(std::span<const std::uint8_t> reply);
+[[nodiscard]] std::optional<nat_pmp_answer> parse_nat_pmp_map(std::span<const std::uint8_t> reply, bool udp = false);
 [[nodiscard]] std::optional<net::address> parse_nat_pmp_address(std::span<const std::uint8_t> reply);
 // SSDP: the LOCATION of an answer, if it is an http URL at `gateway`.
 [[nodiscard]] std::optional<std::string> parse_ssdp_location(std::string_view reply, const net::address& gateway);

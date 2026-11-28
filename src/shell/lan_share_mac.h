@@ -34,7 +34,11 @@ struct volume {
 // Mounts each URL, one after another, through NetFS. `done` runs on the main
 // queue with how it went (outcome.asked = allow_ui). An already-mounted share
 // (EEXIST) counts as mounted.
-void mount(std::vector<std::string> urls, bool allow_ui, std::function<void(remote::lan_share::outcome)> done);
+// `user`/`password`: this computer's own account on the server (the server's caps,
+// self-host-users-smb.md §12), used as given; empty: the Keychain's, or the OS's dialog.
+// `password` is wiped once the mounts are done.
+void mount(std::vector<std::string> urls, bool allow_ui, std::string user, std::string password,
+           std::function<void(remote::lan_share::outcome)> done);
 
 // Unmounts every SMB volume of `host` (not ejecting anything else). `done` on
 // the main queue: how many went and how many would not (a file still open).

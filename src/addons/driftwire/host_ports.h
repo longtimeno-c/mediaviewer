@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The self-host's router keeper (docs/plans/self-hosted.md §5, slice 4): while
 // `driftwire host` runs, the router forwards the host's own TCP ports (the
-// service's, and the relay's when the VPN is on) to this computer, and says
+// service's, and the relay's when the VPN is on) to this computer, the
+// service's for UDP too (its sessions over UDP, at the same outside port), and says
 // where the home faces the internet from.
 //
 // It is mapping.* held for a set of ports: PCP → NAT-PMP → UPnP-IGD, short
@@ -90,6 +91,9 @@ struct port_wanted {
   // An IPv6 pinhole too, at `internal_port` (a pinhole does not translate),
   // if this computer has a public IPv6 address and the router offers IGDv2.
   bool v6 = true;
+  // UDP as well, at the outside port TCP got (the phone dials the TCP route's port over UDP):
+  // one the router gives elsewhere is removed, as a phone could not find it.
+  bool udp = false;
   std::string what;                     // "service", "relay": for the advice ("" says "a port")
 };
 
@@ -101,6 +105,8 @@ struct port_report {
   // nullopt: not asked (not wanted, no public IPv6 address here, or PCP
   // answered: UPnP is not searched for a pinhole besides, #499).
   std::optional<port_state> v6;
+  // nullopt: not asked (not wanted, or TCP was not mapped). The IPv6 pinhole for UDP goes with the TCP one.
+  std::optional<port_state> udp;
   std::vector<std::string> why;         // the mapper's notes for this port, no addresses
 };
 

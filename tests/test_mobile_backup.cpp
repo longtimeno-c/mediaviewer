@@ -174,6 +174,7 @@ struct nas {
     o.free_bytes = [](const std::string&) { return std::uint64_t{1} << 40; };
     o.may_write = may_write;
     o.make_listener = [] { auto l = dw::net::listen_internet(0, true, 32); REQUIRE(l); return std::move(*l); };
+    o.udp = false;  // TCP, as these tests were written for
     auto s = serve::server::start(o);
     REQUIRE(s);
     srv = std::move(*s);

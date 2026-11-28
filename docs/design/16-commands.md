@@ -187,7 +187,7 @@ Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex under the cursor (stills) |
 | `Ctrl+C` | Viewing | Selected words ([Text in images](#text-in-images)) → text; eyedropper on → `#RRGGBB  rgb(r, g, b)  x y`; else the marked (else current) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge. Same texture |
-| hold `\` | browse, video | Previous item for burst pick, from the five-slot GPU LRU (Mac: the last still, kept on the GPU) |
+| hold `\` | browse, video | Previous item for burst pick, from the GPU LRU (a 512 MB byte budget, 3–12 entries) (Mac: the last still, kept on the GPU) |
 | `\|` | browse, video | **Two-up compare** toggle (below); `--compare` starts with it on |
 | `;` | browse, video | Play a Live Photo's motion once with audio; `;`, `Esc` or navigation return early. Mac: not built |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
@@ -521,7 +521,7 @@ Extra draws in the same present; a still still idles to zero presents
 | Overlay | Cost |
 |---|---|
 | Loupe (hold `Z`) | Camera / viewport change; same texture |
-| Hold-previous (hold `\`) | The five-slot LRU; no second session |
+| Hold-previous (hold `\`) | The GPU LRU; no second session |
 | Two-up compare (`\|`) | Second blit of the resident previous texture; same present |
 | Clipping blinkies (`C`) | Shader; may present while on (animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |

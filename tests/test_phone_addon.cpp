@@ -221,7 +221,7 @@ TEST_CASE("phone access: the claimed card is in sections, each a heading with it
   std::size_t at = 0;
   for (const auto& [id, symbol] : std::vector<std::pair<std::string, std::string>>{
            {"sec_server", "computer"}, {"sec_phones", "phone"}, {"sec_folders", "folder"},
-           {"sec_away", "globe"}, {"sec_drives", "drive"}, {"sec_users", "person"}}) {
+           {"sec_away", "globe"}, {"sec_drives", "drive"}}) {
     const std::size_t h = tree.find("\"id\":\"" + id + "_heading\"");
     INFO(id);
     REQUIRE(h != std::string::npos);
@@ -229,6 +229,15 @@ TEST_CASE("phone access: the claimed card is in sections, each a heading with it
     at = h;
     CHECK(tree.find("\"symbol\":\"" + symbol + "\"", h) < tree.find("\"id\":\"" + id + "\"", h));
   }
+  // Each computer is a user by itself (self-host-users-smb.md §12): no People section until
+  // someone made a person's account, and then it follows Drives.
+  CHECK(tree.find("sec_users") == std::string::npos);
+  const std::string with_people = c.build(
+      R"({"folder":"G:\\FamilyNas","claimed":true,"host":{"installed":true,"set_up":true,"running":true},
+          "users":[{"name":"anna","role":"view","applied":true}]})", kNow);
+  require_valid(with_people);
+  REQUIRE(with_people.find("\"id\":\"sec_users_heading\"") != std::string::npos);
+  CHECK(with_people.find("\"id\":\"sec_users_heading\"") > with_people.find("\"id\":\"sec_drives_heading\""));
   // The addresses have titles of their own, not only a field.
   CHECK(tree.find("\"id\":\"local_row\"") != std::string::npos);
   CHECK(tree.find("\"id\":\"public_row\"") != std::string::npos);
@@ -1175,4 +1184,101 @@ TEST_CASE("phone access: the owner can require phones to lock the app", "[phone-
   REQUIRE(asked.size() == 1);
   CHECK(asked[0].find(R"("do":"phone_lock")") != std::string::npos);
   CHECK(asked[0].find(R"("on":true)") != std::string::npos);
+}
+
+// self-host-users-smb.md §12 (owner, 2026-11-27): each paired computer is a user of the share at
+// home. Its row says so, picks its role, renames it, and the host's step makes its account.
+TEST_CASE("phone access: a computer is a user: role, rename, and its share account", "[phone-addon]") {
+  const char* state = R"({"folder":"/x","claimed":true,"nas_passphrase":"set","unlocked_s":300,
+    "nas_features":["passphrase","backup"],"host":{"installed":true,"set_up":true,"running":true},
+    "devices":[{"name":"iPhone","key":"b50089df00"},
+               {"name":"MacBook Pro","key":"9d14160800","limited":true,"expires":0,"backup":false,
+                "desktop":true,"share":"waiting"},
+               {"name":"Studio","key":"77aa","desktop":true,"share":"ready","backup":true}]})";
+  screen c(mv::phone::card::computer::pc);
+  std::string tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find("Computer \xC2\xB7 Can view files \xC2\xB7 Its share at home waits for this PC's administrator") !=
+        std::string::npos);
+  CHECK(tree.find("Computer \xC2\xB7 Can change files \xC2\xB7 Opens your shared folders at home with no sign-in") !=
+        std::string::npos);
+  // A computer picks its role; a phone keeps its Backs up switch.
+  CHECK(tree.find(screen::row_id("ph", "9d14160800") + "_role") != std::string::npos);
+  CHECK(tree.find(screen::row_id("ph", "9d14160800") + "_backup") == std::string::npos);
+  CHECK(tree.find(screen::row_id("ph", "b50089df00") + "_backup") != std::string::npos);
+  auto r = c.on_event(screen::row_id("ph", "9d14160800") + "_role", kChange, quoted("change"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"phone_backup","key":"9d14160800","on":true})");
+  // One computer waits: the host's administrator finishes it.
+  CHECK(tree.find("A computer's share waits for this PC's administrator") != std::string::npos);
+  r = c.on_event("ph_share_apply", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"users_apply"})");
+  // Rename: the field opens under the row, and Save sends the trimmed name.
+  (void)c.on_event(screen::row_id("ph", "9d14160800") + "_rename", kClick, "", kNow);
+  tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find(screen::row_id("ph", "9d14160800") + "_name") != std::string::npos);
+  (void)c.on_event(screen::row_id("ph", "9d14160800") + "_name", kChange, quoted("  Tristan's MacBook "), kNow);
+  r = c.on_event(screen::row_id("ph", "9d14160800") + "_name_save", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"rename","key":"9d14160800","name":"Tristan's MacBook"})");
+  tree = c.build(state, kNow);
+  CHECK(tree.find(screen::row_id("ph", "9d14160800") + "_name\"") == std::string::npos);
+  // Nothing waiting: no Finish row.
+  const std::string ready = c.build(R"({"folder":"/x","claimed":true,"host":{"installed":true,"set_up":true,"running":true},
+    "devices":[{"name":"Studio","key":"77aa","desktop":true,"share":"ready"}]})", kNow);
+  CHECK(ready.find("ph_share_apply") == std::string::npos);
+  // A computer taken off the list is on no row, but its sign-in is still on the server until the
+  // step runs: the card says so and offers the step.
+  const std::string leaving = c.build(R"({"folder":"/x","claimed":true,"shares_leaving":1,
+    "host":{"installed":true,"set_up":true,"running":true},
+    "devices":[{"name":"Studio","key":"77aa","desktop":true,"share":"ready"}]})", kNow);
+  require_valid(leaving);
+  CHECK(leaving.find("A removed computer's sign-in is still on this PC") != std::string::npos);
+  r = c.on_event("ph_share_apply", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"users_apply"})");
+}
+
+// self-host-users-smb.md §13: people on the card. Add a person, pick them under Belongs to,
+// and their role is set once on their row.
+TEST_CASE("phone access: people own devices; their role is set once on their row", "[phone-addon]") {
+  const char* state = R"({"folder":"/x","claimed":true,"nas_features":["backup"],
+    "host":{"installed":true,"set_up":true,"running":true},
+    "people":[{"name":"Tristan","role":"change"}],
+    "devices":[{"name":"iPhone","key":"b50089df00","person":"Tristan","backup":true},
+               {"name":"MacBook Pro","key":"9d14160800","desktop":true,"share":"ready","person":"Tristan","backup":true},
+               {"name":"Guest phone","key":"0011","backup":false}]})";
+  screen c(mv::phone::card::computer::pc);
+  std::string tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find("2 devices \xC2\xB7 the same access in the app and, at home, in Finder or Explorer") != std::string::npos);
+  CHECK(tree.find("Tristan's \xC2\xB7 Can change files") != std::string::npos);
+  // A device of Tristan's has no role of its own to set; one of nobody's does.
+  CHECK(tree.find(screen::row_id("ph", "9d14160800") + "_role") == std::string::npos);
+  CHECK(tree.find(screen::row_id("ph", "b50089df00") + "_backup") == std::string::npos);
+  CHECK(tree.find(screen::row_id("ph", "0011") + "_backup") != std::string::npos);
+  auto r = c.on_event(screen::row_id("pe", "Tristan") + "_role", kChange, quoted("view"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"person_set","name":"Tristan","role":"view"})");
+  r = c.on_event(screen::row_id("ph", "0011") + "_person", kChange, quoted("Tristan"), kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"device_person","key":"0011","person":"Tristan"})");
+  r = c.on_event(screen::row_id("pe", "Tristan") + "_remove", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"person_remove","name":"Tristan"})");
+  // Add person: a name and what their devices can do (change, by default).
+  (void)c.on_event("people_add_open", kClick, "", kNow);
+  tree = c.build(state, kNow);
+  require_valid(tree);
+  CHECK(tree.find("\"pe_new_name\"") != std::string::npos);
+  (void)c.on_event("pe_new_name", kChange, quoted(" Anna "), kNow);
+  r = c.on_event("pe_new_go", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"person_set","name":"Anna","role":"change"})");
+  // No people yet: the row invites one, and devices have no Belongs to.
+  const std::string none = c.build(R"({"folder":"/x","claimed":true,"devices":[{"name":"iPhone","key":"b5"}]})", kNow);
+  CHECK(none.find("people_add_open") != std::string::npos);
+  CHECK(none.find(screen::row_id("ph", "b5") + "_person") == std::string::npos);
 }

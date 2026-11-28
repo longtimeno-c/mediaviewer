@@ -75,7 +75,7 @@ correctly; a flyout opens over the canvas without clipping.
 Folder listing + sort (name, mtime, size, type; date taken arrives in PR 9), directory watcher
 behind portable `io/dir.h` (`io/dir_win.cpp`: `ReadDirectoryChangesW`), SQLite + on-disk
 JPEG-512 thumbnail cache keyed by `(path, mtime, size, spec)` with spec `jpg512.1`,
-visible-first generation, directional prefetch of ±2 decoded textures into a five-slot GPU LRU
+visible-first generation, directional prefetch of ±2 decoded textures into a GPU LRU (five slots then; now a 512 MB byte budget of 3–12 entries)
 with generation-counter cancellation.
 
 The filmstrip is a second XAML island (an `ItemsRepeater`), a bottom strip on the same HWND;
@@ -110,7 +110,7 @@ correct speed.
 
 ### PR 5c — Transport
 Dual-mode seek, frame step, speed 0.25x–4x (chained `atempo`, `player/transport.cpp`), volume,
-track selection, resume position, A-B loop, SMTC + media keys, scrub-preview thumbnails.
+track selection, resume position, A-B loop, SMTC + media keys. (Scrub-preview thumbnails are not built, [05](05-video-pipeline.md).)
 Bindings ([Commands](16-commands.md)): Space play/pause on a clip, `J` `K` `L`, `,` `.`.
 
 **Verify:** scrubbing feels instant; frame step lands on exact frames in both directions; media
@@ -271,7 +271,7 @@ real Wayland session (Mutter or KWin) with Mesa on Intel or AMD, measured from `
 feedback (VSYNC and HW_CLOCK). Under headless Weston it runs, reports, and labels its source weaker.
 
 **State (2026-10-23):** built, unit-tested and smoke-tested under headless Weston only (the CI
-smoke script, run locally, with the GL and pixman renderers; the CI job has not run yet). The verify line's gate is owed on real
+smoke script, run locally, with the GL and pixman renderers; the `linux-lab-smoke` CI job runs the same smoke). The verify line's gate is owed on real
 hardware; no Linux GPU runner exists yet.
 
 ## Milestone D — Viewer and editing updates (PR 9–12, both platforms)
@@ -642,8 +642,8 @@ Driftwire with the gallery selection; both present-loop gates hold.
   spike exist.
 - **PRs 27–28** — Voice query add-on ([19](19-voice.md)).
 - **PR 50** — Transfer, the general copier, and the SMB link check (no `mv_transfer_*` ABI).
-- **PRs 57–60** — the rest of the open add-ons ([25](25-open-addons.md)): a sandboxed script
-  runtime (Lua), screens as data, slots and search providers, files. The owner's calls for them were made 2026-10-03
+- **PRs 58–60** — the rest of the open add-ons ([25](25-open-addons.md)): search providers and
+  files (the script runtime, PR 57, screens and slots are built). The owner's calls for them were made 2026-10-03
   ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)). PR 56's first half is built
   (2026-10-04): Import's commands, keys, Settings line and card hint come from its manifest
   (`contributes`, eight `addon_cmd_*` slots, ABI 0.18), with an older Import kept working

@@ -210,12 +210,27 @@ struct caps_msg {
   // an empty one; the Noise handshake pins the service's key, so an address can only ever lead
   // back to this service.
   std::string local, public_name, relay;
+  // The UDP port that also takes sessions (kCapsUdp, over udp_hub's stream): 0 from a service that
+  // takes none, or one older than that. The same address as the TCP route the session came by.
+  std::uint16_t udp = 0;
+  // A computer at home (self-host-users-smb.md §12): its own login to the server's LAN SMB share,
+  // once the server's elevated step made its account. "" otherwise, and from an older service.
+  // Wiped with the message; the client mounts with it and keeps it nowhere.
+  std::string share_user, share_password;
   // The library's owner asks every phone to lock the app with Face ID or its passcode
   // (kCapsLock; docs/plans/mobile.md §12). false from a service older than that.
   bool lock = false;
+  ~caps_msg();
+  caps_msg() = default;
+  caps_msg(const caps_msg&) = default;
+  caps_msg(caps_msg&&) = default;
+  caps_msg& operator=(const caps_msg&) = default;
+  caps_msg& operator=(caps_msg&&) = default;
 };
 inline constexpr const char* kCapsRole = "role";
+inline constexpr const char* kCapsUdp = "udp";
 inline constexpr const char* kCapsLock = "lock";
+inline constexpr const char* kCapsShare = "share";  // {"user","password"}
 inline constexpr const char* kCapsAddresses = "addresses";  // {"local","public","relay"}, each optional
 // The longest address a caps or serve.json carries.
 inline constexpr std::size_t kMaxAddressBytes = 255;  // as the pairing code's

@@ -89,6 +89,7 @@ void fill_report(const route_report& r, mv_route_report* out) {
   out->over_internet = r.over_internet ? 1 : 0;
   out->relayed = r.relayed ? 1 : 0;
   out->upgraded = r.upgraded ? 1 : 0;
+  out->udp = r.udp ? 1 : 0;
   const std::size_t n = std::min<std::size_t>(r.failures.size(), 4);
   out->failure_count = static_cast<std::int32_t>(n);
   for (std::size_t i = 0; i < n; ++i) {

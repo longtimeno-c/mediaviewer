@@ -87,6 +87,7 @@ typedef struct mv_route_report {
   mv_route_failure failures[4];
   int32_t relayed;  /* 1: through the person's own relay (over_internet is 1 too) */
   int32_t upgraded; /* 1: moved from the relay to a direct path it punched (address is "direct") */
+  int32_t udp;      /* 1: moved from TCP to a UDP stream on the same address */
 } mv_route_report;
 
 typedef struct mv_cancel mv_cancel;

@@ -84,7 +84,7 @@ std::vector<std::uint8_t> pcp_answer(std::span<const std::uint8_t> req, const sp
   put32(r, 1);                                       // epoch
   r.insert(r.end(), 12, 0);
   r.insert(r.end(), req.begin() + 24, req.begin() + 36);  // nonce
-  r.push_back(6);
+  r.push_back(req[36]);  // the protocol asked
   r.insert(r.end(), 3, 0);
   put16(r, be16(req.data() + 40));
   put16(r, ext ? ext : be16(req.data() + 40));
@@ -95,7 +95,7 @@ std::vector<std::uint8_t> pcp_answer(std::span<const std::uint8_t> req, const sp
   return r;
 }
 
-// NAT-PMP (RFC 6886): the outside address, and TCP maps.
+// NAT-PMP (RFC 6886): the outside address, and TCP and UDP maps.
 std::vector<std::uint8_t> nat_pmp_answer(std::span<const std::uint8_t> req, const sp::net::address& outside) {
   if (req.size() >= 2 && req[0] != 0) return {0, static_cast<std::uint8_t>(128 + req[1]), 0, 1};  // a PCP ask: version 0 says no
   if (req.size() == 2 && req[1] == 0) {
@@ -104,8 +104,8 @@ std::vector<std::uint8_t> nat_pmp_answer(std::span<const std::uint8_t> req, cons
     r.insert(r.end(), outside.bytes.begin(), outside.bytes.begin() + 4);
     return r;
   }
-  if (req.size() == 12 && req[1] == 2) {
-    std::vector<std::uint8_t> r = {0, 130, 0, 0};
+  if (req.size() == 12 && (req[1] == 1 || req[1] == 2)) {
+    std::vector<std::uint8_t> r = {0, static_cast<std::uint8_t>(128 + req[1]), 0, 0};
     put32(r, 7);
     put16(r, be16(req.data() + 4));
     put16(r, be16(req.data() + 4) == 0 ? 0 : 40001);
@@ -123,7 +123,7 @@ struct upnp_router {
   std::atomic<bool> stop{false};
   std::thread ssdp_thread, http_thread;
   std::mutex m;
-  std::vector<std::string> actions;  // SOAPAction values seen
+  std::vector<std::string> actions;  // SOAPAction values seen, then " TCP" or " UDP" when a request names one
   std::atomic<int> requests{0};      // every HTTP request, the description's too
   std::string outside = "81.2.69.160";
   std::string wan_service;           // the description's WAN service type ("": the usual)
@@ -191,9 +191,14 @@ struct upnp_router {
     } else {
       const auto a = req.find("SOAPAction: \"");
       const std::string action = a == std::string::npos ? "" : req.substr(a + 13, req.find('"', a + 13) - a - 13);
+      std::string named;
+      if (const auto p = req.find("<NewProtocol>"); p != std::string::npos) named = " " + req.substr(p + 13, 3);
+      if (const auto p = req.find("<Protocol>"); p != std::string::npos) {
+        named = req.compare(p + 10, 3, "17<") == 0 ? " UDP" : " TCP";
+      }
       {
         std::lock_guard lock(m);
-        actions.push_back(action);
+        actions.push_back(action + named);
       }
       const std::string op = action.substr(action.find('#') + 1);
       body = "<?xml version=\"1.0\"?><s:Envelope><s:Body><u:" + op + "Response>";
@@ -563,6 +568,103 @@ internet_pair open_internet(const std::array<std::uint8_t, 6>& typed, std::optio
   return p;
 }
 }  // namespace
+
+TEST_CASE("driftwire internet: PCP and NAT-PMP map UDP with UDP's protocol, and a UDP answer is not taken for TCP",
+          "[driftwire]") {
+  const auto outside = addr("81.2.69.160");
+  {
+    std::mutex m;
+    std::vector<std::uint8_t> protocols;  // what each PCP request asked for
+    udp_router router([&](std::span<const std::uint8_t> req) {
+      if (req.size() >= 60) {
+        std::lock_guard lock(m);
+        protocols.push_back(req[36]);
+      }
+      return pcp_answer(req, outside, 0);
+    });
+    mp::mapper mapper(on_loopback(router.sock->port()));
+    auto got = mapper.map_udp(41000, 41000, 3600);
+    REQUIRE(got);
+    CHECK(got->udp);
+    CHECK(got->how == mp::method::pcp);
+    CHECK(got->external.port == 41000);
+    CHECK(mapper.renew(*got, 3600));
+    mapper.remove(*got);
+    std::lock_guard lock(m);
+    CHECK(protocols == std::vector<std::uint8_t>{17, 17, 17});  // map, renew, remove: all UDP
+  }
+  {
+    std::mutex m;
+    std::vector<std::uint8_t> ops;  // NAT-PMP opcodes of the map requests
+    udp_router router([&](std::span<const std::uint8_t> req) {
+      if (req.size() == 12) {
+        std::lock_guard lock(m);
+        ops.push_back(req[1]);
+      }
+      return nat_pmp_answer(req, outside);
+    });
+    mp::mapper mapper(on_loopback(router.sock->port()));
+    auto got = mapper.map_udp(41000, 0, 3600);
+    REQUIRE(got);
+    CHECK(got->udp);
+    CHECK(got->how == mp::method::nat_pmp);
+    mapper.remove(*got);
+    std::lock_guard lock(m);
+    CHECK(ops == std::vector<std::uint8_t>{1, 1});  // RFC 6886: 1 is UDP
+  }
+  // A reply for the other protocol is not this request's answer.
+  std::array<std::uint8_t, 12> nonce{};
+  std::vector<std::uint8_t> ask(60, 0);
+  ask[0] = 2;
+  ask[1] = 1;
+  ask[36] = 17;
+  const auto udp_reply = pcp_answer(ask, outside, 0);
+  CHECK(mp::parse_pcp_map(udp_reply, nonce, true));
+  CHECK_FALSE(mp::parse_pcp_map(udp_reply, nonce));
+  const std::uint8_t pmp_udp[16] = {0, 129, 0, 0, 0, 0, 0, 7, 0xa0, 0x28, 0xa0, 0x28, 0, 0, 0x0e, 0x10};
+  CHECK(mp::parse_nat_pmp_map(pmp_udp, true));
+  CHECK_FALSE(mp::parse_nat_pmp_map(pmp_udp));
+}
+
+TEST_CASE("driftwire internet: UPnP-IGD maps UDP, opens a UDP pinhole, and removes both as UDP", "[driftwire]") {
+  upnp_router upnp;
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  mp::mapper m(on_loopback((*quiet)->port(), upnp.ssdp->port()));
+  auto got = m.map_udp(41000, 41000, 3600);
+  REQUIRE(got);
+  CHECK(got->udp);
+  CHECK(got->how == mp::method::upnp);
+  auto hole = m.pinhole_v6(addr("2a00:1450:4009:81f::200e"), 41000, 3600, true);
+  REQUIRE(hole);
+  CHECK(m.renew(*got, 3600));
+  m.remove(*got);
+  m.remove(*hole);
+  const auto seen = upnp.seen();
+  auto has = [&](const char* op) { return std::find(seen.begin(), seen.end(), op) != seen.end(); };
+  CHECK(has("urn:schemas-upnp-org:service:WANIPConnection:2#GetSpecificPortMappingEntry UDP"));
+  CHECK(has("urn:schemas-upnp-org:service:WANIPConnection:2#AddPortMapping UDP"));
+  CHECK(has("urn:schemas-upnp-org:service:WANIPv6FirewallControl:1#AddPinhole UDP"));
+  CHECK(has("urn:schemas-upnp-org:service:WANIPConnection:2#DeletePortMapping UDP"));
+  CHECK(std::none_of(seen.begin(), seen.end(), [](const std::string& s) { return s.ends_with(" TCP"); }));
+}
+
+TEST_CASE("driftwire internet: the ledger keeps a UDP mapping as UDP, and an older ledger's lines are TCP",
+          "[driftwire]") {
+  mp::mapped tcp, udp;
+  tcp.how = udp.how = mp::method::pcp;
+  tcp.internal_port = udp.internal_port = 7878;
+  tcp.external = udp.external = {"81.2.69.160", 7878};
+  udp.udp = true;
+  const auto text = mp::ledger_text(addr("192.168.1.1"), {tcp, udp});
+  const auto back = mp::parse_ledger(text);
+  REQUIRE(back);
+  REQUIRE(back->second.size() == 2);
+  CHECK_FALSE(back->second[0].udp);
+  CHECK(back->second[1].udp);
+  CHECK(text.find("\nm ") != std::string::npos);  // the TCP line as an older app wrote it
+  CHECK(text.find("\nu ") != std::string::npos);
+}
 
 TEST_CASE("driftwire internet: the right code opens both ends, with the same check", "[driftwire]") {
   const std::array<std::uint8_t, 6> secret = {1, 2, 3, 4, 5, 6};
@@ -968,6 +1070,55 @@ TEST_CASE("host ports: the service and relay ports are mapped, renewed, and remo
   CHECK(deletes.load() == 2);
 }
 
+TEST_CASE("host ports: the service's port is mapped for UDP too, at the same outside port, and removed on stop",
+          "[driftwire][host-ports]") {
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> udp_maps{0}, udp_deletes{0}, tcp_deletes{0};
+  std::atomic<std::uint16_t> udp_port_offered{0};  // 0: the port asked
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    const bool udp = req.size() >= 60 && req[36] == 17;
+    if (deletes_pcp(req)) {
+      ++(udp ? udp_deletes : tcp_deletes);
+    } else if (udp) {
+      ++udp_maps;
+    }
+    return pcp_answer(req, outside, udp ? udp_port_offered.load() : 0);
+  });
+  {
+    hp::keeper k({{.internal_port = 7878, .udp = true, .what = "service"}}, host_on_loopback(router.sock->port()));
+    const auto r = k.status();
+    REQUIRE(r.ports.size() == 1);
+    CHECK(r.ports[0].v4 == hp::port_state::mapped);
+    CHECK(r.ports[0].udp == hp::port_state::mapped);
+    CHECK(udp_maps.load() == 1);
+  }
+  CHECK(tcp_deletes.load() == 1);
+  CHECK(udp_deletes.load() == 1);
+
+  // A router that puts UDP on another port: a phone dialling the TCP route's port could not find it.
+  udp_maps = 0;
+  udp_deletes = 0;
+  tcp_deletes = 0;
+  udp_port_offered = 50000;
+  {
+    hp::keeper k({{.internal_port = 7878, .udp = true, .what = "service"}}, host_on_loopback(router.sock->port()));
+    const auto r = k.status();
+    CHECK(r.ports[0].v4 == hp::port_state::mapped);
+    CHECK(r.ports[0].udp == hp::port_state::refused);
+    CHECK(udp_deletes.load() == 1);  // given back at once
+  }
+  CHECK(udp_deletes.load() == 1);  // and not held, so nothing more on stop
+  CHECK(tcp_deletes.load() == 1);
+
+  // A port that does not want UDP asks for none.
+  udp_maps = 0;
+  {
+    hp::keeper k({{.internal_port = 8443, .what = "relay"}}, host_on_loopback(router.sock->port()));
+    CHECK_FALSE(k.status().ports[0].udp);
+  }
+  CHECK(udp_maps.load() == 0);
+}
+
 TEST_CASE("host ports: SMB, NetBIOS and RDP are never forwarded, and no router is asked for them",
           "[driftwire][host-ports][host-users]") {
   for (const std::uint16_t p : std::initializer_list<std::uint16_t>{137, 138, 139, 445, 3389}) {
@@ -1247,7 +1398,7 @@ TEST_CASE("host ports in the running host: the service's port, the relay's with 
   REQUIRE(host);
   REQUIRE(eventually([&] {
     const std::string st = state_of(l);
-    return st.find("router      service ") != std::string::npos && st.find("open (PCP)") != std::string::npos &&
+    return st.find("router      service ") != std::string::npos && st.find("open (PCP, UDP too)") != std::string::npos &&
            st.find("\"service_outside_port\":" + std::to_string(host->snapshot().service_port)) != std::string::npos;
   }, 10));
   CHECK(state_of(l).find("relay ") == std::string::npos);  // VPN off: the relay's port stays closed
@@ -1308,7 +1459,7 @@ TEST_CASE("host ports in the running host: a router silent at the start is asked
   REQUIRE(host);
   REQUIRE(eventually([&] { return state_of(l).find(" not open") != std::string::npos; }, 10));
   answering.store(true);
-  REQUIRE(eventually([&] { return state_of(l).find("open (PCP)") != std::string::npos; }, 10));
+  REQUIRE(eventually([&] { return state_of(l).find("open (PCP, UDP too)") != std::string::npos; }, 10));
   host->stop();
   CHECK(deletes.load() >= 1);
 }

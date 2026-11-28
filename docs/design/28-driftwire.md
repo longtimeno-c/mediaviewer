@@ -380,7 +380,7 @@ internet**, off by default (off: no listener, mapping or socket). (`internet.*`,
 
 With **Find each other over the internet (public DHT)** (opt-in) the code is **four words** and both
 meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.*`, `dht.*`,
-`meet.*`, `udp_hub.*`, `bencode.*`, `sha1.*`.)
+`meet.*`, `src/wire/udp_hub.*`, `bencode.*`, `sha1.*`.)
 
 - **Words**: BIP-39 English (`wordlist.inc`), 44 bits, whole or first four letters. Argon2id
   (256 MiB) → Ed25519 key, content key, salt base, CPace password. Salt includes the UTC hour; in an
@@ -410,7 +410,9 @@ meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.
   RACK and tail-loss probe (RFC 8985, simplified), BBR v1 simplified with BBR v2's loss exit and
   inflight cap, RTO floor 200 ms, 16 MiB window (`kStreamMaxRx`); untrusted input bounded. Bench:
   `mv_import_tests "[.driftwire-stream-bench]"`, `tests/driftwire_path.h`,
-  `docs/perf/driftwire-stream.jsonl`.
+  `docs/perf/driftwire-stream.jsonl`. In `src/wire` (the phone service uses it too, below). The
+  hub's timer ticks every 5 ms only while a stream has packets in flight or an ack owed; otherwise
+  it waits (≤ 1 s) for the next packet, so an idle phone link costs no wakeups.
 - Then CPace on the words' password and `Noise_XXhfs+psk0`, as a direct code.
 
 ## Wi-Fi → internet (#472 PR 5)
@@ -543,7 +545,9 @@ catalogues). `serve_caps` reports `features`, passphrase state and a limited pho
 `serve.h`, `serve_wire.h`, `serve_client.h`, `channel::open_library`; plan `docs/plans/mobile.md`
 §7.2, M2b. Headless: a paired phone lists and reads named folders through one forwarded port. No
 DHT, mapping or beacon, except that under `driftwire host` its router keeper (`host_ports.h`) holds
-the host's own ports while it runs (decision log, 2026-11-14).
+the host's own ports while it runs (decision log, 2026-11-14): the service's for UDP too, at the
+outside port TCP got (`port_wanted::udp`; a UDP forward the router puts elsewhere is given back,
+as a phone dials the TCP route's port), so its sessions over UDP reach it from outside.
 
 ```
 driftwire serve [--data DIR]              the service: DIR/serve.json, DIR/secrets
@@ -574,6 +578,8 @@ driftwire serve disown
 5. `serve_pair` with a code (hash + expiry) → added, `serve_paired`; else `{"why":"bad-code"}`.
 6. `peer_key` must be paired (read per connection), else `{"why":"not-paired"}`; re-checked every
    2 s, cut with `{"why":"revoked"}`.
+7. Sessions at once: ≤ 32 in all and ≤ 8 per paired device (a phone's copy opens several lanes),
+   else `{"why":"busy"}`.
 
 Keys and lists in `secrets::file_store` (0600 files, renamed in, refused if group/world-readable or a
 link; folder 0700, this user's). An unreadable value is an error, never regenerated. **As root, or
@@ -596,6 +602,23 @@ a kept one) and races them next time; the desktop's `remote::library` saves them
 the phone (`mv_link_addresses_now`) to its Keychain record. The handshake pins the service's key, so a
 changed address cannot lead to another server. Older clients ignore the field; an older service
 sends none and nothing changes. `driftwire host pair` (the CLI's own host path) does not set them yet.
+
+**Sessions over UDP (2026-11-28).** One TCP connection on a long path with some loss runs far below
+the line (CUBIC halves on each loss: ~0.5–1 MB/s at 150 ms and 0.1 %). So the service
+(`options::udp`, on except for the LAN-only nearby one) also opens a `udp_hub` on its TCP port's
+number; `udp_hub::on_open` hands it each stream a stranger opens (the first data packet of an unknown
+id), and the stream goes through the same handshake as an accepted TCP link (`counters::udp` counts
+them). Its source is only what that datagram claims, so it gets none of TCP's admission budget:
+UDP handshakes have their own few slots (`pending_udp`, 4), never evict a TCP one, and the stream
+holds 64 KB (`kStreamUnprovenRx`) until the handshake ends (`link::peer_proven`). Spoofed opens can
+fill those slots; the phone then just stays on TCP. Every paired session's caps say `"udp":<port>`. The phone connects
+over TCP as before; on a direct route (not relayed, not punched) whose caps name a UDP port,
+`link_session`'s upgrade thread opens one UDP stream to the same address and port (through a router,
+the outside port, which the host's router keeper forwards for UDP too), runs the handshake and
+swaps it in as the live client (reads on the TCP one finish there; `route_report::udp`). One try per
+TCP client (again if it reconnected during the try); a UDP client lost within 2 min, dropped or
+found closed, leaves the next ones on TCP for 10 min (a network that lets the handshake through,
+then drops UDP). A UDP session opens no lanes.
 
 **Paths.** Root id + relative path; absolute paths never sent or logged. `safe_relative`, then
 `io::stat_beneath`, `list_beneath`, `file_reader::open_beneath` walk part by part from the root's
@@ -947,8 +970,8 @@ code…** asks `vpn on` again and shows the line it printed (`self_host::relay_l
 (below), until Hide, the VPN going off or Settings closing; it is asked once more when the relay came
 back on another port than the one printed. Once the library is claimed, this row (or, when a NAS is the server, the NAS's row below) sits in
 the card's **Away from home** section. The card's tree is the add-on's own, so the Mac and Windows chromes draw the
-row with no code of their own. **Phones do not use it yet**: the iPhone app has no VPN
-([phone-vpn plan](../plans/phone-vpn.md), not built), and the pairing code carries no relay route for a
+row with no code of their own. Phones have their own: the iPhone app's built-in VPN
+([phone-vpn plan](../plans/phone-vpn.md)). The pairing code carries no relay route for a
 host (its relay is behind the same router), so a phone reaches the library as before.
 
 ### The NAS as a VPN host (2026-11-15)

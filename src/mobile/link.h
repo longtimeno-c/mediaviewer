@@ -7,6 +7,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -20,6 +21,7 @@
 
 #include "wire/net.h"
 #include "wire/serve_client.h"
+#include "wire/udp_hub.h"
 #include "core/result.h"
 
 namespace mv::mobile {
@@ -78,6 +80,9 @@ struct service_config {
   std::string device_kind;
   // Ask for a direct path once on the relay (docs/plans/nas-relay.md §9).
   bool upgrade = false;
+  // Move a direct TCP session onto UDP when the service offers it (caps' "udp"): one stream that
+  // keeps its speed through loss on a long path. A try that fails leaves TCP as it was.
+  bool udp = true;
   bool loopback_only = false;  // the tests: punch on 127.0.0.1 only
 };
 
@@ -101,6 +106,7 @@ struct route_report {
   bool over_internet = false;
   bool relayed = false;   // through the person's own relay (the mobile-data rules apply as over the internet)
   bool upgraded = false;  // moved from the relay to a direct path it punched
+  bool udp = false;       // moved from TCP to a UDP stream on the same address (service_config::udp)
   std::vector<route_failure> failures;  // the ones that did not
 };
 
@@ -135,6 +141,15 @@ class link_session final : public remote_file {
     }
     if (c) dropped(c);
   }
+  // Tests: the live client closes as one that died idle does, without dropped() hearing of it.
+  void close_live_for_test() noexcept {
+    std::shared_ptr<driftwire::serve::client> c;
+    {
+      std::lock_guard lock(m_);
+      c = live_;
+    }
+    if (c) c->close();
+  }
   [[nodiscard]] bool connected() const;
   // Whether a direct path may be tried now (nas-relay.md §9.2): on Wi-Fi
   // always; on mobile data only with the person's setting on (default on).
@@ -142,6 +157,8 @@ class link_session final : public remote_file {
   void set_upgrade_policy(bool on_cellular, bool allowed_on_cellular) noexcept;
   // The tests: try a direct path now, and wait for it (true when it moved).
   [[nodiscard]] bool upgrade_now_for_test();
+  // The tests: waits for a direct link's one UDP try to end; true when the live client is on UDP.
+  [[nodiscard]] bool udp_settled_for_test();
   // The live connection's limit, as the service said it in serve_caps: 1
   // limited, 0 unlimited, -1 no live connection (nothing known).
   [[nodiscard]] int grant(std::int64_t& expires_unix, bool& scoped) const;
@@ -153,6 +170,9 @@ class link_session final : public remote_file {
   // The caps' "role" for this device (serve_wire.h kCapsRole): "view", "change" or "admin"; "" from
   // a service older than roles. -1 (as grant) with no live link.
   [[nodiscard]] int role(std::string& word) const;
+  // A computer at home: its own login to the server's LAN SMB share, from the live link's caps
+  // (serve_wire.h kCapsShare). False with no live link or none given. The caller wipes `password`.
+  [[nodiscard]] bool share_login(std::string& user, std::string& password) const;
   // Where the service is (serve_wire.h kCapsAddresses): the addresses it was set up with, each
   // replaced by the one the latest connect's caps gave; one the caps left out stays. The next
   // race uses them, and a host keeps them so the next run does. Never blocks on a connect.
@@ -230,6 +250,15 @@ class link_session final : public remote_file {
   void stop_upgrades(bool join) noexcept;
   void upgrade_loop();
   [[nodiscard]] bool try_upgrade();
+  // Onto UDP (service_config::udp): once for each direct TCP client, none for a while after a UDP
+  // client dropped (a network that lets the handshake through and then stops UDP).
+  [[nodiscard]] bool wants_udp_locked() const;  // m_ held
+  [[nodiscard]] bool try_udp();
+  // The live client is ending (dropped, or found closed and replaced): a UDP one that ran only
+  // briefly keeps the next connects on TCP a while. m_ held.
+  void udp_ending_locked();
+  // The UDP socket goes now, not when the last client lets go (shut_down, the destructor).
+  void stop_udp_hub() noexcept;
   [[nodiscard]] std::uint32_t live_caps_ops() const;
   [[nodiscard]] bool upgrade_allowed() const noexcept;
 
@@ -259,6 +288,10 @@ class link_session final : public remote_file {
   std::shared_ptr<driftwire::net::tcp_rendezvous> up_rz_;  // under up_m_: the try in flight's port
   std::shared_ptr<driftwire::link> up_link_;               // under up_m_: a punched link mid-handshake
   bool up_running_ = false;  // under up_m_: the thread has not returned yet
+  std::shared_ptr<driftwire::udp_hub> udp_hub_;  // under up_m_: this phone's UDP socket, once opened
+  std::weak_ptr<driftwire::serve::client> udp_tried_;  // under m_: the TCP client a try last left
+  std::chrono::steady_clock::time_point udp_since_{};       // under m_: when the live client moved to UDP
+  std::chrono::steady_clock::time_point udp_hold_until_{};  // under m_: after a UDP client dropped soon
 };
 
 }  // namespace mv::mobile
