@@ -236,7 +236,8 @@ bool same_ports(const std::vector<host_ports::port_wanted>& a, const std::vector
   if (a.size() != b.size()) return false;
   for (std::size_t i = 0; i < a.size(); ++i) {
     if (a[i].internal_port != b[i].internal_port || a[i].external_port != b[i].external_port ||
-        a[i].fallback_external != b[i].fallback_external || a[i].v6 != b[i].v6 || a[i].what != b[i].what) {
+        a[i].fallback_external != b[i].fallback_external || a[i].v6 != b[i].v6 || a[i].udp != b[i].udp ||
+        a[i].what != b[i].what) {
       return false;
     }
   }
@@ -248,7 +249,11 @@ std::string port_words(const host_ports::port_report& p) {
   const std::uint16_t asked = p.wanted.external_port ? p.wanted.external_port : p.wanted.internal_port;
   switch (p.v4) {
     case host_ports::port_state::mapped:
-      return what + " " + std::to_string(p.external_port) + " open (" + mapping::method_name(p.how) + ")";
+      return what + " " + std::to_string(p.external_port) + " open (" + mapping::method_name(p.how) +
+             (p.udp == host_ports::port_state::mapped ? ", UDP too"
+              : p.udp                                 ? ", not UDP"
+                                                      : "") +
+             ")";
     case host_ports::port_state::refused:
       return what + " " + std::to_string(asked) + " refused";
     case host_ports::port_state::not_offered:
@@ -569,7 +574,8 @@ std::string ago_words(std::int64_t then_unix, std::int64_t now_unix) {
 
 std::vector<host_ports::port_wanted> wanted_ports(const keeper_context& ctx) {
   std::vector<host_ports::port_wanted> out;
-  if (ctx.service_port != 0) out.push_back({.internal_port = ctx.service_port, .what = "service"});
+  // The service's sessions over UDP take the same port number (serve::server::options::udp).
+  if (ctx.service_port != 0) out.push_back({.internal_port = ctx.service_port, .udp = true, .what = "service"});
   // With the web-site look, only it is open outside: the plain relay's
   // cleartext "MVRL" head never reaches the internet (docs/plans/vpn-stealth.md).
   // Outside 443, else 8443 (still a port HTTPS uses) when 443 is someone else's.
