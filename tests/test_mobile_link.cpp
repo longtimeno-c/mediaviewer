@@ -246,6 +246,7 @@ struct rig {
 
   std::string photos_label = "Photos";
   std::string relay_address;  // the person's own relay, for start(): the service waits there
+  bool phone_lock = false;     // for start(): the owner requires phones to lock the app
   // options::udp: off here, so `served` and `path` see every byte; the UDP tests turn it on.
   bool udp = false;
 
@@ -284,6 +285,7 @@ struct rig {
     o.cfg.roots.push_back({"a1a1a1a1a1a1a1a1", photos_label, photos.string()});
     o.cfg.roots.push_back({"c2c2c2c2c2c2c2c2", "Catalogue", (catalogue_home / ".mediaviewer").string()});
     o.cfg.relay = relay_address;
+    o.cfg.phone_lock = phone_lock;
     o.udp = udp;
     o.make_listener = [sent = served, path = path]() -> std::unique_ptr<dw::net::listener> {
       auto l = dw::net::listen_internet(0, true, 32);
@@ -495,6 +497,25 @@ TEST_CASE("pairing: a guest code gives a time, the link reports it, and its end 
                     [](const mob::route_failure& f) { return f.problem == mob::route_problem::expired; }));
   CHECK(std::none_of(ended.failures.begin(), ended.failures.end(),
                      [](const mob::route_failure& f) { return f.problem == mob::route_problem::not_paired; }));
+}
+
+TEST_CASE("link: the owner's word that phones must lock the app reaches the phone", "[mobile-link]") {
+  // docs/plans/mobile.md §12: the caps say it; with no live link the phone keeps what it last heard.
+  rig open;
+  open.pair_now();
+  mob::link_session s(open.config());
+  CHECK(s.lock_required() == -1);  // not connected: nothing known
+  mob::route_report connected;
+  REQUIRE(s.connect(connected));
+  CHECK(s.lock_required() == 0);
+  rig locked;
+  locked.phone_lock = true;
+  locked.srv.reset();
+  locked.start();
+  locked.pair_now();
+  mob::link_session l(locked.config());
+  REQUIRE(l.connect(connected));
+  CHECK(l.lock_required() == 1);
 }
 
 TEST_CASE("link payload: a guest code's grant is read for the confirm screen", "[mobile-link]") {

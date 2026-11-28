@@ -230,6 +230,7 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       next.libraryName = next.hasLibrary ? (record?.libraryName ?? snapshot.libraryName) : ""
       next.soundSearch = next.hasLibrary ? soundState : .notNeeded
       next.accessUntil = next.hasLibrary ? record?.accessUntil.map { Date(timeIntervalSince1970: $0) } : nil
+      next.lockRequired = next.hasLibrary && record?.lockRequired == true
       // A catalogue ends file mode, and so does having no library.
       if !next.hasLibrary || next.catalogue != nil { fileModeNow = false }
       next.fileMode = fileModeNow
@@ -307,7 +308,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       }
       return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
                              isSample: info.sample != 0,
-                             guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil)
+                             guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil,
+                             lockRequired: info.lock_required != 0)
     }
   }
 
@@ -381,11 +383,15 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       await removeLibrary(keepingDeviceKey: true)
     }
 
-    let record = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
-                               fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
-                               local: linkString(parsed.local), publicName: linkString(parsed.public_name),
-                               identity: linkBytes(parsed.identity).hexString, accessKey: linkBytes(parsed.access_key).hexString,
-                               deviceName: deviceName, relay: linkString(parsed.relay))
+    var made = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+                             fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
+                             local: linkString(parsed.local), publicName: linkString(parsed.public_name),
+                             identity: linkBytes(parsed.identity).hexString, accessKey: linkBytes(parsed.access_key).hexString,
+                             deviceName: deviceName, relay: linkString(parsed.relay))
+    // The owner's lock, as the code said (the person passed the check before pairing); the caps
+    // say it again at each connect.
+    if parsed.lock_required != 0 { made.lockRequired = true }
+    let record = made
     let handle: LinkHandle = try await onLinkQueue {
       guard record.save() else { throw PairingFailure.codeNotReadable }
       LinkFolders.prepare()  // again: a Forget removed them, with their backup exclusion
@@ -521,6 +527,9 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     lock.withLock {
       if record?.isSample == true { storageNow = sampleLostDrive ? 2 : 0 } else if storage >= 0 { storageNow = storage }
     }
+    // The owner's lock (docs/plans/mobile.md §12): -1 (the link closed meanwhile) keeps what was said.
+    let lockRequired = status == 0 ? await onLinkQueue { mv_link_lock_required(link.raw) } : Int32(-1)
+    if lockRequired >= 0 { noteLock(required: lockRequired == 1, from: link) }
     // §8.2: the NAS's "expired" shows the end and deletes the copy; the phone's own clock past
     // the end the NAS gave only says so, and only when no route answered at all.
     var unreachable = false
@@ -585,6 +594,17 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       try? await Task.sleep(for: .seconds(wait))
       guard let self, self.lock.withLock({ self.libraryEpoch == epoch && !self.forgotten }) else { return }
       await self.retry()
+    }
+  }
+
+  /// Whether the library's owner requires the app locked, kept with the pairing so a phone kept
+  /// offline still locks. Never for a library replaced meanwhile.
+  private func noteLock(required: Bool, from link: LinkHandle) {
+    lock.withLock {
+      guard handle === link, !forgotten, var r = record, (r.lockRequired == true) != required else { return }
+      r.lockRequired = required
+      record = r
+      _ = r.save()
     }
   }
 

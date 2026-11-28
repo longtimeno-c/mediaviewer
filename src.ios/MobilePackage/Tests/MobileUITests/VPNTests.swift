@@ -411,8 +411,8 @@ final class AppModelVPNTests: XCTestCase {
   }
 }
 
-/// A connection whose snapshot the test changes.
-private final class SwitchingConnection: ConnectionService, @unchecked Sendable {
+/// A connection whose snapshot the test changes (AppLockTests uses it too).
+final class SwitchingConnection: ConnectionService, @unchecked Sendable {
   private let lock = NSLock()
   private var snapshot: ConnectionSnapshot
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
@@ -453,12 +453,12 @@ private final class SwitchingConnection: ConnectionService, @unchecked Sendable 
   }
 }
 
-private struct NoScan: ScanSurfaceProviding {
+struct NoScan: ScanSurfaceProviding {
   func surface(onCode: @escaping (String) -> Void) -> AnyView { AnyView(EmptyView()) }
 }
 
 /// Services that answer nothing, around the test's connection.
-private enum StubServices {
+enum StubServices {
   static func make(connection: ConnectionService) -> Services {
     Services(library: EmptyStore(), images: NoImages(), search: NoSearch(), connection: connection, sync: NoSync(),
              clips: NoClips(), saver: NoSaver())

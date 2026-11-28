@@ -217,6 +217,9 @@ struct caps_msg {
   // once the server's elevated step made its account. "" otherwise, and from an older service.
   // Wiped with the message; the client mounts with it and keeps it nowhere.
   std::string share_user, share_password;
+  // The library's owner asks every phone to lock the app with Face ID or its passcode
+  // (kCapsLock; docs/plans/mobile.md §12). false from a service older than that.
+  bool lock = false;
   ~caps_msg();
   caps_msg() = default;
   caps_msg(const caps_msg&) = default;
@@ -226,6 +229,7 @@ struct caps_msg {
 };
 inline constexpr const char* kCapsRole = "role";
 inline constexpr const char* kCapsUdp = "udp";
+inline constexpr const char* kCapsLock = "lock";
 inline constexpr const char* kCapsShare = "share";  // {"user","password"}
 inline constexpr const char* kCapsAddresses = "addresses";  // {"local","public","relay"}, each optional
 // The longest address a caps or serve.json carries.
@@ -418,6 +422,9 @@ struct config {
   // own relay listens on to forward its owner's laptop traffic out (0: off).
   // Its key is in the secret store (kVpnKeyName), never here.
   std::uint16_t vpn_port = 0;
+  // Phones must lock the app (Face ID or the phone's passcode) to open this library, as the
+  // owner set it (serve_admin set_phone_lock): sent in every paired device's caps (kCapsLock).
+  bool phone_lock = false;
 };
 
 // What a paired device's waiter at the relay is called: BLAKE2b-128 keyed by

@@ -172,6 +172,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* r = doc->str(kCapsRole); r && (*r == "view" || *r == "change" || *r == "admin")) c.role = *r;
+  c.lock = doc->boolean(kCapsLock) == true;
   if (const json::value* a = doc->find(kCapsAddresses); a && a->k == json::kind::object) {
     // Each on its own: one that is not an address is dropped, never the others.
     const auto take = [&](const char* k, std::string& into) {
@@ -557,6 +558,10 @@ result<config> parse_config(std::string_view text, bool any_port, bool no_roots)
     if (!p || *p < 0 || *p > 65535) return err(status::invalid_arg);
     c.vpn_port = static_cast<std::uint16_t>(*p);
   }
+  if (const json::value* l = doc->find("phone_lock")) {
+    if (l->k != json::kind::boolean) return err(status::invalid_arg);
+    c.phone_lock = doc->boolean("phone_lock").value_or(false);
+  }
   return c;
 }
 
@@ -580,6 +585,7 @@ std::string config_json(const config& c) {
   if (!c.local.empty()) w.key("local").string(c.local);
   if (!c.public_name.empty()) w.key("public").string(c.public_name);
   if (c.vpn_port != 0) w.key("vpn_port").integer(c.vpn_port);
+  if (c.phone_lock) w.key("phone_lock").boolean(true);
   w.end_object();
   return w.take();
 }

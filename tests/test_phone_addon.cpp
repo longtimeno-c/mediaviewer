@@ -1146,6 +1146,46 @@ TEST_CASE("phone access: the server row says whether clips are converted, and th
   CHECK(asked[0].find(R"("on":false)") != std::string::npos);
 }
 
+// docs/plans/mobile.md §12: the owner can require every phone to lock MediaViewer, on a server
+// that offers it; the switch asks the server, and its words say what each state means.
+TEST_CASE("phone access: the owner can require phones to lock the app", "[phone-addon]") {
+  const auto tree_for = [](const std::string& extra) {
+    screen c(mv::phone::card::computer::mac);
+    const std::string tree = c.build(R"({"folder":"/x","claimed":true,"reachable":true)" + extra + "}", kNow);
+    require_valid(tree);
+    return tree;
+  };
+  // A server from before it: no switch.
+  CHECK(tree_for(R"(,"nas_features":["passphrase"])").find(R"("id":"phone_lock")") == std::string::npos);
+  const std::string off = tree_for(R"(,"nas_features":["passphrase","phone_lock"],"nas_phone_lock":false)");
+  CHECK(off.find(R"("id":"phone_lock","label":"Phones must lock MediaViewer","value":false)") != std::string::npos);
+  CHECK(off.find("can still turn the lock on") != std::string::npos);
+  const std::string on = tree_for(R"(,"nas_features":["passphrase","phone_lock"],"nas_phone_lock":true)");
+  CHECK(on.find(R"("id":"phone_lock","label":"Phones must lock MediaViewer","value":true)") != std::string::npos);
+  CHECK(on.find("Turning it off needs the server passphrase") != std::string::npos);
+
+  // A code made while it is on says the phone will ask before it pairs; one made without, nothing.
+  const auto code_tree = [](bool lock) {
+    std::string state = kClaimed;
+    if (lock) state.insert(state.size() - 1, R"(,"qr_lock":true)");
+    screen c(mv::phone::card::computer::mac);
+    const std::string tree = c.build(state, kNow);
+    require_valid(tree);
+    return tree;
+  };
+  const char* asks = "ask for Face ID or its passcode before it pairs";
+  REQUIRE(code_tree(false).find("1234 5678") != std::string::npos);  // the code is showing
+  CHECK(code_tree(false).find(asks) == std::string::npos);
+  CHECK(code_tree(true).find(asks) != std::string::npos);
+
+  screen c(mv::phone::card::computer::pc);
+  (void)c.build(R"({"folder":"/x","claimed":true,"nas_features":["phone_lock"]})", kNow);
+  const auto asked = c.on_event("phone_lock", kChange, "true", kNow);
+  REQUIRE(asked.size() == 1);
+  CHECK(asked[0].find(R"("do":"phone_lock")") != std::string::npos);
+  CHECK(asked[0].find(R"("on":true)") != std::string::npos);
+}
+
 // self-host-users-smb.md §12 (owner, 2026-11-27): each paired computer is a user of the share at
 // home. Its row says so, picks its role, renames it, and the host's step makes its account.
 TEST_CASE("phone access: a computer is a user: role, rename, and its share account", "[phone-addon]") {

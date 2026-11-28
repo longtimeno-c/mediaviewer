@@ -724,6 +724,7 @@ void link::refresh(bool phones_only) {
         v_.relay = relay ? *relay : std::string();
         v_.nas_vpn_port = doc->integer("vpn_port").value_or(0);
         v_.nas_vpn_running = doc->boolean("vpn_running").value_or(false);
+        v_.nas_phone_lock = doc->boolean("phone_lock").value_or(false);
         v_.unlocked_s = doc->integer("unlocked_s").value_or(0);
         v_.unlocked_until = std::chrono::steady_clock::now() + std::chrono::seconds(std::max<std::int64_t>(0, v_.unlocked_s));
         v_.locked_until = doc->integer("locked_until").value_or(0);
@@ -1365,6 +1366,7 @@ void link::run(const std::string& request) {
     {
       std::lock_guard lock(m_);
       p.relay = v_.relay;  // the phone tries it after the direct addresses
+      p.lock = v_.nas_phone_lock;  // the phone asks for Face ID or its passcode before it pairs
     }
     const std::string url = catalog::pair_url(p);
     refresh();  // who is paired before this code
@@ -1385,6 +1387,7 @@ void link::run(const std::string& request) {
     }
     v_.qr_expires = p.expires;
     v_.qr_for_s = for_s;
+    v_.qr_lock = p.lock;
     // A new code is the one on the service now: nothing left from before to withdraw.
     if (v_.code_left) {
       v_.code_left = false;
@@ -1477,6 +1480,14 @@ void link::run(const std::string& request) {
       std::lock_guard lock(m_);
       v_.error.clear();
     }
+    refresh();
+    return;
+  }
+  if (what == "phone_lock") {
+    // Phones must lock the app (docs/plans/mobile.md §12); off needs the unlock.
+    json::writer w;
+    w.begin_object().key("on").boolean(doc->boolean("on").value_or(false)).end_object();
+    if (auto r = route("set_phone_lock", w.str()); !r) return fail_status(r.error());
     refresh();
     return;
   }
@@ -2046,6 +2057,7 @@ std::string link::state_json() const {
   }
   w.key("locked_until").integer(v_.locked_until);
   w.key("qr_for_s").integer(v_.qr_for_s);
+  w.key("qr_lock").boolean(v_.qr_lock);
   w.key("folders").begin_array();
   for (const auto& f : v_.folders) {
     w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path);
@@ -2108,6 +2120,7 @@ std::string link::state_json() const {
                                    : serve::relay_connect_code(v_.relay_line));
   }
   w.key("nas_vpn_port").integer(v_.nas_vpn_port).key("nas_vpn_running").boolean(v_.nas_vpn_running);
+  w.key("nas_phone_lock").boolean(v_.nas_phone_lock);
   // This computer's users (names and roles only) and its share's addresses (screen only).
   if (v_.users_read) {
     w.key("users").begin_array();

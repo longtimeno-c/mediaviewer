@@ -55,6 +55,9 @@ struct PairingRecord: Codable, Sendable {
   /// A time-limited phone's end, unix seconds on the service's clock, as it last said (nil: none).
   /// Kept so the phone can say the access ended even with no network.
   var accessUntil: Double? = nil
+  /// The library's owner requires the app locked (Face ID or the passcode), as the service last
+  /// said (nil: never said, as in a record written before it existed).
+  var lockRequired: Bool? = nil
   static let account = "pairing"
 
   static func load() -> PairingRecord? {

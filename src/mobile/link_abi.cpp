@@ -351,6 +351,7 @@ int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
     out->grant_scoped = p->grant_scoped ? 1 : 0;
     put(out->fingerprint, p->fingerprint);
     put(out->relay, p->relay);
+    out->lock_required = p->lock_required ? 1 : 0;
     if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
     return MV_LINK_OK;
   });
@@ -431,6 +432,14 @@ void mv_link_set_upgrade(mv_mobile_link* l, int32_t on_cellular, int32_t allowed
 namespace {
 constexpr const char* kStorageWords[] = {"", "rebuilding", "degraded", "offline", "failing"};
 }  // namespace
+
+int32_t mv_link_lock_required(mv_mobile_link* l) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: no owner to ask
+    return l->session->lock_required();
+  });
+}
 
 int32_t mv_link_storage(mv_mobile_link* l) {
   return catch_all([&]() -> int32_t {

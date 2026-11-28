@@ -164,6 +164,9 @@ class link_session final : public remote_file {
   [[nodiscard]] int grant(std::int64_t& expires_unix, bool& scoped) const;
   // The caps' "storage" word (serve_wire.h): "" when healthy or none; -1 (as grant) with no live link.
   [[nodiscard]] int storage(std::string& word) const;
+  // The caps' "lock" (serve_wire.h kCapsLock): 1 the owner requires the app locked, 0 not;
+  // -1 (as grant) with no live link.
+  [[nodiscard]] int lock_required() const;
   // The caps' "role" for this device (serve_wire.h kCapsRole): "view", "change" or "admin"; "" from
   // a service older than roles. -1 (as grant) with no live link.
   [[nodiscard]] int role(std::string& word) const;

@@ -438,6 +438,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "MediaViewer uses Face ID to unlock itself, when you turn the lock on in Settings.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MediaViewer backs up your photos and videos to the folder you choose on your own NAS. With the sample library they are copied only to a folder inside MediaViewer on this iPhone. Nothing goes anywhere else.";
@@ -530,6 +531,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MediaViewer;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "MediaViewer uses Face ID to unlock itself, when you turn the lock on in Settings.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "MediaViewer uses the camera to scan the code shown on your computer.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MediaViewer adds a copy to Photos only when you ask it to save one.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MediaViewer backs up your photos and videos to the folder you choose on your own NAS. With the sample library they are copied only to a folder inside MediaViewer on this iPhone. Nothing goes anywhere else.";
@@ -620,6 +622,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "MediaViewer uses Face ID to unlock itself, when you turn the lock on in Settings.";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_FILE = App/Info/Common.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -642,6 +645,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "MV Fixtures";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "MediaViewer uses Face ID to unlock itself, when you turn the lock on in Settings.";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_FILE = App/Info/Common.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
