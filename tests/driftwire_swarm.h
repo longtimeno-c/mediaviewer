@@ -33,9 +33,11 @@ struct swarm_node {
   };
   std::map<std::string, stored> items;  // by target
   bool forge = false;
+  std::atomic<bool> silent{false};  // gone: answers nothing (a node that left the DHT)
   std::atomic<int> gets{0};
 
   void on(std::span<const std::uint8_t> d, const sp::net::endpoint& from) {
+    if (silent.load()) return;
     auto v = bc::decode({reinterpret_cast<const char*>(d.data()), d.size()});
     if (!v || !v->str("y") || *v->str("y") != "q" || !v->str("t") || !v->str("q")) return;
     const bc::value* a = v->get("a");

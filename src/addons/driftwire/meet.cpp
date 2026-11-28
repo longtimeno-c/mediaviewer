@@ -284,17 +284,27 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
     }
     for (auto& t : puts) t.join();
   };
-  publish();
-  // The puts asked many nodes how they see us: a NAT that maps each
-  // destination apart may show only now. Said again, so the other side
-  // birthday-punches.
-  if (!mine.hard && !stopped() && seen_hard(dht)) {
-    mine.hard = true;
-    mine.written_ms = unix_ms();
-    seq = std::max(seq + 1, mine.written_ms / 1000);
+  // Published while the first look for the other side's item goes (a remembered device's sender
+  // is always there already): one lookup's time saved. Nothing is punched before it is done, so
+  // the other side can find this one when the punch starts.
+  std::thread publishing([&] {
     publish();
-  }
-  if (stopped()) return err(status::cancelled);
+    // The puts asked many nodes how they see us: a NAT that maps each
+    // destination apart may show only now. Said again, so the other side
+    // birthday-punches.
+    if (!mine.hard && !stopped() && seen_hard(dht)) {
+      mine.hard = true;
+      mine.written_ms = unix_ms();
+      seq = std::max(seq + 1, mine.written_ms / 1000);
+      publish();
+    }
+  });
+  struct joined {
+    std::thread& t;
+    ~joined() {
+      if (t.joinable()) t.join();
+    }
+  } published{publishing};
 
   // 2. The other side's item, under any of its salts, looked up apart.
   say("Looking for the other computer\xE2\x80\xA6");
@@ -335,6 +345,8 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
   // one its firewall lets this side's packets back through: a lab PC on a
   // public address whose policy drops all unsolicited inbound sees them come
   // from this side's address inside, never from its NAT.
+  publishing.join();
+  if (stopped()) return err(status::cancelled);
   say("Connecting through both networks\xE2\x80\xA6");
   const std::vector<net::endpoint> their_public = public_v4(*theirs, o.loopback);
   const auto own_ext = dht.external();

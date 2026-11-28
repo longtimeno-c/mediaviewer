@@ -390,7 +390,10 @@ meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.
   seal and < 10 min age check. Overwritten with "gone" afterwards.
 - **DHT client** (`dht.h`): read-only (BEP 43), 3 in flight / 8 closest, BEP 42 public-address votes
   (one per IPv4 /24 or IPv6 /48; secure voters only once ≥ 4), table in `driftwire_dht.dat` (≤ 200
-  nodes), four bootstrap routers. Public nodes only.
+  nodes), four bootstrap routers. Public nodes only. A lookup keeps 3 queries out all along (the
+  next as one answers); one silent for 500 ms steps aside and is not waited for at the end. Start
+  asks every seed at once, the routers resolved meanwhile, and returns at 8 answers. A meeting looks
+  for the other side's item while its own is being published, and punches once that is done.
 - **One UDP socket** (`udp_hub.h`) for DHT, punching and stream. Probe every given address plus 16
   ports above the public one, every 100 ms for ≤ 10 s; RFC 1918 only when `one_site` (same public
   address or one /16). The sender offers the first replying path (*choose*) until *chosen*.
@@ -459,7 +462,7 @@ still applies. (`secrets.*`, `known.*`.) The question stays until the next send 
 - **Mutual**: the meeting is keyed by the pairing secret; one-sided, "Waiting for Bea to come
   online… Bea must remember this computer too".
 - **Meeting**: each UTC hour the secret yields a four-word key set per direction. While the window is
-  open or Keep receiving is on (internet + DHT on), the receiver looks for a knock every 15 s,
+  open or Keep receiving is on (internet + DHT on), the receiver looks for a knock every 5 s (15 s before 2026-11-28),
   publishing nothing; on a knock both publish and punch (UDP + TCP, 15 s each); items "gone" after.
 - **Trust on first use**: CPace on the meeting hour's password, `Noise_XXhfs+psk0`, then the static
   must match: "This is not the Bea you remembered: its security key has changed…".

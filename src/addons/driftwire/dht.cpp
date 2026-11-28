@@ -5,9 +5,12 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <thread>
 
 #include "addons/driftwire/sha1.h"
@@ -21,6 +24,10 @@ using clock = std::chrono::steady_clock;
 constexpr std::size_t kTable = 512;
 constexpr std::size_t kK = 8;     // the closest nodes a lookup settles on
 constexpr int kAlpha = 3;         // queries in flight
+constexpr int kSlowMs = 500;       // a query unanswered this long stops holding a place among them
+// Seeds answered before start() returns (the rest are let go): enough nodes, and enough address
+// votes (BEP 42) to go by.
+constexpr int kStartAnswers = 8;
 constexpr std::size_t kMaxV = 1000;  // BEP 44
 constexpr std::size_t kSavedNodes = 200;  // the table kept between runs, at most
 constexpr std::size_t kMinSecureVoters = 4;  // enough BEP 42-secure voters to go by them alone
@@ -239,19 +246,20 @@ bool client::start(const std::function<bool()>& stop) {
       seeds.push_back(n.at);
     }
   }
-  if (opts_.use_routers) {
-    for (const auto& [name, port] : bootstrap_routers()) {
-      for (const auto& ip : net::resolve(name)) seeds.push_back({net::address_text(ip), port});
-    }
-  }
-  // find_node for ourselves, a few at once, from every seed.
+  // find_node for ourselves from every seed at once, the routers resolved meanwhile, each on its
+  // own; done once kStartAnswers have answered (lookups learn the rest as they go), or every
+  // seed has answered or not. Asked in batches that waited for each, one dead seed (a saved
+  // node gone since) held a batch for query_ms, and the routers' names were resolved in turn
+  // before any of it.
+  std::mutex sm;
+  std::condition_variable scv;
+  int answered = 0, out = 0;  // under sm
+  std::atomic<bool> enough{false};
+  const auto ended = [&] { return (stop && stop()) || enough.load(); };
   std::vector<std::thread> asks;
-  std::atomic<int> answered{0};
-  for (const auto& s : seeds) {
-    asks.emplace_back([&, s] {
-      auto r = query(s, "find_node", bencode::value::dict({{"target", bencode::value::bytes(as_string(self_))}}), stop);
-      if (!r) return;
-      ++answered;
+  const auto ask = [&](net::endpoint s) {
+    auto r = query(s, "find_node", bencode::value::dict({{"target", bencode::value::bytes(as_string(self_))}}), ended);
+    if (r) {
       if (const std::string* id = r->str("id"); id && id->size() == 20) {
         node n;
         std::memcpy(n.id.data(), id->data(), 20);
@@ -261,14 +269,44 @@ bool client::start(const std::function<bool()>& stop) {
       }
       if (const std::string* c = r->str("nodes")) learn(parse_nodes(*c, false));
       if (const std::string* c = r->str("nodes6")) learn(parse_nodes(*c, true));
-    });
-    if (asks.size() >= 16) {
-      for (auto& t : asks) t.join();
-      asks.clear();
+    }
+    std::lock_guard lock(sm);
+    if (r) ++answered;
+    --out;
+    scv.notify_all();
+  };
+  {
+    std::lock_guard lock(sm);
+    out = static_cast<int>(seeds.size()) + (opts_.use_routers ? static_cast<int>(bootstrap_routers().size()) : 0);
+  }
+  for (const auto& s : seeds) asks.emplace_back(ask, s);
+  if (opts_.use_routers) {
+    for (const auto& [name, port] : bootstrap_routers()) {
+      asks.emplace_back([&, name = std::string(name), port = port] {
+        const auto ips = ended() ? std::vector<net::address>{} : net::resolve(name);
+        {
+          std::lock_guard lock(sm);
+          out += static_cast<int>(ips.size());
+        }
+        std::vector<std::thread> each;
+        for (const auto& ip : ips) each.emplace_back(ask, net::endpoint{net::address_text(ip), port});
+        for (auto& t : each) t.join();
+        std::lock_guard lock(sm);
+        --out;  // this router's name
+        scv.notify_all();
+      });
     }
   }
+  {
+    std::unique_lock lock(sm);
+    while (out > 0 && answered < kStartAnswers && !(stop && stop())) {
+      scv.wait_for(lock, std::chrono::milliseconds(50));
+    }
+  }
+  enough.store(true);
   for (auto& t : asks) t.join();
-  return answered.load() > 0;
+  std::lock_guard lock(sm);
+  return answered > 0;
 }
 
 bool client::refresh(const std::function<bool()>& stop) {
@@ -318,46 +356,35 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
     return da < db;
   };
   const auto until = clock::now() + std::chrono::milliseconds(opts_.lookup_ms);
-  for (;;) {
-    if ((stop && stop()) || clock::now() >= until) break;
-    std::vector<std::size_t> batch;
-    {
-      std::lock_guard lock(cm);
-      std::sort(c.begin(), c.end(), closer);
-      if (c.size() > 256) c.resize(256);
-      // Done when the k closest that answered have all been asked.
-      std::size_t answered = 0;
-      bool pending_near = false;
-      for (std::size_t i = 0; i < c.size() && answered < kK; ++i) {
-        if (c[i].answered) {
-          ++answered;
-        } else if (!c[i].asked) {
-          pending_near = true;
-          if (static_cast<int>(batch.size()) < kAlpha) batch.push_back(i);
-        }
-      }
-      if (!pending_near || batch.empty()) break;
-      for (std::size_t i : batch) c[i].asked = true;
-    }
-    std::vector<std::thread> flight;
-    for (std::size_t i : batch) {
-      flight.emplace_back([&, i] {
-        node n;
-        {
-          std::lock_guard lock(cm);
-          n = c[i].n;
-        }
-        auto r = query(n.at, ask, bencode::value::dict({{"target", bencode::value::bytes(as_string(target))}}), stop);
-        if (!r) return;
-        std::vector<node> more;
+  // kAlpha queries in flight all along: the next goes as soon as one answers (asked in rounds,
+  // one dead node held the whole round for query_ms). A query silent for kSlowMs no longer
+  // counts against kAlpha; it may still answer.
+  std::condition_variable ccv;
+  std::atomic<bool> finished{false};
+  const auto ended = [&] { return (stop && stop()) || finished.load(); };
+  std::vector<clock::time_point> live;  // under cm: when each query still counted went out
+  std::vector<std::thread> flight;
+  const auto ask_one = [&](std::size_t i) {
+    // Under cm.
+    c[i].asked = true;
+    const node n = c[i].n;
+    const auto sent = clock::now();
+    live.push_back(sent);
+    flight.emplace_back([&, n, sent] {
+      auto r = query(n.at, ask, bencode::value::dict({{"target", bencode::value::bytes(as_string(target))}}), ended);
+      std::vector<node> more;
+      if (r) {
         if (const std::string* x = r->str("nodes")) more = parse_nodes(*x, false);
         if (const std::string* x = r->str("nodes6")) {
           auto m6 = parse_nodes(*x, true);
           more.insert(more.end(), m6.begin(), m6.end());
         }
         learn(more);
-        std::lock_guard lock(cm);
-        // Find i again by id: the vector may have been sorted meanwhile.
+      }
+      std::lock_guard lock(cm);
+      if (const auto it = std::find(live.begin(), live.end(), sent); it != live.end()) live.erase(it);
+      if (r) {
+        // Found again by id: the vector may have been sorted meanwhile.
         for (auto& x : c) {
           if (x.n.id == n.id && x.n.at.address == n.at.address) {
             x.answered = true;
@@ -369,10 +396,41 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
         for (const auto& m : more) {
           if (std::none_of(c.begin(), c.end(), [&](const contact& x) { return x.n.id == m.id; })) c.push_back(contact{m, false, false, {}});
         }
-      });
+      }
+      ccv.notify_all();
+    });
+  };
+  {
+    std::unique_lock lock(cm);
+    for (;;) {
+      if ((stop && stop()) || clock::now() >= until) break;
+      // Slow ones step aside.
+      const auto now = clock::now();
+      std::erase_if(live, [&](clock::time_point t) { return now - t >= std::chrono::milliseconds(kSlowMs); });
+      std::sort(c.begin(), c.end(), closer);
+      if (c.size() > 256) c.resize(256);
+      // Done when the k closest that answered have all been asked, and nothing is out but slow
+      // ones (cut off then: what a gone node would have said is not waited for).
+      std::size_t answered = 0;
+      std::vector<std::size_t> next;
+      for (std::size_t i = 0; i < c.size() && answered < kK; ++i) {
+        if (c[i].answered) {
+          ++answered;
+        } else if (!c[i].asked) {
+          next.push_back(i);
+        }
+      }
+      if (next.empty() && live.empty()) break;
+      std::size_t launched = 0;
+      while (launched < next.size() && static_cast<int>(live.size()) < kAlpha) ask_one(next[launched++]);
+      // Until one answers or fails, the next of those still counted turns slow, or the end.
+      auto wake = until;
+      for (const auto t : live) wake = std::min(wake, t + std::chrono::milliseconds(kSlowMs));
+      ccv.wait_until(lock, std::min(wake, clock::now() + std::chrono::milliseconds(50)));
     }
-    for (auto& t : flight) t.join();
+    finished.store(true);
   }
+  for (auto& t : flight) t.join();
   std::vector<contact> out;
   std::lock_guard lock(cm);
   std::sort(c.begin(), c.end(), closer);

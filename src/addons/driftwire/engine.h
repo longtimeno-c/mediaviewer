@@ -341,8 +341,10 @@ class engine {
     // are kept (secrets::os_store() in the app; a folder in the tests).
     // Empty, or nullptr from it: a key per run, and nothing is remembered.
     std::function<std::unique_ptr<secrets::store>()> make_secrets;
-    // How often a remembered device's wait looks for a sender on the DHT.
-    int known_poll_ms = 15000;
+    // How often a remembered device's wait looks for a sender on the DHT: a send to this
+    // computer waits half of it on average before it is seen (15 s before 2026-11-28). Each look
+    // is one DHT get per remembered device, a few kilobytes.
+    int known_poll_ms = 5000;
     // The tests: every UDP socket of the engine's own DHT meetings (four
     // words sent, remembered devices, relays) goes through this (a stand-in
     // NAT). Empty: the sockets as opened.
