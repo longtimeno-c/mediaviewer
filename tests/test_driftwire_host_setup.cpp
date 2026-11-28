@@ -391,6 +391,31 @@ TEST_CASE("host setup: your own domain for the VPN, beside DuckDNS", "[host-setu
   CHECK_FALSE(parse({"host", "name", "domain"}).error.empty());
 }
 
+TEST_CASE("host vpn: a code with the public name never carries the look's inside port before the router maps",
+          "[host-setup][host][vpn-stealth]") {
+  if (!mv::driftwire::tls::available()) SKIP("this build has no BoringSSL");
+  scratch_dir dir("host_vpn_code_unmapped");
+  const cli::host_layout l = new_host(dir / "data");
+  cli::host_settings s;
+  s.vpn = true;
+  s.ddns = "home";
+  REQUIRE(cli::host_files::save_settings(l, s));
+  const auto lock = net::try_lock_instance(l.lock);  // a running host's
+  REQUIRE(lock);
+  auto w = loopback_world();
+  w.loopback = false;  // the name, as from away
+  // `vpn on` prints its code before the router keeper has mapped: no outside port yet.
+  REQUIRE(cli::host_files::write(l.state, R"({"relay_port":47614,"relay_tls_port":47615,"vpn":true})"));
+  std::string why;
+  bool tls = false;
+  CHECK(cli::host_relay_line(l, w, why, &tls).rfind("home.duckdns.org:443#", 0) == 0);
+  CHECK(tls);
+  // Once mapped, the router's port, whatever it is.
+  REQUIRE(cli::host_files::write(l.state,
+                                 R"({"relay_port":47614,"relay_tls_port":47615,"tls_outside_port":8443,"vpn":true})"));
+  CHECK(cli::host_relay_line(l, w, why, &tls).rfind("home.duckdns.org:8443#", 0) == 0);
+}
+
 TEST_CASE("host vpn: the code's port: the router's outside one for a name, the one it listens on for the LAN",
           "[host-setup][host][vpn-stealth]") {
   if (!mv::driftwire::tls::available()) SKIP("this build has no BoringSSL");

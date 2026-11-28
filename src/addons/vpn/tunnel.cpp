@@ -399,6 +399,16 @@ void dialer::stop() {
   turn_cv_.notify_all();
 }
 
+std::vector<std::uint16_t> tls_ports_to_try(std::uint16_t given, std::uint16_t answered) {
+  // 8443: the host's look outside when 443 is someone else's (cli::kLookFallbackPort).
+  constexpr std::uint16_t kLookFallback = 8443;
+  std::vector<std::uint16_t> out;
+  for (const std::uint16_t p : {answered, given, tls::kDefaultPort, kLookFallback}) {
+    if (p != 0 && std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
+  }
+  return out;
+}
+
 result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_t port, relay::forward_answer& said,
                                            const std::shared_ptr<remote_slot>& remote, std::uint8_t kind) {
   said = relay::forward_answer::failed;
@@ -428,8 +438,27 @@ result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_
     resolved_ = at;
   }
   net::endpoint to_server = *at;
-  if (opts_.tls) to_server.port = opts_.tls_port;
-  auto c = opts_.connect ? opts_.connect(to_server, kReachConnectMs) : net::connect(to_server, kReachConnectMs);
+  std::vector<std::uint16_t> ports{to_server.port};
+  if (opts_.tls) {
+    std::lock_guard lock(m_);
+    ports = tls_ports_to_try(opts_.tls_port, tls_answered_);
+  }
+  result<std::unique_ptr<link>> c = err(status::io);
+  for (const std::uint16_t p : ports) {
+    {
+      std::lock_guard lock(m_);
+      if (stopped_) return err(status::cancelled);
+    }
+    to_server.port = p;
+    c = opts_.connect ? opts_.connect(to_server, kReachConnectMs) : net::connect(to_server, kReachConnectMs);
+    if (c) {
+      if (opts_.tls) {
+        std::lock_guard lock(m_);
+        tls_answered_ = p;  // the next opens go straight to it
+      }
+      break;
+    }
+  }
   if (!c) {
     std::lock_guard lock(m_);
     resolved_.reset();  // its address may have changed

@@ -2175,6 +2175,70 @@ TEST_CASE("driftwire tls: a dialer given the knock key uses it and derives none"
   CHECK((*s)->snapshot().website >= 1);
 }
 
+TEST_CASE("vpn: the web-site look is the server's, told on the page not switched; a typed server sets it by its field",
+          "[vpn]") {
+  vpn::view v;
+  v.tls_available = true;
+  v.server = "home.duckdns.org:47615#" + std::string(kKey);
+  v.server_shown = "home.duckdns.org:47615";
+  v.tunnel = true;
+  v.tls = true;
+  std::string tree = vpn::build_settings_tree(v);
+  CHECK(tree.find("\"id\":\"tls_note\"") != std::string::npos);
+  CHECK(tree.find("\"id\":\"tls\"") == std::string::npos);  // no switch that could disagree with the server
+  v.tls = false;
+  tree = vpn::build_settings_tree(v);
+  CHECK(tree.find("\"id\":\"tls_note\"") == std::string::npos);
+  CHECK(tree.find("\"id\":\"tls\"") == std::string::npos);
+  // Typing a server by hand: its line cannot say, so it is asked beside the field.
+  v.server_editing = true;
+  CHECK(vpn::build_settings_tree(v).find("\"id\":\"tls\"") != std::string::npos);
+}
+
+TEST_CASE("vpn tls: a look code's port that does not answer is tried again on 443, then 8443", "[vpn]") {
+  using ports = std::vector<std::uint16_t>;
+  CHECK(tunnel::tls_ports_to_try(47615, 0) == ports{47615, 443, 8443});  // a code made before the router mapped
+  CHECK(tunnel::tls_ports_to_try(47615, 443) == ports{443, 47615, 8443});  // what answered, first
+  CHECK(tunnel::tls_ports_to_try(443, 0) == ports{443, 8443});
+  CHECK(tunnel::tls_ports_to_try(8443, 8443) == ports{8443, 443});
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  std::mutex m;
+  ports tried;
+  tunnel::dialer::options o;
+  o.relay = "127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey;
+  o.tls = true;
+  o.tls_port = 1;  // the code's: nothing answers there
+  // 443 stands for the router's outside port: the relay's real TLS port here.
+  o.connect = [&](const mv::driftwire::net::endpoint& e, int ms) {
+    {
+      std::lock_guard lock(m);
+      tried.push_back(e.port);
+    }
+    auto to = e;
+    if (e.port == 443) to.port = (*s)->tls_port();
+    return mv::driftwire::net::connect(to, ms);
+  };
+  auto d = tunnel::dialer::make(std::move(o));
+  REQUIRE(d);
+  relay::forward_answer said{};
+  auto f = (*d)->open("127.0.0.1", echo.port(), said);
+  REQUIRE(f);
+  say(**f, "outside");
+  CHECK(hear(**f, 7) == "OUTSIDE");
+  {
+    std::lock_guard lock(m);
+    CHECK(tried == ports{1, 443});
+    tried.clear();
+  }
+  auto again = (*d)->open("127.0.0.1", echo.port(), said);
+  REQUIRE(again);
+  std::lock_guard lock(m);
+  CHECK(tried == ports{443});  // straight to the one that answered
+}
+
 TEST_CASE("vpn tls: the Tunnel's Look like a web site switch goes through the TLS port", "[vpn]") {
   if (!tls::available()) SKIP("this build has no BoringSSL");
   scratch_dir dir("driftwire_tunnel_tls");
@@ -2192,7 +2256,9 @@ TEST_CASE("vpn tls: the Tunnel's Look like a web site switch goes through the TL
   eng.on_event("tls", 2, "true");
   eng.on_event("tunnel", 2, "true");
   REQUIRE(eventually([&] { return !eng.snapshot().tunnel_address.empty(); }));
-  CHECK(vpn::build_settings_tree(eng.snapshot()).find("\"id\":\"tls\"") != std::string::npos);
+  // Set beside the typed server's field; on the page, told, not a switch.
+  CHECK(vpn::build_settings_tree(eng.snapshot()).find("\"id\":\"tls_note\"") != std::string::npos);
+  CHECK(vpn::build_settings_tree(eng.snapshot()).find("\"id\":\"tls\"") == std::string::npos);
   const auto pp = static_cast<std::uint16_t>(std::stoi(eng.snapshot().tunnel_address.substr(10)));
   CHECK(curl_connect(pp, "127.0.0.1:" + std::to_string(echo.port())));
   CHECK((*s)->snapshot().forwarded == 1);
