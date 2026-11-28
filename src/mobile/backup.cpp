@@ -145,8 +145,8 @@ class over_link final : public target {
   result<serve::client::write_done> write(const std::string& root, const std::string& rel, std::uint64_t size,
                                           const std::string& hash_hex, std::uint64_t at, const serve::client::read_fn& read,
                                           const std::function<void(std::uint64_t)>& progress, const cancel_flag* cancel,
-                                          serve::client::write_refused* why, bool meta) override {
-    return l_.write(root, rel, size, hash_hex, at, read, progress, cancel, why, meta);
+                                          serve::client::write_refused* why, bool meta, std::int64_t taken) override {
+    return l_.write(root, rel, size, hash_hex, at, read, progress, cancel, why, meta, taken);
   }
   result<std::vector<std::string>> ledger_ids(const std::string& root) override {
     auto listing = l_.list_meta(root, "");
@@ -266,7 +266,7 @@ class on_phone final : public target {
   result<serve::client::write_done> write(const std::string& root, const std::string& rel_in, std::uint64_t size,
                                           const std::string& hash_hex, std::uint64_t at, const serve::client::read_fn& read,
                                           const std::function<void(std::uint64_t)>& progress, const cancel_flag* cancel,
-                                          serve::client::write_refused* why, bool meta) override {
+                                          serve::client::write_refused* why, bool meta, std::int64_t taken) override {
     const auto refuse = [&](const char* w, std::uint64_t have = 0) -> result<serve::client::write_done> {
       if (why) *why = {w, have};
       return err(status::permission_denied);
@@ -301,6 +301,7 @@ class on_phone final : public target {
           ec.clear();
           book_.drop(stale);
         }
+        if (taken != serve::kNoTime) (void)io::set_file_times(io::join_path(dir.value(), *found), taken);
         return serve::client::write_done{shown(*found), true};
       }
     }
@@ -377,6 +378,9 @@ class on_phone final : public target {
     }
     if (done.freed != 0) book_.removed(root_.id, done.freed);
     using kind = serve::backup::commit_result::kind;
+    if (!meta && taken != serve::kNoTime && (done.k == kind::placed || done.k == kind::existing)) {
+      (void)io::set_file_times(io::join_path(dir.value(), done.name), taken);
+    }
     switch (done.k) {
       case kind::placed: return serve::client::write_done{shown(done.name), false};
       case kind::existing: return serve::client::write_done{shown(done.name), true};
@@ -873,6 +877,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
     std::size_t item = 0;
     std::string key, kind, name, rel, hash, scratch;
     std::uint64_t size = 0, at = 0;
+    std::int64_t taken = serve::kNoTime;
     std::size_t lane = 0;
     io::file_reader in;
     std::atomic<std::uint64_t> sent{0};
@@ -1090,6 +1095,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
       u->key = it.key;
       u->kind = res.kind;
       u->name = res.name;
+      u->taken = it.taken;
       u->scratch = scratch;
       u->lane = lane;
       lane_busy[lane] = true;
@@ -1104,7 +1110,7 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
                                     raw->sent.store(sent);
                                     notify();
                                   },
-                                  cancel, &raw->why, false);
+                                  cancel, &raw->why, false, raw->taken);
           if (raw->written) break;
           if (raw->why.why == serve::kWhyOffset) {
             raw->at = raw->why.have;  // this phone's unfinished copy from an earlier run

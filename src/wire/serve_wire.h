@@ -255,6 +255,12 @@ inline constexpr std::size_t kMaxAddressBytes = 255;  // as the pairing code's
 inline constexpr std::size_t kMaxPairCodeBytes = 128;
 
 // ---- stream_open ---------------------------------------------------------------------------
+// No time given: a write's `taken`.
+inline constexpr std::int64_t kNoTime = INT64_MIN;
+// What a `taken` may be: the year 1601 (the first a Windows file can carry) to the end of 9999.
+inline constexpr std::int64_t kMinTaken = -11644473600LL;
+inline constexpr std::int64_t kMaxTaken = 253402300799LL;
+
 struct open_request {
   std::uint32_t id = 0;
   op kind = op::roots;
@@ -268,6 +274,9 @@ struct open_request {
   std::uint64_t size = 0;    // the whole file
   std::string hash;          // its BLAKE3, 64 lowercase hex digits
   bool meta = false;         // rel is under kBackupMetaFolder
+  // When the photo was taken, in seconds since 1970 (kNoTime: not said). The file is stamped
+  // with it once it is whole. A service from before this reads past it.
+  std::int64_t taken = kNoTime;
   // convert: -1 for the plan, else the segment (0 .. plan.segments - 1)
   std::int64_t segment = -1;
   // move: where to

@@ -123,6 +123,7 @@ struct write_stream {
   std::string part;      // the unfinished copy, beside it
   std::string hash;
   bool meta = false;     // the device's ledger copy: replaces, under the meta folder
+  std::int64_t taken = kNoTime;  // when the photo was taken: the file's time once it is whole
   std::uint64_t size = 0;
   std::uint64_t next = 0;   // the offset the next byte must have
   std::uint64_t held = 0;   // still held against the limit, not yet written
@@ -1066,6 +1067,8 @@ class session_state {
           }
           book_->drop(part);
         }
+        // A copy from before the phone said when its photos were taken gets its time now.
+        if (r.taken != kNoTime) (void)io::set_file_times(io::join_path(*dir, *found), r.taken);
         return send_end(r.id, end_code::ok, name_json(rel_dir, *found, true));
       }
     }
@@ -1078,6 +1081,7 @@ class session_state {
     w->part = io::join_path(*dir, backup::part_name(name, device_id_));
     w->hash = r.hash;
     w->meta = r.meta;
+    w->taken = r.meta ? kNoTime : r.taken;
     w->size = r.size;
     if (!book_->claim(w->part)) return send_end(r.id, end_code::refused, why_json(kWhyBusy));
     struct unclaim {
@@ -1732,6 +1736,11 @@ class session_state {
       book_->added(w.root.id, backup::book::kMinFileCost - w.size);
     }
     using kind = backup::commit_result::kind;
+    // The photo's own time, not the day it was backed up: what a file manager dates it by.
+    // A volume that keeps no such time still has the photo, so a failure here is not one.
+    if (w.taken != kNoTime && (done.k == kind::placed || done.k == kind::existing)) {
+      (void)io::set_file_times(io::join_path(w.dir, done.name), w.taken);
+    }
     switch (done.k) {
       case kind::placed: return {end_code::ok, name_json(w.rel_dir, done.name, false)};
       case kind::existing: return {end_code::ok, name_json(w.rel_dir, done.name, true)};

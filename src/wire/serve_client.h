@@ -122,7 +122,8 @@ class client {
   [[nodiscard]] result<write_done> write(const std::string& root, const std::string& rel, std::uint64_t size,
                                          const std::string& hash_hex, std::uint64_t at, const read_fn& read,
                                          const std::function<void(std::uint64_t)>& progress,
-                                         const std::atomic<bool>* cancel, write_refused* why, bool meta = false);
+                                         const std::atomic<bool>* cancel, write_refused* why, bool meta = false,
+                                         std::int64_t taken = kNoTime);
 
   // ---- changing the shared folders (serve_wire.h "changing"; docs/design/28 "Changing files") ----
   // For a device whose role (caps().role) is "change". Ask for kWriteOp | kChangeOps in

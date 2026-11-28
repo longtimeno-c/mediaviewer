@@ -390,6 +390,15 @@ expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent)
 #endif
 }
 
+expected set_file_times(std::string_view utf8_path, std::int64_t unix_seconds) {
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  const std::string path(utf8_path);
+  struct timespec times[2]{};
+  times[0].tv_nsec = UTIME_OMIT;  // the last read stays
+  times[1].tv_sec = static_cast<time_t>(unix_seconds);
+  return ::utimensat(AT_FDCWD, path.c_str(), times, AT_SYMLINK_NOFOLLOW) == 0 ? expected{} : err(status::io);
+}
+
 expected set_hidden(std::string_view utf8_path, bool hidden) {
   if (utf8_path.empty()) return err(status::invalid_arg);
 #if defined(__APPLE__)

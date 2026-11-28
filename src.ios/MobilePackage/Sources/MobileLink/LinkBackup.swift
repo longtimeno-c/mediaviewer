@@ -430,10 +430,13 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
           let resources = Self.originals(of: asset)
           guard !resources.isEmpty, let key = cloud[asset.localIdentifier] else { continue }
           let date = calendar.dateComponents([.year, .month, .day], from: asset.creationDate ?? Date())
+          // The moment it was taken: the time its files carry on the server, so a file manager
+          // there dates them by it and not by the day of the backup. Int64.min: Photos has none.
+          let taken = asset.creationDate.map { Int64($0.timeIntervalSince1970.rounded(.down)) } ?? Int64.min
           let json = "[" + resources.map { "{\"kind\":\"\($0.kind)\",\"name\":\(Self.jsonString($0.name))}" }.joined(separator: ",") + "]"
           let status = key.withCString { k in
             asset.localIdentifier.withCString { l in
-              json.withCString { j in mv_backup_add_item(b, k, l, Int32(date.year ?? 1970), Int32(date.month ?? 1), Int32(date.day ?? 1), j) }
+              json.withCString { j in mv_backup_add_item(b, k, l, Int32(date.year ?? 1970), Int32(date.month ?? 1), Int32(date.day ?? 1), taken, j) }
             }
           }
           if status == Int32(MV_LINK_OK.rawValue) {

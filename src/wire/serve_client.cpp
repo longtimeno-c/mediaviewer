@@ -492,7 +492,8 @@ result<std::vector<list_entry>> client::list(const std::string& root, const std:
 result<client::write_done> client::write(const std::string& root, const std::string& rel, std::uint64_t size,
                                          const std::string& hash_hex, std::uint64_t at, const read_fn& read,
                                          const std::function<void(std::uint64_t)>& progress,
-                                         const std::atomic<bool>* cancel, write_refused* why, bool meta) {
+                                         const std::atomic<bool>* cancel, write_refused* why, bool meta,
+                                         std::int64_t taken) {
   if (why) *why = {};
   if ((st_->caps.ops & kWriteOp) == 0) return err(status::unsupported_format);
   open_request r;
@@ -503,6 +504,7 @@ result<client::write_done> client::write(const std::string& root, const std::str
   r.size = size;
   r.hash = hash_hex;
   r.meta = meta;
+  r.taken = meta ? kNoTime : taken;
   auto slot = st_->open_slot(r);
   if (auto s = st_->ch->send(msg::stream_open, encode_open(r)); !s) {
     st_->remove(r.id);

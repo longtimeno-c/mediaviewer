@@ -473,10 +473,13 @@ int32_t mv_backup_make_folder(mv_backup* b, const char* folder_id, const char* n
 /* The photos to back up, newest first. MV_LINK_INVALID for no resources, a name that is a path, or a
  * year outside 1900-9999. resources_json: [{"kind":"photo|video|live_video|raw|other","name":"IMG_0412.HEIC"}].
  * key: PHCloudIdentifier where iCloud Photos gives one, else "local:" + the local identifier.
- * year, month, day: the capture date where it was taken. */
+ * year, month, day: the capture date where it was taken.
+ * taken_unix: the moment it was taken, in seconds since 1970 (MV_BACKUP_NO_TIME: not known). Its
+ * files in the backup folder carry that time, not the day they were backed up. */
+#define MV_BACKUP_NO_TIME INT64_MIN
 int32_t mv_backup_clear_items(mv_backup* b);
 int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
-                           const char* resources_json);
+                           int64_t taken_unix, const char* resources_json);
 /* The key of a photo Photos says was deleted (cleared with the items): the next run moves its files
  * in the folder into the folder's trash on the server, unless it is among the items again. Never a
  * photo merely missing from the items (hidden ones and a burst's other frames are left out of them). */
