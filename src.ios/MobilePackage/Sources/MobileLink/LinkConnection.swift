@@ -300,8 +300,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     try await onLinkQueue {
       var info = mv_pair_info()
       let status = code.withCString { mv_pair_parse($0, Int64(Date().timeIntervalSince1970), &info) }
-      if status == 2 { throw PairingFailure.codeExpired }
-      guard status == 0 else { throw PairingFailure.codeNotReadable }
+      switch PairingCode.reading(status: status, hasDeviceKey: DeviceKey.exists) {
+      case .expired: throw PairingFailure.codeExpired
+      case .unreadable: throw PairingFailure.codeNotReadable
+      case .usable: break
+      }
       return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
                              isSample: info.sample != 0,
                              guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil)
@@ -327,8 +330,11 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
     let parsed: mv_pair_info = try await onLinkQueue {
       var info = mv_pair_info()
       let status = code.withCString { mv_pair_parse($0, Int64(Date().timeIntervalSince1970), &info) }
-      if status == 2 { throw PairingFailure.codeExpired }
-      guard status == 0 else { throw PairingFailure.codeNotReadable }
+      switch PairingCode.reading(status: status, hasDeviceKey: DeviceKey.exists) {
+      case .expired: throw PairingFailure.codeExpired
+      case .unreadable: throw PairingFailure.codeNotReadable
+      case .usable: break
+      }
       return info
     }
     // What the person compared with the desktop must be what this code says (§7.4).
