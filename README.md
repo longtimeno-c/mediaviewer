@@ -22,7 +22,7 @@ goes to anyone else's server.
 | **People** | Faces grouped into people. Name someone once, then find every photo and clip they are in |
 | **Edit without fear** | Crop, straighten, colour, lossless rotate, edit any metadata tag, trim and cut video. Originals are never touched |
 | **On your phone** | The iPhone and iPad app searches your whole library on the phone itself, even with no signal, and streams the photos and clips from home |
-| **Your own server** | The Mac you already have (a Windows PC and a Synology NAS next): one guided setup shares your folders with your phones and your other computers, encrypted end to end |
+| **Your own server** | The Mac or Windows PC you already have (a Synology NAS next): one guided setup shares your folders with your phones and your other computers, encrypted end to end |
 | **Import and back up** | Verified copies from a card at network speed, sorted by date, duplicates skipped. Back up your whole Photos library to a NAS |
 | **Make it yours** | Every key remappable, with built-in themes and more from anyone, installed from a file or a link |
 | **Private by design** | No account, no cloud, no upload. Telemetry is off unless you turn it on |
@@ -83,7 +83,7 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display (2026-11-18). One
 
 ### Video
 
-**On screen.** 60 s of 1080p HEVC. Frame time sits on the refresh. No present was dropped, and no video frame was skipped.
+**On screen.** 60 s of 1080p HEVC. Frame time sits on the refresh. No present was dropped; the selector skipped one video frame.
 
 ![Video frame pacing over 60 seconds of playback](docs/img/perf-video.svg)
 
@@ -91,7 +91,7 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display (2026-11-18). One
 
 ![Audio/video error over 120 seconds of playback](docs/img/perf-av-sync.svg)
 
-What is still slower than it should be: a full RAW decode takes 0.6–2.0 s behind the preview, and one of three timed Nikon NEF opens dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 22 fps on screen, with a worst gap of 636 ms. The folder chart is stills only.
+What is still slower than it should be: a full RAW decode takes 0.6–2.0 s behind the preview, and one of three timed Nikon NEF opens dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 22 fps on screen, with a 99th-percentile gap of 636 ms. The folder chart is stills only.
 
 ### On a Mac
 
@@ -147,7 +147,7 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 - **Fit, fill, 100 %, or any zoom.** Wheel zoom toward the cursor with springy, physical-feeling pan and zoom.
 - **Animated GIF, APNG and WebP** play on the same frame clock.
 - **As many windows as you like.** `Ctrl/⌘+N` opens a new window, from the File menu or the Dock too.
-- **Light or dark.** Follows the system appearance on Windows and macOS, and so does the canvas surround unless you pick Grey, White, Checkerboard or Dark.
+- **Light or dark.** Follows the system appearance on Windows and macOS, or the theme you pick; the space around your photos and videos follows it too.
 
 | Gallery | Frame-time overlay (`F3`) |
 |---|---|
@@ -265,7 +265,7 @@ and small thumbnails still come up, and the photos and clips stream from home wh
 
 - **Search the way you do on your computer.** By meaning ("dog on a beach", "snow in the mountains"), words on a sign or a menu, words said in a clip (which plays from that moment), the people you named, place, date, camera and file name. Sound search ("dog barking") is a one-time download on Wi-Fi.
 - **Browse it as it is.** Your whole library by date, or folder by folder as it is on the server, each folder a tile of what is inside. Photos full screen with pinch, swipe and a filmstrip; clips open at the moment that matched.
-- **Clips the phone can't play still play.** MP4 and MOV play as they are, and so do camcorder MTS and M2TS with H.264. Your server converts the rest (MKV, WebM, AVI, MPG, MPEG-2, HEVC in a transport stream) on its hardware encoder as you watch: on a Mac, 5.6–7.4 times real time for 1080p; on a Windows PC with NVENC, the first frame of a 1080p AVI or MKV in 0.6–0.75 s and a seek in 0.4–0.5 s.
+- **Clips the phone can't play still play.** MP4 and MOV play as they are, and so do camcorder MTS and M2TS with H.264. Your server converts the rest (MKV, WebM, AVI, MPG, MPEG-2, HEVC in a transport stream) on its hardware encoder as you watch: on a Mac, 5.6–7.4 times real time for 1080p; on a Windows PC with NVENC, the first frame of a 1080p AVI or MKV in 0.57–0.75 s and a seek in 0.36–0.53 s.
 - **Share and save.** Send a photo or clip anywhere from the share sheet, or save a copy to Photos.
 - **Yours, on your own hardware.** No account, no cloud, no subscription, no data collected. The phone pairs by scanning a code on your computer and checking a code on both screens; every connection is encrypted end to end, and the app checks it is your server before it asks for anything. Hand someone a guest code that lasts as long as you choose, and *Forget this library* removes everything the app kept.
 - **Try it without a server.** Enter the code `SAMPLE` and a public-domain sample library of 44 photos and 3 clips opens, searched on the phone by the same model as a real library.
@@ -282,7 +282,7 @@ up from Settings.
 
 - **One guided setup.** Choose the folders to share, get a free DuckDNS name, and the router's port is opened and kept open for you. Scan the code with your phone and it is done. It starts at login, with no administrator rights.
 - **Reach it from anywhere.** One forwarded port, encrypted end to end, never a file share opened to the internet. Without a public address, a relay you run yourself on a small rented server carries it, sealed so the relay can't read it.
-- **Your other computers too.** On a Mac, **File → Connect to a Server…** pins the server's folders at the top of the folder tree, read-only. Measured through the service over loopback on one Mac: a 12-megapixel photo's first picture in 79–88 ms, its full resolution in 139–155 ms, the next one you arrow to in 56–60 ms (78–87 ms if it wasn't fetched ahead). The same over loopback on the Windows PC above: 131–143 ms, 217–229 ms, 76–78 ms (93–96 ms).
+- **Your other computers too.** **Connect to a Server…** (the File menu on a Mac, the folder tree on Windows) pins the server's folders at the top of the folder tree, read-only. Measured through the service over loopback on one Mac: a 12-megapixel photo's first picture in 79–88 ms, its full resolution in 139–155 ms, the next one you arrow to in 56–60 ms (78–87 ms if it wasn't fetched ahead). The same over loopback on the Windows PC above: 131–143 ms, 217–229 ms, 76–78 ms (93–96 ms).
 - **Combine your drives.** Keep each drive separate, or mirror, span or stripe them (and, on Windows, parity) with the system's own tools, AppleRAID or Storage Spaces.
 - **People at home.** Add the people in your house with a role each (view, change or admin), and share folders with them over the home network as an encrypted file share with no guest access.
 - **Always in reach.** A menu-bar (or notification-area) item shows the server running, the phones connected and what they used today, and pauses or resumes it in one click.
@@ -322,7 +322,7 @@ The optional **Enhance** add-on writes a restored copy of what is on screen: a p
 - **Up to 4K video and 100-megapixel photos.** Choose the same size with more detail, twice or four times the size; Enhance tells you how long is left. A photo keeps its date, place and camera details.
 - **A choice of models.** Video comes with a quick model and a slower one that draws finer detail; photos with Sharpen & restore or Real-ESRGAN for detail, and more ways to restore them in Edit. Pick per kind, and switch whenever you like.
 - **Only the model you ask for.** Each model is downloaded when you click for it, checked before it is kept, and runs on this computer. Nothing about your files is sent anywhere.
-- **One key away.** `Ctrl+Shift+R` (`⌘⇧R` on a Mac), the right-click menu or the command palette opens Enhance on the file in front of you.
+- **One key away.** `Ctrl+Shift+R` (`⌘⇧R` on a Mac) or the right-click menu opens Enhance on the file in front of you.
 - **Settings that fit the file.** The sheet shows what the model can do for the item in front of you, and remembers how you like it.
 
 ## Themes and add-ons from anyone

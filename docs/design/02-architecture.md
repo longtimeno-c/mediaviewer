@@ -13,7 +13,8 @@ src/
   codec/       decoder registry; one translation unit per format family; magic-byte probe; OS-codec hook
   image/       decode→upload pipeline, colour (LCMS), linear FP16 working image, tiled pyramid,
                GPU upload, thumbnails
-  gfx/         D3D11 backend (device, swapchain, pacer, blit, video blit) and the Metal twins (*_metal.mm)
+  gfx/         D3D11 backend (device, swapchain, pacer, blit, video blit), the Metal twins (*_metal.mm)
+               and the OpenGL / Wayland backend (*_gl, *_wayland)
   player/      FFmpeg demux/decode, hwdecode (D3D11VA / VideoToolbox), audio sinks, A/V clock, transport
   meta/        Exiv2 + libavformat readers, property model, writers, XMP sidecars, AF points
   geo/         offline reverse geocoder over the bundled place database; linked by the Places add-on,
@@ -22,12 +23,16 @@ src/
   canvas/      camera (pan/zoom), springs, refinement
   addon/       the add-on host: manifest verification, loader, host function table
   infer/       ONNX Runtime wrapper and preprocessing (AI search)
+  wire/        Driftwire's protocol, shared by the add-on, the app's phone feature and the phone
+  catalogue/   the catalogue a phone reads (keys, current.json, delivery)
+  mobile/      the phone's core: catalogue reader, search, link, sync, backup (src.ios links it)
+  remote/      another computer's folders over the phone link (`remote:` keys, range reads, cache)
   abi/         the flat C ABI — the top of the native graph ([14-abi.md](14-abi.md))
   nle/         Local search from an editing app, FCPXML ([23-nle-search.md](23-nle-search.md))
   shell/       Windows host (Win32 window, island bridge, key router, CLI, OS integration) and the
-               Mac host (AppKit + Metal, *_mac.mm)
+               Mac host (AppKit + Metal, *_mac.mm); the Linux present lab (main_linux.cpp)
   shellext/    Explorer thumbnail handler (out-of-process DLL) and its portable half, shared with Quick Look
-  addons/      add-ons (import, ai) — reach the core only through the host function table
+  addons/      add-ons (ai, driftwire, enhance, import, phone, places, vpn) — reach the core only through the host function table
 
 src.managed/   C# WinUI 3 chrome (Windows)
   MediaViewer.Chrome/   the island host: command bar, filmstrip, gallery, panes, settings, video, edit
@@ -35,6 +40,7 @@ src.managed/   C# WinUI 3 chrome (Windows)
   MediaViewer.Updater/  Velopack update flow
   MediaViewer.Import.Chrome/, MediaViewer.Ai.Chrome/  add-on chrome
 src.swift/     SwiftUI chrome (macOS): MediaViewerChrome, ImportChrome, AIChrome
+src.ios/       the iPhone/iPad app (SwiftUI): MobilePackage, App, UITests
 tests/         Catch2 suites, fixtures, frame-time fixture
 tools/         frame-time harness, fuzzers, perf suite, packaging, policy checks
 ```
@@ -51,8 +57,11 @@ Dependencies point **downward only**. The enforced map
 | `image`, `meta`, `player` | `codec`, `gfx`, `io`, `core` |
 | `edit`, `canvas` | `image`, `codec`, `gfx`, `io`, `core` |
 | `addon` | `io`, `core` |
-| `geo` | `io`, `core` (`geo.cpp` / `fold.cpp`: core's header-only pieces only, so an add-on can link them). Not included by `meta`, `abi` or `shell` |
+| `geo` | `io`, `core` (`geo.cpp` / `fold.h`: core's header-only pieces only, so an add-on can link them). Not included by `meta`, `abi` or `shell` |
 | `infer` | `core` (ONNX Runtime behind our interface; linked into the AI pack) |
+| `wire` | `io`, `core` |
+| `catalogue` | `wire`, `io`, `core` |
+| `mobile`, `remote` | no rule in the script yet, so their includes are unchecked |
 | `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`), `geo`; the AI pack also `infer` |
 | `abi` | everything below it |
 | `nle` | `addon`, `image`, `io`, `core` |

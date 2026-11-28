@@ -16,7 +16,7 @@ move what it built into the matching `docs/design/` doc and strike the slice her
   Driftwire command-line branches, not this one. It needs no window and would ship ahead of the
   app.
 - Linux PR 1 (below) is the first slice of the app: built (2026-10-23) and smoke-tested locally
-  under headless Weston only (the `linux-lab-smoke` CI job is written but has not run yet); its
+  under headless Weston only (locally and in the `linux-lab-smoke` CI job); its
   gate is owed on real hardware
   ([10](../design/10-roadmap.md#linux-pr-1--opengl-present-lab)). Nothing of the viewer runs on
   Linux yet.

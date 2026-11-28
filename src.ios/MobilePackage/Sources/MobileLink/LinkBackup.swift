@@ -11,6 +11,7 @@ import CMobileLink
 import Foundation
 import ImageIO
 import MobileKit
+import MobileLinkSupport
 import Network
 import Photos
 import UIKit
@@ -315,10 +316,14 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     let layout = current.layout
     let b = h.raw
     let final: Int32 = await onQueue { [self] in
-      let total = listPhotos(into: b)
+      // A stop while listing leaves the deletions as they were: they are read against a whole listing.
+      guard let total = listPhotos(into: b, cancel: cancel.raw) else { return 0 }
       noteDeletions(into: b)
       if mv_backup_cancelled(cancel.raw) != 0 { return 0 }
-      change { $0.total = total }
+      change {
+        $0.total = total
+        $0.listing = nil
+      }
       let ctx = Unmanaged.passUnretained(self).toOpaque()
       var state: Int32 = 8  // unreachable, unless the run says otherwise
       let status = folder.id.withCString { id in
@@ -369,6 +374,7 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     }
     change {
       $0.currentName = nil
+      $0.listing = nil
       $0.failures = failures
       if let space { $0.space = space }
     }
@@ -380,12 +386,15 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     let reason = lock.withLock { stopReason }
     change {
       $0.currentName = nil
+      $0.listing = nil
       $0.state = reason == .offWiFi ? .pausedOffWiFi : .off
     }
   }
 
-  /// The person's Photos, newest first, as the core's items. Returns how many.
-  private func listPhotos(into b: OpaquePointer) -> Int {
+  /// The person's Photos, newest first, as the core's items. Returns how many; nil when stopped.
+  /// A big library takes a while (each photo's originals are asked of Photos), so it goes in
+  /// batches: the screen counts them, and a stop or leaving the app ends it between two.
+  private func listPhotos(into b: OpaquePointer, cancel: OpaquePointer) -> Int? {
     mv_backup_clear_items(b)
     let options = PHFetchOptions()
     options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -394,35 +403,50 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     options.includeHiddenAssets = false
     options.includeAllBurstAssets = false
     let assets = PHAsset.fetchAssets(with: options)
-    var ids: [String] = []
-    ids.reserveCapacity(assets.count)
-    assets.enumerateObjects { asset, _, _ in ids.append(asset.localIdentifier) }
-    // §10b: PHCloudIdentifier where iCloud Photos gives one, since a local id is per device.
-    var cloud: [String: String] = [:]
-    for (local, result) in PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: ids) {
-      if case .success(let id) = result { cloud[local] = id.stringValue }
-    }
+    let count = assets.count
+    change { $0.listing = BackupListing(looked: 0, of: count) }
+    // The last listing's keys (deletions.json): an asset's iCloud id never changes.
+    let known = Self.loadDeletions().keys
     var keys: [String: String] = [:]
-    var count = 0
+    var added = 0
     let calendar = Calendar.current
-    assets.enumerateObjects { asset, _, _ in
-      let resources = Self.originals(of: asset)
-      guard !resources.isEmpty else { return }
-      let key = cloud[asset.localIdentifier] ?? "local:" + asset.localIdentifier
-      let date = calendar.dateComponents([.year, .month, .day], from: asset.creationDate ?? Date())
-      let json = "[" + resources.map { "{\"kind\":\"\($0.kind)\",\"name\":\(Self.jsonString($0.name))}" }.joined(separator: ",") + "]"
-      let added = key.withCString { k in
-        asset.localIdentifier.withCString { l in
-          json.withCString { j in mv_backup_add_item(b, k, l, Int32(date.year ?? 1970), Int32(date.month ?? 1), Int32(date.day ?? 1), j) }
+    let batch = 500
+    var at = 0
+    while at < count {
+      if mv_backup_cancelled(cancel) != 0 { return nil }
+      let range = at..<min(count, at + batch)
+      // PhotoKit's objects for a batch go with it, not at the end of the whole listing.
+      autoreleasepool {
+        let chunk = assets.objects(at: IndexSet(integersIn: range))
+        // §10b: PHCloudIdentifier where iCloud Photos gives one, since a local id is per device.
+        let cloud = BackupKeys.keys(for: chunk.map(\.localIdentifier), known: known) { ids in
+          var found: [String: String] = [:]
+          for (local, result) in PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: ids) {
+            if case .success(let id) = result { found[local] = id.stringValue }
+          }
+          return found
+        }
+        for asset in chunk {
+          let resources = Self.originals(of: asset)
+          guard !resources.isEmpty, let key = cloud[asset.localIdentifier] else { continue }
+          let date = calendar.dateComponents([.year, .month, .day], from: asset.creationDate ?? Date())
+          let json = "[" + resources.map { "{\"kind\":\"\($0.kind)\",\"name\":\(Self.jsonString($0.name))}" }.joined(separator: ",") + "]"
+          let status = key.withCString { k in
+            asset.localIdentifier.withCString { l in
+              json.withCString { j in mv_backup_add_item(b, k, l, Int32(date.year ?? 1970), Int32(date.month ?? 1), Int32(date.day ?? 1), j) }
+            }
+          }
+          if status == Int32(MV_LINK_OK.rawValue) {
+            keys[key] = asset.localIdentifier
+            added += 1
+          }
         }
       }
-      if added == Int32(MV_LINK_OK.rawValue) {
-        keys[key] = asset.localIdentifier
-        count += 1
-      }
+      at = range.upperBound
+      change { $0.listing = BackupListing(looked: at, of: count) }
     }
     lock.withLock { localIDs = keys }
-    return count
+    return added
   }
 
   // MARK: Photos deleted on this phone
