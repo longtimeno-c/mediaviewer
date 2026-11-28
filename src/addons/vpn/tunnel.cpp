@@ -411,7 +411,9 @@ std::vector<std::uint16_t> tls_ports_to_try(std::uint16_t given, std::uint16_t a
 
 result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_t port, relay::forward_answer& said,
                                            const std::shared_ptr<remote_slot>& remote, std::uint8_t kind) {
-  for (bool again = false;; again = true) {
+  // `again`: asked again at once after meeting an older server's cap. `waited`: has had its
+  // moment's wait, so the next refusal is the answer.
+  for (bool again = false, waited = false;;) {
     said = relay::forward_answer::failed;
     int crowd = 0;               // forwards opening with this one, itself counted
     std::uint64_t started = 0;   // opens begun before it
@@ -432,20 +434,24 @@ result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_
     } given{*this};
     bool closed_early = false;
     auto r = open_turn(host, port, said, remote, kind, closed_early);
-    if (r || again || !closed_early) return r;
-    // Closed before a word: tried once more, in turn. With more opening
-    // alongside (those open then, and those begun since) than an older server
-    // takes from one source, that is taken for the server's cap and kept to
-    // from now on. With few, the server may still be counting handshakes that
-    // have ended here (it lets one go a moment after its answer), so this one
-    // waits a moment first; a server that refuses everyone is only asked twice.
+    if (r || waited || !closed_early) return r;
+    // Closed before a word: tried again, in turn. With more opening alongside (those open
+    // then, and those begun since) than an older server takes from one source, that is taken
+    // for the server's cap and kept to from now on, and this open goes again at once. Refused
+    // then too, or with few alongside, the server may still be counting handshakes that have
+    // ended here (it lets one go a moment after its answer; several, just after the cap came
+    // down), so the open waits a moment and asks a last time. A server that refuses everyone
+    // is asked twice, or three times by an open that met the cap.
     std::unique_lock lock(m_);
-    if (crowd + static_cast<int>(starts_ - started) > kOldOpensAtOnce + 1) {
-      cap_ = kOldOpensAtOnce;
-    } else {
-      turn_cv_.wait_for(lock, std::chrono::milliseconds(kRefusedAgainMs), [&] { return stopped_; });
-      if (stopped_) return err(status::cancelled);
+    const bool many = crowd + static_cast<int>(starts_ - started) > kOldOpensAtOnce + 1;
+    if (many) cap_ = kOldOpensAtOnce;
+    if (many && !again) {
+      again = true;
+      continue;
     }
+    turn_cv_.wait_for(lock, std::chrono::milliseconds(kRefusedAgainMs), [&] { return stopped_; });
+    if (stopped_) return err(status::cancelled);
+    waited = true;
   }
 }
 

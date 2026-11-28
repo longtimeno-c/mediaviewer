@@ -66,15 +66,17 @@ TEST_CASE("without DXGI statistics the source is labelled, not laundered",
 
 TEST_CASE("a long interval is counted as a dropped frame by the fallback",
           "[gfx][pacer]") {
-  // 240 Hz claimed refresh against ~10 ms sleeps: every interval is a couple of
-  // dozen missed vblanks, which the heuristic must notice.
+  // 240 Hz claimed refresh against sleeps of 25 ms or more: every interval is six refreshes
+  // or more, so five or more missed, which the heuristic must notice. Not 10 ms: a sleep that
+  // ends on time is then 2.4 refreshes, counted as one missed, and missed == dropped (a runner
+  // with a fine timer gave exactly that; a coarse one sleeps 15.6 ms and hid it).
   mv::gfx::pacer pacer;
   pacer.begin_session(1.0 / 240.0);
 
   pacer.frame_begin();
   pacer.frame_end(nullptr);
   for (int i = 0; i < 3; ++i) {
-    std::this_thread::sleep_for(10ms);
+    std::this_thread::sleep_for(25ms);
     pacer.frame_begin();
     pacer.frame_end(nullptr);
   }
