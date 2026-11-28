@@ -170,6 +170,14 @@ inline constexpr bool kHasHiddenFlag = true;
 inline constexpr bool kHasHiddenFlag = false;
 #endif
 
+// A phone's backup: stamps a file with the time its photo was taken, so a file
+// manager sorts and dates it by that and not by the day it was copied. Sets the
+// modified time, and the created time where the OS lets it be set (Windows; on
+// the Mac a modified time before the created one moves the created one back
+// too). Never follows a link at the last part. Seconds since 1970, which may be
+// negative.
+[[nodiscard]] expected set_file_times(std::string_view utf8_path, std::int64_t unix_seconds);
+
 // `driftwire serve`: what `relative_slash` ('/'-separated; empty is `root`
 // itself) names under `root`, reached one part at a time from `root` and never
 // through a link at any part (status::permission_denied). A part that is ".",

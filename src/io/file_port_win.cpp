@@ -471,6 +471,21 @@ expected set_hidden(std::string_view utf8_path, bool hidden) {
   return ::SetFileAttributesW(path.c_str(), next) ? expected{} : err(status::io);
 }
 
+expected set_file_times(std::string_view utf8_path, std::int64_t unix_seconds) {
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  // FILE_WRITE_ATTRIBUTES alone: no read or write of its bytes, so a reader that shares
+  // nothing does not refuse it. OPEN_REPARSE_POINT: the name itself, never a link's target.
+  const HANDLE h = ::CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return err(status::io);
+  const FILETIME ft = filetime_from_unix(unix_seconds);
+  const bool ok = ::SetFileTime(h, &ft, nullptr, &ft) != 0;
+  ::CloseHandle(h);
+  return ok ? expected{} : err(status::io);
+}
+
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {
   detail::simulated_round_trip();
   const std::wstring from = wide(from_utf8);

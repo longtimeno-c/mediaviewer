@@ -71,7 +71,8 @@ class target {
   [[nodiscard]] virtual result<driftwire::serve::client::write_done> write(
       const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
-      const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta) = 0;
+      const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta,
+      std::int64_t taken = driftwire::serve::kNoTime) = 0;
   // The meta folder: each device's folder id, and a ledger copy's text.
   [[nodiscard]] virtual result<std::vector<std::string>> ledger_ids(const std::string& root) = 0;
   [[nodiscard]] virtual result<std::string> read_ledger(const std::string& root, const std::string& id) = 0;
@@ -142,6 +143,9 @@ struct item {
   std::string key;       // PHCloudIdentifier, or "local:" + the local identifier
   std::string local_id;  // for the source
   int year = 0, month = 0, day = 0;  // the capture date where it was taken
+  // The moment it was taken, in seconds since 1970 (serve::kNoTime: not known): the time its
+  // files carry in the backup folder.
+  std::int64_t taken = driftwire::serve::kNoTime;
   std::vector<resource> resources;
 };
 

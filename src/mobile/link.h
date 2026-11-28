@@ -209,7 +209,8 @@ class link_session final : public remote_file {
   [[nodiscard]] result<driftwire::serve::client::write_done> write(
       const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
-      const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false);
+      const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false,
+      std::int64_t taken = driftwire::serve::kNoTime);
   // Changing the shared folders (serve_client.h "changing the shared folders"): plain
   // pass-throughs to the live client, each blocking (a worker). changes_files(): the
   // service has mkdir, move and delete; show New folder / Move / Rename / Delete only then,

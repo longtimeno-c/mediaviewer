@@ -1315,7 +1315,7 @@ int32_t mv_backup_add_deleted(mv_backup* b, const char* key) {
 }
 
 int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
-                           const char* resources_json) {
+                           int64_t taken_unix, const char* resources_json) {
   return catch_all([&]() -> int32_t {
     if (!b || !key || !*key || !local_id || !resources_json) return MV_LINK_INVALID;
     const auto doc = json::parse(resources_json, 3);
@@ -1326,6 +1326,7 @@ int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, 
     it.year = year;
     it.month = std::clamp(month, 1, 12);
     it.day = std::clamp(day, 1, 31);
+    if (taken_unix >= driftwire::serve::kMinTaken && taken_unix <= driftwire::serve::kMaxTaken) it.taken = taken_unix;
     for (const auto& v : doc->a) {
       const std::string* kind = v.str("kind");
       const std::string* name = v.str("name");
