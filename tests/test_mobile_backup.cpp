@@ -28,6 +28,7 @@
 #include "wire/net.h"
 #include "mobile/backup.h"
 #include "mobile/link.h"
+#include "emulated_path.h"
 
 namespace fs = std::filesystem;
 namespace mob = mv::mobile;
@@ -222,8 +223,11 @@ bk::options options_for(const fs::path& scratch, const std::string& root = kBack
 
 // One run, stopped when `stop_after` files have been reported done (0: never).
 bk::status_report run_once(bk::target& t, camera_roll& roll, bk::ledger& l, const fs::path& scratch, int stop_after,
-                           double stop_fraction = 2.0, const std::string& root = kBackupRoot) {
-  bk::engine e(options_for(scratch, root), t, roll, l);
+                           double stop_fraction = 2.0, const std::string& root = kBackupRoot,
+                           const std::function<void(bk::options&)>& tune = {}) {
+  auto o = options_for(scratch, root);
+  if (tune) tune(o);
+  bk::engine e(o, t, roll, l);
   e.set_items(roll.items);
   mob::cancel_flag cancel;
   bk::status_report last;
@@ -289,8 +293,8 @@ TEST_CASE("backup: stopped at random points, every file arrives once and whole; 
   }
   for (const auto& [k, bytes] : roll.files) CHECK(contents.count(bytes) == 1);
   CHECK((*ledger)->size(kBackupRoot) == on_nas.size());
-  // Peak extra storage on the phone: one file at a time.
-  CHECK(roll.peak_scratch <= roll.largest);
+  // Peak extra storage on the phone: one file, and the others sending within parallel_bytes.
+  CHECK(roll.peak_scratch <= roll.largest + static_cast<std::uint64_t>(bk::options{}.parallel_bytes));
 
   // Delete 5 from the NAS: exactly those are copied again.
   int removed = 0;
@@ -1391,4 +1395,148 @@ TEST_CASE("change: what arrives is never kept unless it is what was hashed", "[m
     CHECK(done->rel == "clip.mov");
     CHECK((read_all(n.shared / "clip.mov") == other));
   }
+}
+
+// A link target that counts the writes on their way at once.
+struct counting_target final : bk::target {
+  bk::target& t;
+  std::mutex m;
+  int now = 0, most = 0;
+  explicit counting_target(bk::target& x) : t(x) {}
+  mv::result<std::vector<bk::folder>> folders() override { return t.folders(); }
+  mv::result<serve::stat_info> space(const std::string& root) override { return t.space(root); }
+  mv::result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
+    return t.list(root, rel);
+  }
+  mv::result<serve::client::write_done> write(const std::string& root, const std::string& rel, std::uint64_t size,
+                                              const std::string& hash, std::uint64_t at,
+                                              const serve::client::read_fn& read,
+                                              const std::function<void(std::uint64_t)>& progress,
+                                              const mob::cancel_flag* cancel, serve::client::write_refused* why,
+                                              bool meta) override {
+    {
+      std::lock_guard lock(m);
+      most = std::max(most, ++now);
+    }
+    auto r = t.write(root, rel, size, hash, at, read, progress, cancel, why, meta);
+    std::lock_guard lock(m);
+    --now;
+    return r;
+  }
+  mv::result<std::vector<std::string>> ledger_ids(const std::string& root) override { return t.ledger_ids(root); }
+  mv::result<std::string> read_ledger(const std::string& root, const std::string& id) override {
+    return t.read_ledger(root, id);
+  }
+  std::string device_id() const override { return t.device_id(); }
+  bool limited_to_some_folders() const override { return t.limited_to_some_folders(); }
+  bool writes_at_once() override { return t.writes_at_once() && !one_at_a_time; }
+  bool one_at_a_time = false;  // as a service from before kWritesAtOnceOp says
+  mv::result<bool> trash(const std::string& root, const std::string& rel) override { return t.trash(root, rel); }
+  mv::expected make_folder(const std::string& root, const std::string& rel) override { return t.make_folder(root, rel); }
+};
+
+TEST_CASE("backup: several files are on their way at once, within the phone's scratch budget", "[mobile-link]") {
+  // Before this, one file at a time: each waits a round trip for the service's first credit
+  // and another for its confirmation, so small photos left the link idle.
+  const auto run = [](const std::function<void(bk::options&)>& tune, int& most, std::uint64_t& peak,
+                      std::uint64_t& largest, bool older_service = false) {
+    nas n;
+    n.start();
+    const key32 device = random_key();
+    n.pair(device);
+    temp_root phone;
+    const fs::path scratch = phone.root / "scratch";
+    fs::create_directories(scratch);
+    camera_roll roll(phone.root / "roll", scratch, 40, 4321);
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto inner = bk::link_target(link);
+    counting_target counted(*inner);
+    counted.one_at_a_time = older_service;
+    const auto last = run_once(counted, roll, **ledger, scratch, 0, 2.0, kBackupRoot, tune);
+    CHECK(last.now == bk::state::done);
+    CHECK(last.backed_up == roll.items.size());
+    CHECK(last.copied == roll.resource_count());
+    // Every file once, whole.
+    const auto on_nas = files_under(n.backup);
+    CHECK(on_nas.size() == roll.resource_count());
+    std::set<std::string> contents;
+    for (const auto& [rel, bytes] : on_nas) contents.insert(bytes);
+    for (const auto& [k, bytes] : roll.files) CHECK(contents.count(bytes) == 1);
+    CHECK((*ledger)->size(kBackupRoot) == on_nas.size());
+    most = counted.most;
+    peak = roll.peak_scratch.load();
+    largest = roll.largest;
+  };
+  int most = 0;
+  std::uint64_t peak = 0, largest = 0;
+  SECTION("by default, up to uploads_at_once (this service lists writes_at_once)") {
+    run({}, most, peak, largest);
+    CHECK(most > 1);
+    CHECK(most <= bk::options{}.uploads_at_once);
+  }
+  SECTION("no budget: one file at a time, one file's storage") {
+    run([](bk::options& o) { o.parallel_bytes = 0; }, most, peak, largest);
+    CHECK(most == 1);
+    CHECK(peak <= largest);
+  }
+  SECTION("a service that does not list writes_at_once: one file at a time") {
+    run({}, most, peak, largest, true);
+    CHECK(most == 1);
+    CHECK(peak <= largest);
+  }
+  SECTION("a small budget: the storage stays within one file and it") {
+    constexpr std::int64_t kBudget = 300 * 1000;
+    run([](bk::options& o) { o.parallel_bytes = kBudget; }, most, peak, largest);
+    CHECK(peak <= largest + static_cast<std::uint64_t>(kBudget));
+  }
+}
+
+// The backup's pace over a phone's path to the NAS (tests/emulated_path.h), one JSON line:
+//   mv_mobile_link_tests "[.backup-bench]"
+//     MV_BACKUP_BENCH_RTT_MS  the round trip (default 40)
+//     MV_BACKUP_BENCH_MBPS    the path's rate each way, Mbit/s (default 50)
+//     MV_BACKUP_BENCH_ITEMS   photos in the roll (default 80; 1 to 200 KB, every fourth a video to 900 KB)
+TEST_CASE("backup: the pace of many small photos over a phone's path", "[.backup-bench]") {
+  const auto env = [](const char* name, double fallback) {
+    const char* v = std::getenv(name);
+    return v && *v ? std::atof(v) : fallback;
+  };
+  const int rtt = static_cast<int>(env("MV_BACKUP_BENCH_RTT_MS", 40));
+  const double mbps = env("MV_BACKUP_BENCH_MBPS", 50);
+  const int count = static_cast<int>(env("MV_BACKUP_BENCH_ITEMS", 80));
+  nas n;
+  n.start();
+  const key32 device = random_key();
+  n.pair(device);
+  mv::test::path_proxy path({"127.0.0.1", n.srv->port()}, rtt, mbps);
+  REQUIRE(path.ok());
+  temp_root phone;
+  const fs::path scratch = phone.root / "scratch";
+  fs::create_directories(scratch);
+  camera_roll roll(phone.root / "roll", scratch, count, 77);
+  auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+  REQUIRE(ledger);
+  auto c = n.config(device);
+  c.local = "127.0.0.1:" + std::to_string(path.port());
+  c.public_name = c.local;
+  mob::link_session link(c);
+  mob::route_report report;
+  REQUIRE(link.connect(report));
+  auto target = bk::link_target(link);
+  std::uint64_t bytes = 0;
+  for (const auto& [k, b] : roll.files) bytes += b.size();
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto last = run_once(*target, roll, **ledger, scratch, 0);
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  std::printf("{\"rtt_ms\":%d,\"mbps\":%.0f,\"files\":%zu,\"mb\":%.1f,\"seconds\":%.2f,\"files_per_s\":%.1f,"
+              "\"mbit_per_s\":%.1f,\"peak_scratch_kb\":%.0f}\n",
+              rtt, mbps, roll.resource_count(), bytes / 1e6, s, roll.resource_count() / s, bytes * 8 / 1e6 / s,
+              roll.peak_scratch.load() / 1e3);
+  std::fflush(stdout);
+  CHECK(last.now == bk::state::done);
+  CHECK(files_under(n.backup).size() == roll.resource_count());
 }

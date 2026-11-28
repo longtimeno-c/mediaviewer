@@ -50,7 +50,7 @@ serve::client::options options_for(const service_config& c) {
   // Backup (1.1) as well: a service from before it leaves `write` out of its caps.
   // Changing the shared folders (docs/design/28 "Changing files"): asked for always; a
   // service older than them, or a "view" device, leaves them out or refuses each request.
-  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp | serve::kChangeOps;
+  o.ops = serve::kAllOps | serve::kWriteOp | serve::kWritesAtOnceOp | serve::kConvertOp | serve::kChangeOps;
   if (c.upgrade) o.ops |= serve::kUpgradeOp;  // granted only on a relayed link
   return o;
 }
@@ -909,6 +909,12 @@ result<bool> link_session::can_write() {
   auto c = client(nullptr);
   if (!c) return err(c.error());
   return ((*c)->caps().ops & serve::kWriteOp) != 0;
+}
+
+result<bool> link_session::writes_at_once() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return ((*c)->caps().ops & serve::kWritesAtOnceOp) != 0;
 }
 
 result<serve::client::write_done> link_session::write(const std::string& root, const std::string& rel, std::uint64_t size,

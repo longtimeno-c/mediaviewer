@@ -169,6 +169,8 @@ class link_session final : public remote_file {
   // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
   // folder's meta folder. status::unsupported_format: the service is from before 1.1.
   [[nodiscard]] result<bool> can_write();
+  // Whether the service takes several writes from this phone at once (serve::kWritesAtOnceOp).
+  [[nodiscard]] result<bool> writes_at_once();
   // Clips this phone can't play (docs/plans/phone-clip-convert.md): whether the service offers
   // `convert`, a clip's plan (status::unsupported_format: not offered, or not a clip), and one
   // segment's MPEG-TS. A segment's first bytes wait for the server's encoder (kConvertStallMs).

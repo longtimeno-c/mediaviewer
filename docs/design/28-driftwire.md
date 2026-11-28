@@ -628,7 +628,9 @@ over SMB with owner operations over the channel; library rejoin; the phone's `re
 server reads as "nothing may be written"; a server from before reads INT64_MAX as a limit no folder
 reaches. The card's No storage limit toggle sends `"limit":"none"` to the link, which sends kNoLimit
 on. A client listing `write` gets the op (bit `1u << 6`); `mkdir`, `move`, `delete` are ops 8–10
-(`kChangeOps`).
+(`kChangeOps`); `writes_at_once` (11, `kWritesAtOnceOp`, granted with `write`) says the service
+takes several writes from a device at once, an empty `.mvpart` left by a write cancelled as it
+opened included (one from before refused that file on every later run).
 
 **Who may write is the device's role** (`caps.role`): "change" is an unlimited paired device or a
 grant with `backup` on (`library_grants`), "view" a grant with it off (guest codes, a desktop until
@@ -643,7 +645,10 @@ beneath the root, never through a link; an identical file (name, size, BLAKE3) a
 writes hidden `.<name>.<device id>.mvpart`, then flushes, hashes and renames without replacing
 (`" (2)"`), one commit per folder at a time. Only the device's own `.mvpart` and
 `.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`) are ever replaced. Phone side
-`src/mobile/backup.*`.
+`src/mobile/backup.*`: up to `uploads_at_once` (4) files sending at once to a service listing
+`writes_at_once`, each from its own scratch file, the next exported and hashed meanwhile; another
+starts only while those sending hold under `parallel_bytes` (32 MiB) of scratch, so the phone's
+free space goes on one file and that much more. The ledger and the report stay on the run's thread.
 
 A write is taken in any writable folder. A backup folder keeps its limit and reserve; any other is
 never walked and only keeps `kDefaultReserve` (1 GiB) free on its volume (`book::reserve`). The

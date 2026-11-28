@@ -34,11 +34,14 @@
 #include <deque>
 
 #include "addons/vpn/vpn.h"
+#include "emulated_path.h"
 #include "wire/splice.h"
 
 namespace vpn = mv::driftwire::vpn;
 namespace relay = mv::driftwire::relay;
 using bench_clock = std::chrono::steady_clock;
+using mv::test::bottleneck;
+using mv::test::path_link;
 
 namespace {
 
@@ -99,145 +102,6 @@ std::unique_ptr<tun_device> open_tun() {
   if (std::system(up.c_str()) != 0) return nullptr;
   return d;
 }
-
-// The phone's one path: a rate each way that every connection over it shares.
-struct bottleneck {
-  std::mutex m;
-  bench_clock::time_point up{}, down{};  // when each direction is next free
-};
-
-// A link over the emulated path: `one_way_ms` each way, and `bytes_per_s`
-// each way (0: no cap) shared through `b`, with up to 256 KB queued per link each way.
-class path_link final : public sp::link {
- public:
-  path_link(std::unique_ptr<sp::link> inner, int one_way_ms, double bytes_per_s, std::shared_ptr<bottleneck> b)
-      : inner_(std::move(inner)), delay_(std::chrono::milliseconds(one_way_ms)), rate_(bytes_per_s), b_(std::move(b)) {
-    tx_ = std::thread([this] { send_loop(); });
-    rx_ = std::thread([this] { receive_loop(); });
-  }
-  ~path_link() override {
-    shutdown();
-    tx_.join();
-    rx_.join();
-  }
-  mv::expected write_all(std::span<const std::uint8_t> b) override {
-    std::unique_lock lock(m_);
-    cv_.wait(lock, [&] { return over_ || queued_ < kQueue; });
-    if (over_) return mv::err(mv::status::io);
-    out_.push_back({due(true, b.size()), {b.begin(), b.end()}});
-    queued_ += b.size();
-    cv_.notify_all();
-    return {};
-  }
-  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
-    const auto deadline = bench_clock::now() + std::chrono::milliseconds(timeout_ms);
-    std::unique_lock lock(m_);
-    for (;;) {
-      if (!in_.empty() && in_.front().at <= bench_clock::now()) {
-        auto& c = in_.front();
-        const std::size_t n = std::min(into.size(), c.bytes.size() - c.used);
-        std::copy_n(c.bytes.begin() + static_cast<std::ptrdiff_t>(c.used), n, into.begin());
-        c.used += n;
-        if (c.used == c.bytes.size()) {
-          in_queued_ -= c.bytes.size();
-          in_.pop_front();
-          cv_.notify_all();
-        }
-        return n;
-      }
-      if (in_.empty() && in_ended_) return std::size_t{0};
-      if (over_ && in_.empty()) return mv::err(mv::status::io);
-      const auto wake = in_.empty() ? deadline : std::min(deadline, in_.front().at);
-      if (bench_clock::now() >= deadline) return mv::err(mv::status::timeout);
-      cv_.wait_until(lock, wake);
-    }
-  }
-  void shutdown() noexcept override {
-    {
-      std::lock_guard lock(m_);
-      over_ = true;
-      cv_.notify_all();
-    }
-    inner_->shutdown();
-  }
-  [[nodiscard]] sp::transport via() const noexcept override { return inner_->via(); }
-
- private:
-  static constexpr std::size_t kQueue = 256 * 1024;
-  struct chunk {
-    bench_clock::time_point at;
-    std::vector<std::uint8_t> bytes;
-    std::size_t used = 0;
-  };
-  // When `n` bytes through a bottleneck free at `free` arrive at the far end.
-  bench_clock::time_point due(bool up, std::size_t n) {
-    std::lock_guard lock(b_->m);
-    auto& free = up ? b_->up : b_->down;
-    const auto now = bench_clock::now();
-    if (free < now) free = now;
-    if (rate_ > 0) {
-      free += std::chrono::duration_cast<bench_clock::duration>(std::chrono::duration<double>(n / rate_));
-    }
-    return free + delay_;
-  }
-  void send_loop() {
-    std::unique_lock lock(m_);
-    for (;;) {
-      cv_.wait(lock, [&] { return over_ || !out_.empty(); });
-      if (over_) return;
-      const auto at = out_.front().at;
-      if (at > bench_clock::now()) {
-        cv_.wait_until(lock, at, [&] { return over_.load(); });
-        continue;
-      }
-      auto c = std::move(out_.front());
-      out_.pop_front();
-      queued_ -= c.bytes.size();
-      cv_.notify_all();
-      lock.unlock();
-      const bool ok = static_cast<bool>(inner_->write_all(c.bytes));
-      lock.lock();
-      if (!ok) {
-        over_ = true;
-        cv_.notify_all();
-        return;
-      }
-    }
-  }
-  void receive_loop() {
-    std::vector<std::uint8_t> buf(65536);
-    for (;;) {
-      if (over_.load()) return;
-      {
-        std::unique_lock lock(m_);
-        cv_.wait(lock, [&] { return over_ || in_queued_ < kQueue; });
-      }
-      auto n = inner_->read_some(buf, 100);
-      if (!n && n.error() == mv::status::timeout) continue;
-      std::lock_guard lock(m_);
-      if (n && *n) in_queued_ += *n;
-      if (!n || *n == 0) {
-        in_ended_ = true;
-        cv_.notify_all();
-        return;
-      }
-      in_.push_back({due(false, *n), {buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n)}});
-      cv_.notify_all();
-    }
-  }
-
-  std::unique_ptr<sp::link> inner_;
-  bench_clock::duration delay_;
-  double rate_;
-  std::mutex m_;
-  std::condition_variable cv_;
-  std::deque<chunk> out_, in_;  // under m_
-  std::size_t queued_ = 0, in_queued_ = 0;  // under m_
-  std::shared_ptr<bottleneck> b_;
-  std::atomic<bool> over_{false};
-  bool in_ended_ = false;
-  std::thread tx_, rx_;
-};
 
 // The site: 'D' + 4-byte count: that many bytes back; 'U' + count: reads
 // them, then one byte back.

@@ -1067,7 +1067,7 @@ class session_state {
     std::error_code ec;
     const auto part_path = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(w->part.data()), w->part.size()));
     const auto pst = std::filesystem::symlink_status(part_path, ec);
-    const bool exists = !ec && std::filesystem::exists(pst);
+    bool exists = !ec && std::filesystem::exists(pst);
     if (exists) {
       if (!std::filesystem::is_regular_file(pst)) return send_end(r.id, end_code::error);
       have = std::filesystem::file_size(part_path, ec);
@@ -1078,6 +1078,7 @@ class session_state {
         if (ec) return send_end(r.id, end_code::error);
         book_->removed(root.id, have);
         have = 0;
+        exists = false;
       }
     }
     if (r.at != have) return send_end(r.id, end_code::refused, why_json(kWhyOffset, have));
@@ -1089,7 +1090,9 @@ class session_state {
     }
     w->held = left;
     w->next = have;
-    if (have > 0) {
+    // An unfinished copy is gone on from, even an empty one (a write cancelled as it opened):
+    // made anew, it would be taken for a name in use, and that file refused on every run.
+    if (exists) {
       if (auto o = w->out.open_resume(w->part, have); !o) {
         book_->release(root.id, left);
         return send_end(r.id, end_code::error);
@@ -1886,7 +1889,7 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       // (A punched one is direct already: not offered again.) Writes (phone
       // backup) to any device but the owner's session; each folder asks its grant.
       const bool punched = c.source.starts_with("punch:");
-      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp | kChangeOps) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0) |
+      ops = hello->ops & (kAllOps | (c.is_owner ? kAdminOp : kWriteOp | kWritesAtOnceOp | kChangeOps) | (c.relayed && !punched && !lan_only ? kUpgradeOp : 0) |
                           (converter() ? kConvertOp : 0));
     }
   }
