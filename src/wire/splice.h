@@ -328,7 +328,9 @@ class relayed_link final : public link {
 // connection and joins every thread.
 class server {
  public:
-  static constexpr int kMaxHandshakes = 32;
+  // Four sources at their kHandshakesPerSource to fill it (two, at 32, as a phone's VPN took
+  // 16 from one).
+  static constexpr int kMaxHandshakes = 64;
   // Waiters from one source, at most.
   static constexpr int kPerSource = 4;
   // Handshakes from one source at once, by default: a phone's VPN opens

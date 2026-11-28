@@ -321,6 +321,25 @@ TEST_CASE("driftwire relay: one address cannot fill the server's handshakes or i
   CHECK((*s)->snapshot().waiting == static_cast<std::uint64_t>(relay::server::kPerSource));
 }
 
+TEST_CASE("driftwire relay: it takes four sources at their limit to fill the handshakes", "[driftwire]") {
+  // A phone's VPN opens 16 at once from one source; two sources filled the table of 32.
+  STATIC_REQUIRE(relay::server::kMaxHandshakes >= 4 * relay::server::kHandshakesPerSource);
+  // And the table holds that many: one source let past its own limit fills it, and no more.
+  relay::server::options o = server_options();
+  o.handshakes_per_source = relay::server::kMaxHandshakes + 1;
+  auto s = relay::server::start(o);
+  REQUIRE(s);
+  const auto port = (*s)->port();
+  std::vector<std::unique_ptr<sp::link>> silent;
+  for (int i = 0; i < relay::server::kMaxHandshakes; ++i) silent.push_back(dial(port));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  auto extra = dial(port);
+  CHECK(closed_soon(*extra));
+  std::uint8_t one = 0;
+  const auto last = silent.back()->read_some({&one, 1}, 1000);
+  CHECK((!last && last.error() == mv::status::timeout));  // the 64th is still being heard
+}
+
 TEST_CASE("driftwire relay: a splice ends at its byte cap, and a rate cap paces it", "[driftwire]") {
   {
     auto [a1, a2] = loopback_pair();

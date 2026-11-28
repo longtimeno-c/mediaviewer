@@ -490,7 +490,7 @@ session run end to end; the relay sees ciphertext only.
   **The hop to the server is sealed** (protocol 3): `MVRL`, 3, role, session id, CPace on the server
   key; a sender sends its token's keyed-BLAKE2b id (no waiter → closed); then Noise NNpsk0, server
   first. Sealed server words **registered** and **paired**; then raw splice. Waiters re-register
-  every 60 s. Caps: 32 handshakes (16 per source; 4 before 2026-11-28), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
+  every 60 s. Caps: 64 handshakes (16 per source; 16 and 4 before 2026-11-28), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
   splices, 64 GiB each way, optional rate, 120 s idle. Not post-quantum; no state on disk.
 - TURN and Tor are not used ([plan](../plans/driftwire-tor-spike.md)).
 
