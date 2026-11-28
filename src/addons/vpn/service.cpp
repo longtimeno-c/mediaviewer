@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <span>
+#include <string_view>
 
 #include "core/json.h"
 #include "io/file_port.h"
@@ -35,6 +36,20 @@ void wipe(std::string& s) {
   s.clear();
 }
 
+// Text that starts as a VPN code does ("mediaviewer://", any case), spaces before it allowed.
+bool is_code(std::string_view t) {
+  constexpr std::string_view scheme = "mediaviewer://";
+  while (!t.empty() && (t.front() == ' ' || t.front() == '\t' || t.front() == '\r' || t.front() == '\n')) {
+    t.remove_prefix(1);
+  }
+  if (t.size() < scheme.size()) return false;
+  for (std::size_t i = 0; i < scheme.size(); ++i) {
+    const char c = t[i] >= 'A' && t[i] <= 'Z' ? static_cast<char>(t[i] - 'A' + 'a') : t[i];
+    if (c != scheme[i]) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 service::service(service_host& host, options o) : host_(host), opts_(std::move(o)) {
@@ -44,7 +59,11 @@ service::service(service_host& host, options o) : host_(host), opts_(std::move(o
   v_.server = kept.server;
   // The key is in the secret store, the address in the file (one written
   // without a store keeps both, until the next save).
-  if (secrets_ && !v_.server.empty() && v_.server.find('#') == std::string::npos) {
+  // A code saved whole by a build that took one in the server field: its address keeps the
+  // code's own '#', so the key goes back on all the same.
+  const bool saved_code = is_code(v_.server);
+  if (secrets_ && !v_.server.empty() &&
+      (v_.server.find('#') == std::string::npos || (saved_code && !serve::parse_relay_connect_code(v_.server)))) {
     if (auto k = secrets_->get(kServerKeyName)) {
       v_.server += '#';
       v_.server.append(k->begin(), k->end());
@@ -58,6 +77,19 @@ service::service(service_host& host, options o) : host_(host), opts_(std::move(o
   v_.tls = kept.tls;
   v_.tls_available = tls::available();
   tls_port_ = kept.tls_port;
+  if (saved_code) {  // what Connect would have made of it: the relay line, and the look it says
+    bool look = false;
+    if (auto line = serve::parse_relay_connect_code(v_.server, &look)) {
+      wipe(v_.server);
+      v_.server = std::move(*line);
+      v_.server_shown = tunnel::relay_shown(v_.server);
+      v_.tls = look && v_.tls_available;
+      if (v_.tls) {
+        const auto colon = v_.server.rfind(':', v_.server.find('#'));
+        tls_port_ = static_cast<std::uint16_t>(std::stoi(v_.server.substr(colon + 1)));
+      }
+    }
+  }
   v_.all_traffic = kept.all_traffic;
   v_.block = kept.block;
   if (opts_.make_vpn) vpn_port_ = opts_.make_vpn();
@@ -767,6 +799,45 @@ void service::tunnel_changed() {
 
 // ---- events ----------------------------------------------------------------------------
 
+void service::take_code(std::string code) {
+  std::optional<std::string> line;
+  {
+    std::lock_guard lock(m_);
+    bool look = false;
+    line = serve::parse_relay_connect_code(code, &look);
+    const bool empty = code.find_first_not_of(" \t\r\n") == std::string::npos;
+    wipe(code);
+    if (!line) {
+      v_.connect_note = empty ? "Paste the VPN code from your server first, then Connect."
+                              : "That isn't a VPN code. Copy it again from the VPN page on your server (VPN code\xE2\x80\xA6).";
+    } else {
+      // As the server field would take it, and the Tunnel on.
+      wipe(v_.server);
+      v_.server = *line;
+      v_.server_shown = tunnel::relay_shown(*line);
+      v_.tunnel = true;
+      // The code says whether the host looks like a web site (docs/plans/vpn-stealth.md): the
+      // Tunnel's look follows it, on the code's port, so nothing else is set by hand.
+      v_.tls = look && v_.tls_available;
+      if (v_.tls) {
+        const auto colon = line->rfind(':', line->find('#'));
+        tls_port_ = static_cast<std::uint16_t>(std::stoi(line->substr(colon + 1)));
+      }
+      v_.connect_open = false;
+      v_.connect_note = look && !v_.tls_available
+                            ? "This VPN code needs Look like a web site, which this build lacks."
+                            : "Connected to " + v_.server_shown + ". The Tunnel is on" +
+                                  (v_.all_traffic_available ? "; turn on All traffic (VPN) for every app." : ".");
+    }
+  }
+  if (line) {
+    wipe(*line);
+    proxy_retry_.store(true);
+    request(true, true);
+  }
+  post();  // at once: the page shows what the click did
+}
+
 void service::on_event(const std::string& node, std::uint32_t kind, const std::string& value_json) {
   const auto value = json::parse(value_json, 2);
   const std::string* text = value && value->k == json::kind::string ? &value->s : nullptr;
@@ -799,7 +870,18 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
   // Your VPN server: a secure field (it holds the key), kept here as typed
   // until Return or Done; then the Tunnel follows it. Change server… opens it
   // again, Remove clears it (and its key).
+  // A VPN code (the server's VPN page) pasted here goes the way Connect takes it, never kept
+  // as an address with its mediaviewer:// in front, which no relay answers.
   const auto set_server = [&](std::string field) {
+    if (is_code(field)) {
+      {
+        std::lock_guard lock(m_);
+        v_.server_editing = false;
+        wipe(typed_server_);
+      }
+      take_code(std::move(field));
+      return;
+    }
     {
       std::lock_guard lock(m_);
       wipe(v_.server);
@@ -867,44 +949,17 @@ void service::on_event(const std::string& node, std::uint32_t kind, const std::s
     return;
   }
   if ((node == "connect_go" && kind == kClick) || (node == "connect_code" && kind == kSubmit)) {
-    std::optional<std::string> line;
+    std::string code;
     {
       std::lock_guard lock(m_);
       if (node == "connect_code" && text) {
         wipe(typed_code_);
         typed_code_ = *text;
       }
-      bool look = false;
-      line = serve::parse_relay_connect_code(typed_code_, &look);
-      wipe(typed_code_);
-      if (!line) {
-        v_.connect_note = "That isn't a VPN code. Copy it again from the VPN page on your server (VPN code\xE2\x80\xA6).";
-      } else {
-        // As the server field would take it, and the Tunnel on.
-        wipe(v_.server);
-        v_.server = *line;
-        v_.server_shown = tunnel::relay_shown(*line);
-        v_.tunnel = true;
-        // The code says whether the host looks like a web site (docs/plans/vpn-stealth.md): the
-        // Tunnel's look follows it, on the code's port, so nothing else is set by hand.
-        v_.tls = look && v_.tls_available;
-        if (v_.tls) {
-          const auto colon = line->rfind(':', line->find('#'));
-          tls_port_ = static_cast<std::uint16_t>(std::stoi(line->substr(colon + 1)));
-        }
-        v_.connect_open = false;
-        v_.connect_note = look && !v_.tls_available
-                              ? "This VPN code needs Look like a web site, which this build lacks."
-                              : "Connected to " + v_.server_shown + ". The Tunnel is on" +
-                                    (v_.all_traffic_available ? "; turn on All traffic (VPN) for every app." : ".");
-      }
+      code = std::move(typed_code_);
+      typed_code_.clear();
     }
-    if (line) {
-      wipe(*line);
-      proxy_retry_.store(true);
-      request(true, true);
-    }
-    post();  // at once: the page shows what the click did
+    take_code(std::move(code));
     return;
   }
   // Host: Phone access does it (its link owns this computer's server and the NAS).
