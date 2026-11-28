@@ -14628,6 +14628,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   const bool edit_selftest = ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", nullptr, 0) > 0;
   const bool harness_run = options.soak_seconds != 0.0 || options.av_soak_seconds != 0 || g_browse.enabled ||
                            g_pane_drag.enabled || options.scripted_pan || edit_selftest;
+  // Explorer starts the viewer inside the folder of the photo that was opened, and Windows
+  // keeps a process's working folder open for as long as it runs: with the viewer waiting in
+  // the notification area, that folder could not be deleted or renamed ("in use") long after
+  // its window closed. So the paths asked for are made whole here, and the process moves to
+  // the system folder, which nobody deletes. A harness run keeps its folder: its report
+  // paths are relative to it.
+  if (!harness_run && options.json_report_path.empty() && options.av_csv.empty()) {
+    for (auto& path : requested_paths) {
+      std::vector<wchar_t> whole(32768);
+      const DWORD n = ::GetFullPathNameW(path.c_str(), static_cast<DWORD>(whole.size()), whole.data(), nullptr);
+      if (n != 0 && n < whole.size()) path.assign(whole.data(), n);
+    }
+    wchar_t system_dir[MAX_PATH];
+    const UINT n = ::GetSystemDirectoryW(system_dir, MAX_PATH);
+    if (n != 0 && n < MAX_PATH) (void)::SetCurrentDirectoryW(system_dir);
+  }
   // An add-on update's restart waits for the old process to be gone first, so
   // it claims the name like any start instead of handing its paths to the
   // window that is closing (the restore flags do not opt it out).
