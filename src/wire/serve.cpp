@@ -311,6 +311,9 @@ struct server::state {
   void note_desk(const std::array<std::uint8_t, 32>& key, bool paired);
   // "ready", "waiting" (the elevated step must run), or "" for a phone.
   [[nodiscard]] std::string desk_word(const std::array<std::uint8_t, 32>& key, const device_access& acc);
+  // Computers no longer paired whose made account is still on this computer (and whose password
+  // they still hold), until the elevated step takes it away. They are on no list any more.
+  [[nodiscard]] std::int64_t shares_leaving();
 
   // ---- the owner's passphrase (owner_pass.h) ----
   std::function<std::int64_t()> now_unix;
@@ -2490,6 +2493,22 @@ std::string server::state::desk_word(const std::array<std::uint8_t, 32>& key, co
   return device_shares::waiting(*d, w.role, w.folders) ? "waiting" : "ready";
 }
 
+std::int64_t server::state::shares_leaving() {
+  std::vector<device_shares::desk> list;
+  if (!device_shares::load(*store, list)) return 0;
+  const auto unlimited = known::load(*store);
+  std::vector<grants::grant> limited;
+  (void)grants::load(*store, limited);
+  std::int64_t n = 0;
+  for (const auto& d : list) {
+    if (d.applied == 0) continue;
+    const bool paired = std::any_of(unlimited.begin(), unlimited.end(), [&](const auto& u) { return u.key == d.key; }) ||
+                        std::any_of(limited.begin(), limited.end(), [&](const auto& g) { return g.key == d.key; });
+    if (d.gone || !paired) ++n;
+  }
+  return n;
+}
+
 std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
@@ -3015,7 +3034,9 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     std::vector<people::person> folk;
     (void)people::load(*store, folk);  // unreadable: no one is named, the devices still listed
     json::writer w;
-    w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
+    w.begin_object().key("code_waiting").boolean(waiting);
+    if (const auto leaving = shares_leaving(); leaving > 0) w.key("shares_leaving").integer(leaving);
+    w.key("devices").begin_array();
     for (const auto& d : known::load(*store)) {
       w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key));
       if (const auto* p = people::owner_of(folk, d.key)) w.key("person").string(p->name);

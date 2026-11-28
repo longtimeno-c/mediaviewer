@@ -110,6 +110,7 @@ struct view {
   std::string local, public_name, warning;
   std::vector<phone_row> phones;
   std::vector<person_row> people;  // §13
+  std::int64_t shares_leaving = 0;  // removed computers' accounts still on the server (§12)
   std::vector<folder_row> folders;
   std::string qr, qr_library, qr_fingerprint;
   std::int64_t qr_expires = 0, qr_for_s = 0;
@@ -186,6 +187,7 @@ view parse(std::string_view text) {
     s.catalogue = r;
   }
   s.claimed = b_of(o, "claimed");
+  s.shares_leaving = i_of(o, "shares_leaving");
   s.reachable = b_of(o, "reachable", true);
   s.local = s_of(o, "local");
   s.public_name = s_of(o, "public");
@@ -1600,6 +1602,14 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
                                                 : std::to_string(waiting) + " computers' shares wait for " + me + "'s administrator",
             "Each computer gets its own sign-in to your shared folders at home, so its Finder or Explorer opens them "
             "with nothing to type. " + Me + " asks " + me + "'s administrator once to make it. Never on your router.");
+        button(w, "ph_share_apply", "Finish\xE2\x80\xA6", busy, "primary", "Finish with " + me + "'s administrator");
+        end_row(w);
+      } else if (s.shares_leaving > 0) {
+        // A computer taken off the list is on no row: said here, or nothing would ask for the step
+        // that takes its sign-in away.
+        row(w, "ph_share_leaving", s.shares_leaving == 1 ? "A removed computer's sign-in is still on " + me
+                                                         : std::to_string(s.shares_leaving) + " removed computers' sign-ins are still on " + me,
+            "It can still open your shared folders at home until " + me + "'s administrator takes its sign-in away.");
         button(w, "ph_share_apply", "Finish\xE2\x80\xA6", busy, "primary", "Finish with " + me + "'s administrator");
         end_row(w);
       }

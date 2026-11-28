@@ -205,6 +205,9 @@ class desk {
   // used it (a re-scan adds nothing to the list) or it ran out. As last read
   // by refresh_devices.
   [[nodiscard]] bool pairing_waiting();
+  // Removed computers whose share account is still on the server, waiting for its elevated step
+  // (self-host-users-smb.md §12). As last read by refresh_devices.
+  [[nodiscard]] std::int64_t shares_leaving();
   // Revokes made here that the service has not heard yet.
   [[nodiscard]] std::size_t revokes_pending();
 

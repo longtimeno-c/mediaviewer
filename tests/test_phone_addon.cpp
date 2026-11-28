@@ -1189,6 +1189,16 @@ TEST_CASE("phone access: a computer is a user: role, rename, and its share accou
   const std::string ready = c.build(R"({"folder":"/x","claimed":true,"host":{"installed":true,"set_up":true,"running":true},
     "devices":[{"name":"Studio","key":"77aa","desktop":true,"share":"ready"}]})", kNow);
   CHECK(ready.find("ph_share_apply") == std::string::npos);
+  // A computer taken off the list is on no row, but its sign-in is still on the server until the
+  // step runs: the card says so and offers the step.
+  const std::string leaving = c.build(R"({"folder":"/x","claimed":true,"shares_leaving":1,
+    "host":{"installed":true,"set_up":true,"running":true},
+    "devices":[{"name":"Studio","key":"77aa","desktop":true,"share":"ready"}]})", kNow);
+  require_valid(leaving);
+  CHECK(leaving.find("A removed computer's sign-in is still on this PC") != std::string::npos);
+  r = c.on_event("ph_share_apply", kClick, "", kNow);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0] == R"({"do":"users_apply"})");
 }
 
 // self-host-users-smb.md §13: people on the card. Add a person, pick them under Belongs to,

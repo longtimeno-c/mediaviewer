@@ -705,6 +705,7 @@ void link::refresh(bool phones_only) {
       v_.devices = std::move(rows);
       v_.reachable = doc && doc->boolean("reachable").value_or(false);
       v_.code_waiting = doc && doc->boolean("code_waiting").value_or(false);
+      v_.shares_leaving = doc ? doc->integer("shares_leaving").value_or(0) : 0;
     }
     if (phones_only) return;  // the two-second poll under a showing code
     if (auto o = route("owner_status", "{}")) {
@@ -2011,6 +2012,7 @@ std::string link::state_json() const {
   // Local search's own answer (phone_json), as it gave it: the catalogue rows.
   if (!pub_.source_json.empty()) w.key("catalogue").raw(pub_.source_json);
   w.key("claimed").boolean(v_.claimed);
+  w.key("shares_leaving").integer(v_.shares_leaving);
   w.key("reachable").boolean(v_.reachable);
   w.key("local").string(v_.local);
   w.key("public").string(v_.public_name);

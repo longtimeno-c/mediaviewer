@@ -3101,11 +3101,21 @@ TEST_CASE("phone pairing: a paired computer is a user: renamed, its role set, it
     CHECK((*c)->caps().share_user.empty());
   }
 
-  // Unpaired: its account is marked to go at the next step.
+  // Unpaired: its account is marked to go at the next step. It is on no list any more, so the
+  // service counts it for the card until the step has taken it away.
+  CHECK(mac.d->shares_leaving() == 0);
   REQUIRE(mac.d->revoke(pub));
   REQUIRE(ds::load(*n.store, desks));
   REQUIRE(desks.size() == 1);
   CHECK(desks[0].gone);
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  CHECK(list->empty());
+  CHECK(mac.d->shares_leaving() == 1);
+  desks.clear();  // as `driftwire host users apply` leaves it
+  REQUIRE(ds::save(*n.store, desks));
+  REQUIRE(mac.d->refresh_devices());
+  CHECK(mac.d->shares_leaving() == 0);
 }
 
 // self-host-users-smb.md §13 (owner, 2026-11-28): "link a user to a device, then set that user's

@@ -193,6 +193,7 @@ class link {
     std::int64_t code_left_until = 0;
     bool flags_unsaved = false, flags_dirty = false, pairing = false, flags_read = false;
     bool code_waiting = false;
+    std::int64_t shares_leaving = 0;  // removed computers' accounts still on the server (§12)
     std::int64_t pending = 0;
     double retry_s = 0;
     std::chrono::steady_clock::time_point retry_at{};

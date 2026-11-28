@@ -172,6 +172,7 @@ struct desk::state {
   bool loaded = false;
   std::unique_ptr<serve::client> admin;  // kept through a pairing, so polling is one connection
   bool waiting = false;                   // the last code is still on the service
+  std::int64_t shares_leaving = 0;        // removed computers' accounts the host's step has yet to take away
   // The owner's unlock (§3.4): the key the passphrase made, in memory only and
   // only this long (call C2), with the salt and cost it was made for.
   std::optional<serve::owner::signer> signer;
@@ -615,6 +616,11 @@ bool desk::pairing_waiting() {
   return st_->waiting;
 }
 
+std::int64_t desk::shares_leaving() {
+  std::lock_guard lock(st_->m);
+  return st_->shares_leaving;
+}
+
 std::size_t desk::revokes_pending() {
   std::lock_guard lock(st_->m);
   return st_->pending().size();
@@ -645,6 +651,7 @@ result<std::vector<device_row>> desk::refresh_devices() {
   const json::value* list = doc ? doc->find("devices") : nullptr;
   if (!list || list->k != json::kind::array) return err(status::corrupt);
   st_->waiting = doc->boolean("code_waiting").value_or(false);
+  st_->shares_leaving = std::clamp<std::int64_t>(doc->integer("shares_leaving").value_or(0), 0, 64);
   std::vector<device_row> rows;
   for (const auto& v : list->a) {
     const std::string* name = v.str("name");
@@ -1075,9 +1082,10 @@ std::string desk::library_tag(std::string_view library_id) {
 
 namespace {
 
-std::string devices_json(const std::vector<device_row>& rows, bool reachable, bool waiting) {
+std::string devices_json(const std::vector<device_row>& rows, bool reachable, bool waiting, std::int64_t shares_leaving) {
   json::writer w;
-  w.begin_object().key("reachable").boolean(reachable).key("code_waiting").boolean(waiting).key("devices").begin_array();
+  w.begin_object().key("reachable").boolean(reachable).key("code_waiting").boolean(waiting);
+  w.key("shares_leaving").integer(shares_leaving).key("devices").begin_array();
   for (const auto& r : rows) {
     w.begin_object().key("name").string(r.name).key("key").string(key_hex(r.key));
     if (r.limited) {
@@ -1154,9 +1162,9 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
   }
   if (method == "devices") {
     auto rows = d.refresh_devices();
-    if (rows) return devices_json(*rows, true, d.pairing_waiting());
+    if (rows) return devices_json(*rows, true, d.pairing_waiting(), d.shares_leaving());
     if (rows.error() != status::io && rows.error() != status::timeout) return err(rows.error());
-    return devices_json(d.devices(), false, d.pairing_waiting());
+    return devices_json(d.devices(), false, d.pairing_waiting(), d.shares_leaving());
   }
   if (method == "revoke") {
     const auto key = parse_key_hex(text("key"));

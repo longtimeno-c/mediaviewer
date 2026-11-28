@@ -298,8 +298,9 @@ of the share, and the card's one list is **Phones and computers**.
   that is no longer on either device list (whatever dropped it), and of one whose timed access
   has ended. The ended one stays listed as never made, so extending it makes a new account with
   a new password; until the step has run, its row says `"share":"waiting"` (then `"ended"`), so
-  the card offers **Finish…**. A computer removed outright is no longer on the card: its account
-  goes at the next step anyone runs (`driftwire serve revoke` says so).
+  the card offers **Finish…**. A computer removed outright is on no row any more, so the service's
+  `devices` answer counts such accounts (`"shares_leaving"`) and the card shows "A removed
+  computer's sign-in is still on this PC" with **Finish…** (`driftwire serve revoke` says so too).
 - **Made by the same step:** `driftwire host users apply` adds the computers to the request as
   users (`cli::desk_users`). It generates the password for a new account, sends none for one
   already made, and removes a gone one's account. After the step, it saves the password and what was
