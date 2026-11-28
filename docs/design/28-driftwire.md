@@ -1084,8 +1084,13 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   <server>**), its menu row, `/vpn`. `sync_tunnel` on the service's control thread; `link` node
   bearer `via: "tunnel"`; `mode` "proxy" or "vpn". Site refusals map to SOCKS5 reply 2/4 or
   HTTP 403/502.
-- **Looking like HTTPS** (`tls.*`; [spike](../plans/driftwire-tls-spike.md)): **Look like a web site
-  (port 443)** (`tls`) uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
+- **Looking like HTTPS** (`tls.*`; [spike](../plans/driftwire-tls-spike.md)): the web-site look
+  (`tls`) is the server's choice and its VPN code carries it (`relay-tls#`): the VPN page states it
+  rather than offering a switch, which could only disagree; a server typed by hand sets it beside its
+  field. A host's code for its public name carries the router's outside port, 443 until the router
+  keeper has said otherwise (never the look's inside port), and the dialer tries the code's port, then
+  443, then 8443 (`tunnel::tls_ports_to_try`; the key still has to match), keeping the one that
+  answered. It uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
   --tls-port 443` (JA4 in tests `t13d1516h2_8daaf6152771_d8a2da3f94cd`). Certificate unchecked (the
   inner hop proves the key). First 32 bytes inside TLS are the **knock** (keyed BLAKE2b of exporter
   `EXPORTER-driftwire-knock`, key = Argon2id of the server key); without it the relay acts as a web

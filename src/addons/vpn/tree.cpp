@@ -145,16 +145,14 @@ void tunnel_controls(writer& w, const view& v) {
          "caption");
     return;
   }
-  // The server's TLS port, for networks that block what does not look like a
-  // web site. Only in a build with TLS.
-  if (v.tls_available) {
-    toggle(w, "tls", "Look like a web site (port 443)", v.tls);
-    if (v.tls) {
-      text(w, "tls_note",
-           "Your server needs its relay's web-site port for this (and ideally a real certificate). To anyone "
-           "without your key it looks like an ordinary web site.",
-           "caption");
-    }
+  // Whether the server looks like a web site is the server's choice, and its VPN code says it
+  // (Connect sets it): no switch here, which could only disagree with the server. A server typed by
+  // hand sets it beside its field.
+  if (v.tls_available && v.tls) {
+    text(w, "tls_note",
+         "Your server looks like a web site, so networks that block VPNs let it through. That is set "
+         "on your server, and its VPN code tells this computer.",
+         "caption");
   }
   toggle(w, "all_apps", "Use for all apps", v.all_apps);
   if (v.all_apps && !v.system_asking.empty()) {
@@ -217,6 +215,8 @@ void connect_card(writer& w, const view& v) {
     w.begin_object().key("type").string("text_field").key("id").string("server");
     w.key("label").string("Your VPN server").key("value").string("").key("secure").boolean(true);
     w.key("placeholder").string("address:port#key, as your relay server prints it").end_object();
+    // A line typed by hand does not say whether its port is the web-site one: asked here, only.
+    if (v.tls_available) toggle(w, "tls", "This port looks like a web site (TLS)", v.tls);
     stack(w, "server_buttons", 8, "horizontal");
     button(w, "server_done", v.server.empty() ? "Set" : "Done", "plain");
     end(w);

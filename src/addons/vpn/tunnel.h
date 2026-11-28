@@ -183,7 +183,14 @@ class dialer {
   std::uint64_t starts_ = 0;               // under m_: opens begun, in all
   bool stopped_ = false;                   // under m_
   std::optional<net::endpoint> resolved_;  // under m_
+  std::uint16_t tls_answered_ = 0;         // under m_: the TLS port that last answered (0: none yet)
 };
+
+// The ports a dialer tries for the web-site look, in order: the one that last answered, the one
+// given (the code's), then the two a host's router keeper ever opens for it outside (443, else
+// 8443). A code made before the router had opened its port carries the port the relay listens on
+// inside, which nothing outside reaches; the relay's key still has to match on whichever answers.
+[[nodiscard]] std::vector<std::uint16_t> tls_ports_to_try(std::uint16_t given, std::uint16_t answered);
 
 // ---- the proxy ----------------------------------------------------------------------------
 
