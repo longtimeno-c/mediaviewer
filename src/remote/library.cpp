@@ -537,6 +537,11 @@ std::optional<route_seen> library::last_route(std::string_view id) const {
   return s->route;
 }
 
+bool library::share_login(std::string_view id, std::string& user, std::string& password) const {
+  auto s = find(id);
+  return s && s->link && s->link->share_login(user, password);
+}
+
 std::shared_ptr<library::server_rt> library::find(std::string_view id) const {
   std::lock_guard lock(m_);
   auto it = servers_.find(std::string(id));

@@ -7,6 +7,7 @@
 
 #include <sodium.h>
 
+#include <condition_variable>
 #include <random>
 
 #include "addons/driftwire/bencode.h"
@@ -159,7 +160,7 @@ TEST_CASE("driftwire dht: an item is sealed to the code, padded, and refused whe
 
 // ---- one UDP socket: the DHT, the probes, the reliable stream ------------------------------------
 
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 #if defined(__APPLE__)
 #include <netinet/in.h>
@@ -289,6 +290,158 @@ TEST_CASE("driftwire dht: protocol 2 opens and carries a session over the UDP st
     REQUIRE((*server)->receive(m, 5000));
     CHECK(m.body == chunk);
   }
+}
+
+TEST_CASE("driftwire dht: a stream someone opens to the hub is handed to on_open, and carries both ways",
+          "[driftwire]") {
+  hub_pair h;
+  std::mutex m;
+  std::condition_variable cv;
+  std::unique_ptr<sp::link> opened;
+  sp::net::endpoint from;
+  h.b->on_open([&](std::unique_ptr<sp::link> l, const sp::net::endpoint& who) {
+    std::lock_guard lock(m);
+    opened = std::move(l);
+    from = who;
+    cv.notify_all();
+  });
+  auto sa = h.a->stream(h.at_b(), 0x5150);
+  const auto hello = pattern(5000, 7);  // more than one packet
+  REQUIRE(sa->write_all(hello));
+  {
+    std::unique_lock lock(m);
+    REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&] { return opened != nullptr; }));
+  }
+  CHECK(from.port == h.a->port());
+  std::vector<std::uint8_t> got, buf(8192);
+  while (got.size() < hello.size()) {
+    auto n = opened->read_some(buf, 5000);
+    REQUIRE(n);
+    got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+  }
+  CHECK(got == hello);
+  const auto back = pattern(3000, 9);
+  REQUIRE(opened->write_all(back));
+  got.clear();
+  while (got.size() < back.size()) {
+    auto n = sa->read_some(buf, 5000);
+    REQUIRE(n);
+    got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+  }
+  CHECK(got == back);
+
+  // With no handler, a stranger's stream is dropped as before.
+  h.b->on_open(nullptr);
+  auto other = h.a->stream(h.at_b(), 0x6160);
+  REQUIRE(other->write_all(hello));
+  CHECK_FALSE(other->read_some(buf, 300));
+}
+
+TEST_CASE("driftwire dht: a stream opened to the hub holds 64 KB until its peer is proven, then the full buffer",
+          "[driftwire]") {
+  hub_pair h;
+  std::mutex m;
+  std::condition_variable cv;
+  std::unique_ptr<sp::link> opened;
+  std::vector<std::unique_ptr<sp::link>> markers;  // under m: the streams that only mark a point
+  h.b->on_open([&](std::unique_ptr<sp::link> l, const sp::net::endpoint&) {
+    std::lock_guard lock(m);
+    if (!opened) opened = std::move(l);
+    else markers.push_back(std::move(l));
+    cv.notify_all();
+  });
+  // Sent blind, as a spoofer would: data packets that ignore every ack and window.
+  constexpr std::size_t kPayload = 1000;
+  constexpr std::uint32_t kId = 0x7a7a;
+  std::uint32_t seq = 0;
+  const auto packet = [&](std::uint32_t id, std::uint32_t at) {
+    std::vector<std::uint8_t> d(10 + kPayload, static_cast<std::uint8_t>(at));
+    d[0] = sp::kStream;
+    d[1] = 1;  // data
+    for (int b = 0; b < 4; ++b) {
+      d[2 + b] = static_cast<std::uint8_t>(id >> (8 * b));  // little-endian, as the hub writes
+      d[6 + b] = static_cast<std::uint8_t>(at >> (8 * b));
+    }
+    return d;
+  };
+  // The hub takes its socket's datagrams in order, so once it has opened the stream a marker
+  // starts, it has taken everything sent before it. Nothing is read until then: a reader that
+  // drained the stream while packets still arrived would make room for all of them.
+  std::uint32_t next_marker = 0x7b00;
+  const auto wait_taken = [&] {
+    std::unique_lock lock(m);
+    const std::size_t had = markers.size();
+    for (int tries = 0; tries < 50 && markers.size() == had; ++tries) {  // a marker the socket dropped is sent again
+      lock.unlock();
+      REQUIRE(h.a->send(packet(next_marker++, 0), h.at_b()));
+      lock.lock();
+      cv.wait_for(lock, std::chrono::milliseconds(200), [&] { return markers.size() > had; });
+    }
+    REQUIRE(markers.size() > had);
+  };
+  // A few at a time, each lot taken before the next, so the socket's own buffer never drops one.
+  const auto send_packets = [&](int n) {
+    for (int i = 0; i < n; ++i, ++seq) {
+      REQUIRE(h.a->send(packet(kId, seq), h.at_b()));
+      if (i % 32 == 31) wait_taken();
+    }
+    wait_taken();
+  };
+  const auto take_all = [&] {
+    std::size_t total = 0;
+    std::vector<std::uint8_t> buf(1 << 20);
+    for (;;) {
+      auto n = opened->read_some(buf, 300);
+      if (!n || *n == 0) return total;
+      total += *n;
+    }
+  };
+  send_packets(1);
+  {
+    std::unique_lock lock(m);
+    REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&] { return opened != nullptr; }));
+  }
+  send_packets(199);  // 200 KB in all
+  const std::size_t before = take_all();
+  CHECK(before > 0);
+  CHECK(before <= sp::kStreamUnprovenRx + sp::kStreamPayload);
+  // Proven (its handshake ended): what comes next is held as on any stream.
+  opened->peer_proven();
+  seq = static_cast<std::uint32_t>(before / kPayload);  // the next one it wants
+  send_packets(100);
+  CHECK(take_all() > sp::kStreamUnprovenRx + sp::kStreamPayload);
+  h.b->on_open(nullptr);
+}
+
+TEST_CASE("driftwire dht: the hub's timer waits while nothing is in flight, and wakes for the next write",
+          "[driftwire]") {
+  hub_pair h;
+  std::shared_ptr<sp::link> la(h.a->stream(h.at_b(), 9)), lb(h.b->stream(h.at_a(), 9));
+  const auto data = pattern(20000, 5);
+  std::vector<std::uint8_t> buf(32768), got;
+  const auto send_and_take = [&] {
+    REQUIRE(la->write_all(data));
+    got.clear();
+    while (got.size() < data.size()) {
+      auto n = lb->read_some(buf, 5000);
+      REQUIRE(n);
+      got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+    }
+    CHECK(got == data);
+  };
+  send_and_take();
+  // Once every packet is acknowledged both timers go quiet: over 400 ms a timer ticking every
+  // 5 ms would make ~80 passes; waiting, it makes a handful (the last acks, then its 1 s wait).
+  const auto quiet = [&] {
+    const auto a0 = h.a->timer_passes_for_test(), b0 = h.b->timer_passes_for_test();
+    CHECK_FALSE(lb->read_some(buf, 400));  // nothing comes: 400 ms of an idle stream
+    return std::max(h.a->timer_passes_for_test() - a0, h.b->timer_passes_for_test() - b0);
+  };
+  std::uint64_t passes = quiet();
+  for (int i = 0; i < 3 && passes > 10; ++i) passes = quiet();  // the first may still hold the last acks
+  CHECK(passes <= 10);
+  // And the next write after the quiet goes through at once, acks and all.
+  send_and_take();
 }
 
 TEST_CASE("driftwire dht: the hub hands KRPC and probes to their handlers, and drops strangers' stream packets",

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 #include <sodium.h>
 
@@ -76,6 +76,7 @@ struct udp_hub::stream_state {
   net::endpoint peer;
   std::uint32_t id = 0;
   bool learn = false;  // under m: the first packet's sender becomes the peer
+  std::size_t max_rx = kMaxRx;  // under m: kStreamUnprovenRx for one opened to this hub, until proven
   std::mutex m;
   std::condition_variable cv;
   bool down = false;
@@ -269,7 +270,7 @@ struct udp_hub::stream_state {
     // What may still arrive: the buffer less what waits to be read and what
     // is held out of order (a sender forgets a packet once it is SACKed).
     const std::size_t used = rx.size() + ahead_bytes;
-    const std::size_t room = used >= kMaxRx ? 0 : kMaxRx - used;
+    const std::size_t room = used >= max_rx ? 0 : max_rx - used;
     put32(a + 10 + 8 * kSackWords, static_cast<std::uint32_t>(std::min<std::size_t>(room, 0xffffffffu)));
     // The runs that reach past the bitmap, the first kMaxRuns of them.
     std::size_t len = kAckPacket, count = 0;
@@ -299,7 +300,7 @@ struct udp_hub::stream_state {
     // Past the window this side advertised: dropped (an honest sender never
     // sends it; it is sent again once the window opens). The next packet in
     // order may use one packet more, so held packets can always drain.
-    const std::size_t limit = kMaxRx + (seq == rcv_next ? kStreamPayload : 0);
+    const std::size_t limit = max_rx + (seq == rcv_next ? kStreamPayload : 0);
     if (rx.size() + ahead_bytes + payload.size() > limit) {
       send_ack();
       return;
@@ -669,11 +670,11 @@ class udp_stream final : public link {
       return err(status::timeout);
     }
     if (!s_->rx.empty()) {
-      const bool was_full = s_->rx.size() + s_->ahead_bytes >= kMaxRx / 2;
+      const bool was_full = s_->rx.size() + s_->ahead_bytes >= s_->max_rx / 2;
       const std::size_t n = std::min(into.size(), s_->rx.size());
       std::copy_n(s_->rx.begin(), n, into.begin());
       s_->rx.erase(s_->rx.begin(), s_->rx.begin() + static_cast<std::ptrdiff_t>(n));
-      if (was_full && s_->rx.size() + s_->ahead_bytes < kMaxRx / 2) s_->send_ack();  // the window opened
+      if (was_full && s_->rx.size() + s_->ahead_bytes < s_->max_rx / 2) s_->send_ack();  // the window opened
       return n;
     }
     if (s_->down) return err(status::cancelled);
@@ -695,6 +696,16 @@ class udp_stream final : public link {
     }
     s_->cv.notify_all();
     release_extra();
+  }
+
+  void peer_proven() noexcept override {
+    std::lock_guard lock(s_->m);
+    if (s_->down || s_->max_rx == kMaxRx) return;
+    s_->max_rx = kMaxRx;
+    try {
+      s_->send_ack();  // the window opened
+    } catch (...) {
+    }
   }
 
   transport via() const noexcept override { return transport::internet; }
@@ -735,6 +746,10 @@ udp_hub::~udp_hub() { stop(); }
 void udp_hub::stop() noexcept {
   if (stop_.exchange(true)) return;
   if (sock_) sock_->shutdown();
+  {
+    std::lock_guard lock(timer_m_);
+    timer_cv_.notify_all();
+  }
   if (reader_.joinable()) reader_.join();
   if (timer_.joinable()) timer_.join();
   std::map<std::uint32_t, std::weak_ptr<stream_state>> all;
@@ -773,9 +788,18 @@ expected udp_hub::send_on(net::udp_socket& sock, std::span<const std::uint8_t> d
   if (stop_.load()) return err(status::cancelled);
   if (const int loss = loss_.load(); loss > 0 && !datagram.empty() && datagram[0] == kStream &&
                                      static_cast<int>(randombytes_uniform(1000)) < loss) {
+    kick();
     return {};  // the tests' lossy network
   }
+  if (!datagram.empty() && datagram[0] == kStream) kick();
   return sock.send_to(datagram, to);
+}
+
+void udp_hub::kick() noexcept {
+  if (!timer_idle_.load()) return;
+  std::lock_guard lock(timer_m_);
+  timer_idle_.store(false);
+  timer_cv_.notify_one();
 }
 
 std::vector<std::uint32_t> udp_hub::open_extras(int n) {
@@ -822,6 +846,12 @@ void udp_hub::on_probe(probe_fn fn) {
   std::lock_guard calling(calling_m_);
   std::lock_guard lock(m_);
   probe_ = std::move(fn);
+}
+
+void udp_hub::on_open(open_fn fn) {
+  std::lock_guard calling(calling_m_);
+  std::lock_guard lock(m_);
+  open_ = std::move(fn);
 }
 
 std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id, bool learn, std::uint32_t sock) {
@@ -932,9 +962,31 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
   if (d[0] != kStream || d.size() < kHead) return;
   const std::uint32_t id = get32(d.data() + 2);
   std::shared_ptr<stream_state> s;
+  open_fn opener;
   {
     std::lock_guard lock(m_);
     if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+    if (!s) opener = open_;
+  }
+  // Someone opening a stream to this hub: its first data packet, on the main socket.
+  if (!s && opener && sock_id == 0 && d[1] == kData && get32(d.data() + 6) == 0) {
+    std::lock_guard calling(calling_m_);
+    {
+      std::lock_guard lock(m_);
+      opener = open_;  // set again meanwhile: the one set now
+    }
+    if (opener) {
+      auto l = stream(from, id);
+      {
+        std::lock_guard lock(m_);
+        if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+      }
+      if (s) {
+        std::lock_guard held(s->m);
+        s->max_rx = kStreamUnprovenRx;  // its sender is unproven (spoofable) until its handshake ends
+      }
+      opener(std::move(l), from);
+    }
   }
   if (!s) return;
   std::lock_guard l(s->m);
@@ -944,6 +996,7 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
     s->learn = false;
   }
   if (s->down || s->sock != sock || s->peer.address != from.address || s->peer.port != from.port) return;
+  kick();  // an ack now owed, or a flight moved on: the timer has work
   const std::uint8_t type = d[1];
   if (type == kData && d.size() <= kHead + kStreamPayload) {
     s->on_data(get32(d.data() + 6), d.subspan(kHead), false);
@@ -958,7 +1011,10 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
 
 void udp_hub::timer_loop() {
   while (!stop_.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // Marked idle before the pass: a packet sent or taken meanwhile (kick) clears it, so the
+    // wait below cannot miss work that came during the pass.
+    timer_idle_.store(true);
+    timer_passes_.fetch_add(1);
     std::vector<std::shared_ptr<stream_state>> live;
     {
       std::lock_guard lock(m_);
@@ -972,10 +1028,23 @@ void udp_hub::timer_loop() {
       }
     }
     const auto now = clock::now();
+    bool busy = false;
     for (auto& s : live) {
       std::lock_guard l(s->m);
-      if (!s->down) s->tick(now);
+      if (s->down) continue;
+      s->tick(now);
+      busy = busy || !s->inflight.empty() || s->ack_due != clock::time_point{};
     }
+    if (busy) {
+      timer_idle_.store(false);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+    // Nothing in flight and no ack owed: nothing to time. A phone's link sits like this for
+    // hours, so the wait is long, until a packet goes or comes (kick) or the hub stops.
+    std::unique_lock lock(timer_m_);
+    timer_cv_.wait_for(lock, std::chrono::seconds(1), [&] { return !timer_idle_.load() || stop_.load(); });
+    timer_idle_.store(false);
   }
 }
 

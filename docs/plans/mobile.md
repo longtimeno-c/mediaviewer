@@ -669,7 +669,7 @@ backed up only when it has a row **and** the file is still on the NAS, checked w
 listing per folder, so a file someone deleted from the NAS is copied again. A copy of the ledger is
 written to `<folder>/.mediaviewer-phone-backup/<device id>/ledger.json` by temp file and rename,
 after every 50 files and at the end. A reinstall or a new phone restores from it.
-The ledger keys on `PHCloudIdentifier` where iCloud Photos provides one, because a `localIdentifier` is per-device and can change after a transfer to a new phone. Everything else falls back to name, size and hash. The NAS copy is found by library id, which the QR carries, because a new phone has a new device id. It is unsigned, so restoring it only saves re-copying and never counts a file as safe without the folder check.
+The ledger keys on `PHCloudIdentifier` where iCloud Photos provides one, because a `localIdentifier` is per-device and can change after a transfer to a new phone. Everything else falls back to name, size and hash. Asking Photos for those ids takes minutes on a big library, so each run reuses the last listing's (an asset's id never changes) and asks only about new photos and those without one; the listing goes in batches of 500, counted on the Backup screen and ended between two by a stop. The NAS copy is found by library id, which the QR carries, because a new phone has a new device id. It is unsigned, so restoring it only saves re-copying and never counts a file as safe without the folder check.
 
 **Copying,** the desktop's rule through the service: the phone sends the file and its hash, and
 the service writes `<name>.part`, flushes it, hashes what is on disk, and renames without
@@ -862,7 +862,7 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | An unclaimed service on the NAS | Claimed only once, only from its own network, and only by a desktop that can write to the share (§7.2) |
 | The sample library's release is replaced | The phone pins the sample publisher's key (compiled in). The catalogue is checked as a NAS's is: `current.json`'s signature, then every file against the signed manifest. Every other file (the root list, the JPEG-512 pack, each original and clip) must be in `files.json`, which the same key signs with its size and SHA-256; it is fetched whole and hashed before any byte reaches ImageIO or AVFoundation, and an unlisted file is never read. So write access to the release alone cannot put a picture on a phone. The secret key is not in the repository. |
 | The sample library sends something about the person | Only HTTPS reads of the release's files: no cookies, no cache, a fixed `User-Agent: MediaViewer` (not the app's build, the OS or the device) and `Accept-Language: *`, besides the range and the transport's own headers (checked in `sample-library-sim.sh`). GitHub sees the address, as for any download. Not tracking, so nothing for `NSPrivacyTrackingDomains`; the App Privacy answers stay "no data collected". |
-| Lost phone | iOS data protection, Keychain device-only, optional Face ID, "Forget this library" wipes everything; revoking the phone from the desktop removes it from both the NAS service and the Mac's paired devices |
+| Lost phone | iOS data protection, Keychain device-only, an optional lock (built 2026-11-28, `MobileUI/AppLock.swift`: Settings → Lock, offered once a library is set up; Face ID, Touch ID or Optic ID with the phone's passcode as the fallback, asked once when turning it on; locks each time the app goes to the background and covers it in the app switcher, in a window above every sheet; Forget turns it off; the library's owner can require it for every phone from the desktop's Phones section, "Phones must lock MediaViewer". It is set at pairing: a code made while it is on carries `lock` (not in the check code), the confirm screen says so, and the phone asks for Face ID or its passcode before it pairs (a phone with no passcode cannot confirm); it then locks from the first launch. A change after pairing travels the other way: the service keeps it in `serve.json` (`phone_lock`, admin `set_phone_lock`, off needs the unlock) and says it in each session's caps (`lock`), the phone keeps it with the pairing so it holds offline, and its Settings switch then shows on and fixed; a phone with no passcode is told to set one, or can Forget), "Forget this library" wipes everything; revoking the phone from the desktop removes it from both the NAS service and the Mac's paired devices |
 | Cloud backup copies the catalogue | Excluded from backup (§8.3) |
 | The catalogue on the NAS reveals names, places, text | No worse than the share it sits on, which already holds the files. Encrypting it with a key from the QR is a later option. |
 | Biometrics | Never published (call 7) |
@@ -977,6 +977,11 @@ Segments are written in order, so the `.part` stays a prefix of the file and a r
 at most 24 MB waits in memory ahead of it. No protocol change: each lane is an ordinary session, and a
 service that says busy just leaves fewer. Bench: `mv_mobile_link_tests "[.phone-copy-bench]"`
 (`tests/tcp_path.h`, an emulated CUBIC path).
+
+**Over UDP (2026-11-28):** a direct session moves onto Driftwire's UDP stream (BBR: loss costs one
+packet sent again, not half the rate) when the service's caps offer it, so every read, not only the
+copy, keeps the line's speed on a long path; such a session opens no lanes. Lanes stay for TCP
+(older services, a network that drops UDP). docs/design/28 "Sessions over UDP".
 
 **A newer generation mid-copy (2026-11-27):** a copy cut short used to be thrown away whole as soon
 as a newer generation was published, and nothing was taken from the installed generation, so every

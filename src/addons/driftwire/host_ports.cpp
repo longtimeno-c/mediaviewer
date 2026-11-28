@@ -148,6 +148,19 @@ keeper::keeper(std::vector<port_wanted> ports, options o) : opts_(std::move(o)) 
       p.external_port = got->external.port;
       held.push_back(*got);
       write_ledger(opts_.ledger, *mapper->gateway(), held);
+      if (w.udp && !cancelled()) {
+        // The same outside port, or none: the phone dials the TCP route's port over UDP.
+        auto u = mapper->map_udp(w.internal_port, got->external.port, lease);
+        if (u && u->external.port != got->external.port) {
+          mapper->remove(*u);
+          u.reset();
+        }
+        p.udp = u ? port_state::mapped : port_state::refused;
+        if (u) {
+          held.push_back(*u);
+          write_ledger(opts_.ledger, *mapper->gateway(), held);
+        }
+      }
     } else {
       p.v4 = anyone_answered(notes_since(*mapper, before)) ? port_state::refused : port_state::not_offered;
     }
@@ -157,6 +170,9 @@ keeper::keeper(std::vector<port_wanted> ports, options o) : opts_(std::move(o)) 
       if (auto hole = mapper->pinhole_v6(*v6, w.internal_port, lease)) {
         p.v6 = port_state::mapped;
         held.push_back(*hole);
+        if (w.udp && !cancelled()) {
+          if (auto uhole = mapper->pinhole_v6(*v6, w.internal_port, lease, true)) held.push_back(*uhole);
+        }
         write_ledger(opts_.ledger, *mapper->gateway(), held);
       } else {
         const auto said = notes_since(*mapper, mark);

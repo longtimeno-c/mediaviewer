@@ -202,6 +202,11 @@ LAN-only SMB share per named folder, called `share_users::share_name(label)`, fo
 admin adds ([self-host-users-smb.md](self-host-users-smb.md)). The desktop only mounts them.
 Owner's calls, the same day:
 
+0. **Its own account (2026-11-27, self-host-users-smb.md §12):** a paired Mac is a user of the
+   share in its own right. Once the host's administrator finished it on the card, the server
+   hands this Mac its login at each connect from home (`library::share_login`), and the mount
+   uses it with no sign-in at all. What follows is for a server from before that, or an account
+   still waiting.
 1. **Sign-in:** macOS's own dialog the first time, with its "Remember this password in my
    keychain". MediaViewer never sees, keeps or logs the password. The pairing carries no SMB
    account, because an SMB password is a share user's OS account.

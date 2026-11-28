@@ -73,6 +73,9 @@ struct view {
   std::string host_domain, host_domain_line;
   bool domain_open = false;
   std::string domain_typed;
+  // `host_error` is the form's own ("Type your domain"): kept over Phone access's answers, which
+  // carry only its errors, until the person types or saves again.
+  bool host_error_ours = false;
 };
 
 // The settings page (contribution API 8, place "settings"). Pure; tested.

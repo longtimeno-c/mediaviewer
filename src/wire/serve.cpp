@@ -23,13 +23,16 @@
 #include "wire/admission.h"
 #include "wire/splice.h"
 #include "wire/channel.h"
+#include "wire/device_shares.h"
 #include "wire/grants.h"
+#include "wire/people.h"
 #include "wire/known.h"
 #include "wire/net.h"
 #include "wire/keys.h"
 #include "wire/owner_pass.h"
 #include "wire/serve_backup.h"
 #include "wire/share_users.h"
+#include "wire/udp_hub.h"
 #include "core/json.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
@@ -138,6 +141,7 @@ struct conn {
   bool relayed = false;
   // The device whose waiter it came through: only that device's handshake goes on.
   std::array<std::uint8_t, 32> relay_device{};
+  bool udp = false;  // over a UDP stream (options::udp)
   std::chrono::steady_clock::time_point born = std::chrono::steady_clock::now();
   bool pending_released = false;  // the connection's thread's own
   // 0: its hello has not all arrived; 1: it has, the handshake is running;
@@ -301,6 +305,18 @@ struct server::state {
   [[nodiscard]] redeemed redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m, bool live);
   [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
 
+  // ---- each paired computer's share account (self-host-users-smb.md §12) ----
+  // What its pairing lets it do, in the share's words: "view" or "change", and the labels of
+  // its folders (nullopt: all).
+  [[nodiscard]] device_shares::want want_of(const device_access& acc) const;
+  // A computer paired (listed for an account) or unpaired (its account marked to go).
+  void note_desk(const std::array<std::uint8_t, 32>& key, bool paired);
+  // "ready", "waiting" (the elevated step must run), or "" for a phone.
+  [[nodiscard]] std::string desk_word(const std::array<std::uint8_t, 32>& key, const device_access& acc);
+  // Computers no longer paired whose made account is still on this computer (and whose password
+  // they still hold), until the elevated step takes it away. They are on no list any more.
+  [[nodiscard]] std::int64_t shares_leaving();
+
   // ---- the owner's passphrase (owner_pass.h) ----
   std::function<std::int64_t()> now_unix;
   std::function<clock::time_point()> now_steady;
@@ -325,13 +341,15 @@ struct server::state {
 
   secrets::store* store = nullptr;
   bool loopback_only = false;
-  int max_sessions = 8;
+  int max_sessions = 32;
+  int max_per_device = 8;
   int max_pending = 16;
   int per_minute = 30;
 
   std::array<std::uint8_t, 32> identity{}, access_key{};
   std::array<std::uint8_t, 32> identity_public{};  // what clients pin, and sign over
   std::unique_ptr<net::listener> listen;
+  std::shared_ptr<udp_hub> udp;  // options::udp: sessions over UDP streams, on the same port number
   std::uint16_t port = 0;
   std::atomic<bool> stopping{false};
   source_limit limits{30, std::chrono::minutes(1), kLimitSources};
@@ -341,6 +359,13 @@ struct server::state {
   int per_source_pending = 4, per_block_pending = 8;
 
   std::atomic<int> pending{0}, sessions{0};
+  // Sessions over UDP still in their handshake: their own budget, never TCP's (pending, the
+  // tokens, the per-address tables). A UDP stream's source is whatever its first datagram
+  // said, so spoofed opens may fill this; the phone then stays on TCP.
+  std::atomic<int> pending_udp{0};
+  int max_pending_udp = 4;
+  std::mutex device_sessions_m;
+  std::map<std::array<std::uint8_t, 32>, int> device_sessions;  // under device_sessions_m: sessions per device
   std::mutex conns_m;
   std::list<std::shared_ptr<conn>> conns;  // under conns_m
   std::map<std::array<std::uint8_t, 32>, std::pair<std::uint64_t, std::uint64_t>> ended_usage;  // under conns_m: read, written
@@ -415,6 +440,7 @@ struct server::state {
   std::list<punch> punches;  // under punch_m
   std::map<std::array<std::uint8_t, 32>, clock::time_point> punch_last;  // under punch_m: each device's last ask
   std::atomic<std::uint64_t> n_punched{0};
+  std::atomic<std::uint64_t> n_udp{0};
   std::optional<std::pair<end_code, std::string>> upgrade(conn& c, std::uint32_t id, std::string_view request);
   std::vector<candidate> gather_candidates(net::tcp_rendezvous& rz);
   void stop_punches();
@@ -484,7 +510,7 @@ struct server::state {
   // Takes a connection in through the limits, as the listener does (relayed:
   // keyed by its device token, never the service's own network).
   void admit(std::unique_ptr<link> l, const std::string& source, const std::string& block, const net::address& from,
-             bool relayed, const std::array<std::uint8_t, 32>& relay_device = {});
+             bool relayed, const std::array<std::uint8_t, 32>& relay_device = {}, bool over_udp = false);
   void stop_waiters();
   void relay_loop();
   void wait_at_relay(waiter& w, const std::string& relay_key);
@@ -1912,6 +1938,24 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     const std::string r = w.take();
     extra += (extra.empty() ? "" : ",") + r.substr(1, r.size() - 2);
   }
+  if (!c.is_owner && c.via == server::usage_via::home) {
+    // A computer at home is given its own share login (§12), once the step made its account as
+    // its pairing says now: inside this encrypted session, to this device alone, never logged.
+    std::vector<device_shares::desk> desks;
+    if (device_shares::load(*store, desks)) {
+      if (const auto* d = device_shares::find(desks, c.device); d && !d->gone) {
+        const auto w_now = want_of(access_of(c.device, false));
+        if (!device_shares::waiting(*d, w_now.role, w_now.folders)) {
+          json::writer w;
+          w.begin_object().key(kCapsShare).begin_object().key("user").string(d->account).key("password").string(d->password);
+          w.end_object().end_object();
+          std::string sh = w.take();
+          extra += (extra.empty() ? "" : ",") + sh.substr(1, sh.size() - 2);
+          sodium_memzero(sh.data(), sh.size());
+        }
+      }
+    }
+  }
   if (storage) {
     // Every session's, the owner's and a limited phone's alike: the health of the server's drives.
     if (const std::string word = storage(); is_storage_word(word)) {
@@ -1920,6 +1964,14 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       const std::string sw = w.take();
       extra += (extra.empty() ? "" : ",") + sw.substr(1, sw.size() - 2);
     }
+  }
+  if (cfg()->phone_lock) {
+    // Every paired session's: the owner asks phones to lock the app (kCapsLock). A phone keeps
+    // what it was last told, so a phone kept offline still locks.
+    json::writer w;
+    w.begin_object().key(kCapsLock).boolean(true).end_object();
+    const std::string lw = w.take();
+    extra += (extra.empty() ? "" : ",") + lw.substr(1, lw.size() - 2);
   }
   {
     // Every paired session's: where the service is now (kCapsAddresses), so a device paired
@@ -1935,6 +1987,10 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       const std::string a = w.take();
       extra += (extra.empty() ? "" : ",") + a.substr(1, a.size() - 2);
     }
+  }
+  if (udp) {
+    // Every paired session's: the port that takes sessions over UDP too (caps_msg::udp).
+    extra += (extra.empty() ? "" : ",") + std::string("\"") + kCapsUdp + "\":" + std::to_string(udp->port());
   }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
@@ -1988,6 +2044,10 @@ void server::state::release_pending(conn& c) {
   if (c.pending_released) return;
   c.pending_released = true;
   c.stage.store(3);
+  if (c.udp) {
+    pending_udp.fetch_sub(1);
+    return;  // it was never in the per-address tables
+  }
   pending.fetch_sub(1);
   std::lock_guard lock(source_m);
   for (const std::string* key : {&c.source, &c.block}) {
@@ -2043,6 +2103,7 @@ void server::state::serve_connection(conn* c) {
     o.fresh_first = [this](std::span<const std::uint8_t> first) { return fresh(first); };
     auto ch = channel::open_library_server(c->l, std::move(*h), "0000000000000000", service_name, o);
     release_pending(*c);
+    if (ch) c->l->peer_proven();  // it answered the server's half of the handshake: not spoofed
     if (!ch) {
       if (ch.error() == status::permission_denied) n_key.fetch_add(1);
       c->l->shutdown();
@@ -2112,12 +2173,31 @@ void server::state::serve_connection(conn* c) {
     c->grant = acc.a == access::live ? acc.g : std::nullopt;
   }
   const int before = sessions.fetch_add(1);
-  // Held to the end of this function, however it ends.
+  int before_here = 0;
+  {
+    std::lock_guard lock(device_sessions_m);
+    before_here = device_sessions[*peer]++;
+  }
+  // Both held to the end of this function, however it ends.
   struct slot {
-    std::atomic<int>& n;
-    ~slot() { n.fetch_sub(1); }
-  } held{sessions};
-  if (before >= max_sessions) {
+    server::state& st;
+    std::array<std::uint8_t, 32> device;
+    bool holding = true;
+    void release() {
+      if (!holding) return;
+      holding = false;
+      st.sessions.fetch_sub(1);
+      std::lock_guard lock(st.device_sessions_m);
+      if (const auto it = st.device_sessions.find(device); it != st.device_sessions.end() && --it->second <= 0) {
+        st.device_sessions.erase(it);
+      }
+    }
+    ~slot() { release(); }
+  } held{*this, *peer};
+  if (before >= max_sessions || before_here >= max_per_device) {
+    // Given back before the refusal goes out: saying "busy" waits up to kCancelWaitMs, and a
+    // connection turned away must not take another's place meanwhile.
+    held.release();
     (void)opened->cancel(kCancelWaitMs, "busy");
     return;
   }
@@ -2134,6 +2214,7 @@ void server::state::serve_connection(conn* c) {
   }
   n_sessions.fetch_add(1);
   if (c->source.starts_with("punch:")) n_punched.fetch_add(1);  // moved: counted once its session is up
+  if (c->udp) n_udp.fetch_add(1);
   session(*c, std::move(hello));
   {
     std::lock_guard lock(c->m);
@@ -2187,14 +2268,15 @@ bool server::state::evict_oldest_hello(clock::time_point now) {
     n_evicted.fetch_add(1);
     return true;
   };
+  // A UDP one is never taken: it holds no TCP slot, so taking it makes no room.
   for (auto& c : conns) {  // in the order they arrived
     if (now - c->born < kMinHelloAge) break;  // and everything after it is younger
-    if (evict(*c, 0)) return true;
+    if (!c->udp && evict(*c, 0)) return true;
   }
   // Nothing silent to take: a handshake that holds the key but has stalled
   // (a revoked phone, a recording). Its reply went out at least this long ago.
   for (auto& c : conns) {
-    if (c->stage.load() == 1 && now - c->hello_at >= kMinReplyAge && evict(*c, 1)) return true;
+    if (!c->udp && c->stage.load() == 1 && now - c->hello_at >= kMinReplyAge && evict(*c, 1)) return true;
   }
   return false;
 }
@@ -2216,40 +2298,46 @@ void server::state::accept_loop() {
 }
 
 void server::state::admit(std::unique_ptr<link> accepted, const std::string& source, const std::string& block,
-                          const net::address& from, bool relayed, const std::array<std::uint8_t, 32>& relay_device) {
+                          const net::address& from, bool relayed, const std::array<std::uint8_t, 32>& relay_device,
+                          bool over_udp) {
   {
     // The global bucket and the eviction were the listener's alone; relayed
     // connections come in on the waiters' threads too.
     std::lock_guard admitting(admit_m);
     const auto now = clock::now();
     bool room = true;
-    {
-      // The coarser bucket first: a block over its limit never reaches the
-      // per-address table, so it cannot push other addresses out of it.
-      std::lock_guard lock(source_m);
-      if (!block.empty()) {
-        const auto at_block = in_flight.find(block);
-        room = at_block == in_flight.end() || at_block->second < per_block_pending;
+    if (over_udp) {
+      // Its source may be spoofed: none of TCP's budget is spent on it (pending_udp).
+      room = pending_udp.load() < max_pending_udp;
+    } else {
+      {
+        // The coarser bucket first: a block over its limit never reaches the
+        // per-address table, so it cannot push other addresses out of it.
+        std::lock_guard lock(source_m);
+        if (!block.empty()) {
+          const auto at_block = in_flight.find(block);
+          room = at_block == in_flight.end() || at_block->second < per_block_pending;
+        }
+        if (room) {
+          const auto at_source = in_flight.find(source);
+          room = at_source == in_flight.end() || at_source->second < per_source_pending;
+        }
       }
-      if (room) {
-        const auto at_source = in_flight.find(source);
-        room = at_source == in_flight.end() || at_source->second < per_source_pending;
+      // The block is charged only once the address has passed, so one address
+      // over its limit does not spend its neighbours' budget.
+      room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
+             pending.load() < 2 * max_pending;
+      // The desktop's nearby service: this network only, and silently.
+      if (room && lan_only && (relayed || !on_own_network(from))) room = false;
+      // The global budget is last, and only for a connection that gets in, so
+      // what the per-address limits drop never spends it. Full: the oldest
+      // connection still saying nothing makes way (from kMinHelloAge), else
+      // the oldest handshake waiting past kMinReplyAge.
+      if (room && !take_token(now)) room = false;
+      if (room && pending.load() >= max_pending && !evict_oldest_hello(now)) {
+        tokens = std::min(kGlobalBurst, tokens + 1.0);  // it did not get in
+        room = false;
       }
-    }
-    // The block is charged only once the address has passed, so one address
-    // over its limit does not spend its neighbours' budget.
-    room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
-           pending.load() < 2 * max_pending;
-    // The desktop's nearby service: this network only, and silently.
-    if (room && lan_only && (relayed || !on_own_network(from))) room = false;
-    // The global budget is last, and only for a connection that gets in, so
-    // what the per-address limits drop never spends it. Full: the oldest
-    // connection still saying nothing makes way (from kMinHelloAge), else
-    // the oldest handshake waiting past kMinReplyAge.
-    if (room && !take_token(now)) room = false;
-    if (room && pending.load() >= max_pending && !evict_oldest_hello(now)) {
-      tokens = std::min(kGlobalBurst, tokens + 1.0);  // it did not get in
-      room = false;
     }
     if (!room) {
       n_over.fetch_add(1);
@@ -2259,11 +2347,14 @@ void server::state::admit(std::unique_ptr<link> accepted, const std::string& sou
     c->l = std::shared_ptr<link>(std::move(accepted));
     c->relayed = relayed;
     c->relay_device = relay_device;
+    c->udp = over_udp;
     c->source = source;
     c->block = block;
     c->from = from;
-    pending.fetch_add(1);
-    {
+    if (over_udp) {
+      pending_udp.fetch_add(1);
+    } else {
+      pending.fetch_add(1);
       std::lock_guard lock(source_m);
       ++in_flight[source];
       if (!block.empty()) ++in_flight[block];
@@ -2438,12 +2529,54 @@ std::optional<std::pair<end_code, std::string>> server::state::needs_unlock(conn
   return refusal_json("needs-unlock");
 }
 
+device_shares::want server::state::want_of(const device_access& acc) const {
+  return device_shares::want_of(acc.a == access::full ? nullptr : (acc.g ? &*acc.g : nullptr), cfg()->roots);
+}
+
+void server::state::note_desk(const std::array<std::uint8_t, 32>& key, bool paired) {
+  std::lock_guard lock(devices_m);
+  std::unique_ptr<net::instance_lock> held;
+  if (!may_change_devices(held)) return;
+  std::vector<device_shares::desk> list;
+  if (!device_shares::load(*store, list)) return;  // unreadable: never replaced
+  const bool changed = paired ? device_shares::add(list, key) : device_shares::remove(list, key);
+  if (changed) (void)device_shares::save(*store, list);
+}
+
+std::string server::state::desk_word(const std::array<std::uint8_t, 32>& key, const device_access& acc) {
+  std::vector<device_shares::desk> list;
+  if (!device_shares::load(*store, list)) return {};
+  const auto* d = device_shares::find(list, key);
+  if (!d || d->gone) return {};
+  // Timed access that ended: an account the step made waits to be taken away (the computer still
+  // has its password); one never made has nothing to wait for until the access is extended.
+  if (acc.g && acc.g->expired(now())) return d->applied != 0 ? "waiting" : "ended";
+  const auto w = want_of(acc);
+  return device_shares::waiting(*d, w.role, w.folders) ? "waiting" : "ready";
+}
+
+std::int64_t server::state::shares_leaving() {
+  std::vector<device_shares::desk> list;
+  if (!device_shares::load(*store, list)) return 0;
+  const auto unlimited = known::load(*store);
+  std::vector<grants::grant> limited;
+  (void)grants::load(*store, limited);
+  std::int64_t n = 0;
+  for (const auto& d : list) {
+    if (d.applied == 0) continue;
+    const bool paired = std::any_of(unlimited.begin(), unlimited.end(), [&](const auto& u) { return u.key == d.key; }) ||
+                        std::any_of(limited.begin(), limited.end(), [&](const auto& g) { return g.key == d.key; });
+    if (d.gone || !paired) ++n;
+  }
+  return n;
+}
+
 std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
   json::writer w;
   w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers);
-  w.string(kFeatureAddresses);
+  w.string(kFeatureAddresses).string(kFeaturePhoneLock);
   if (vpn_offered) w.string(kFeatureVpn);
   w.end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
@@ -2805,6 +2938,8 @@ server::state::redeemed server::state::redeem(channel& ch, const std::array<std:
     (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "error");
     return redeemed::refused;
   }
+  // A computer is its own user of the LAN share (§12): its account waits for the elevated step.
+  if (p->kind == kDeviceDesktop) note_desk(peer, true);
   n_paired.fetch_add(1);
   return ch.send(msg::serve_paired, std::string_view("{}")).has_value() ? redeemed::paired : redeemed::refused;
 }
@@ -2830,6 +2965,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         unlocked ? std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(c.unlocked_until - steady()).count()) : 0);
     w.key("locked_until").integer(locked_until(owner_counter));
     w.key("relay").string(cfg()->relay);  // the address only, as in the caps
+    w.key("phone_lock").boolean(cfg()->phone_lock);
     if (vpn_offered) {
       std::lock_guard vl(vpn_m);
       w.key("vpn_port").integer(cfg()->vpn_port).key("vpn_running").boolean(vpn_relay != nullptr);
@@ -2958,13 +3094,119 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       std::erase_if(codes, [&](const waiting_code& w) { return w.deadline <= now; });
       waiting = !codes.empty() || redeeming > 0;
     }
+    std::vector<people::person> folk;
+    (void)people::load(*store, folk);  // unreadable: no one is named, the devices still listed
     json::writer w;
-    w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
+    w.begin_object().key("code_waiting").boolean(waiting);
+    if (const auto leaving = shares_leaving(); leaving > 0) w.key("shares_leaving").integer(leaving);
+    w.key("devices").begin_array();
     for (const auto& d : known::load(*store)) {
-      w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key)).end_object();
+      w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key));
+      if (const auto* p = people::owner_of(folk, d.key)) w.key("person").string(p->name);
+      device_access acc;
+      acc.a = access::full;
+      if (const std::string share = desk_word(d.key, acc); !share.empty()) {
+        w.key("desktop").boolean(true).key("share").string(share);
+      }
+      w.end_object();
     }
     w.end_array().end_object();
     return {end_code::ok, w.take()};
+  }
+  // ---- people a device belongs to (self-host-users-smb.md §13) ----
+  // A person's role is every device of theirs' role: set through `grant {role}` for each, so
+  // "change" needs the unlock exactly as a device's own would.
+  const auto apply_role = [&](const std::array<std::uint8_t, 32>& key, const std::string& role) {
+    json::writer g;
+    g.begin_object().key("do").string("grant").key("key").string(key_hex(key)).key("role").string(role).end_object();
+    return admin(c, g.take());
+  };
+  const auto people_json = [](const std::vector<people::person>& folk) {
+    json::writer w;
+    w.begin_object().key("people").begin_array();
+    for (const auto& p : folk) {
+      w.begin_object().key("name").string(p.name).key("role").string(p.role).key("devices").begin_array();
+      for (const auto& d : p.devices) w.string(key_hex(d));
+      w.end_array().end_object();
+    }
+    w.end_array().end_object();
+    return w.take();
+  };
+  if (*what == "people") {
+    std::vector<people::person> folk;
+    if (!people::load(*store, folk)) return {end_code::error, {}};
+    return {end_code::ok, people_json(folk)};
+  }
+  if (*what == "person_set" || *what == "person_remove" || *what == "device_person") {
+    const std::string role = text("role");
+    if (*what == "person_set" && role == "change") {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    std::vector<people::person> folk;
+    std::vector<std::array<std::uint8_t, 32>> follow;  // devices whose role is now their person's
+    std::string their_role;
+    // The device's access, read before the lists' lock (access_of takes it).
+    const auto key = *what == "device_person" ? device_key() : std::nullopt;
+    const auto acc = key ? access_of(*key) : device_access{};
+    {
+      std::lock_guard lock(devices_m);
+      std::unique_ptr<net::instance_lock> held;
+      if (!may_change_devices(held)) return {end_code::error, {}};
+      if (!people::load(*store, folk)) return {end_code::error, {}};
+      if (*what == "person_set") {
+        const std::string why = people::set(folk, text("name"), role);
+        if (why == "too-many") return {end_code::too_many, {}};
+        if (!why.empty()) return {end_code::bad_request, {}};
+        if (const auto* p = people::find(folk, *people::clean_name(text("name")))) {
+          follow = p->devices;
+          their_role = p->role;
+        }
+      } else if (*what == "person_remove") {
+        if (!people::remove(folk, text("name"))) return {end_code::not_found, {}};
+      } else {
+        if (!key) return {end_code::bad_request, {}};
+        if (acc.a == access::none) return {end_code::not_found, {}};
+        const std::string to = text("person");
+        const std::string why = people::link(folk, *key, to);
+        if (why == "not-found") return {end_code::not_found, {}};
+        if (!why.empty()) return {end_code::too_many, {}};
+        if (!to.empty()) {
+          their_role = people::find(folk, to)->role;
+          // Taking a person's "change" adds access: the unlock, before anything is kept.
+          if (their_role == "change" && want_of(acc).role != "change") {
+            if (auto refused = needs_unlock(c)) return *refused;
+          }
+          follow.push_back(*key);
+        }
+      }
+      if (!people::save(*store, folk)) return {end_code::error, {}};
+    }
+    for (const auto& k : follow) {
+      if (access_of(k).a == access::none) continue;  // unpaired meanwhile
+      if (auto done = apply_role(k, their_role); done.first != end_code::ok) return done;
+    }
+    return {end_code::ok, people_json(folk)};
+  }
+  if (*what == "rename") {
+    // {"key","name"}: a device's nickname on this server's lists. It adds no access: no unlock.
+    const auto key = device_key();
+    std::string name = text("name");
+    while (!name.empty() && (name.back() == ' ' || name.front() == ' ')) {
+      if (name.back() == ' ') name.pop_back();
+      else name.erase(name.begin());
+    }
+    if (!key || name.empty() || name.size() > known::kMaxName ||
+        std::any_of(name.begin(), name.end(), [](char ch) { return static_cast<unsigned char>(ch) < 0x20; })) {
+      return {end_code::bad_request, {}};
+    }
+    const auto acc = access_of(*key);
+    if (acc.a == access::none) return {end_code::not_found, {}};
+    if (acc.a == access::unreadable) return {end_code::error, {}};
+    bool full = false;
+    if (!set_access(name, *key, acc.a == access::full ? std::nullopt : acc.g, full)) {
+      return {full ? end_code::too_many : end_code::error, {}};
+    }
+    return {end_code::ok, "{}"};
   }
   if (*what == "add_device") {
     const auto key = device_key();
@@ -2989,6 +3231,14 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       if (devices.size() + limited.size() == before) return {end_code::not_found, {}};
       if (!grants::save(*store, limited)) return {end_code::error, {}};
       if (!known::save(*store, devices) || known::load(*store).size() != devices.size()) return {end_code::error, {}};
+      // A computer's share account goes too, at the next elevated step (§12).
+      std::vector<device_shares::desk> desks;
+      if (device_shares::load(*store, desks) && device_shares::remove(desks, *key)) {
+        (void)device_shares::save(*store, desks);
+      }
+      // And it belongs to nobody any more (§13).
+      std::vector<people::person> folk;
+      if (people::load(*store, folk) && people::forget_device(folk, *key)) (void)people::save(*store, folk);
     }
     cut_unpaired();
     return {end_code::ok, "{}"};
@@ -2999,6 +3249,8 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     // lists them: a desktop from before this would serve them unlimited.
     std::vector<grants::grant> limited;
     if (!grants::load(*store, limited)) return {end_code::error, {}};
+    std::vector<people::person> folk;
+    (void)people::load(*store, folk);
     const auto t = now();
     json::writer w;
     w.begin_object().key("now").integer(t).key("grants").begin_array();
@@ -3011,6 +3263,13 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         w.key("roots").begin_array();
         for (const auto& r : *g.roots) w.string(r);
         w.end_array();
+      }
+      if (const auto* p = people::owner_of(folk, g.key)) w.key("person").string(p->name);
+      device_access acc;
+      acc.a = access::live;
+      acc.g = g;
+      if (const std::string share = desk_word(g.key, acc); !share.empty()) {
+        w.key("desktop").boolean(true).key("share").string(share);
       }
       w.end_object();
     }
@@ -3297,6 +3556,23 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     relay_cv.notify_all();
     return {end_code::ok, "{}"};
   }
+  if (*what == "set_phone_lock") {
+    // Phones must lock the app (kCapsLock): {"on": bool}. On asks more of phones and adds no
+    // access; off takes a protection away, so it needs the unlock once there is a passphrase.
+    const auto on = doc->boolean("on");
+    if (!on) return {end_code::bad_request, {}};
+    if (!*on) {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    {
+      std::lock_guard lock(claim_m);  // one change of serve.json at a time
+      config next = *cfg();
+      next.phone_lock = *on;
+      if (!publish_config(std::move(next))) return {end_code::error, {}};
+    }
+    // Phones learn it at their next session's caps (each return to the app starts one).
+    return {end_code::ok, "{}"};
+  }
   if (*what == "set_addresses") {
     // Where paired devices find the service (kCapsAddresses), as the owner's desktop knows them:
     // {"local"?,"public"?}, each "host:port" or "" for none; a member left out stays as it is.
@@ -3500,6 +3776,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
+  st.max_per_device = o.max_per_device;
   st.max_pending = o.max_pending;
   st.per_minute = o.per_minute;
   st.limits = source_limit(o.per_minute, std::chrono::minutes(1), kLimitSources);
@@ -3534,6 +3811,19 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.conv = o.converter;
   st.vpn_offered = o.vpn && !o.lan_only;
   st.vpn_tweak = o.vpn_tweak;
+  if (o.udp && !o.lan_only) {
+    // The same port number over UDP; one another program holds leaves TCP alone, as before.
+    // Opened here, after everything a session reads is set: a datagram may start one at once.
+    if (auto hub = udp_hub::open(st.port, o.loopback_only)) {
+      st.udp = std::move(*hub);
+      st.udp->on_open([&st](std::unique_ptr<link> l, const net::endpoint& from) {
+        const auto a = net::parse_address(from.address);
+        if (!a || st.stopping.load()) return;  // dropped: the stream closes
+        st.n_accepted.fetch_add(1);
+        st.admit(std::move(l), source_of(*a), block_of(*a), *a, false, {}, true);
+      });
+    }
+  }
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
@@ -3565,6 +3855,7 @@ counters server::stats() const noexcept {
   c.expired = st_->n_expired.load();
   c.relayed = st_->n_relayed.load();
   c.punched = st_->n_punched.load();
+  c.udp = st_->n_udp.load();
   return c;
 }
 
@@ -3988,6 +4279,7 @@ void server::stop() noexcept {
   if (!st_ || st_->stopping.exchange(true)) return;
   st_->watch_cv.notify_all();
   if (st_->listen) st_->listen->shutdown();  // a start that failed has none
+  if (st_->udp) st_->udp->on_open(nullptr);  // no new stream; the ones running end below
   if (st_->acceptor.joinable()) st_->acceptor.join();
   if (st_->watcher.joinable()) st_->watcher.join();
   {
@@ -4018,6 +4310,7 @@ void server::stop() noexcept {
   for (auto& c : all) {
     if (c->t.joinable()) c->t.join();
   }
+  if (st_->udp) st_->udp->stop();
 }
 
 server::~server() { stop(); }

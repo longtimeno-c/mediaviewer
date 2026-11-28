@@ -82,7 +82,6 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/bencode.cpp ${_S}/bencode.h
   ${_S}/sha1.cpp ${_S}/sha1.h
   ${_S}/dht_item.cpp ${_S}/dht_item.h ${_S}/wordlist.inc
-  ${_S}/udp_hub.cpp ${_S}/udp_hub.h
   ${_S}/dht.cpp ${_S}/dht.h
   ${_S}/meet.cpp ${_S}/meet.h
   ${_S}/handover.cpp ${_S}/handover.h

@@ -82,6 +82,11 @@ struct device_row {
   std::int64_t expires = 0;  // unix, the NAS's clock; 0: no end
   bool expired = false, guest = false, scoped = false;
   bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
+  // A computer (self-host-users-smb.md §12): its own share account is "ready", or "waiting" for
+  // the host's elevated step. "" for a phone, and from a service before this.
+  bool desktop = false;
+  std::string share = {};
+  std::string person = {};  // who it belongs to (self-host-users-smb.md §13); "" nobody
 };
 
 // The NAS's owner side (§3): what it can do and where the owner stands.
@@ -95,6 +100,8 @@ struct owner_state {
   // whether its relay listens now.
   std::int64_t vpn_port = 0;
   bool vpn_running = false;
+  // Phones must lock the app (feature "phone_lock"; docs/plans/mobile.md §12).
+  bool phone_lock = false;
 };
 // What set_vpn answers: the port, whether it listens, and (turned on) the
 // relay's key for the owner's relay line, once.
@@ -169,6 +176,9 @@ class desk {
   // The NAS as a VPN host (docs/design/28): its own relay forwards the owner's
   // laptop traffic out, or stops. Needs an unlocked session once there is a passphrase.
   [[nodiscard]] result<vpn_answer> set_vpn(bool on);
+  // Phones must lock the app with Face ID or their passcode (serve_admin set_phone_lock). Off
+  // needs an unlocked session once there is a passphrase; on never does.
+  [[nodiscard]] expected set_phone_lock(bool on);
   // A device's limit from now: `for_s` seconds, or 0 for no limit at all.
   [[nodiscard]] expected grant(const key32& key, std::int64_t for_s);
   // The self-hosted computer's users (wire/share_users.h, docs/plans/self-host-users-smb.md §4):
@@ -200,6 +210,9 @@ class desk {
   // used it (a re-scan adds nothing to the list) or it ran out. As last read
   // by refresh_devices.
   [[nodiscard]] bool pairing_waiting();
+  // Removed computers whose share account is still on the server, waiting for its elevated step
+  // (self-host-users-smb.md §12). As last read by refresh_devices.
+  [[nodiscard]] std::int64_t shares_leaving();
   // Revokes made here that the service has not heard yet.
   [[nodiscard]] std::size_t revokes_pending();
 
@@ -224,6 +237,11 @@ class desk {
   [[nodiscard]] expected set_backup(const std::string& id, backup_sizes sizes);
   // A phone's backup flag (B2): on adds access (an unlock, once there is a passphrase); off does not.
   [[nodiscard]] expected set_phone_backup(const key32& key, bool on);
+  // A device's nickname on the server's lists (serve_admin rename; no unlock).
+  [[nodiscard]] expected rename(const key32& key, const std::string& name);
+  // The people devices belong to (§13): `verb` one of people, person_set, person_remove,
+  // device_person, with its fields; the service's answer (the list) as JSON.
+  [[nodiscard]] result<std::string> people(std::string_view verb, const std::string& request_json);
   [[nodiscard]] expected remove_root(const std::string& id);
 
   // The nearby service over `folder` (the Catalogue root) for the paired phones,

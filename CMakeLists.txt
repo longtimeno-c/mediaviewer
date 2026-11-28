@@ -1206,6 +1206,8 @@ if(MV_BUILD_TESTS)
     tests/test_desktop_client.cpp
     # §6a: a paired server's LAN share in the Finder: when and what to mount.
     tests/test_lan_share.cpp
+    # self-host-users-smb.md §12: each paired computer's own share account.
+    tests/test_device_shares.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_boot_timeline.cpp

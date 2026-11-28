@@ -132,6 +132,7 @@ result<pair_payload> parse_pair_payload(std::string_view text) {
     if (for_s && *for_s > 0 && *for_s <= 365 * 24 * 3600) p.grant_for_s = *for_s;
     p.grant_scoped = g->boolean("scoped") == true;
   }
+  p.lock_required = doc->boolean("lock") == true;
   // An address that does not parse is left out, never a reason to refuse the
   // code: the direct routes still work.
   if (const json::value* r = doc->find("relay"); r && r->k == json::kind::object) {

@@ -667,3 +667,211 @@ TEST_CASE("host users: the step never shares a system folder, and takes only val
   CHECK_FALSE(smb::acceptable_password("over\xc0\xaf" "long!!"));
   CHECK_FALSE(smb::acceptable_password("cut off \xe2\x82"));
 }
+
+// self-host-users-smb.md §12 (owner, 2026-11-27): each paired computer is its own user of the
+// share. `apply` makes its account with a password nobody types, keeps it for that computer's
+// sessions, follows its role and folders, and takes it away once it is unpaired.
+TEST_CASE("host users: a paired computer gets its own account, its pairing's role, and loses it unpaired", "[host-users]") {
+  namespace ds = serve::device_shares;
+  namespace grants = serve::grants;
+  host_fixture h;
+  ds::key32 mac{};
+  mac.fill(0x9d);
+  {
+    auto st = h.store();
+    std::vector<ds::desk> desks;
+    REQUIRE(ds::add(desks, mac));
+    REQUIRE(ds::save(*st, desks));
+    // Paired as a desktop: "can view files", on the grants list with backup off, every folder.
+    grants::grant g;
+    g.name = "MacBook Pro";
+    g.key = mac;
+    g.backup = false;
+    REQUIRE(grants::save(*st, {g}));
+  }
+  cli::users_command a;
+  a.verb = cli::users_verb::apply;
+  a.input_stdin = true;
+  auto e = h.env();
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  const std::string account = ds::account_for(mac);
+  CHECK(account == "mv-9d9d9d9d");
+  REQUIRE(h.os.passwords.count(account) == 1);
+  const std::string made = h.os.passwords[account];
+  CHECK(made.size() == 32);
+  std::vector<ds::desk> desks;
+  {
+    auto st = h.store();
+    REQUIRE(ds::load(*st, desks));
+  }
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].password == made);  // what its session will be given
+  CHECK(desks[0].role == "view");
+  CHECK_FALSE(desks[0].folders);
+  CHECK(desks[0].applied == h.clock);
+  CHECK_FALSE(ds::waiting(desks[0], "view", std::nullopt));
+  // The people's list never holds it, and the step's lines never show its password.
+  CHECK(h.users().empty());
+  CHECK_FALSE(contains(h.all_said(), made));
+
+  // Its role changes on the card (backup on = can change files): the next apply changes the
+  // account's rights and keeps its password.
+  {
+    auto st = h.store();
+    grants::grant g;
+    g.name = "MacBook Pro";
+    g.key = mac;
+    g.backup = true;
+    g.roots = std::vector<std::string>{"a1a1a1a1a1a1a1a1"};
+    REQUIRE(grants::save(*st, {g}));
+  }
+  h.requests.clear();
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  REQUIRE(h.requests.size() == 1);
+  CHECK_FALSE(contains(h.requests[0], made));  // an account already made keeps its password
+  {
+    auto st = h.store();
+    REQUIRE(ds::load(*st, desks));
+  }
+  CHECK(desks[0].role == "change");
+  REQUIRE(desks[0].folders);
+  CHECK(*desks[0].folders == std::vector<std::string>{"Photos"});
+  CHECK(desks[0].password == made);
+
+  // Unpaired (the service marks it gone): the step takes the account away and the entry goes.
+  {
+    auto st = h.store();
+    REQUIRE(ds::remove(desks, mac));
+    REQUIRE(ds::save(*st, desks));
+    REQUIRE(grants::save(*st, {}));
+  }
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  CHECK(h.os.accounts.count(account) == 0);
+  {
+    auto st = h.store();
+    REQUIRE(ds::load(*st, desks));
+  }
+  CHECK(desks.empty());
+}
+
+// An account never outlives its pairing: whatever took the pairing away, or let its time run
+// out, the next step takes the account (and the password that computer still holds) away.
+TEST_CASE("host users: a computer's account goes when its access ends or its pairing is gone, however that happened",
+          "[host-users]") {
+  namespace ds = serve::device_shares;
+  namespace grants = serve::grants;
+  host_fixture h;
+  ds::key32 mac{};
+  mac.fill(0x5e);
+  const std::string account = ds::account_for(mac);
+  grants::grant g;
+  g.name = "Guest's laptop";
+  g.key = mac;
+  g.backup = false;
+  g.expires = h.clock + 3600;
+  {
+    auto st = h.store();
+    std::vector<ds::desk> desks;
+    REQUIRE(ds::add(desks, mac));
+    REQUIRE(ds::save(*st, desks));
+    REQUIRE(grants::save(*st, {g}));
+  }
+  cli::users_command a;
+  a.verb = cli::users_verb::apply;
+  a.input_stdin = true;
+  auto e = h.env();
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  REQUIRE(h.os.accounts.count(account) == 1);
+  const std::string first = h.os.passwords[account];
+  const auto listed = [&] {
+    auto st = h.store();
+    std::vector<ds::desk> desks;
+    REQUIRE(ds::load(*st, desks));
+    return desks;
+  };
+
+  // Its time runs out: the account goes. The computer stays listed (its access can be extended),
+  // as one whose account was never made.
+  h.clock += 3601;
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  CHECK(h.os.accounts.count(account) == 0);
+  auto desks = listed();
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].applied == 0);
+  CHECK(desks[0].password.empty());
+  CHECK(ds::waiting(desks[0], "view", std::nullopt));
+  // While it stays ended, a later step neither makes it again nor asks to remove it again.
+  h.requests.clear();
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  for (const auto& request : h.requests) CHECK_FALSE(contains(request, account));
+  CHECK(h.os.accounts.count(account) == 0);
+
+  // Extended: made again, with a new password (the old one was the ended access's).
+  g.expires = h.clock + 3600;
+  {
+    auto st = h.store();
+    REQUIRE(grants::save(*st, {g}));
+  }
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  REQUIRE(h.os.accounts.count(account) == 1);
+  CHECK(h.os.passwords[account] != first);
+  desks = listed();
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].password == h.os.passwords[account]);
+
+  // Its pairing dropped by something that never marked it gone (an old grant pruned, a list
+  // edited): the account goes all the same, and the entry with it.
+  {
+    auto st = h.store();
+    REQUIRE(grants::save(*st, {}));
+  }
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  CHECK(h.os.accounts.count(account) == 0);
+  CHECK(listed().empty());
+}
+
+TEST_CASE("host users: a device revoked from the command line leaves as the app's Remove leaves it", "[host-users]") {
+  namespace ds = serve::device_shares;
+  namespace people = serve::people;
+  host_fixture h;
+  ds::key32 made{}, never{};
+  made.fill(0x11);
+  never.fill(0x22);
+  auto st = h.store();
+  std::vector<ds::desk> desks;
+  REQUIRE(ds::add(desks, made));
+  REQUIRE(ds::add(desks, never));
+  desks[0].password = "a-password-nobody-types-0123456789";
+  desks[0].role = "view";
+  desks[0].applied = h.clock;
+  REQUIRE(ds::save(*st, desks));
+  std::vector<people::person> folk;
+  REQUIRE(people::set(folk, "Anna", "view").empty());
+  REQUIRE(people::link(folk, made, "Anna").empty());
+  REQUIRE(people::save(*st, folk));
+
+  // One never made: nothing waits, and its entry is gone at once.
+  CHECK_FALSE(cli::note_revoked(*st, {never}));
+  REQUIRE(ds::load(*st, desks));
+  REQUIRE(desks.size() == 1);
+  CHECK_FALSE(desks[0].gone);
+  // One with an account: marked to go at the next step, and it belongs to nobody.
+  CHECK(cli::note_revoked(*st, {made}));
+  REQUIRE(ds::load(*st, desks));
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].gone);
+  REQUIRE(people::load(*st, folk));
+  CHECK(people::owner_of(folk, made) == nullptr);
+  // A phone (no account at all) changes nothing.
+  ds::key32 phone{};
+  phone.fill(0x33);
+  CHECK_FALSE(cli::note_revoked(*st, {phone}));
+}
+
+TEST_CASE("host users: a person's account cannot take a paired computer's name", "[host-users]") {
+  const std::vector<std::string> argv{"host", "users", "add", "mv-9d9d9d9d"};
+  const auto p = cli::parse_args(argv, true);
+  REQUIRE(p.error.empty());
+  cli::users_command c;
+  CHECK_FALSE(cli::parse_users_command(p.a, c).empty());
+}

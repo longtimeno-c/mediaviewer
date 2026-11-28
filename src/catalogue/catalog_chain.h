@@ -93,6 +93,9 @@ struct pair_payload {
   // The person's own relay, "host:port" ("" for none): the phone tries it after
   // the direct addresses (docs/plans/nas-relay.md). An app from before ignores it.
   std::string relay;
+  // The owner requires phones to lock the app (docs/plans/mobile.md §12), so the phone asks for
+  // Face ID or its passcode before it pairs. The service's caps say it again at every connect.
+  bool lock = false;
 };
 [[nodiscard]] std::string pair_url(const pair_payload& p);
 

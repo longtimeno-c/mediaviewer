@@ -150,7 +150,7 @@ cursor off the window.
 
 The engines the iPhone app links statically (`mv_ai_engine`, `mv_infer`, `mv_driftwire_engine`), from the
 root `CMakeLists.txt` through `cmake/ios.cmake`, with their own small manifest (`tools/ios/vcpkg.json`) and the
-`arm64-ios` / `arm64-ios-simulator` triplets. The chrome in `src.ios` will link these when it lands. Xcode with the iOS SDK and a
+`arm64-ios` / `arm64-ios-simulator` triplets. The iPhone app in `src.ios` links these. Xcode with the iOS SDK and a
 Simulator runtime, CMake ≥ 3.28, Ninja, vcpkg. The minimum iOS is set in the root `CMakeLists.txt` and both
 triplets, so change them together.
 

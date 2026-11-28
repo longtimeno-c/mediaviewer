@@ -32,6 +32,10 @@ struct pair_payload {
   // The person's own relay, "host:port" (docs/plans/nas-relay.md): tried after
   // the direct routes. Optional; a QR from before has none.
   std::string relay;
+  // The owner requires the app locked (docs/plans/mobile.md §12): asked for before pairing.
+  // Not in the fingerprint; the caps at the first connect say it again, so a code without it
+  // only skips the question at pairing.
+  bool lock_required = false;
   std::string fingerprint;  // driftwire::pairing_check over the library, both keys and the access key
 };
 

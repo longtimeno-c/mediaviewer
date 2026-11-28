@@ -50,7 +50,7 @@
 #include "addons/driftwire/resume.h"
 #include "addons/driftwire/presence.h"
 #include "addons/driftwire/transfer.h"
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 namespace mv::driftwire {
 

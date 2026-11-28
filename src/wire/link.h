@@ -42,6 +42,9 @@ class link {
   // Tests: a TCP link's write fails once its send buffer has stayed full and
   // nothing was heard from the peer for this long (kSilenceMs).
   virtual void set_stall_ms_for_tests(int /*ms*/) noexcept {}
+  // The peer is now authenticated (its handshake finished): a link that held its
+  // receive buffer small until then (a UDP stream someone else opened) takes the full one.
+  virtual void peer_proven() noexcept {}
 };
 
 // A link that says it is another bearer than its own (#472 PR 2: a TCP link

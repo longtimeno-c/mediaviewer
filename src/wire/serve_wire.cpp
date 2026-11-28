@@ -173,6 +173,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     }
   }
   if (const std::string* r = doc->str(kCapsRole); r && (*r == "view" || *r == "change" || *r == "admin")) c.role = *r;
+  c.lock = doc->boolean(kCapsLock) == true;
   if (const json::value* a = doc->find(kCapsAddresses); a && a->k == json::kind::object) {
     // Each on its own: one that is not an address is dropped, never the others.
     const auto take = [&](const char* k, std::string& into) {
@@ -185,8 +186,19 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
     take("public", c.public_name);
     take("relay", c.relay);
   }
+  if (const json::value* sh = doc->find(kCapsShare); sh && sh->k == json::kind::object) {
+    const std::string* u = sh->str("user");
+    const std::string* p = sh->str("password");
+    if (u && p && !u->empty() && u->size() <= 20 && !p->empty() && p->size() <= 256) {
+      c.share_user = *u;
+      c.share_password = *p;
+    }
+  }
+  if (const auto u = doc->integer(kCapsUdp); u && *u > 0 && *u <= 65535) c.udp = static_cast<std::uint16_t>(*u);
   return c;
 }
+
+caps_msg::~caps_msg() { sodium_memzero(share_password.data(), share_password.size()); }
 
 std::vector<std::uint8_t> encode_open(const open_request& r) {
   json::writer w;
@@ -547,6 +559,10 @@ result<config> parse_config(std::string_view text, bool any_port, bool no_roots)
     if (!p || *p < 0 || *p > 65535) return err(status::invalid_arg);
     c.vpn_port = static_cast<std::uint16_t>(*p);
   }
+  if (const json::value* l = doc->find("phone_lock")) {
+    if (l->k != json::kind::boolean) return err(status::invalid_arg);
+    c.phone_lock = doc->boolean("phone_lock").value_or(false);
+  }
   return c;
 }
 
@@ -570,6 +586,7 @@ std::string config_json(const config& c) {
   if (!c.local.empty()) w.key("local").string(c.local);
   if (!c.public_name.empty()) w.key("public").string(c.public_name);
   if (c.vpn_port != 0) w.key("vpn_port").integer(c.vpn_port);
+  if (c.phone_lock) w.key("phone_lock").boolean(true);
   w.end_object();
   return w.take();
 }

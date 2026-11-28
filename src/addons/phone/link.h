@@ -103,6 +103,7 @@ class link {
   //   unlock {passphrase}, lock, set_passphrase {passphrase}, grant {key, for_s (0: no limit)}.
   // Phone backup (docs/plans/mobile.md §10b.1): add_folder also takes {backup:"1", limit, reserve}
   //   (decimal bytes); set_backup {id, limit, reserve}; phone_backup {key, on} (a phone's grant).
+  // Phones must lock the app (docs/plans/mobile.md §12): phone_lock {on}; off needs the unlock.
   // This computer as the server (docs/plans/self-hosted.md slice 6), through the
   // installed driftwire program (phone/self_host.h):
   //   host_status          read the host's files again (the card's status row)
@@ -149,6 +150,12 @@ class link {
     bool limited = false, expired = false, guest = false, scoped = false;
     std::int64_t expires = 0;
     bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
+    bool desktop = false;  // a computer: its own share account (self-host-users-smb.md §12)
+    std::string share = {};  // "ready", "waiting" or ""
+    std::string person = {};  // who it belongs to (self-host-users-smb.md §13)
+  };
+  struct person_row {
+    std::string name, role;  // role: "view" or "change"
   };
   struct folder_row {
     std::string id, label, path;
@@ -175,6 +182,7 @@ class link {
     bool claimed = false, reachable = true;
     std::string local, public_name, warning;
     std::vector<row> devices;
+    std::vector<person_row> people;  // §13: whom the devices belong to
     std::vector<folder_row> folders;
     std::string qr_url, qr_library, qr_fingerprint;
     std::int64_t qr_expires = 0;
@@ -186,6 +194,7 @@ class link {
     std::int64_t code_left_until = 0;
     bool flags_unsaved = false, flags_dirty = false, pairing = false, flags_read = false;
     bool code_waiting = false;
+    std::int64_t shares_leaving = 0;  // removed computers' accounts still on the server (§12)
     std::int64_t pending = 0;
     double retry_s = 0;
     std::chrono::steady_clock::time_point retry_at{};
@@ -197,11 +206,13 @@ class link {
     // The NAS as a VPN host (owner_status): the port asked for (0: off), and whether it listens.
     std::int64_t nas_vpn_port = 0;
     bool nas_vpn_running = false;
+    bool nas_phone_lock = false;  // phones must lock the app (owner_status "phone_lock")
     std::int64_t unlocked_s = 0, locked_until = 0;
     // When the unlock read as unlocked_s runs out: the card's countdown is the
     // time left from now, not the snapshot (state_json).
     std::chrono::steady_clock::time_point unlocked_until{};
     std::int64_t qr_for_s = 0;  // the code showing is a guest code for this long
+    bool qr_lock = false;       // the code showing asks the phone to lock the app
     // This computer as the server: what the host's files said when last read,
     // the step a setup is at ("share", "name", "start", "claim"; "" when
     // none runs) and what the program said when a step failed (its own words).

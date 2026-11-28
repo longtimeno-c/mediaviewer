@@ -180,6 +180,10 @@ class library {
   [[nodiscard]] std::optional<server_info> server(std::string_view id) const;
   // How this run's latest connect to the server reached it; nullopt before one answered.
   [[nodiscard]] std::optional<route_seen> last_route(std::string_view id) const;
+  // The server's login for this computer's own account on its LAN SMB share
+  // (self-host-users-smb.md §12), as the live link's caps gave it at home; false otherwise.
+  // Never kept: asked again at each mount. The caller wipes `password`. Never blocks.
+  [[nodiscard]] bool share_login(std::string_view id, std::string& user, std::string& password) const;
   // The name a folder key is shown under: a named folder's label, a
   // subfolder's leaf, the server's name. "" when unknown.
   [[nodiscard]] std::string display_name(std::string_view key) const;

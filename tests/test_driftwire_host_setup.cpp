@@ -35,6 +35,7 @@
 #include "addons/driftwire/cli/qr.h"
 #include "addons/driftwire/ddns.h"
 #include "addons/vpn/tunnel.h"
+#include "catalogue/catalog_chain.h"
 #include "core/json.h"
 #include "import_fixture.h"
 #include "io/child_process.h"
@@ -449,11 +450,13 @@ TEST_CASE("host setup: what the router is asked for, and the status words", "[ho
   REQUIRE(w.size() == 1);  // the relay only with the VPN on
   CHECK(w[0].internal_port == 7878);
   CHECK(w[0].what == "service");
+  CHECK(w[0].udp);  // the service's sessions over UDP, at the same port
   k.vpn = true;
   w = cli::wanted_ports(k);  // the VPN without the look: the plain relay's port
   REQUIRE(w.size() == 2);
   CHECK(w[1].internal_port == 47614);
   CHECK(w[1].what == "relay");
+  CHECK_FALSE(w[1].udp);
   // With the look, only it is open outside (the plain relay's cleartext head never is):
   // outside 443, else 8443.
   k.relay_tls_port = 47615;
@@ -1063,4 +1066,26 @@ TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loo
     REQUIRE(eventually([&] { return host2->snapshot().relay_tls_port == 0 && !host2->snapshot().vpn; }));
   }
   host2->stop();
+}
+
+// docs/plans/mobile.md §12: a code from a library whose owner requires the app lock says so, so
+// the phone asks for Face ID or its passcode before it pairs; a code from before it says nothing.
+TEST_CASE("pairing code: the owner's lock travels in the code", "[phone-pairing]") {
+  mv::ai::catalog::pair_payload p;
+  p.library_id = "11111111-2222-3333-4444-555555555555";
+  p.library_name = "Home";
+  p.publisher_key.assign(32, 0x11);
+  p.service_local = "192.168.1.20:7878";
+  p.service_identity_hex = std::string(64, '2');
+  p.access_key_hex = std::string(64, '3');
+  p.code = std::string(32, 'c');
+  p.expires = 2000000000;
+  const auto open = mv::mobile::parse_pair_payload(mv::ai::catalog::pair_url(p));
+  REQUIRE(open);
+  CHECK_FALSE(open->lock_required);
+  p.lock = true;
+  const auto locked = mv::mobile::parse_pair_payload(mv::ai::catalog::pair_url(p));
+  REQUIRE(locked);
+  CHECK(locked->lock_required);
+  CHECK(locked->fingerprint == open->fingerprint);  // the same library, the same check code
 }

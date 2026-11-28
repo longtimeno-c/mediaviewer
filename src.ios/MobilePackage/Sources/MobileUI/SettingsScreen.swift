@@ -28,6 +28,9 @@ struct SettingsScreen: View {
   @AppStorage(Preferences.filmstrip) private var showsFilmstrip = true
   @AppStorage(Preferences.appearance) private var appearance = "dark"
   @AppStorage(Preferences.directOnMobileData) private var directOnMobileData = true
+  @Environment(\.scenePhase) private var scenePhase
+  /// What locks this phone; read again on coming back, as a passcode may have been set meanwhile.
+  @State private var lockKind: OwnerCheckKind?
 
   var body: some View {
     NavigationStack {
@@ -147,6 +150,7 @@ struct SettingsScreen: View {
             }
             .tint(Theme.accent)
           }
+          section(LockCopy.section) { lockToggle }
           section("About") {
             InfoRow(label: "Version", value: Self.version)
             NavigationLink {
@@ -189,7 +193,44 @@ struct SettingsScreen: View {
       .navigationDestination(isPresented: Binding(get: { model.showsVPN }, set: { model.showsVPN = $0 })) {
         VPNScreen()
       }
+      .onAppear { lockKind = model.lock.kind() }
+      .onChange(of: scenePhase) { _, phase in if phase == .active { lockKind = model.lock.kind() } }
     }
+  }
+
+  /// docs/plans/mobile.md §12: turning it on asks for Face ID (or the passcode) first, so it is
+  /// known to work before it is needed. One the library's owner requires is on, and not the
+  /// person's to turn off.
+  @ViewBuilder
+  private var lockToggle: some View {
+    let lock = model.lock
+    let name = LockCopy.toggle(lockKind ?? .passcode)
+    let detail = lock.isRequired ? (lockKind == nil ? LockCopy.requiredNoPasscode : LockCopy.required)
+      : lockKind == nil && !lock.isChosen ? LockCopy.noPasscode : LockCopy.detail
+    let fixed = lock.isRequired || (lockKind == nil && !lock.isChosen) || lock.isChecking
+    Toggle(isOn: Binding(get: { lock.isOn }, set: { on in
+      if on { Task { await lock.turnOn() } } else { lock.turnOff() }
+    })) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(name).font(.subheadline).foregroundStyle(Theme.title)
+        Text(detail)
+          .font(.footnote)
+          .foregroundStyle(Theme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .tint(Theme.accent)
+    .disabled(fixed)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(name)
+    .accessibilityValue(lock.isOn ? "On" : "Off")
+    .accessibilityHint(detail)
+    .accessibilityAddTraits(.isToggle)
+    .accessibilityAction {
+      guard !fixed else { return }
+      if lock.isChosen { lock.turnOff() } else { Task { await lock.turnOn() } }
+    }
+    .accessibilityIdentifier("settings.lock")
   }
 
   /// §9 "Sound search": what clips sound like, once its model is on the phone. Shown only for a

@@ -409,6 +409,9 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public var serverStorage: Int32 = 0
   /// The sentence for `serverStorage` ("Your server's mirror lost a drive. …"); "" when healthy.
   public var serverStorageWords = ""
+  /// The library's owner requires the app locked with Face ID or the passcode (docs/plans/mobile.md
+  /// §12), as the service last said; kept with the pairing, so it holds offline too.
+  public var lockRequired = false
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {
@@ -437,12 +440,17 @@ public struct LibraryIdentity: Hashable, Sendable {
   /// A guest code (docs/plans/nas-owner-and-guests.md §8.2): how long access lasts from pairing,
   /// as the code says. nil for an ordinary code. The NAS holds the real limit.
   public let guestFor: TimeInterval?
+  /// The library's owner requires the app locked (docs/plans/mobile.md §12): the phone asks for
+  /// Face ID or its passcode before it pairs, and locks from the first launch.
+  public let lockRequired: Bool
 
-  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil) {
+  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil,
+              lockRequired: Bool = false) {
     self.name = name
     self.fingerprint = fingerprint
     self.isSample = isSample
     self.guestFor = guestFor
+    self.lockRequired = lockRequired
   }
 }
 
