@@ -345,6 +345,11 @@ struct server::state {
   int per_source_pending = 2, per_block_pending = 4;
 
   std::atomic<int> pending{0}, sessions{0};
+  // Sessions over UDP still in their handshake: their own budget, never TCP's (pending, the
+  // tokens, the per-address tables). A UDP stream's source is whatever its first datagram
+  // said, so spoofed opens may fill this; the phone then stays on TCP.
+  std::atomic<int> pending_udp{0};
+  int max_pending_udp = 4;
   std::mutex device_sessions_m;
   std::map<std::array<std::uint8_t, 32>, int> device_sessions;  // under device_sessions_m: sessions per device
   std::mutex conns_m;
@@ -1996,6 +2001,10 @@ void server::state::release_pending(conn& c) {
   if (c.pending_released) return;
   c.pending_released = true;
   c.stage.store(3);
+  if (c.udp) {
+    pending_udp.fetch_sub(1);
+    return;  // it was never in the per-address tables
+  }
   pending.fetch_sub(1);
   std::lock_guard lock(source_m);
   for (const std::string* key : {&c.source, &c.block}) {
@@ -2051,6 +2060,7 @@ void server::state::serve_connection(conn* c) {
     o.fresh_first = [this](std::span<const std::uint8_t> first) { return fresh(first); };
     auto ch = channel::open_library_server(c->l, std::move(*h), "0000000000000000", service_name, o);
     release_pending(*c);
+    if (ch) c->l->peer_proven();  // it answered the server's half of the handshake: not spoofed
     if (!ch) {
       if (ch.error() == status::permission_denied) n_key.fetch_add(1);
       c->l->shutdown();
@@ -2215,14 +2225,15 @@ bool server::state::evict_oldest_hello(clock::time_point now) {
     n_evicted.fetch_add(1);
     return true;
   };
+  // A UDP one is never taken: it holds no TCP slot, so taking it makes no room.
   for (auto& c : conns) {  // in the order they arrived
     if (now - c->born < kMinHelloAge) break;  // and everything after it is younger
-    if (evict(*c, 0)) return true;
+    if (!c->udp && evict(*c, 0)) return true;
   }
   // Nothing silent to take: a handshake that holds the key but has stalled
   // (a revoked phone, a recording). Its reply went out at least this long ago.
   for (auto& c : conns) {
-    if (c->stage.load() == 1 && now - c->hello_at >= kMinReplyAge && evict(*c, 1)) return true;
+    if (!c->udp && c->stage.load() == 1 && now - c->hello_at >= kMinReplyAge && evict(*c, 1)) return true;
   }
   return false;
 }
@@ -2252,33 +2263,38 @@ void server::state::admit(std::unique_ptr<link> accepted, const std::string& sou
     std::lock_guard admitting(admit_m);
     const auto now = clock::now();
     bool room = true;
-    {
-      // The coarser bucket first: a block over its limit never reaches the
-      // per-address table, so it cannot push other addresses out of it.
-      std::lock_guard lock(source_m);
-      if (!block.empty()) {
-        const auto at_block = in_flight.find(block);
-        room = at_block == in_flight.end() || at_block->second < per_block_pending;
+    if (over_udp) {
+      // Its source may be spoofed: none of TCP's budget is spent on it (pending_udp).
+      room = pending_udp.load() < max_pending_udp;
+    } else {
+      {
+        // The coarser bucket first: a block over its limit never reaches the
+        // per-address table, so it cannot push other addresses out of it.
+        std::lock_guard lock(source_m);
+        if (!block.empty()) {
+          const auto at_block = in_flight.find(block);
+          room = at_block == in_flight.end() || at_block->second < per_block_pending;
+        }
+        if (room) {
+          const auto at_source = in_flight.find(source);
+          room = at_source == in_flight.end() || at_source->second < per_source_pending;
+        }
       }
-      if (room) {
-        const auto at_source = in_flight.find(source);
-        room = at_source == in_flight.end() || at_source->second < per_source_pending;
+      // The block is charged only once the address has passed, so one address
+      // over its limit does not spend its neighbours' budget.
+      room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
+             pending.load() < 2 * max_pending;
+      // The desktop's nearby service: this network only, and silently.
+      if (room && lan_only && (relayed || !on_own_network(from))) room = false;
+      // The global budget is last, and only for a connection that gets in, so
+      // what the per-address limits drop never spends it. Full: the oldest
+      // connection still saying nothing makes way (from kMinHelloAge), else
+      // the oldest handshake waiting past kMinReplyAge.
+      if (room && !take_token(now)) room = false;
+      if (room && pending.load() >= max_pending && !evict_oldest_hello(now)) {
+        tokens = std::min(kGlobalBurst, tokens + 1.0);  // it did not get in
+        room = false;
       }
-    }
-    // The block is charged only once the address has passed, so one address
-    // over its limit does not spend its neighbours' budget.
-    room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
-           pending.load() < 2 * max_pending;
-    // The desktop's nearby service: this network only, and silently.
-    if (room && lan_only && (relayed || !on_own_network(from))) room = false;
-    // The global budget is last, and only for a connection that gets in, so
-    // what the per-address limits drop never spends it. Full: the oldest
-    // connection still saying nothing makes way (from kMinHelloAge), else
-    // the oldest handshake waiting past kMinReplyAge.
-    if (room && !take_token(now)) room = false;
-    if (room && pending.load() >= max_pending && !evict_oldest_hello(now)) {
-      tokens = std::min(kGlobalBurst, tokens + 1.0);  // it did not get in
-      room = false;
     }
     if (!room) {
       n_over.fetch_add(1);
@@ -2292,8 +2308,10 @@ void server::state::admit(std::unique_ptr<link> accepted, const std::string& sou
     c->source = source;
     c->block = block;
     c->from = from;
-    pending.fetch_add(1);
-    {
+    if (over_udp) {
+      pending_udp.fetch_add(1);
+    } else {
+      pending.fetch_add(1);
       std::lock_guard lock(source_m);
       ++in_flight[source];
       if (!block.empty()) ++in_flight[block];
@@ -3555,18 +3573,6 @@ result<std::unique_ptr<server>> server::start(const options& o) {
     st.listen = std::move(*l);
   }
   st.port = st.listen->port();
-  if (o.udp && !o.lan_only) {
-    // The same port number over UDP; one another program holds leaves TCP alone, as before.
-    if (auto hub = udp_hub::open(st.port, o.loopback_only)) {
-      st.udp = std::move(*hub);
-      st.udp->on_open([&st](std::unique_ptr<link> l, const net::endpoint& from) {
-        const auto a = net::parse_address(from.address);
-        if (!a || st.stopping.load()) return;  // dropped: the stream closes
-        st.n_accepted.fetch_add(1);
-        st.admit(std::move(l), source_of(*a), block_of(*a), *a, false, {}, true);
-      });
-    }
-  }
   // Everything a session or the relay thread reads, set before either starts.
   st.relay_connect = o.relay_connect;
   st.before_gather = o.before_gather;
@@ -3577,6 +3583,19 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.conv = o.converter;
   st.vpn_offered = o.vpn && !o.lan_only;
   st.vpn_tweak = o.vpn_tweak;
+  if (o.udp && !o.lan_only) {
+    // The same port number over UDP; one another program holds leaves TCP alone, as before.
+    // Opened here, after everything a session reads is set: a datagram may start one at once.
+    if (auto hub = udp_hub::open(st.port, o.loopback_only)) {
+      st.udp = std::move(*hub);
+      st.udp->on_open([&st](std::unique_ptr<link> l, const net::endpoint& from) {
+        const auto a = net::parse_address(from.address);
+        if (!a || st.stopping.load()) return;  // dropped: the stream closes
+        st.n_accepted.fetch_add(1);
+        st.admit(std::move(l), source_of(*a), block_of(*a), *a, false, {}, true);
+      });
+    }
+  }
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay

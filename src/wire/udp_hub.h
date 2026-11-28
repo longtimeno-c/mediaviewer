@@ -56,6 +56,9 @@ inline constexpr std::size_t kStreamPayload = 1200;
 // authenticated while the handshake runs over it, so it cannot make this
 // side hold more).
 inline constexpr std::size_t kStreamMaxRx = 16u * 1024 * 1024;
+// A stream someone else opened (on_open) holds this much until link::peer_proven: its sender
+// is anyone who can write a source address, and nothing has answered it yet.
+inline constexpr std::size_t kStreamUnprovenRx = 64u * 1024;
 
 class udp_hub : public std::enable_shared_from_this<udp_hub> {
  public:
@@ -89,7 +92,8 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   // A stream someone else opens (the phone service: a phone that moves its session onto UDP).
   // The first data packet of an id this hub has no stream for, on the main socket, makes one to
   // its sender and hands it here; the handler owns it (dropping it closes it). Nothing about the
-  // sender is known yet: what runs over the link authenticates it, as over an accepted TCP one.
+  // sender is known yet: what runs over the link authenticates it, as over an accepted TCP one,
+  // and until it calls link::peer_proven the stream holds kStreamUnprovenRx at most.
   using open_fn = std::function<void(std::unique_ptr<link>, const net::endpoint& from)>;
   void on_open(open_fn fn);
   // A reliable stream to `peer`, both sides with the same `id` (the sender

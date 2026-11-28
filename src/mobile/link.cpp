@@ -326,6 +326,9 @@ link_session::~link_session() {
   stop_upgrades(false);
   disconnect();
   stop_upgrades(true);
+  // Stopped here, not by whichever thread lets go of it last: a retired client's pinger may hold
+  // it, and ~udp_hub on that thread would join a thread waiting on that client's own lock.
+  stop_udp_hub();
 }
 
 expected link_session::connect(route_report& report, const cancel_flag* cancel, int timeout_ms) {
@@ -382,6 +385,7 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     }
     // Swapped, never closed here: reads already running on the old client hold
     // it and finish on it; it closes when the last of them lets go.
+    if (live_ && live_->closed()) udp_ending_locked();  // it died idle: dropped() never saw it
     previous = std::move(live_);
     if (previous) {
       std::erase_if(retired_, [](const auto& w) { return w.expired(); });
@@ -479,6 +483,7 @@ void link_session::upgrade_loop() {
     if (udp) {
       (void)try_udp();  // once for this client: TCP stays if it fails
       lock.lock();
+      if (up_now_) continue;  // reconnected meanwhile: start_upgrades found this thread running
       break;
     }
     bool moved = false;
@@ -688,6 +693,19 @@ bool link_session::try_udp() {
   return true;
 }
 
+void link_session::udp_ending_locked() {
+  if (last_report_.udp && clock::now() - udp_since_ < kUdpShortLived) udp_hold_until_ = clock::now() + kUdpHold;
+}
+
+void link_session::stop_udp_hub() noexcept {
+  std::shared_ptr<dw::udp_hub> hub;
+  {
+    std::lock_guard lock(up_m_);
+    hub = std::move(udp_hub_);
+  }
+  if (hub) hub->stop();
+}
+
 bool link_session::udp_settled_for_test() {
   std::thread t;
   {
@@ -714,12 +732,7 @@ void link_session::shut_down() noexcept {
   disconnect();
   streams_cv_.notify_all();
   stop_upgrades(true);
-  std::shared_ptr<dw::udp_hub> hub;
-  {
-    std::lock_guard lock(up_m_);
-    hub = std::move(udp_hub_);
-  }
-  if (hub) hub->stop();  // its socket goes now, not when the last client lets go
+  stop_udp_hub();
   std::vector<std::shared_ptr<link_session>> lanes;
   {
     std::lock_guard lock(m_);
@@ -833,7 +846,7 @@ void link_session::dropped(const std::shared_ptr<serve::client>& c) noexcept {
   if (live_ != c) return;
   // A UDP client lost soon after it began: a network that let the handshake through, then stopped
   // UDP. The next connects stay on TCP a while (one that ran long was lost as TCP would have been).
-  if (last_report_.udp && clock::now() - udp_since_ < kUdpShortLived) udp_hold_until_ = clock::now() + kUdpHold;
+  udp_ending_locked();
   // Other reads may still be on it: Forget must be able to cut them, as for a swapped-out client.
   std::erase_if(retired_, [](const auto& w) { return w.expired(); });
   retired_.push_back(live_);

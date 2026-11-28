@@ -76,6 +76,7 @@ struct udp_hub::stream_state {
   net::endpoint peer;
   std::uint32_t id = 0;
   bool learn = false;  // under m: the first packet's sender becomes the peer
+  std::size_t max_rx = kMaxRx;  // under m: kStreamUnprovenRx for one opened to this hub, until proven
   std::mutex m;
   std::condition_variable cv;
   bool down = false;
@@ -269,7 +270,7 @@ struct udp_hub::stream_state {
     // What may still arrive: the buffer less what waits to be read and what
     // is held out of order (a sender forgets a packet once it is SACKed).
     const std::size_t used = rx.size() + ahead_bytes;
-    const std::size_t room = used >= kMaxRx ? 0 : kMaxRx - used;
+    const std::size_t room = used >= max_rx ? 0 : max_rx - used;
     put32(a + 10 + 8 * kSackWords, static_cast<std::uint32_t>(std::min<std::size_t>(room, 0xffffffffu)));
     // The runs that reach past the bitmap, the first kMaxRuns of them.
     std::size_t len = kAckPacket, count = 0;
@@ -299,7 +300,7 @@ struct udp_hub::stream_state {
     // Past the window this side advertised: dropped (an honest sender never
     // sends it; it is sent again once the window opens). The next packet in
     // order may use one packet more, so held packets can always drain.
-    const std::size_t limit = kMaxRx + (seq == rcv_next ? kStreamPayload : 0);
+    const std::size_t limit = max_rx + (seq == rcv_next ? kStreamPayload : 0);
     if (rx.size() + ahead_bytes + payload.size() > limit) {
       send_ack();
       return;
@@ -669,11 +670,11 @@ class udp_stream final : public link {
       return err(status::timeout);
     }
     if (!s_->rx.empty()) {
-      const bool was_full = s_->rx.size() + s_->ahead_bytes >= kMaxRx / 2;
+      const bool was_full = s_->rx.size() + s_->ahead_bytes >= s_->max_rx / 2;
       const std::size_t n = std::min(into.size(), s_->rx.size());
       std::copy_n(s_->rx.begin(), n, into.begin());
       s_->rx.erase(s_->rx.begin(), s_->rx.begin() + static_cast<std::ptrdiff_t>(n));
-      if (was_full && s_->rx.size() + s_->ahead_bytes < kMaxRx / 2) s_->send_ack();  // the window opened
+      if (was_full && s_->rx.size() + s_->ahead_bytes < s_->max_rx / 2) s_->send_ack();  // the window opened
       return n;
     }
     if (s_->down) return err(status::cancelled);
@@ -695,6 +696,16 @@ class udp_stream final : public link {
     }
     s_->cv.notify_all();
     release_extra();
+  }
+
+  void peer_proven() noexcept override {
+    std::lock_guard lock(s_->m);
+    if (s_->down || s_->max_rx == kMaxRx) return;
+    s_->max_rx = kMaxRx;
+    try {
+      s_->send_ack();  // the window opened
+    } catch (...) {
+    }
   }
 
   transport via() const noexcept override { return transport::internet; }
@@ -969,6 +980,10 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
       {
         std::lock_guard lock(m_);
         if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+      }
+      if (s) {
+        std::lock_guard held(s->m);
+        s->max_rx = kStreamUnprovenRx;  // its sender is unproven (spoofable) until its handshake ends
       }
       opener(std::move(l), from);
     }

@@ -141,6 +141,15 @@ class link_session final : public remote_file {
     }
     if (c) dropped(c);
   }
+  // Tests: the live client closes as one that died idle does, without dropped() hearing of it.
+  void close_live_for_test() noexcept {
+    std::shared_ptr<driftwire::serve::client> c;
+    {
+      std::lock_guard lock(m_);
+      c = live_;
+    }
+    if (c) c->close();
+  }
   [[nodiscard]] bool connected() const;
   // Whether a direct path may be tried now (nas-relay.md §9.2): on Wi-Fi
   // always; on mobile data only with the person's setting on (default on).
@@ -239,6 +248,11 @@ class link_session final : public remote_file {
   // client dropped (a network that lets the handshake through and then stops UDP).
   [[nodiscard]] bool wants_udp_locked() const;  // m_ held
   [[nodiscard]] bool try_udp();
+  // The live client is ending (dropped, or found closed and replaced): a UDP one that ran only
+  // briefly keeps the next connects on TCP a while. m_ held.
+  void udp_ending_locked();
+  // The UDP socket goes now, not when the last client lets go (shut_down, the destructor).
+  void stop_udp_hub() noexcept;
   [[nodiscard]] std::uint32_t live_caps_ops() const;
   [[nodiscard]] bool upgrade_allowed() const noexcept;
 

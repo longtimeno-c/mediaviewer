@@ -607,14 +607,18 @@ sends none and nothing changes. `driftwire host pair` (the CLI's own host path) 
 the line (CUBIC halves on each loss: ~0.5–1 MB/s at 150 ms and 0.1 %). So the service
 (`options::udp`, on except for the LAN-only nearby one) also opens a `udp_hub` on its TCP port's
 number; `udp_hub::on_open` hands it each stream a stranger opens (the first data packet of an unknown
-id), and the stream goes through the same `admit()` limits and handshake as an accepted TCP link
-(`counters::udp` counts them). Every paired session's caps say `"udp":<port>`. The phone connects
+id), and the stream goes through the same handshake as an accepted TCP link (`counters::udp` counts
+them). Its source is only what that datagram claims, so it gets none of TCP's admission budget:
+UDP handshakes have their own few slots (`pending_udp`, 4), never evict a TCP one, and the stream
+holds 64 KB (`kStreamUnprovenRx`) until the handshake ends (`link::peer_proven`). Spoofed opens can
+fill those slots; the phone then just stays on TCP. Every paired session's caps say `"udp":<port>`. The phone connects
 over TCP as before; on a direct route (not relayed, not punched) whose caps name a UDP port,
 `link_session`'s upgrade thread opens one UDP stream to the same address and port (through a router,
 the outside port, which the host's router keeper forwards for UDP too), runs the handshake and
 swaps it in as the live client (reads on the TCP one finish there; `route_report::udp`). One try per
-TCP client; a UDP client lost within 2 min leaves the next ones on TCP for 10 min (a network that
-lets the handshake through, then drops UDP). A UDP session opens no lanes.
+TCP client (again if it reconnected during the try); a UDP client lost within 2 min, dropped or
+found closed, leaves the next ones on TCP for 10 min (a network that lets the handshake through,
+then drops UDP). A UDP session opens no lanes.
 
 **Paths.** Root id + relative path; absolute paths never sent or logged. `safe_relative`, then
 `io::stat_beneath`, `list_beneath`, `file_reader::open_beneath` walk part by part from the root's

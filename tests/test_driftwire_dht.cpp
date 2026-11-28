@@ -336,6 +336,59 @@ TEST_CASE("driftwire dht: a stream someone opens to the hub is handed to on_open
   CHECK_FALSE(other->read_some(buf, 300));
 }
 
+TEST_CASE("driftwire dht: a stream opened to the hub holds 64 KB until its peer is proven, then the full buffer",
+          "[driftwire]") {
+  hub_pair h;
+  std::mutex m;
+  std::condition_variable cv;
+  std::unique_ptr<sp::link> opened;
+  h.b->on_open([&](std::unique_ptr<sp::link> l, const sp::net::endpoint&) {
+    std::lock_guard lock(m);
+    opened = std::move(l);
+    cv.notify_all();
+  });
+  // Sent blind, as a spoofer would: data packets that ignore every ack and window.
+  constexpr std::size_t kPayload = 1000;
+  constexpr std::uint32_t kId = 0x7a7a;
+  std::uint32_t seq = 0;
+  const auto send_packets = [&](int n) {
+    for (int i = 0; i < n; ++i, ++seq) {
+      std::vector<std::uint8_t> d(10 + kPayload, static_cast<std::uint8_t>(seq));
+      d[0] = sp::kStream;
+      d[1] = 1;  // data
+      for (int b = 0; b < 4; ++b) {
+        d[2 + b] = static_cast<std::uint8_t>(kId >> (8 * b));  // little-endian, as the hub writes
+        d[6 + b] = static_cast<std::uint8_t>(seq >> (8 * b));
+      }
+      REQUIRE(h.a->send(d, h.at_b()));
+    }
+  };
+  const auto take_all = [&] {
+    std::size_t total = 0;
+    std::vector<std::uint8_t> buf(1 << 20);
+    for (;;) {
+      auto n = opened->read_some(buf, 300);
+      if (!n || *n == 0) return total;
+      total += *n;
+    }
+  };
+  send_packets(1);
+  {
+    std::unique_lock lock(m);
+    REQUIRE(cv.wait_for(lock, std::chrono::seconds(5), [&] { return opened != nullptr; }));
+  }
+  send_packets(199);  // 200 KB in all
+  const std::size_t before = take_all();
+  CHECK(before > 0);
+  CHECK(before <= sp::kStreamUnprovenRx + sp::kStreamPayload);
+  // Proven (its handshake ended): what comes next is held as on any stream.
+  opened->peer_proven();
+  seq = static_cast<std::uint32_t>(before / kPayload);  // the next one it wants
+  send_packets(100);
+  CHECK(take_all() > sp::kStreamUnprovenRx + sp::kStreamPayload);
+  h.b->on_open(nullptr);
+}
+
 TEST_CASE("driftwire dht: the hub's timer waits while nothing is in flight, and wakes for the next write",
           "[driftwire]") {
   hub_pair h;

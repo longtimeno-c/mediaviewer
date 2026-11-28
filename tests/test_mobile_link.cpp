@@ -2657,6 +2657,21 @@ TEST_CASE("link udp: a UDP session lost soon after the move leaves the next one 
   CHECK(r.srv->stats().udp == 1);
 }
 
+TEST_CASE("link udp: a UDP session that died idle also leaves the next one on TCP", "[mobile-link]") {
+  rig r;
+  with_udp(r);
+  r.pair_now();
+  mob::link_session s(r.config());
+  mob::route_report rep;
+  REQUIRE(s.connect(rep));
+  REQUIRE(s.udp_settled_for_test());
+  s.close_live_for_test();  // nothing was reading: connect finds it closed
+  REQUIRE(s.connect(rep));
+  CHECK_FALSE(rep.udp);
+  CHECK_FALSE(s.udp_settled_for_test());  // held, as after a drop
+  CHECK(r.srv->stats().udp == 1);
+}
+
 TEST_CASE("upgrade: the relay says what it sees of a connection", "[phone-upgrade]") {
   dw::relay::server::options ro;
   ro.key = kPhoneRelayKey;

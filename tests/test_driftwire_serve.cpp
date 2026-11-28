@@ -667,6 +667,25 @@ TEST_CASE("serve udp: over UDP a stranger is refused as over TCP, and a service 
   CHECK(s.open_client()->caps().udp == 0);
 }
 
+TEST_CASE("serve udp: a flood of UDP opens never stops a TCP session being admitted", "[driftwire-serve]") {
+  // A UDP open's source is whatever its datagram says: none of TCP's budget may go to it.
+  service_fixture s(10000, /*pending_per_source=*/100, /*pending_all=*/4, 8);
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  constexpr int kOpens = 12;
+  for (int i = 0; i < kOpens; ++i) {
+    // A stream's first data packet (seq 0) and nothing more: a session that never says its hello.
+    std::uint8_t d[11] = {sp::kStream, 1, 0, 0, 0, static_cast<std::uint8_t>(i + 1), 0, 0, 0, 0, 0x55};
+    REQUIRE((*hub)->send(d, {"127.0.0.1", s.srv->port()}));
+  }
+  REQUIRE(eventually([&] { return s.srv->stats().accepted >= kOpens; }));
+  CHECK(s.srv->stats().over_limit >= kOpens - 4);  // past UDP's own few, turned away
+  // Straight after, while every one of them is still in its hello.
+  auto c = serve::client::open(s.connect(), s.client_options());
+  REQUIRE(c);
+  CHECK((*c)->caps().udp == s.srv->port());
+}
+
 TEST_CASE("serve: a burst is admitted up to the session limit", "[driftwire-serve]") {
   service_fixture s(10000, 100, 16, 8);
   std::atomic<int> ok{0};
