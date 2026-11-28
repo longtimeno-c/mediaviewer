@@ -33,6 +33,8 @@
 #include "addons/driftwire/cli/elevate.h"
 #include "addons/driftwire/cli/host_cmd.h"
 #include "addons/driftwire/host_smb.h"
+#include "wire/device_shares.h"
+#include "wire/known.h"
 #include "wire/secrets.h"
 #include "wire/share_users.h"
 
@@ -69,6 +71,17 @@ struct share_state {
 [[nodiscard]] bool save_share_state(secrets::store& store, const share_state& s);
 // `host status`'s lines: the share's addresses and the users, names and roles only.
 [[nodiscard]] std::vector<std::string> users_status_lines(secrets::store& store);
+
+// ---- each paired computer's own account (self-host-users-smb.md §12) -------------------------
+// The computers' share users, as the step is asked for them: one per listed computer still
+// paired (on `unlimited` or `limited`), named its account, with its pairing's role and
+// folders. A computer listed but no longer paired is left out (the service marks it gone at
+// revoke). `gone`: the accounts of the ones unpairing, to take away.
+[[nodiscard]] std::vector<su::user> desk_users(const std::vector<serve::device_shares::desk>& desks,
+                                               const std::vector<known::device>& unlimited,
+                                               const std::vector<serve::grants::grant>& limited,
+                                               const std::vector<serve::root_config>& roots,
+                                               std::vector<std::string>& gone);
 
 // ---- running it (the tests give their own env) ----------------------------------------------
 struct users_env {

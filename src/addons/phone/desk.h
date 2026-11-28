@@ -82,6 +82,10 @@ struct device_row {
   std::int64_t expires = 0;  // unix, the NAS's clock; 0: no end
   bool expired = false, guest = false, scoped = false;
   bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
+  // A computer (self-host-users-smb.md §12): its own share account is "ready", or "waiting" for
+  // the host's elevated step. "" for a phone, and from a service before this.
+  bool desktop = false;
+  std::string share = {};
 };
 
 // The NAS's owner side (§3): what it can do and where the owner stands.
@@ -224,6 +228,8 @@ class desk {
   [[nodiscard]] expected set_backup(const std::string& id, backup_sizes sizes);
   // A phone's backup flag (B2): on adds access (an unlock, once there is a passphrase); off does not.
   [[nodiscard]] expected set_phone_backup(const key32& key, bool on);
+  // A device's nickname on the server's lists (serve_admin rename; no unlock).
+  [[nodiscard]] expected rename(const key32& key, const std::string& name);
   [[nodiscard]] expected remove_root(const std::string& id);
 
   // The nearby service over `folder` (the Catalogue root) for the paired phones,

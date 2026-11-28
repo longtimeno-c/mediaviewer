@@ -277,3 +277,44 @@ change this Mac's sharing settings, and use loopback only.
 - **Windows firewall:** File and Printer Sharing on the Private profile is the person's own call.
   The step only says when the network is marked Public.
 - **Linux:** Samba, with the Linux host.
+
+## 12. Each paired computer is a user (owner's call, 2026-11-27) — built
+
+The owner found a second list of people with passwords confusing: "each device is a user, and
+each device can be nicknamed and their permissions set". So a **paired computer** is its own user
+of the share, and the card's one list is **Phones and computers**.
+
+- **The list:** every paired device as it already was (grants and the paired list), with a
+  nickname anyone signed in as admin can change (`serve_admin rename {key, name}`; no unlock,
+  since it adds no access). A computer's row picks **Can view files / Can change files**. That is the
+  `grant {backup}` flag a desktop already had (§9), so changing it to "change" still needs the
+  unlock. A phone keeps its Backs up switch.
+- **Its account:** a computer that pairs (`pair_msg::kind = desktop`) is listed in the store item
+  `device_shares` (`wire/device_shares.h`), with an OS account named `mv-` plus the first 4 bytes of its key in hex,
+  a 32-character random password nobody types, and the role and folders last applied. A computer
+  unpaired is marked `gone`.
+- **Made by the same step:** `driftwire host users apply` adds the computers to the request as
+  users (`cli::desk_users`). It generates the password for a new account, sends none for one
+  already made, and removes a gone one's account. After the step, it saves the password and what was
+  applied. The card shows "A computer's share waits for this PC's administrator" with
+  **Finish…** (the UAC prompt or the Mac's authorization dialog), as the people's users did.
+- **Handed to that computer alone:** when the computer connects **from the host's own network**
+  (`usage_via::home`) and its account matches its pairing now, the service's caps carry
+  `"share":{"user","password"}` (`kCapsShare`), inside that session's Noise channel. The Mac
+  mounts with it through NetFS (`desktop-client.md` §6a) and keeps it nowhere: it is asked again
+  at each connect. Never to the owner's session, never away from home, never while the account
+  waits for a change.
+- **People's accounts** made with the CLI (`host users add`) still work. The card shows them
+  under **People** only when one exists.
+- **This changes §3's rule:** the service's store now holds the computers' passwords.
+  They are machine-made, one per computer, in the owner-only store beside the pairing keys, and
+  never logged or listed. A person's password is still never kept.
+
+**Not built yet:** admin from another computer. A paired computer given **admin** gets the owner's
+admin verbs, behind the same passphrase unlock, so it can rename and set roles from its own card.
+Today the card that edits the list is the host's own.
+
+**Tests:** `[device-shares]` (the store, names, when the step runs, a pairing's role and folders),
+`[host-users]` "a paired computer gets its own account…" (made, kept, changed, taken away),
+`[phone-pairing]` "a paired computer is a user…" (listed, renamed, its login at home only, a
+role change makes it wait, unpaired), and `[phone-addon]` "a computer is a user…" (the card).

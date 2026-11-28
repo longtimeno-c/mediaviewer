@@ -667,3 +667,89 @@ TEST_CASE("host users: the step never shares a system folder, and takes only val
   CHECK_FALSE(smb::acceptable_password("over\xc0\xaf" "long!!"));
   CHECK_FALSE(smb::acceptable_password("cut off \xe2\x82"));
 }
+
+// self-host-users-smb.md §12 (owner, 2026-11-27): each paired computer is its own user of the
+// share. `apply` makes its account with a password nobody types, keeps it for that computer's
+// sessions, follows its role and folders, and takes it away once it is unpaired.
+TEST_CASE("host users: a paired computer gets its own account, its pairing's role, and loses it unpaired", "[host-users]") {
+  namespace ds = serve::device_shares;
+  namespace grants = serve::grants;
+  host_fixture h;
+  ds::key32 mac{};
+  mac.fill(0x9d);
+  {
+    auto st = h.store();
+    std::vector<ds::desk> desks;
+    REQUIRE(ds::add(desks, mac));
+    REQUIRE(ds::save(*st, desks));
+    // Paired as a desktop: "can view files", on the grants list with backup off, every folder.
+    grants::grant g;
+    g.name = "MacBook Pro";
+    g.key = mac;
+    g.backup = false;
+    REQUIRE(grants::save(*st, {g}));
+  }
+  cli::users_command a;
+  a.verb = cli::users_verb::apply;
+  a.input_stdin = true;
+  auto e = h.env();
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  const std::string account = ds::account_for(mac);
+  CHECK(account == "mv-9d9d9d9d");
+  REQUIRE(h.os.passwords.count(account) == 1);
+  const std::string made = h.os.passwords[account];
+  CHECK(made.size() == 32);
+  std::vector<ds::desk> desks;
+  {
+    auto st = h.store();
+    REQUIRE(ds::load(*st, desks));
+  }
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].password == made);  // what its session will be given
+  CHECK(desks[0].role == "view");
+  CHECK_FALSE(desks[0].folders);
+  CHECK(desks[0].applied == h.clock);
+  CHECK_FALSE(ds::waiting(desks[0], "view", std::nullopt));
+  // The people's list never holds it, and the step's lines never show its password.
+  CHECK(h.users().empty());
+  CHECK_FALSE(contains(h.all_said(), made));
+
+  // Its role changes on the card (backup on = can change files): the next apply changes the
+  // account's rights and keeps its password.
+  {
+    auto st = h.store();
+    grants::grant g;
+    g.name = "MacBook Pro";
+    g.key = mac;
+    g.backup = true;
+    g.roots = std::vector<std::string>{"a1a1a1a1a1a1a1a1"};
+    REQUIRE(grants::save(*st, {g}));
+  }
+  h.requests.clear();
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  REQUIRE(h.requests.size() == 1);
+  CHECK_FALSE(contains(h.requests[0], made));  // an account already made keeps its password
+  {
+    auto st = h.store();
+    REQUIRE(ds::load(*st, desks));
+  }
+  CHECK(desks[0].role == "change");
+  REQUIRE(desks[0].folders);
+  CHECK(*desks[0].folders == std::vector<std::string>{"Photos"});
+  CHECK(desks[0].password == made);
+
+  // Unpaired (the service marks it gone): the step takes the account away and the entry goes.
+  {
+    auto st = h.store();
+    REQUIRE(ds::remove(desks, mac));
+    REQUIRE(ds::save(*st, desks));
+    REQUIRE(grants::save(*st, {}));
+  }
+  CHECK(cli::run_users(a, h.l, e) == 0);
+  CHECK(h.os.accounts.count(account) == 0);
+  {
+    auto st = h.store();
+    REQUIRE(ds::load(*st, desks));
+  }
+  CHECK(desks.empty());
+}

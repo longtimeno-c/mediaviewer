@@ -699,6 +699,14 @@ int link_session::role(std::string& word) const {
   return 1;
 }
 
+bool link_session::share_login(std::string& user, std::string& password) const {
+  std::lock_guard lock(m_);
+  if (!live_ || live_->closed() || live_->caps().share_user.empty()) return false;
+  user = live_->caps().share_user;
+  password = live_->caps().share_password;
+  return true;
+}
+
 void link_session::addresses(std::string& local, std::string& public_name, std::string& relay) const {
   std::lock_guard lock(m_);
   local = config_.local;

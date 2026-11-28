@@ -91,6 +91,35 @@ std::string user_line(const su::user& u) {
 
 }  // namespace
 
+std::vector<su::user> desk_users(const std::vector<serve::device_shares::desk>& desks,
+                                 const std::vector<known::device>& unlimited,
+                                 const std::vector<serve::grants::grant>& limited,
+                                 const std::vector<serve::root_config>& roots, std::vector<std::string>& gone) {
+  namespace ds = serve::device_shares;
+  std::vector<su::user> out;
+  for (const auto& d : desks) {
+    if (d.gone) {
+      gone.push_back(d.account);
+      continue;
+    }
+    const bool full = std::any_of(unlimited.begin(), unlimited.end(), [&](const auto& u) { return u.key == d.key; });
+    const auto g = std::find_if(limited.begin(), limited.end(), [&](const auto& x) { return x.key == d.key; });
+    if (!full && g == limited.end()) continue;
+    std::vector<serve::root_config> shared;
+    for (const auto& r : roots) {
+      if (r.label != serve::kCatalogueLabel) shared.push_back(r);
+    }
+    const ds::want w = ds::want_of(full ? nullptr : &*g, shared);
+    su::user u;
+    u.name = d.account;
+    u.r = w.role == "change" ? su::role::change : su::role::view;
+    u.folders = w.folders;
+    u.applied = ds::waiting(d, w.role, w.folders) ? 0 : d.applied;
+    out.push_back(std::move(u));
+  }
+  return out;
+}
+
 // ---- the command's words ---------------------------------------------------------------------
 
 std::string parse_users_command(const args& a, users_command& out) {
@@ -278,12 +307,51 @@ int apply_now(const host_layout& l, secrets::store& store, users_env& env, std::
     env.say("driftwire host: the list of users cannot be read; nothing changed.");
     return 1;
   }
+  // Each paired computer is a user too (§12): its account, a fresh password for one not made yet.
+  namespace ds = serve::device_shares;
+  std::vector<ds::desk> desks;
+  if (!ds::load(store, desks)) {
+    env.say("driftwire host: the list of paired computers cannot be read; nothing changed.");
+    return 1;
+  }
+  std::vector<std::string> desk_removed = removed;
+  std::vector<std::string> desk_names;
+  {
+    std::vector<serve::grants::grant> limited;
+    (void)serve::grants::load(store, limited);
+    const auto cfg = host_files::config(l, env.any_port);
+    auto mine = desk_users(desks, known::load(store), limited,
+                           cfg ? cfg->roots : std::vector<serve::root_config>{}, desk_removed);
+    for (auto& u : mine) {
+      desk_names.push_back(u.name);
+      const auto* d = [&]() -> const ds::desk* {
+        for (const auto& x : desks) {
+          if (x.account == u.name) return &x;
+        }
+        return nullptr;
+      }();
+      if (d && (d->password.empty() || d->applied == 0)) {
+        // Made (or made again) with the password the service will hand that computer. An
+        // account already made keeps its own: a role or folder change sends none.
+        host_smb::password_for p;
+        p.user = u.name;
+        p.password = d->password.empty() ? ds::new_password() : d->password;
+        passwords.push_back(std::move(p));
+      }
+      users.push_back(std::move(u));
+    }
+  }
+  // The passwords as given to the step, by account, kept to be saved once it made the account.
+  std::vector<host_smb::password_for> desk_passwords;
+  for (const auto& p : passwords) {
+    if (std::find(desk_names.begin(), desk_names.end(), p.user) != desk_names.end()) desk_passwords.push_back({p.user, p.password});
+  }
   const auto folders = lan_folders(l, env.any_port);
   if (folders.empty() && !users.empty()) {
     env.say("driftwire host: no folder is shared yet (driftwire host share PATH); the users are kept for when one is.");
     return 0;
   }
-  host_smb::request r = host_smb::plan(users, folders, passwords, removed);
+  host_smb::request r = host_smb::plan(users, folders, passwords, desk_removed);
   if (r.empty()) {
     env.say("Nothing to change.");
     return 0;
@@ -326,6 +394,33 @@ int apply_now(const host_layout& l, secrets::store& store, users_env& env, std::
       }
     }
     (void)su::save(store, now_list);
+    // The computers' accounts: what the step made them, and the passwords their sessions get.
+    std::vector<ds::desk> now_desks;
+    if (ds::load(store, now_desks)) {
+      for (const auto& it : answer->users) {
+        if (!it.ok) continue;
+        for (auto& d : now_desks) {
+          if (d.account != it.name || d.gone) continue;
+          for (const auto& p : desk_passwords) {
+            if (p.user == d.account) d.password = p.password;
+          }
+          for (const auto& u : r.users) {
+            if (u.name != d.account) continue;
+            d.role = u.r == su::role::change ? "change" : "view";
+          }
+          for (const auto& u : users) {
+            if (u.name == d.account) d.folders = u.folders;
+          }
+          d.applied = t;
+        }
+      }
+      // Gone ones whose account the step took away (or never had): dropped.
+      std::erase_if(now_desks, [&](const ds::desk& d) {
+        if (!d.gone) return false;
+        return std::find(r.remove.begin(), r.remove.end(), d.account) != r.remove.end() && answer->ok;
+      });
+      (void)ds::save(store, now_desks);
+    }
   }
   share_state st;
   st.computer = answer->computer;

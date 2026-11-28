@@ -682,6 +682,8 @@ void link::refresh(bool phones_only) {
           r.guest = v.boolean("guest").value_or(false);
           r.scoped = v.boolean("scoped").value_or(false);
           r.backup = v.boolean("backup").value_or(!r.guest);
+          r.desktop = v.boolean("desktop").value_or(false);
+          if (const std::string* sh = v.str("share")) r.share = *sh;
           rows.push_back(std::move(r));
         }
       }
@@ -1091,6 +1093,7 @@ void link::run(const std::string& request) {
   }
   if (what == "users_apply") {
     users_apply({});
+    refresh();  // the computers' share accounts it made (self-host-users-smb.md §12)
     return;
   }
   if (what == "host_drives" || what == "host_drives_choices" || what == "host_drives_combine" ||
@@ -1421,6 +1424,13 @@ void link::run(const std::string& request) {
     w.end_object();
     const char* verb = what == "add_folder" ? "add_root" : what == "remove_folder" ? "remove_root" : "set_backup";
     if (auto r = route(verb, w.str()); !r) return fail_status(r.error());
+    refresh();
+    return;
+  }
+  if (what == "rename") {
+    json::writer w;
+    w.begin_object().key("key").string(text("key")).key("name").string(text("name")).end_object();
+    if (auto r = route("rename", w.str()); !r) return fail_status(r.error());
     refresh();
     return;
   }
@@ -1987,6 +1997,7 @@ std::string link::state_json() const {
     w.key("limited").boolean(d.limited).key("expires").integer(d.expires).key("expired").boolean(d.expired);
     w.key("guest").boolean(d.guest).key("scoped").boolean(d.scoped);
     w.key("backup").boolean(d.backup);
+    if (d.desktop) w.key("desktop").boolean(true).key("share").string(d.share);
     w.end_object();
   }
   w.end_array();

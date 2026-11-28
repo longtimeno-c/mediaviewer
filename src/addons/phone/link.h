@@ -149,6 +149,8 @@ class link {
     bool limited = false, expired = false, guest = false, scoped = false;
     std::int64_t expires = 0;
     bool backup = true;  // may back up to the backup folders (docs/plans/mobile.md §10b.1, B2)
+    bool desktop = false;  // a computer: its own share account (self-host-users-smb.md §12)
+    std::string share = {};  // "ready", "waiting" or ""
   };
   struct folder_row {
     std::string id, label, path;

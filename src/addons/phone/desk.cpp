@@ -654,6 +654,8 @@ result<std::vector<device_row>> desk::refresh_devices() {
     device_row r;
     r.name = *name;
     r.key = *parsed;
+    r.desktop = v.boolean("desktop").value_or(false);
+    if (const std::string* sh = v.str("share")) r.share = *sh;
     rows.push_back(std::move(r));
   }
   // The timed and scoped phones (§5), from a NAS that has them: `devices`
@@ -678,6 +680,8 @@ result<std::vector<device_row>> desk::refresh_devices() {
       r.guest = v.boolean("guest").value_or(false);
       // A service from before backup says nothing: a guest has it off, anyone else on.
       r.backup = v.boolean("backup").value_or(!r.guest);
+      r.desktop = v.boolean("desktop").value_or(false);
+      if (const std::string* sh = v.str("share")) r.share = *sh;
       if (const json::value* roots = v.find("roots"); roots && roots->k == json::kind::array) {
         r.scoped = true;
         std::vector<std::string> ids;
@@ -945,6 +949,16 @@ expected desk::set_phone_backup(const key32& key, bool on) {
   return {};
 }
 
+expected desk::rename(const key32& key, const std::string& name) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("rename").key("key").string(key_hex(key)).key("name").string(name).end_object();
+  MV_TRY(const std::string done, st_->ask(w.str()));
+  (void)done;
+  return {};
+}
+
 std::string desk::last_refusal() {
   std::lock_guard lock(st_->m);
   return st_->refusal;
@@ -1052,6 +1066,7 @@ std::string devices_json(const std::vector<device_row>& rows, bool reachable, bo
       w.key("guest").boolean(r.guest).key("scoped").boolean(r.scoped);
     }
     w.key("backup").boolean(r.backup);
+    if (r.desktop) w.key("desktop").boolean(true).key("share").string(r.share);
     w.end_object();
   }
   w.end_array().end_object();
@@ -1233,6 +1248,12 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     const auto key = parse_key_hex(text("key"));
     if (!key) return err(status::invalid_arg);
     MV_TRY_VOID(d.grant(*key, doc->integer("for_s").value_or(0)));
+    return std::string("{}");
+  }
+  if (method == "rename") {
+    const auto key = parse_key_hex(text("key"));
+    if (!key || text("name").empty()) return err(status::invalid_arg);
+    MV_TRY_VOID(d.rename(*key, text("name")));
     return std::string("{}");
   }
   if (method == "phone_backup") {

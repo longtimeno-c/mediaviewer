@@ -16567,6 +16567,10 @@ class remote_clip_source final : public mv::player::byte_source {
       in.already = mv::shell::lan_share_mac::mounted_now();
       plan = ls::plan_mounts(in);
     }
+    // This Mac's own account on the server (self-host-users-smb.md §12), when it gave one at home:
+    // no sign-in at all. Otherwise the Keychain's, or (asked) macOS's own dialog.
+    auto login = std::make_shared<std::pair<std::string, std::string>>();
+    if (!plan.urls.empty()) (void)lib->share_login(serverId, login->first, login->second);
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* s = weakSelf;
       if (!s) return;
@@ -16576,7 +16580,10 @@ class remote_clip_source final : public mv::player::byte_source {
         if (asked && !words.empty()) [s noticeShow:words];
         return;
       }
-      mv::shell::lan_share_mac::mount(plan.urls, asked == YES, [weakSelf, serverId, name](ls::outcome o) {
+      std::string user = std::move(login->first);
+      std::string password = std::move(login->second);
+      mv::shell::lan_share_mac::mount(plan.urls, asked == YES, std::move(user), std::move(password),
+                                      [weakSelf, serverId, name](ls::outcome o) {
         MvLabApp* t = weakSelf;
         if (!t) return;
         t->_lanShareBusy.erase(serverId);

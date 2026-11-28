@@ -23,6 +23,7 @@
 #include "wire/admission.h"
 #include "wire/splice.h"
 #include "wire/channel.h"
+#include "wire/device_shares.h"
 #include "wire/grants.h"
 #include "wire/known.h"
 #include "wire/net.h"
@@ -300,6 +301,15 @@ struct server::state {
   enum class redeemed { paired, bad_code_live, refused };
   [[nodiscard]] redeemed redeem(channel& ch, const std::array<std::uint8_t, 32>& peer, const message& m, bool live);
   [[nodiscard]] std::pair<end_code, std::string> admin(conn& c, std::string_view request);
+
+  // ---- each paired computer's share account (self-host-users-smb.md §12) ----
+  // What its pairing lets it do, in the share's words: "view" or "change", and the labels of
+  // its folders (nullopt: all).
+  [[nodiscard]] device_shares::want want_of(const device_access& acc) const;
+  // A computer paired (listed for an account) or unpaired (its account marked to go).
+  void note_desk(const std::array<std::uint8_t, 32>& key, bool paired);
+  // "ready", "waiting" (the elevated step must run), or "" for a phone.
+  [[nodiscard]] std::string desk_word(const std::array<std::uint8_t, 32>& key, const device_access& acc);
 
   // ---- the owner's passphrase (owner_pass.h) ----
   std::function<std::int64_t()> now_unix;
@@ -1909,6 +1919,24 @@ void server::state::session(conn& c, std::optional<message> first_message) {
     const std::string r = w.take();
     extra += (extra.empty() ? "" : ",") + r.substr(1, r.size() - 2);
   }
+  if (!c.is_owner && c.via == server::usage_via::home) {
+    // A computer at home is given its own share login (§12), once the step made its account as
+    // its pairing says now: inside this encrypted session, to this device alone, never logged.
+    std::vector<device_shares::desk> desks;
+    if (device_shares::load(*store, desks)) {
+      if (const auto* d = device_shares::find(desks, c.device); d && !d->gone) {
+        const auto w_now = want_of(access_of(c.device, false));
+        if (!device_shares::waiting(*d, w_now.role, w_now.folders)) {
+          json::writer w;
+          w.begin_object().key(kCapsShare).begin_object().key("user").string(d->account).key("password").string(d->password);
+          w.end_object().end_object();
+          std::string sh = w.take();
+          extra += (extra.empty() ? "" : ",") + sh.substr(1, sh.size() - 2);
+          sodium_memzero(sh.data(), sh.size());
+        }
+      }
+    }
+  }
   if (storage) {
     // Every session's, the owner's and a limited phone's alike: the health of the server's drives.
     if (const std::string word = storage(); is_storage_word(word)) {
@@ -2435,6 +2463,29 @@ std::optional<std::pair<end_code, std::string>> server::state::needs_unlock(conn
   return refusal_json("needs-unlock");
 }
 
+device_shares::want server::state::want_of(const device_access& acc) const {
+  return device_shares::want_of(acc.a == access::full ? nullptr : (acc.g ? &*acc.g : nullptr), cfg()->roots);
+}
+
+void server::state::note_desk(const std::array<std::uint8_t, 32>& key, bool paired) {
+  std::lock_guard lock(devices_m);
+  std::unique_ptr<net::instance_lock> held;
+  if (!may_change_devices(held)) return;
+  std::vector<device_shares::desk> list;
+  if (!device_shares::load(*store, list)) return;  // unreadable: never replaced
+  const bool changed = paired ? device_shares::add(list, key) : device_shares::remove(list, key);
+  if (changed) (void)device_shares::save(*store, list);
+}
+
+std::string server::state::desk_word(const std::array<std::uint8_t, 32>& key, const device_access& acc) {
+  std::vector<device_shares::desk> list;
+  if (!device_shares::load(*store, list)) return {};
+  const auto* d = device_shares::find(list, key);
+  if (!d || d->gone) return {};
+  const auto w = want_of(acc);
+  return device_shares::waiting(*d, w.role, w.folders) ? "waiting" : "ready";
+}
+
 std::string server::state::owner_fields() {
   owner::verifier v;
   const auto s = owner::load(*store, v);
@@ -2802,6 +2853,8 @@ server::state::redeemed server::state::redeem(channel& ch, const std::array<std:
     (void)ch.cancel(kCancelWaitMs, full ? "too-many" : "error");
     return redeemed::refused;
   }
+  // A computer is its own user of the LAN share (§12): its account waits for the elevated step.
+  if (p->kind == kDeviceDesktop) note_desk(peer, true);
   n_paired.fetch_add(1);
   return ch.send(msg::serve_paired, std::string_view("{}")).has_value() ? redeemed::paired : redeemed::refused;
 }
@@ -2958,10 +3011,37 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
     json::writer w;
     w.begin_object().key("code_waiting").boolean(waiting).key("devices").begin_array();
     for (const auto& d : known::load(*store)) {
-      w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key)).end_object();
+      w.begin_object().key("name").string(d.name).key("key").string(key_hex(d.key));
+      device_access acc;
+      acc.a = access::full;
+      if (const std::string share = desk_word(d.key, acc); !share.empty()) {
+        w.key("desktop").boolean(true).key("share").string(share);
+      }
+      w.end_object();
     }
     w.end_array().end_object();
     return {end_code::ok, w.take()};
+  }
+  if (*what == "rename") {
+    // {"key","name"}: a device's nickname on this server's lists. It adds no access: no unlock.
+    const auto key = device_key();
+    std::string name = text("name");
+    while (!name.empty() && (name.back() == ' ' || name.front() == ' ')) {
+      if (name.back() == ' ') name.pop_back();
+      else name.erase(name.begin());
+    }
+    if (!key || name.empty() || name.size() > known::kMaxName ||
+        std::any_of(name.begin(), name.end(), [](char ch) { return static_cast<unsigned char>(ch) < 0x20; })) {
+      return {end_code::bad_request, {}};
+    }
+    const auto acc = access_of(*key);
+    if (acc.a == access::none) return {end_code::not_found, {}};
+    if (acc.a == access::unreadable) return {end_code::error, {}};
+    bool full = false;
+    if (!set_access(name, *key, acc.a == access::full ? std::nullopt : acc.g, full)) {
+      return {full ? end_code::too_many : end_code::error, {}};
+    }
+    return {end_code::ok, "{}"};
   }
   if (*what == "add_device") {
     const auto key = device_key();
@@ -2986,6 +3066,11 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       if (devices.size() + limited.size() == before) return {end_code::not_found, {}};
       if (!grants::save(*store, limited)) return {end_code::error, {}};
       if (!known::save(*store, devices) || known::load(*store).size() != devices.size()) return {end_code::error, {}};
+      // A computer's share account goes too, at the next elevated step (§12).
+      std::vector<device_shares::desk> desks;
+      if (device_shares::load(*store, desks) && device_shares::remove(desks, *key)) {
+        (void)device_shares::save(*store, desks);
+      }
     }
     cut_unpaired();
     return {end_code::ok, "{}"};
@@ -3008,6 +3093,12 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         w.key("roots").begin_array();
         for (const auto& r : *g.roots) w.string(r);
         w.end_array();
+      }
+      device_access acc;
+      acc.a = access::live;
+      acc.g = g;
+      if (const std::string share = desk_word(g.key, acc); !share.empty()) {
+        w.key("desktop").boolean(true).key("share").string(share);
       }
       w.end_object();
     }
