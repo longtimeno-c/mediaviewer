@@ -996,6 +996,70 @@ TEST_CASE("vpn: Connect to a VPN host takes a server's code in one step", "[vpn]
   CHECK(again.snapshot().server == line);
 }
 
+TEST_CASE("vpn: a VPN code pasted in the server field is taken as Connect takes it", "[vpn][nas-vpn]") {
+  scratch_dir dir("vpn_code_in_server");
+  const std::string line = "home.duckdns.org:47615#" + std::string(kKey);
+  fs::create_directories(dir / "secrets");
+  vpn_test::fake_host host;
+  vpn::service::options o;
+  o.prefs_path = utf8(dir / vpn::kPrefsFile);
+  o.data_dir = utf8(dir.root());
+  o.offline = true;
+  o.make_secrets = [&] { return sp::secrets::file_store(utf8(dir / "secrets")); };
+  vpn::service eng(host, o);
+  // Connect with nothing pasted (the click came without the field's text): said so.
+  eng.on_event("connect_open", 1, "");
+  eng.on_event("connect_go", 1, "");
+  CHECK(eng.snapshot().connect_note.find("Paste the VPN code") != std::string::npos);
+  CHECK(eng.snapshot().server.empty());
+  // The code in the server field: the relay line, not "mediaviewer://relay#..." as an address.
+  eng.on_event("server", 3, "\" " + serve::relay_connect_code(line) + "\"");
+  auto v = eng.snapshot();
+  CHECK(v.server == line);
+  CHECK(v.server_shown == "home.duckdns.org:47615");
+  CHECK(v.tunnel);
+  CHECK_FALSE(v.server_editing);
+  // The web-site look's code, the same way, with Done: the look on at the code's port.
+  if (mv::driftwire::tls::available()) {
+    eng.on_event("server_change", 1, "");
+    eng.on_event("server", 2, "\"" + serve::relay_connect_code(line, true) + "\"");
+    eng.on_event("server_done", 1, "");
+    v = eng.snapshot();
+    CHECK(v.server == line);
+    CHECK(v.tls);
+  }
+  // A broken code is refused, the server kept.
+  eng.on_event("server_change", 1, "");
+  eng.on_event("server", 3, "\"mediaviewer://relay-tls#home.duckdns.org:47615\"");
+  CHECK(eng.snapshot().server == line);
+  CHECK(eng.snapshot().connect_note.find("isn't a VPN code") != std::string::npos);
+  eng.settle();
+}
+
+TEST_CASE("vpn: a code saved whole as the server is mended at the next start", "[vpn][nas-vpn]") {
+  // An earlier build kept "mediaviewer://relay-tls#host:port" in the file, its key in the store.
+  scratch_dir dir("vpn_saved_code");
+  fs::create_directories(dir / "secrets");
+  auto store = sp::secrets::file_store(utf8(dir / "secrets"));
+  const std::string key(kKey);
+  REQUIRE(store->put(vpn::kServerKeyName,
+                     std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(key.data()), key.size())));
+  vpn_test::fake_host host;
+  vpn::service::options o;
+  o.prefs_path = utf8(dir / vpn::kPrefsFile);
+  o.data_dir = utf8(dir.root());
+  o.offline = true;
+  o.make_secrets = [&] { return sp::secrets::file_store(utf8(dir / "secrets")); };
+  vpn::prefs p;
+  p.server = "mediaviewer://relay-tls#ronan.duckdns.org:47615";
+  o.initial = p;
+  vpn::service eng(host, o);
+  const auto v = eng.snapshot();
+  CHECK(v.server == "ronan.duckdns.org:47615#" + key);
+  CHECK(v.server_shown == "ronan.duckdns.org:47615");
+  CHECK(v.tls == mv::driftwire::tls::available());
+}
+
 // ---- the Tunnel: forwarding on the relay server (docs/plans/driftwire-menu-and-tunnel.md) ----
 
 namespace {

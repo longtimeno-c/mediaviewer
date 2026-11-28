@@ -69,4 +69,11 @@ final class PhoneAccessTests: XCTestCase {
     XCTAssertTrue(text.contains("SecureField("))
     XCTAssertTrue(text.contains(#"!focused && !node.bool("secure")"#))
   }
+
+  // A code pasted in a secure field reaches the add-on when a button is clicked, focus or not
+  // (VPN's Connect saw an empty code: macOS left `focused` false for the SecureField).
+  func testASecureFieldsTypingGoesWithTheClick() throws {
+    let text = try source("ScreenView.swift")
+    XCTAssertTrue(text.contains(#"if focused || node.bool("secure") { SlotStore.shared.noteTyping("#))
+  }
 }

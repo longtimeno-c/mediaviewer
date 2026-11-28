@@ -1247,9 +1247,11 @@ private struct TextFieldNode: View {
     }
     .accessibilityLabel(node.label)
     .onAppear { text = node.string("value") ?? "" }
-    // Typed and not sent yet: a button's click sends it first (SlotStore.noteTyping).
+    // Typed and not sent yet: a button's click sends it first (SlotStore.noteTyping). A secure
+    // field's text is only ever the person's (the tree never fills it), and macOS can leave
+    // `focused` false for a SecureField: a code pasted there and Connect clicked arrived empty.
     .onChange(of: text) { _, now in
-      if focused { SlotStore.shared.noteTyping(address, node: node.id, text: now) }
+      if focused || node.bool("secure") { SlotStore.shared.noteTyping(address, node: node.id, text: now) }
     }
     .onChange(of: revision) { _, _ in if !focused && !node.bool("secure") { text = node.string("value") ?? "" } }
   }

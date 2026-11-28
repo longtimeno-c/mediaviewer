@@ -155,6 +155,9 @@ class service {
   void save_now();
   void post();
   void post_throttled();
+  // A VPN code (Connect, or pasted in the server field): the server it names, the Tunnel on,
+  // the look as it says; or a note saying what is wrong with it. Wipes `code`.
+  void take_code(std::string code);
   void sync_tunnel();
   // The control thread: what the system proxy should point at (port 0: at
   // nothing of ours), handed to the proxy thread, the latest wins.
