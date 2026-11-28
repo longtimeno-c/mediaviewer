@@ -1348,6 +1348,7 @@ void link::run(const std::string& request) {
     {
       std::lock_guard lock(m_);
       p.relay = v_.relay;  // the phone tries it after the direct addresses
+      p.lock = v_.nas_phone_lock;  // the phone asks for Face ID or its passcode before it pairs
     }
     const std::string url = catalog::pair_url(p);
     refresh();  // who is paired before this code
@@ -1368,6 +1369,7 @@ void link::run(const std::string& request) {
     }
     v_.qr_expires = p.expires;
     v_.qr_for_s = for_s;
+    v_.qr_lock = p.lock;
     // A new code is the one on the service now: nothing left from before to withdraw.
     if (v_.code_left) {
       v_.code_left = false;
@@ -2013,6 +2015,7 @@ std::string link::state_json() const {
   }
   w.key("locked_until").integer(v_.locked_until);
   w.key("qr_for_s").integer(v_.qr_for_s);
+  w.key("qr_lock").boolean(v_.qr_lock);
   w.key("folders").begin_array();
   for (const auto& f : v_.folders) {
     w.begin_object().key("id").string(f.id).key("label").string(f.label).key("path").string(f.path);

@@ -305,7 +305,8 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       guard status == 0 else { throw PairingFailure.codeNotReadable }
       return LibraryIdentity(name: linkString(info.library_name), fingerprint: linkString(info.fingerprint),
                              isSample: info.sample != 0,
-                             guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil)
+                             guestFor: info.grant_for_s > 0 ? TimeInterval(info.grant_for_s) : nil,
+                             lockRequired: info.lock_required != 0)
     }
   }
 
@@ -376,11 +377,15 @@ public final class LinkConnection: ConnectionService, CatalogueSync, @unchecked 
       await removeLibrary(keepingDeviceKey: true)
     }
 
-    let record = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
-                               fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
-                               local: linkString(parsed.local), publicName: linkString(parsed.public_name),
-                               identity: linkBytes(parsed.identity).hexString, accessKey: linkBytes(parsed.access_key).hexString,
-                               deviceName: deviceName, relay: linkString(parsed.relay))
+    var made = PairingRecord(libraryID: linkString(parsed.library_id), libraryName: linkString(parsed.library_name),
+                             fingerprint: linkString(parsed.fingerprint), publisherKey: linkBytes(parsed.publisher_key).hexString,
+                             local: linkString(parsed.local), publicName: linkString(parsed.public_name),
+                             identity: linkBytes(parsed.identity).hexString, accessKey: linkBytes(parsed.access_key).hexString,
+                             deviceName: deviceName, relay: linkString(parsed.relay))
+    // The owner's lock, as the code said (the person passed the check before pairing); the caps
+    // say it again at each connect.
+    if parsed.lock_required != 0 { made.lockRequired = true }
+    let record = made
     let handle: LinkHandle = try await onLinkQueue {
       guard record.save() else { throw PairingFailure.codeNotReadable }
       LinkFolders.prepare()  // again: a Forget removed them, with their backup exclusion

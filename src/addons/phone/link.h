@@ -204,6 +204,7 @@ class link {
     // time left from now, not the snapshot (state_json).
     std::chrono::steady_clock::time_point unlocked_until{};
     std::int64_t qr_for_s = 0;  // the code showing is a guest code for this long
+    bool qr_lock = false;       // the code showing asks the phone to lock the app
     // This computer as the server: what the host's files said when last read,
     // the step a setup is at ("share", "name", "start", "claim"; "" when
     // none runs) and what the program said when a step failed (its own words).

@@ -70,6 +70,9 @@ typedef struct mv_pair_info {
   /* The person's own relay, "host:port", tried after the direct routes; empty for none (an older
    * code). Keep it with the pairing and pass it to mv_link_config.relay. */
   char relay[256];
+  /* 1: the library's owner requires the app locked with Face ID or the passcode (12): ask for it
+   * before pairing. The caps say it again at every connect (mv_link_lock_required). */
+  int32_t lock_required;
 } mv_pair_info;
 
 typedef struct mv_route_failure {

@@ -350,6 +350,7 @@ int32_t mv_pair_parse(const char* text, int64_t now_unix, mv_pair_info* out) {
     out->grant_scoped = p->grant_scoped ? 1 : 0;
     put(out->fingerprint, p->fingerprint);
     put(out->relay, p->relay);
+    out->lock_required = p->lock_required ? 1 : 0;
     if (!is_sample && p->expires <= now_unix) return MV_LINK_EXPIRED;
     return MV_LINK_OK;
   });

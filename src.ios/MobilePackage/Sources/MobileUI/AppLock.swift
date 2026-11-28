@@ -62,6 +62,12 @@ enum LockCopy {
   static let requiredNoPasscode =
     "The owner of this library requires a passcode on this iPhone. Set one in the Settings app, then try again."
   static let turnOnReason = "Turn on the lock for MediaViewer."
+  static let pairReason = "This library's owner requires the lock."
+  static func pairing(_ kind: OwnerCheckKind?) -> String {
+    guard let kind else { return requiredNoPasscode }
+    let check = kind == .passcode ? "your passcode" : kind.name
+    return "The owner of this library requires \(check) on this iPhone. You'll be asked for it now, and each time you open MediaViewer."
+  }
   static let unlockReason = "Unlock MediaViewer."
   static let locked = "MediaViewer is locked"
   static let tryAgain = "Try again"
@@ -136,6 +142,16 @@ public final class AppLock {
     isChosen = true
     defaults.set(true, forKey: Self.key)
     return true
+  }
+
+  /// Pairing with a library whose owner requires the lock: the check first, so the person knows
+  /// what opening it will take. Nothing changes here; the pairing brings the owner's word.
+  public func checkBeforePairing() async -> Bool {
+    guard !isChecking, owner.kind() != nil else { return false }
+    isChecking = true
+    let passed = await owner.check(reason: LockCopy.pairReason)
+    isChecking = false
+    return passed
   }
 
   /// The person's own lock off. Settings is reached only unlocked; one the owner requires stays.

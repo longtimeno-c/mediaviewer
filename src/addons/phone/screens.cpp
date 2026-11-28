@@ -106,6 +106,7 @@ struct view {
   std::vector<folder_row> folders;
   std::string qr, qr_library, qr_fingerprint;
   std::int64_t qr_expires = 0, qr_for_s = 0;
+  bool qr_lock = false;
   std::vector<std::string> added;
   bool other_publisher = false, mismatch = false;
   std::string other_fingerprint, asking_name, asking_key, asking_fingerprint;
@@ -219,6 +220,7 @@ view parse(std::string_view text) {
   s.qr_fingerprint = s_of(o, "qr_fingerprint");
   s.qr_expires = i_of(o, "qr_expires");
   s.qr_for_s = i_of(o, "qr_for_s");
+  s.qr_lock = b_of(o, "qr_lock");
   s.added = strings_of(o, "added");
   s.other_publisher = b_of(o, "other_publisher");
   s.mismatch = b_of(o, "mismatch");
@@ -1462,6 +1464,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     if (s.qr_for_s > 0) {
       text(w, "code_guest", "Guest code \xC2\xB7 access for " + duration_text(s.qr_for_s) + " from when it is scanned", "body");
     }
+    if (s.qr_lock) text(w, "code_lock", "The phone will ask for Face ID or its passcode before it pairs, and each time MediaViewer is opened.", "secondary");
     text(w, "code_check", "Your phone will show " + s.qr_library + " and this code. Check they match before you confirm.",
          "secondary");
     copyable(w, "code_fingerprint", s.qr_fingerprint, "mono", "Check code " + s.qr_fingerprint);

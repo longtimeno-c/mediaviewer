@@ -183,6 +183,24 @@ final class AppLockTests: XCTestCase {
     XCTAssertFalse(makeLock(FakeOwner()).isOn)
   }
 
+  /// Pairing with a library whose owner requires it: the check comes first, and changes nothing.
+  func testTheCheckBeforePairingAsksAndKeepsNothing() async {
+    let owner = FakeOwner(passes: false)
+    let lock = makeLock(owner, hasLibrary: false)
+    let refused = await lock.checkBeforePairing()
+    XCTAssertFalse(refused)
+    owner.passes = true
+    let passed = await lock.checkBeforePairing()
+    XCTAssertTrue(passed)
+    XCTAssertEqual(owner.reasons, [LockCopy.pairReason, LockCopy.pairReason])
+    XCTAssertFalse(lock.isOn, "The pairing brings the owner's word, not the check.")
+    XCTAssertFalse(makeLock(FakeOwner()).isChosen)
+    let noPasscode = FakeOwner(kind: nil)
+    let cannot = await makeLock(noPasscode, hasLibrary: false).checkBeforePairing()
+    XCTAssertFalse(cannot)
+    XCTAssertTrue(noPasscode.reasons.isEmpty)
+  }
+
   func testWithNoLibraryTheOwnersWordIsIgnored() {
     XCTAssertFalse(makeLock(FakeOwner(), hasLibrary: false, required: true).isOn)
   }
@@ -218,6 +236,9 @@ final class AppLockTests: XCTestCase {
     XCTAssertEqual(LockCopy.unlock(nil), "Unlock")
     XCTAssertTrue(LockCopy.required.contains("owner"))
     XCTAssertTrue(LockCopy.requiredNoPasscode.contains("passcode"))
+    XCTAssertTrue(LockCopy.pairing(.faceID).contains("requires Face ID"))
+    XCTAssertTrue(LockCopy.pairing(.passcode).contains("requires your passcode"))
+    XCTAssertEqual(LockCopy.pairing(nil), LockCopy.requiredNoPasscode)
   }
 }
 

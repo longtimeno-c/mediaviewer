@@ -387,6 +387,9 @@ struct ConnectScreen: View {
   @State private var attempt = 0
   /// The sample library would replace the library on this phone: asked before anything changes.
   @State private var confirmingReplace: String?
+  /// What locks this phone, for a library whose owner requires the lock; read again on coming
+  /// back, as a passcode may have been set in the Settings app meanwhile.
+  @State private var lockKind: OwnerCheckKind?
 
   var body: some View {
     SetupPage {
@@ -415,6 +418,10 @@ struct ConnectScreen: View {
     .task(id: attempt) {
       if attempt > 0, let confirmed { await pair(confirmed) } else { await begin() }
     }
+    .onAppear { lockKind = model.lock.kind() }
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+      lockKind = model.lock.kind()
+    }
   }
 
   // §7.4: the phone shows the library's name and a short key fingerprint, the desktop shows the same.
@@ -441,6 +448,14 @@ struct ConnectScreen: View {
           .accessibilityLabel(identity.fingerprint.map(String.init).joined(separator: " "))
         if let guestFor = identity.guestFor {
           Text(FailureCopy.guestAccess(for: guestFor))
+            .font(.subheadline)
+            .foregroundStyle(Theme.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 4)
+        }
+        // docs/plans/mobile.md §12: the owner's lock is asked for now, before pairing.
+        if identity.lockRequired {
+          Label(LockCopy.pairing(lockKind), systemImage: "lock.fill")
             .font(.subheadline)
             .foregroundStyle(Theme.body)
             .fixedSize(horizontal: false, vertical: true)
@@ -569,11 +584,12 @@ struct ConnectScreen: View {
     case (.check(let identity), _):
       VStack(spacing: 8) {
         Button("They match") {
-          confirmed = identity
-          phase = .pairing
-          attempt += 1
+          guard identity.lockRequired else { return startPairing(identity) }
+          Task { if await model.lock.checkBeforePairing() { startPairing(identity) } }
         }
         .buttonStyle(PrimaryButtonStyle())
+        // A phone with no passcode cannot give the lock the owner requires.
+        .disabled(identity.lockRequired && (lockKind == nil || model.lock.isChecking))
         Button("They don't match") { phase = .notMatched }
           .buttonStyle(SecondaryButtonStyle())
       }
@@ -606,6 +622,12 @@ struct ConnectScreen: View {
     if model.connection.hasLibrary {
       Button("Back to library") { model.returnToLibrary() }.buttonStyle(QuietButtonStyle())
     }
+  }
+
+  private func startPairing(_ identity: LibraryIdentity) {
+    confirmed = identity
+    phase = .pairing
+    attempt += 1
   }
 
   private func openSample() {

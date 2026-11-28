@@ -440,12 +440,17 @@ public struct LibraryIdentity: Hashable, Sendable {
   /// A guest code (docs/plans/nas-owner-and-guests.md §8.2): how long access lasts from pairing,
   /// as the code says. nil for an ordinary code. The NAS holds the real limit.
   public let guestFor: TimeInterval?
+  /// The library's owner requires the app locked (docs/plans/mobile.md §12): the phone asks for
+  /// Face ID or its passcode before it pairs, and locks from the first launch.
+  public let lockRequired: Bool
 
-  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil) {
+  public init(name: String, fingerprint: String, isSample: Bool = false, guestFor: TimeInterval? = nil,
+              lockRequired: Bool = false) {
     self.name = name
     self.fingerprint = fingerprint
     self.isSample = isSample
     self.guestFor = guestFor
+    self.lockRequired = lockRequired
   }
 }
 

@@ -1155,6 +1155,20 @@ TEST_CASE("phone access: the owner can require phones to lock the app", "[phone-
   CHECK(on.find(R"("id":"phone_lock","label":"Phones must lock MediaViewer","value":true)") != std::string::npos);
   CHECK(on.find("Turning it off needs the server passphrase") != std::string::npos);
 
+  // A code made while it is on says the phone will ask before it pairs; one made without, nothing.
+  const auto code_tree = [](bool lock) {
+    std::string state = kClaimed;
+    if (lock) state.insert(state.size() - 1, R"(,"qr_lock":true)");
+    screen c(mv::phone::card::computer::mac);
+    const std::string tree = c.build(state, kNow);
+    require_valid(tree);
+    return tree;
+  };
+  const char* asks = "ask for Face ID or its passcode before it pairs";
+  REQUIRE(code_tree(false).find("1234 5678") != std::string::npos);  // the code is showing
+  CHECK(code_tree(false).find(asks) == std::string::npos);
+  CHECK(code_tree(true).find(asks) != std::string::npos);
+
   screen c(mv::phone::card::computer::pc);
   (void)c.build(R"({"folder":"/x","claimed":true,"nas_features":["phone_lock"]})", kNow);
   const auto asked = c.on_event("phone_lock", kChange, "true", kNow);
