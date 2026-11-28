@@ -9,8 +9,8 @@ frame pacing. CI compiles WinUI and SwiftUI independently of the full native bui
 - Open Settings with Ctrl+, (Cmd+, on macOS), at a normal window size and at the
   smallest supported size. General shows labelled groups and right-aligned
   switches. Descriptions wrap; the page scrolls without moving the header or Done.
-- Toggle both filmstrip preferences, wrap and keep pan/zoom; change sort, direction
-  and background. Close/reopen Settings and restart the app: values persist and
+- Toggle both filmstrip preferences, wrap and keep pan/zoom; change sort and
+  direction. Close/reopen Settings and restart the app: values persist and
   the viewer/menu agree. No setting changes merely by switching tabs.
 - Tab/Shift+Tab through General and Keyboard shortcuts. Controls have readable
   accessibility names. Space activates a focused switch. Done closes Settings.

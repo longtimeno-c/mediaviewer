@@ -939,8 +939,8 @@ code…** asks `vpn on` again and shows the line it printed (`self_host::relay_l
 (below), until Hide, the VPN going off or Settings closing; it is asked once more when the relay came
 back on another port than the one printed. Once the library is claimed, this row (or, when a NAS is the server, the NAS's row below) sits in
 the card's **Away from home** section. The card's tree is the add-on's own, so the Mac and Windows chromes draw the
-row with no code of their own. **Phones do not use it yet**: the iPhone app has no VPN
-([phone-vpn plan](../plans/phone-vpn.md), not built), and the pairing code carries no relay route for a
+row with no code of their own. Phones have their own: the iPhone app's built-in VPN
+([phone-vpn plan](../plans/phone-vpn.md)). The pairing code carries no relay route for a
 host (its relay is behind the same router), so a phone reaches the library as before.
 
 ### The NAS as a VPN host (2026-11-15)
