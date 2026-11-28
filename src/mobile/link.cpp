@@ -619,19 +619,19 @@ bool link_session::wants_udp_locked() const {
 bool link_session::try_udp() {
   std::shared_ptr<serve::client> c;
   std::string address;
-  std::uint16_t udp_port = 0;
   {
     std::lock_guard lock(m_);
     if (!wants_udp_locked()) return false;
     c = live_;
     udp_tried_ = live_;
     address = last_report_.address;
-    udp_port = live_->caps().udp;
   }
-  // Where the TCP session went: that address, at the port the caps gave.
+  // Where the TCP session went, the same address and port over UDP: the service listens on its TCP
+  // port's number (caps' "udp" says it does), and through a router the outside port is the one the
+  // host's router keeper forwards for UDP too (host_ports' port_wanted::udp), whatever the inside one.
   std::string host;
-  std::uint16_t tcp_port = 0;
-  if (!split_host_port(address, host, tcp_port)) return false;
+  std::uint16_t udp_port = 0;
+  if (!split_host_port(address, host, udp_port)) return false;
   std::vector<dw::net::endpoint> to;
   if (const auto literal = dw::net::parse_address(host)) {
     to.push_back({dw::net::address_text(*literal), udp_port});

@@ -606,11 +606,11 @@ number; `udp_hub::on_open` hands it each stream a stranger opens (the first data
 id), and the stream goes through the same `admit()` limits and handshake as an accepted TCP link
 (`counters::udp` counts them). Every paired session's caps say `"udp":<port>`. The phone connects
 over TCP as before; on a direct route (not relayed, not punched) whose caps name a UDP port,
-`link_session`'s upgrade thread opens one UDP stream to the same address, runs the handshake and
+`link_session`'s upgrade thread opens one UDP stream to the same address and port (through a router,
+the outside port, which the host's router keeper forwards for UDP too), runs the handshake and
 swaps it in as the live client (reads on the TCP one finish there; `route_report::udp`). One try per
 TCP client; a UDP client lost within 2 min leaves the next ones on TCP for 10 min (a network that
-lets the handshake through, then drops UDP). A UDP session opens no lanes. The router still needs
-the port open for UDP: the host's mapping asks for TCP only so far.
+lets the handshake through, then drops UDP). A UDP session opens no lanes.
 
 **Paths.** Root id + relative path; absolute paths never sent or logged. `safe_relative`, then
 `io::stat_beneath`, `list_beneath`, `file_reader::open_beneath` walk part by part from the root's
