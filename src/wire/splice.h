@@ -322,20 +322,25 @@ class relayed_link final : public link {
 
 // The rendezvous, as tools/driftwire-relay runs it (and the tests, in
 // process). Its own threads: an accept loop, one per connection running its
-// handshake (at most kMaxHandshakes at once, kPerSource from one source), one
-// per waiter (at most max_waiting, kPerSource from one source) which runs
+// handshake (at most kMaxHandshakes at once, handshakes_per_source from one
+// source), one per waiter (at most max_waiting, kPerSource from one source) which runs
 // its splice once paired (at most max_pairs). Destroying it closes every
 // connection and joins every thread.
 class server {
  public:
-  static constexpr int kMaxHandshakes = 16;
+  static constexpr int kMaxHandshakes = 32;
+  // Waiters from one source, at most.
   static constexpr int kPerSource = 4;
+  // Handshakes from one source at once, by default: a phone's VPN opens
+  // tunnel::kOpensAtOnce forwards together (4 before 2026-11-28).
+  static constexpr int kHandshakesPerSource = 16;
   struct options {
     std::string key;  // required: what a waiter's CPace runs on (at least kMinKeyChars)
     std::uint16_t port = kDefaultPort;  // ignored with loopback_only: the OS picks
     bool loopback_only = false;
     int max_pairs = 8;
     int max_waiting = 64;
+    int handshakes_per_source = kHandshakesPerSource;  // the tests: an older server's 4
     int wait_ms = 10 * 60 * 1000;  // a code lives 10 minutes
     limits lim;
     // Forwarding (the Tunnel): the ports a key holder may reach (empty: no
@@ -399,7 +404,7 @@ class server {
   // (the old certificate stays).
   [[nodiscard]] expected set_tls_certificate(const std::string& cert_pem_path, const std::string& key_pem_path);
   [[nodiscard]] counts snapshot() const;
-  // Where a connection counts toward kPerSource: its IPv6 /64, or its IPv4 /24.
+  // Where a connection counts toward the per-source caps: its IPv6 /64, or its IPv4 /24.
   [[nodiscard]] static net::address source_of(const net::address& a) noexcept;
 
  private:

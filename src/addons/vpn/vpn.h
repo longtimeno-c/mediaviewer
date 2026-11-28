@@ -130,6 +130,7 @@ class runner {
   struct snapshot {
     std::uint32_t tcp_open = 0;
     std::uint64_t tcp_made = 0, udp_flows = 0, failed = 0;
+    std::uint64_t dns_flows = 0;  // of udp_flows, those for the tunnel's resolver (one carries many lookups)
     std::uint64_t ticks = 0;  // times the ticker woke (the tests' idle check)
     std::string problem;  // the relay's (the key, forwarding off, no answer)
   };
@@ -139,12 +140,19 @@ class runner {
 
  private:
   struct udp_flow;
+  struct dns_pipe;
   explicit runner(options o);
   void pump();
   void ticker();
   void on_tcp(std::unique_ptr<link> l, const flow& f);
   void on_udp(const flow& f, std::span<const std::uint8_t> payload);
   void serve_udp(std::shared_ptr<udp_flow> u);
+  // The tunnel's resolver (settings::dns4:53): every lookup, whatever its
+  // source port, over one datagram flow to kDnsHost, kept open while used,
+  // each query's ID swapped for one of ours so its answer finds its way back.
+  // A lookup then costs one round trip, not a forward's handshake.
+  void on_dns(const flow& f, std::span<const std::uint8_t> query);
+  void serve_dns();
   void note(relay::forward_answer a, bool opened);
   void reap_locked();
   // Wakes the ticker if `due` is sooner than what it sleeps to (min: always,
@@ -174,6 +182,8 @@ class runner {
   };
   std::vector<worker> workers_;                           // under m_
   std::map<flow, std::shared_ptr<udp_flow>> udp_;          // under m_
+  std::shared_ptr<dns_pipe> dns_;                         // set at start
+  std::thread dns_thread_;                                // serve_dns
   snapshot snap_;                                         // under m_
 };
 

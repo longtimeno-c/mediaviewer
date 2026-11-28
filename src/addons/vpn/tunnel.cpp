@@ -401,21 +401,46 @@ void dialer::stop() {
 
 result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_t port, relay::forward_answer& said,
                                            const std::shared_ptr<remote_slot>& remote, std::uint8_t kind) {
-  said = relay::forward_answer::failed;
-  {
-    std::unique_lock lock(m_);
-    turn_cv_.wait(lock, [&] { return stopped_ || opening_ < kOpensAtOnce; });
-    if (stopped_) return err(status::cancelled);
-    ++opening_;
-  }
-  struct turn {
-    dialer& d;
-    ~turn() {
-      std::lock_guard lock(d.m_);
-      --d.opening_;
-      d.turn_cv_.notify_one();
+  for (bool again = false;; again = true) {
+    said = relay::forward_answer::failed;
+    int crowd = 0;               // forwards opening with this one, itself counted
+    std::uint64_t started = 0;   // opens begun before it
+    {
+      std::unique_lock lock(m_);
+      turn_cv_.wait(lock, [&] { return stopped_ || opening_ < cap_; });
+      if (stopped_) return err(status::cancelled);
+      crowd = ++opening_;
+      started = ++starts_;
     }
-  } given{*this};
+    struct turn {
+      dialer& d;
+      ~turn() {
+        std::lock_guard lock(d.m_);
+        --d.opening_;
+        d.turn_cv_.notify_all();
+      }
+    } given{*this};
+    bool closed_early = false;
+    auto r = open_turn(host, port, said, remote, kind, closed_early);
+    if (r || again || !closed_early) return r;
+    // Closed before a word, with more opening alongside (those open then,
+    // and those begun since) than an older server takes from one source:
+    // taken for that server's cap, kept to from now on, and this one tried
+    // again in turn.
+    std::lock_guard lock(m_);
+    if (crowd + static_cast<int>(starts_ - started) <= kOldOpensAtOnce + 1) return r;
+    cap_ = kOldOpensAtOnce;
+  }
+}
+
+result<std::unique_ptr<link>> dialer::open_turn(const std::string& host, std::uint16_t port,
+                                                relay::forward_answer& said,
+                                                const std::shared_ptr<remote_slot>& remote, std::uint8_t kind,
+                                                bool& closed_early) {
+  // Closed by the server before it answered (not a timeout, not a stop).
+  const auto early = [&](status s) {
+    closed_early = s != status::timeout && s != status::cancelled && said == relay::forward_answer::failed;
+  };
   std::optional<net::endpoint> at;
   {
     std::lock_guard lock(m_);
@@ -448,10 +473,15 @@ result<std::unique_ptr<link>> dialer::open(const std::string& host, std::uint16_
   if (opts_.tls) {
     // Slice 4: TLS with Chrome's ClientHello, and the knock, first.
     auto t = tls::client(std::move(hop), sni_, &knock_);
-    if (!t) return err(t.error());
+    if (!t) {
+      early(t.error());
+      return err(t.error());
+    }
     hop = std::move(*t);
   }
-  return relay::forward(std::move(hop), server_.key, host, port, relay::kForwardWaitMs, said, kind);
+  auto f = relay::forward(std::move(hop), server_.key, host, port, relay::kForwardWaitMs, said, kind);
+  if (!f) early(f.error());
+  return f;
 }
 
 void proxy::serve(std::shared_ptr<link> local, const std::shared_ptr<remote_slot>& remote) {

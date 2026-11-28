@@ -67,6 +67,9 @@ std::string upper(std::string s) {
 
 std::vector<std::uint8_t> bytes(const std::string& s) { return {s.begin(), s.end()}; }
 
+// What udp_echo answers to `s`.
+std::string echoed(const std::string& s) { return s.substr(0, 2) + upper(s.substr(std::min<std::size_t>(2, s.size()))); }
+
 // Packets the stack sent, in order.
 struct wire {
   std::mutex m;
@@ -156,7 +159,8 @@ struct tcp_echo {
   std::uint16_t port() const { return l->port(); }
 };
 
-// A UDP server on loopback that answers each datagram upper-cased.
+// A UDP server on loopback that answers each datagram upper-cased past its
+// first two bytes (kept, as a resolver keeps a query's ID).
 struct udp_echo {
   std::unique_ptr<sp::net::udp_socket> s;
   std::thread t;
@@ -171,7 +175,7 @@ struct udp_echo {
         sp::net::endpoint from;
         auto n = s->receive_from(b, 200, from);
         if (!n) continue;
-        for (std::size_t i = 0; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
+        for (std::size_t i = 2; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
         (void)s->send_to(std::span<const std::uint8_t>(b.data(), *n), from);
       }
     });
@@ -531,7 +535,7 @@ TEST_CASE("vpn: the relay carries a key holder's datagram flows, DNS to its own 
   for (const char* m : {"ping", "second"}) {
     REQUIRE(relay::write_datagram(**f, bytes(m)));
     REQUIRE(relay::read_datagram(**f, part, d, 5000));
-    CHECK(std::string(d.begin(), d.end()) == upper(m));
+    CHECK(std::string(d.begin(), d.end()) == echoed(m));
   }
   // The server's resolver, whatever the ports list says.
   auto dns = relay::forward(dial(), kKey, std::string(relay::kDnsHost), 53, relay::kForwardWaitMs, said,
@@ -539,7 +543,7 @@ TEST_CASE("vpn: the relay carries a key holder's datagram flows, DNS to its own 
   REQUIRE(dns);
   REQUIRE(relay::write_datagram(**dns, bytes("example.com?")));
   REQUIRE(relay::read_datagram(**dns, part, d, 5000));
-  CHECK(std::string(d.begin(), d.end()) == "EXAMPLE.COM?");
+  CHECK(std::string(d.begin(), d.end()) == "exAMPLE.COM?");
   // Another UDP port: no.
   CHECK_FALSE(relay::forward(dial(), kKey, "127.0.0.1", 443, 5000, said, relay::kForwardUdp));
   CHECK(said == relay::forward_answer::port);
@@ -639,7 +643,7 @@ TEST_CASE("vpn: an app's TCP and DNS go through the VPN and the relay, end to en
   auto answer = next_from_vpn(vpn::kUdp);
   REQUIRE(answer);
   CHECK(answer->f == reversed(q));
-  CHECK(std::string(answer->payload.begin(), answer->payload.end()) == "WHO IS EXAMPLE.COM");
+  CHECK(std::string(answer->payload.begin(), answer->payload.end()) == "whO IS EXAMPLE.COM");
   // TCP to the echo server through the relay.
   app_tcp a{v4_flow("198.18.0.1", 40100, "127.0.0.1", te.port())};
   REQUIRE(os->write(a.packet(vpn::kSyn)));
@@ -661,6 +665,119 @@ TEST_CASE("vpn: an app's TCP and DNS go through the VPN and the relay, end to en
   CHECK(eventually([&] { return r->get()->state().tcp_made == 1; }));
   CHECK((*server)->snapshot().forwarded >= 2);  // the DNS flow and the TCP stream
   r->reset();  // every stream reset, every thread joined
+}
+
+TEST_CASE("vpn: every app's lookups share one DNS flow, each answer back to its asker",
+          "[vpn]") {
+  // Before this, each lookup (its own source port, as an OS sends them) was
+  // a datagram flow of its own: a forward's handshake per lookup.
+  tcp_echo te;
+  udp_echo ue;
+  auto server = relay::server::start(relay_options(te.port(), ue.port()));
+  REQUIRE(server);
+  auto [ours, os_side] = loopback_pair();
+  auto os = vpn::framed_device(std::move(os_side));
+  vpn::runner::options o;
+  o.dial.relay = "127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey;
+  o.dev = vpn::framed_device(std::move(ours));
+  auto r = vpn::runner::start(std::move(o));
+  REQUIRE(r);
+  // 20 lookups at once from 20 ports, every one with the same ID (each
+  // asker picks its own: they collide).
+  constexpr int kLookups = 20;
+  const auto query = [](int i) {
+    auto q = bytes("..lookup number " + std::to_string(i));
+    q[0] = 0x42;
+    q[1] = 0x42;
+    return q;
+  };
+  for (int i = 0; i < kLookups; ++i) {
+    const auto q = v4_flow("198.18.0.1", static_cast<std::uint16_t>(6000 + i), "198.18.0.2", 53, vpn::kUdp);
+    REQUIRE(os->write(vpn::make_udp(reversed(q), query(i))));
+  }
+  std::map<std::uint16_t, std::string> answers;  // by the asker's port
+  std::vector<std::uint8_t> buf(65536);
+  for (int tries = 0; tries < 200 && answers.size() < kLookups; ++tries) {
+    auto n = os->read(buf, 5000);
+    REQUIRE(n);
+    const auto p = vpn::parse(std::span<const std::uint8_t>(buf.data(), *n));
+    if (!p || p->f.proto != vpn::kUdp) continue;
+    CHECK(p->f.sport == 53);
+    answers[p->f.dport] = std::string(p->payload.begin(), p->payload.end());
+  }
+  REQUIRE(answers.size() == kLookups);
+  for (int i = 0; i < kLookups; ++i) {
+    const auto q = query(i);
+    CHECK(answers[static_cast<std::uint16_t>(6000 + i)] == upper(std::string(q.begin(), q.end())).replace(0, 2, "BB"));
+  }
+  CHECK(r->get()->state().dns_flows == 1);
+  CHECK((*server)->snapshot().forwarded == 1);  // one flow for all 20
+  CHECK(r->get()->state().udp_flows == 1);  // the DNS flow is the only one
+  r->reset();
+}
+
+TEST_CASE("vpn: the dialer opens many forwards at once, and falls back for an older relay",
+          "[vpn]") {
+  namespace tunnel = mv::driftwire::tunnel;
+  tcp_echo te;
+  udp_echo ue;
+  // The relay's connect to each forward's host waits until every open is
+  // there at once (or 10 s): the most seen together is how many the dialer
+  // opens at once.
+  struct gate {
+    std::mutex m;
+    std::condition_variable cv;
+    int in = 0, most = 0, target = 0;
+  };
+  const auto run = [&](int per_source, int together) {
+    auto g = std::make_shared<gate>();
+    g->target = together;
+    auto o = relay_options(te.port(), ue.port());
+    o.handshakes_per_source = per_source;
+    const auto echo_port = te.port();
+    o.forward_connect = [g, echo_port](const std::string&, std::uint16_t, int timeout_ms, relay::forward_answer&)
+        -> mv::result<std::unique_ptr<sp::link>> {
+      {
+        std::unique_lock lock(g->m);
+        g->most = std::max(g->most, ++g->in);
+        g->cv.notify_all();
+        g->cv.wait_for(lock, std::chrono::seconds(10), [&] { return g->most >= g->target; });
+        --g->in;
+      }
+      return sp::net::connect({"127.0.0.1", echo_port}, timeout_ms);
+    };
+    auto server = relay::server::start(o);
+    REQUIRE(server);
+    tunnel::dialer::options d;
+    d.relay = "127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey;
+    auto dialer = tunnel::dialer::make(d);
+    REQUIRE(dialer);
+    // A page's worth at once: more than the dialer opens together.
+    constexpr int kAsks = tunnel::kOpensAtOnce + 4;
+    std::vector<int> ok(kAsks, 0);
+    std::vector<std::thread> ts;
+    for (int i = 0; i < kAsks; ++i) {
+      ts.emplace_back([&, i] {
+        relay::forward_answer said{};
+        auto s = (*dialer)->open("127.0.0.1", echo_port, said);
+        ok[static_cast<std::size_t>(i)] = s && said == relay::forward_answer::ok;
+      });
+    }
+    for (auto& t : ts) t.join();
+    std::lock_guard lock(g->m);
+    return std::pair{static_cast<int>(std::count(ok.begin(), ok.end(), 1)), g->most};
+  };
+  SECTION("this relay: kOpensAtOnce together") {
+    const auto [opened, most] = run(relay::server::kHandshakesPerSource, tunnel::kOpensAtOnce);
+    CHECK(opened == tunnel::kOpensAtOnce + 4);
+    CHECK(most == tunnel::kOpensAtOnce);
+    CHECK(most > 4);  // more than a relay from before would take
+  }
+  SECTION("a relay from before, 4 handshakes from one source: every open still made") {
+    const auto [opened, most] = run(4, tunnel::kOldOpensAtOnce);
+    CHECK(opened == tunnel::kOpensAtOnce + 4);
+    CHECK(most <= 4);
+  }
 }
 
 namespace {
@@ -1011,7 +1128,7 @@ TEST_CASE("vpn: an app's IPv6 goes through the relay, and is never passed on unt
   auto back = next_from_vpn(vpn::kUdp);
   REQUIRE(back);
   CHECK(back->f == reversed(d));
-  CHECK(std::string(back->payload.begin(), back->payload.end()) == "DATAGRAM OVER IPV6");
+  CHECK(std::string(back->payload.begin(), back->payload.end()) == "daTAGRAM OVER IPV6");
   const auto forwarded = (*server)->snapshot().forwarded;
   CHECK(forwarded >= 2);
   // Somewhere the relay will not go (a port it does not forward): the app's

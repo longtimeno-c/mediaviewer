@@ -304,9 +304,9 @@ TEST_CASE("driftwire relay: one address cannot fill the server's handshakes or i
   auto s = relay::server::start(o);
   REQUIRE(s);
   const auto port = (*s)->port();
-  // Silent connections from one address: past kPerSource they are closed at once.
+  // Silent connections from one address: past handshakes_per_source they are closed at once.
   std::vector<std::unique_ptr<sp::link>> silent;
-  for (int i = 0; i < relay::server::kPerSource; ++i) silent.push_back(dial(port));
+  for (int i = 0; i < o.handshakes_per_source; ++i) silent.push_back(dial(port));
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   auto extra = dial(port);
   CHECK(closed_soon(*extra));
@@ -719,7 +719,7 @@ TEST_CASE("driftwire relay: a registration the server refuses says so, and the o
   // new registration is closed. It is not taken for a success (the old wait
   // would be dropped for nothing): register_waiter fails.
   std::vector<std::unique_ptr<sp::link>> silent;
-  for (int i = 0; i < relay::server::kPerSource; ++i) silent.push_back(dial(port));
+  for (int i = 0; i < relay::server::kHandshakesPerSource; ++i) silent.push_back(dial(port));
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   CHECK_FALSE(relay::register_waiter(dial(port), t, kKey, 3000));
   silent.clear();

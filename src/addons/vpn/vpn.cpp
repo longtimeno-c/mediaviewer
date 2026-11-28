@@ -7,12 +7,23 @@
 #include <chrono>
 #include <deque>
 
+#include <sodium.h>
+
 namespace mv::driftwire::vpn {
 
 namespace {
 
 using clock = std::chrono::steady_clock;
 constexpr std::size_t kUdpQueue = 64;  // datagrams waiting for their flow to open, at most
+// The DNS flow: lookups waiting to be sent, and asked but not yet answered,
+// at most; an unanswered one is forgotten after kDnsAnswerMs (the app asks
+// again). The flow is closed when unused for kDnsPipeIdleMs (before the
+// server closes a lookup's flow, relay::kDnsIdleMs), and opened again by the
+// next lookup.
+constexpr std::size_t kDnsQueue = 256;
+constexpr std::size_t kDnsAsked = 1024;
+constexpr int kDnsAnswerMs = 10000;
+constexpr int kDnsPipeIdleMs = relay::kDnsIdleMs / 2;
 
 // A link shared by the worker list (shut down at the end) and the splice.
 struct shared_link final : link {
@@ -85,10 +96,25 @@ struct runner::udp_flow {
   std::shared_ptr<tunnel::remote_slot> remote = std::make_shared<tunnel::remote_slot>();
 };
 
+struct runner::dns_pipe {
+  struct asked {
+    flow f;               // the app's
+    std::uint16_t id = 0;  // the app's ID
+    clock::time_point at;
+  };
+  std::mutex m;
+  std::condition_variable cv;
+  std::deque<std::pair<flow, std::vector<std::uint8_t>>> queue;  // under m
+  std::map<std::uint16_t, asked> out;                             // under m: by our ID
+  bool closed = false;                                            // under m
+  std::shared_ptr<tunnel::remote_slot> remote = std::make_shared<tunnel::remote_slot>();
+};
+
 runner::runner(options o) : opts_(std::move(o)) {}
 
 result<std::unique_ptr<runner>> runner::start(options o) {
   if (!o.dev) return err(status::invalid_arg);
+  if (sodium_init() < 0) return err(status::internal);  // the DNS flow's IDs (safe to repeat)
   auto d = tunnel::dialer::make(o.dial);
   if (!d) return err(d.error());
   std::unique_ptr<runner> r(new runner(std::move(o)));
@@ -100,6 +126,8 @@ result<std::unique_ptr<runner>> runner::start(options o) {
   cb.on_udp = [raw](const flow& f, std::span<const std::uint8_t> p) { raw->on_udp(f, p); };
   cb.timer = [raw](std::chrono::steady_clock::time_point due) { raw->kick(due); };
   r->stack_ = std::make_unique<stack>(std::move(cb), r->opts_.lim);
+  r->dns_ = std::make_shared<dns_pipe>();
+  r->dns_thread_ = std::thread([raw] { raw->serve_dns(); });  // not an app's: outside lim.max_connections
   r->pump_thread_ = std::thread([raw] { raw->pump(); });
   r->tick_thread_ = std::thread([raw] { raw->ticker(); });
   return r;
@@ -123,6 +151,15 @@ runner::~runner() {
     u->closed = true;
     u->cv.notify_all();
   }
+  if (dns_) {
+    {
+      std::lock_guard lock(dns_->m);
+      dns_->closed = true;
+      dns_->cv.notify_all();
+    }
+    dns_->remote->end();
+  }
+  if (dns_thread_.joinable()) dns_thread_.join();
   for (auto& w : all) {
     if (w.remote) w.remote->end();
     if (w.local) w.local->shutdown();
@@ -274,6 +311,7 @@ void runner::on_tcp(std::unique_ptr<link> l, const flow& f) {
 }
 
 void runner::on_udp(const flow& f, std::span<const std::uint8_t> payload) {
+  if (!f.v6 && f.dport == 53 && net::address_text(f.dst) == opts_.s.dns4) return on_dns(f, payload);
   std::shared_ptr<udp_flow> u;
   {
     std::lock_guard lock(m_);
@@ -313,12 +351,8 @@ void runner::serve_udp(std::shared_ptr<udp_flow> u) {
     std::lock_guard lock(m_);
     if (auto it = udp_.find(u->f); it != udp_.end() && it->second == u) udp_.erase(it);
   };
-  // The tunnel's own resolver goes to the relay's (kDnsHost): the network's
-  // DNS sees no name.
-  const bool dns = !u->f.v6 && net::address_text(u->f.dst) == opts_.s.dns4 && u->f.dport == 53;
-  const std::string host = dns ? std::string(relay::kDnsHost) : net::address_text(u->f.dst);
   relay::forward_answer said{};
-  auto s = dial_->open(host, u->f.dport, said, u->remote, relay::kForwardUdp);
+  auto s = dial_->open(net::address_text(u->f.dst), u->f.dport, said, u->remote, relay::kForwardUdp);
   if (!stop_.load()) note(said, static_cast<bool>(s));
   if (!s) {
     forget();
@@ -370,6 +404,120 @@ void runner::serve_udp(std::shared_ptr<udp_flow> u) {
   forget();
 }
 
+void runner::on_dns(const flow& f, std::span<const std::uint8_t> query) {
+  if (query.size() < 12) return;  // not a DNS message: no header
+  std::lock_guard g(dns_->m);
+  if (dns_->closed || dns_->queue.size() >= kDnsQueue) return;  // dropped: the app asks again
+  dns_->queue.emplace_back(f, std::vector<std::uint8_t>(query.begin(), query.end()));
+  dns_->cv.notify_all();
+}
+
+// The tunnel's own resolver goes to the relay's (kDnsHost): the network's
+// DNS sees no name. One flow for every lookup, opened when one waits.
+void runner::serve_dns() {
+  dns_pipe& p = *dns_;
+  const auto ended = [&] { return p.closed || stop_.load(); };
+  for (;;) {
+    {
+      std::unique_lock g(p.m);
+      p.cv.wait(g, [&] { return ended() || !p.queue.empty(); });
+      if (ended()) return;
+    }
+    relay::forward_answer said{};
+    auto s = dial_->open(std::string(relay::kDnsHost), 53, said, p.remote, relay::kForwardUdp);
+    if (stop_.load()) return;
+    note(said, static_cast<bool>(s));
+    if (!s) {
+      std::lock_guard g(p.m);
+      p.queue.clear();  // the apps ask again, and the next lookup tries again
+      continue;
+    }
+    {
+      std::lock_guard lock(m_);
+      ++snap_.udp_flows;
+      ++snap_.dns_flows;
+    }
+    std::shared_ptr<link> stream(std::move(*s));
+    std::atomic<bool> over{false};
+    std::atomic<std::int64_t> last{clock::now().time_since_epoch().count()};
+    const auto touch = [&] { last.store(clock::now().time_since_epoch().count()); };
+    std::thread back([&] {
+      std::vector<std::uint8_t> part, d;
+      while (!over.load()) {
+        auto r = relay::read_datagram(*stream, part, d, 250);
+        if (!r) {
+          if (r.error() == status::timeout) continue;
+          break;
+        }
+        if (d.size() < 12) continue;
+        const std::uint16_t ours = static_cast<std::uint16_t>(d[0] << 8 | d[1]);
+        flow to;
+        {
+          std::lock_guard g(p.m);
+          const auto it = p.out.find(ours);
+          if (it == p.out.end()) continue;  // late, or not ours
+          to = it->second.f;
+          d[0] = static_cast<std::uint8_t>(it->second.id >> 8);
+          d[1] = static_cast<std::uint8_t>(it->second.id);
+          p.out.erase(it);
+        }
+        touch();
+        if (stop_.load()) break;
+        stack_->udp_reply(to, d);
+      }
+      over.store(true);
+      std::lock_guard g(p.m);
+      p.cv.notify_all();
+    });
+    for (;;) {
+      std::pair<flow, std::vector<std::uint8_t>> q;
+      {
+        std::unique_lock g(p.m);
+        p.cv.wait_for(g, std::chrono::milliseconds(250), [&] { return ended() || over.load() || !p.queue.empty(); });
+        if (ended() || over.load()) break;
+        const auto now = clock::now();
+        for (auto it = p.out.begin(); it != p.out.end();) {
+          it = now - it->second.at > std::chrono::milliseconds(kDnsAnswerMs) ? p.out.erase(it) : std::next(it);
+        }
+        if (p.queue.empty()) {
+          const clock::time_point seen{clock::duration(last.load())};
+          if (p.out.empty() && now - seen > std::chrono::milliseconds(kDnsPipeIdleMs)) break;
+          continue;
+        }
+        if (p.out.size() >= kDnsAsked) continue;  // answers first
+        q = std::move(p.queue.front());
+        p.queue.pop_front();
+        // Our ID, random (a resolver's answer is matched by it) and not one
+        // in flight.
+        std::uint16_t ours = 0;
+        do {
+          ours = static_cast<std::uint16_t>(randombytes_uniform(65536));
+        } while (p.out.count(ours));
+        p.out[ours] = {q.first, static_cast<std::uint16_t>(q.second[0] << 8 | q.second[1]), now};
+        q.second[0] = static_cast<std::uint8_t>(ours >> 8);
+        q.second[1] = static_cast<std::uint8_t>(ours);
+      }
+      touch();
+      if (!relay::write_datagram(*stream, q.second)) {
+        // The flow is gone: this lookup goes first on the next one.
+        std::lock_guard g(p.m);
+        const auto it = p.out.find(static_cast<std::uint16_t>(q.second[0] << 8 | q.second[1]));
+        if (it != p.out.end()) {
+          q.second[0] = static_cast<std::uint8_t>(it->second.id >> 8);
+          q.second[1] = static_cast<std::uint8_t>(it->second.id);
+          p.out.erase(it);
+          p.queue.push_front(std::move(q));
+        }
+        break;
+      }
+    }
+    over.store(true);
+    stream->shutdown();
+    back.join();
+    std::lock_guard g(p.m);
+    p.out.clear();  // asked on a flow that is gone: the apps ask again
+  }
+}
 
 namespace {
 

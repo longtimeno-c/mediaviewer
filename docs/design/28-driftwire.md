@@ -486,7 +486,7 @@ session run end to end; the relay sees ciphertext only.
   **The hop to the server is sealed** (protocol 3): `MVRL`, 3, role, session id, CPace on the server
   key; a sender sends its token's keyed-BLAKE2b id (no waiter → closed); then Noise NNpsk0, server
   first. Sealed server words **registered** and **paired**; then raw splice. Waiters re-register
-  every 60 s. Caps: 16 handshakes (4 per source), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
+  every 60 s. Caps: 32 handshakes (16 per source; 4 before 2026-11-28), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
   splices, 64 GiB each way, optional rate, 120 s idle. Not post-quantum; no state on disk.
 - TURN and Tor are not used ([plan](../plans/driftwire-tor-spike.md)).
 
@@ -1068,7 +1068,7 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   every port but `never_forward`'s, as the VPN hosts set it; `none` off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
   logs only counts. Models: `tools/formal/relay.pv`, `relay_leaked_key.pv`.
 - **Local proxy** (`tunnel.*`): SOCKS5 CONNECT (names sent as names) and HTTP CONNECT / absolute-form
-  on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 3 opening at once. No UDP.
+  on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 12 opening at once (3 once an older relay closes the extras). No UDP.
 - **System proxy** (`sysproxy.*`): **Use for all apps** (`all_apps`, on by default) sets the
   OS auto-proxy to `http://127.0.0.1:<port>/driftwire-tunnel.pac` (local DIRECT, else `SOCKS5
   127.0.0.1:<port>; DIRECT`; no `dnsResolve`). `sysproxy_mac.cpp` (SystemConfiguration, admin once
@@ -1095,7 +1095,7 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
 - **All traffic** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`all_traffic`,
   `/vpn all`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
   no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram
-  flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay
+  flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay over one datagram flow for every lookup (IDs swapped for random ones of the runner's, kept open while used)
   (`dns.driftwire`, `--dns`). Addresses `198.18.0.1/30`, `fd5d:7269:6674::1/64`; everything routed
   except the relay's addresses and local networks (`vpn::plan_routes`). **Block when the tunnel is
   down** (`block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,

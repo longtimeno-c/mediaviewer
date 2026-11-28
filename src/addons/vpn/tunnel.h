@@ -47,10 +47,14 @@ namespace mv::driftwire::tunnel {
 
 // Streams through the tunnel at once (each its own forward at the server).
 inline constexpr int kMaxStreams = 128;
-// Forwards being opened at once: the relay server takes 4 handshakes at once
-// from one source (splice.h server::kPerSource), and a page opens many
-// connections together; the rest wait their turn.
-inline constexpr int kOpensAtOnce = 3;
+// Forwards being opened at once: a page, or a speed test, opens many
+// connections together, each a few round trips to open; the rest wait their
+// turn. The relay server takes 16 handshakes at once from one source
+// (splice.h server::kHandshakesPerSource); one before 2026-11-28 took 4, and
+// closes the rest at once: a dialer that sees that falls back to
+// kOldOpensAtOnce for the rest of its life.
+inline constexpr int kOpensAtOnce = 12;
+inline constexpr int kOldOpensAtOnce = 3;
 // A local client says its request within this.
 inline constexpr int kRequestMs = 10000;
 // An HTTP request head, at most.
@@ -163,6 +167,11 @@ class dialer {
 
  private:
   explicit dialer(options o) : opts_(std::move(o)) {}
+  // One try, in a turn; `closed_early`: the server closed before its word.
+  [[nodiscard]] result<std::unique_ptr<link>> open_turn(const std::string& host, std::uint16_t port,
+                                                        relay::forward_answer& said,
+                                                        const std::shared_ptr<remote_slot>& remote, std::uint8_t kind,
+                                                        bool& closed_early);
   options opts_;
   relay_server_field server_;
   std::string sni_;         // the relay's name for TLS ("" for an address)
@@ -170,6 +179,8 @@ class dialer {
   std::mutex m_;
   std::condition_variable turn_cv_;
   int opening_ = 0;                        // under m_
+  int cap_ = kOpensAtOnce;                 // under m_: kOldOpensAtOnce for an older server
+  std::uint64_t starts_ = 0;               // under m_: opens begun, in all
   bool stopped_ = false;                   // under m_
   std::optional<net::endpoint> resolved_;  // under m_
 };

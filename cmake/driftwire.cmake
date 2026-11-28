@@ -217,6 +217,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_serve_owner.cpp"
     # The VPN add-on (docs/plans/vpn-addon.md): the proxy, the stack, the service, the module.
     "${MV_SOURCE_ROOT}/tests/test_vpn.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_vpn_bench.cpp"
     "${MV_SOURCE_ROOT}/tests/test_vpn_addon.cpp"
     # The phone's VPN ABI (docs/plans/phone-vpn.md S1/S2), against a relay on loopback.
     "${MV_SOURCE_ROOT}/tests/test_phone_vpn.cpp"
