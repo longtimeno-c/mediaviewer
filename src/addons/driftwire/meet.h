@@ -62,7 +62,7 @@
 #include <vector>
 
 #include "addons/driftwire/dht.h"
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 
 namespace mv::driftwire::dht {
 

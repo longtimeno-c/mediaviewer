@@ -21,6 +21,7 @@
 #include "wire/serve.h"
 #include "wire/serve_backup.h"
 #include "wire/serve_client.h"
+#include "wire/udp_hub.h"
 #include "io/content_hash.h"
 
 #if !defined(_WIN32)
@@ -105,6 +106,8 @@ struct service_fixture {
   int per_source_pending = 2;
   int max_pending = 16;
   int max_sessions = 8;
+  bool udp = true;  // options::udp
+  int max_per_device = 8;
   std::function<std::unique_ptr<sp::net::listener>()> make_listener;
   std::function<std::string()> storage;  // options::storage (the host's drives keeper)
   std::shared_ptr<serve::convert::service> converter;  // options::converter
@@ -174,6 +177,8 @@ struct service_fixture {
     o.per_block_pending = per_source_pending * 2;
     o.max_pending = max_pending;
     o.max_sessions = max_sessions;
+    o.udp = udp;
+    o.max_per_device = max_per_device;
     o.make_listener = make_listener;
     o.storage = storage;
     o.converter = converter;
@@ -605,6 +610,82 @@ TEST_CASE("serve: a handshake that stalls after the reply gives its slot back so
   CHECK(ms <= 3500);
 }
 
+// A phone's session over UDP (options::udp): what link_session::try_udp opens.
+std::unique_ptr<serve::client> open_over_udp(service_fixture& s, sp::udp_hub& hub, std::uint16_t port,
+                                             std::optional<key32> device = {}, serve::refusal* why = nullptr) {
+  std::shared_ptr<sp::link> l(hub.stream({"127.0.0.1", port}, randombytes_random()));
+  auto c = serve::client::open(l, s.client_options(device), why);
+  return c ? std::move(*c) : nullptr;
+}
+
+TEST_CASE("serve udp: a session over a UDP stream, on the port the caps name, reads a file whole",
+          "[driftwire-serve]") {
+  service_fixture s;
+  const std::size_t size = 3 * 1024 * 1024 + 123;
+  write_file(s.library / "clip.bin", marker(0, size));
+  const auto port = s.open_client()->caps().udp;  // said over TCP
+  REQUIRE(port == s.srv->port());
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  auto c = open_over_udp(s, **hub, port);
+  REQUIRE(c);
+  CHECK(c->caps().udp == port);
+  auto r = c->read_range(kRootA, "clip.bin", 0, size, serve::kMaxStreamCredit, true);
+  REQUIRE(r);
+  CHECK(read_all(**r) == marker(0, size));
+  CHECK((*r)->code() == serve::end_code::ok);
+  CHECK(s.srv->stats().udp == 1);
+}
+
+TEST_CASE("serve udp: a read over a lossy UDP stream arrives whole", "[driftwire-serve]") {
+  service_fixture s;
+  const std::size_t size = 1024 * 1024;
+  write_file(s.library / "lossy.bin", marker(7, size));
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  (*hub)->test_loss(30);  // 3 % of what the phone sends: the handshake, requests, acks
+  auto c = open_over_udp(s, **hub, s.srv->port());
+  REQUIRE(c);
+  auto r = c->read_range(kRootA, "lossy.bin", 0, size, serve::kMaxStreamCredit, true);
+  REQUIRE(r);
+  CHECK(read_all(**r) == marker(7, size));
+}
+
+TEST_CASE("serve udp: over UDP a stranger is refused as over TCP, and a service with it off offers none",
+          "[driftwire-serve]") {
+  service_fixture s;
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(open_over_udp(s, **hub, s.srv->port(), random_key(), &why));
+  CHECK(why == serve::refusal::not_paired);
+  CHECK(s.srv->stats().udp == 0);
+
+  s.srv.reset();
+  s.udp = false;
+  s.start(10000);
+  CHECK(s.open_client()->caps().udp == 0);
+}
+
+TEST_CASE("serve udp: a flood of UDP opens never stops a TCP session being admitted", "[driftwire-serve]") {
+  // A UDP open's source is whatever its datagram says: none of TCP's budget may go to it.
+  service_fixture s(10000, /*pending_per_source=*/100, /*pending_all=*/4, 8);
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  constexpr int kOpens = 12;
+  for (int i = 0; i < kOpens; ++i) {
+    // A stream's first data packet (seq 0) and nothing more: a session that never says its hello.
+    std::uint8_t d[11] = {sp::kStream, 1, 0, 0, 0, static_cast<std::uint8_t>(i + 1), 0, 0, 0, 0, 0x55};
+    REQUIRE((*hub)->send(d, {"127.0.0.1", s.srv->port()}));
+  }
+  REQUIRE(eventually([&] { return s.srv->stats().accepted >= kOpens; }));
+  CHECK(s.srv->stats().over_limit >= kOpens - 4);  // past UDP's own few, turned away
+  // Straight after, while every one of them is still in its hello.
+  auto c = serve::client::open(s.connect(), s.client_options());
+  REQUIRE(c);
+  CHECK((*c)->caps().udp == s.srv->port());
+}
+
 TEST_CASE("serve: a burst is admitted up to the session limit", "[driftwire-serve]") {
   service_fixture s(10000, 100, 16, 8);
   std::atomic<int> ok{0};
@@ -627,6 +708,90 @@ TEST_CASE("serve: a burst is admitted up to the session limit", "[driftwire-serv
   auto ninth = serve::client::open(s.connect(), s.client_options(), &why);
   CHECK_FALSE(ninth);
   CHECK(why == serve::refusal::busy);
+}
+
+TEST_CASE("serve: one device's sessions stop at its own limit, and another device still gets in",
+          "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = 6;
+  s.max_per_device = 3;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+
+  std::vector<std::unique_ptr<serve::client>> first;
+  for (int i = 0; i < 3; ++i) {
+    auto c = serve::client::open(s.connect(), s.client_options());
+    REQUIRE(c);
+    first.push_back(std::move(*c));
+  }
+  serve::refusal why = serve::refusal::none;
+  CHECK_FALSE(serve::client::open(s.connect(), s.client_options(), &why));
+  CHECK(why == serve::refusal::busy);
+
+  // Three of six in use, all the first phone's: the second still has its own.
+  std::vector<std::unique_ptr<serve::client>> other;
+  for (int i = 0; i < 3; ++i) {
+    auto c = serve::client::open(s.connect(), s.client_options(second));
+    REQUIRE(c);
+    other.push_back(std::move(*c));
+  }
+  why = serve::refusal::none;
+  CHECK_FALSE(serve::client::open(s.connect(), s.client_options(second), &why));
+  CHECK(why == serve::refusal::busy);
+
+  // A session that ends gives its device's slot back.
+  first.front()->close();
+  first.erase(first.begin());
+  std::unique_ptr<serve::client> again;
+  for (int i = 0; i < 200 && !again; ++i) {  // the service sees the close a moment later
+    why = serve::refusal::none;
+    if (auto c = serve::client::open(s.connect(), s.client_options(), &why)) again = std::move(*c);
+    else REQUIRE(why == serve::refusal::busy);
+  }
+  CHECK(again);
+}
+
+TEST_CASE("serve: a connection turned away as busy gives its place back before it is told", "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = 2;
+  s.max_per_device = 1;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  auto first = serve::client::open(s.connect(), s.client_options());
+  REQUIRE(first);
+  // The first phone again, over its limit: through the handshake, then it never reads its
+  // refusal, so the service waits (kCancelWaitMs) to say it.
+  sp::channel_options co;
+  co.access_key = s.access;
+  co.static_key = s.device;
+  auto refused = sp::channel::open_library(s.connect(), "aaaaaaaaaaaaaaaa", "Phone", co);
+  REQUIRE(refused);
+  // Meanwhile the second phone takes the one place left: the refused one is not holding it.
+  auto other = serve::client::open(s.connect(), s.client_options(second));
+  CHECK(other);
+}
+
+TEST_CASE("serve: by default a phone copying over all its lanes leaves room for another phone",
+          "[driftwire-serve]") {
+  service_fixture s;
+  s.srv.reset();
+  s.max_sessions = serve::server::options{}.max_sessions;
+  s.max_per_device = serve::server::options{}.max_per_device;
+  s.start(10000);
+  const key32 second = random_key();
+  REQUIRE(s.pair(second, "Second phone"));
+  std::vector<std::unique_ptr<serve::client>> kept;
+  for (int i = 0; i < 8; ++i) {  // more lanes than a copy opens today (sync_config::lanes)
+    auto c = serve::client::open(s.connect(), s.client_options());
+    REQUIRE(c);
+    kept.push_back(std::move(*c));
+  }
+  auto other = serve::client::open(s.connect(), s.client_options(second));
+  CHECK(other);
 }
 
 TEST_CASE("serve: a wrong prefix takes as long to close as a right one", "[driftwire-serve]") {

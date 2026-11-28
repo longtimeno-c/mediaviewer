@@ -424,11 +424,13 @@ TEST_CASE("host setup: what the router is asked for, and the status words", "[ho
   REQUIRE(w.size() == 1);  // the relay only with the VPN on
   CHECK(w[0].internal_port == 7878);
   CHECK(w[0].what == "service");
+  CHECK(w[0].udp);  // the service's sessions over UDP, at the same port
   k.vpn = true;
   w = cli::wanted_ports(k);  // the VPN without the look: the plain relay's port
   REQUIRE(w.size() == 2);
   CHECK(w[1].internal_port == 47614);
   CHECK(w[1].what == "relay");
+  CHECK_FALSE(w[1].udp);
   // With the look, only it is open outside (the plain relay's cleartext head never is):
   // outside 443, else 8443.
   k.relay_tls_port = 47615;

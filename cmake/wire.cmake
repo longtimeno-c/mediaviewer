@@ -113,6 +113,7 @@ add_library(mv_wire STATIC
   ${_W}/pair_check.cpp ${_W}/pair_check.h
   ${_W}/splice.cpp ${_W}/splice.h
   ${_W}/relay_field.cpp ${_W}/relay_field.h
+  ${_W}/udp_hub.cpp ${_W}/udp_hub.h
   ${_W}/tls.h ${_W}/tls_common.cpp ${_driftwire_tls}
   ${_W}/advert.h
   ${_wire_port}

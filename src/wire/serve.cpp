@@ -32,6 +32,7 @@
 #include "wire/owner_pass.h"
 #include "wire/serve_backup.h"
 #include "wire/share_users.h"
+#include "wire/udp_hub.h"
 #include "core/json.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
@@ -140,6 +141,7 @@ struct conn {
   bool relayed = false;
   // The device whose waiter it came through: only that device's handshake goes on.
   std::array<std::uint8_t, 32> relay_device{};
+  bool udp = false;  // over a UDP stream (options::udp)
   std::chrono::steady_clock::time_point born = std::chrono::steady_clock::now();
   bool pending_released = false;  // the connection's thread's own
   // 0: its hello has not all arrived; 1: it has, the handshake is running;
@@ -339,13 +341,15 @@ struct server::state {
 
   secrets::store* store = nullptr;
   bool loopback_only = false;
-  int max_sessions = 8;
+  int max_sessions = 32;
+  int max_per_device = 8;
   int max_pending = 16;
   int per_minute = 30;
 
   std::array<std::uint8_t, 32> identity{}, access_key{};
   std::array<std::uint8_t, 32> identity_public{};  // what clients pin, and sign over
   std::unique_ptr<net::listener> listen;
+  std::shared_ptr<udp_hub> udp;  // options::udp: sessions over UDP streams, on the same port number
   std::uint16_t port = 0;
   std::atomic<bool> stopping{false};
   source_limit limits{30, std::chrono::minutes(1), kLimitSources};
@@ -355,6 +359,13 @@ struct server::state {
   int per_source_pending = 2, per_block_pending = 4;
 
   std::atomic<int> pending{0}, sessions{0};
+  // Sessions over UDP still in their handshake: their own budget, never TCP's (pending, the
+  // tokens, the per-address tables). A UDP stream's source is whatever its first datagram
+  // said, so spoofed opens may fill this; the phone then stays on TCP.
+  std::atomic<int> pending_udp{0};
+  int max_pending_udp = 4;
+  std::mutex device_sessions_m;
+  std::map<std::array<std::uint8_t, 32>, int> device_sessions;  // under device_sessions_m: sessions per device
   std::mutex conns_m;
   std::list<std::shared_ptr<conn>> conns;  // under conns_m
   std::map<std::array<std::uint8_t, 32>, std::pair<std::uint64_t, std::uint64_t>> ended_usage;  // under conns_m: read, written
@@ -429,6 +440,7 @@ struct server::state {
   std::list<punch> punches;  // under punch_m
   std::map<std::array<std::uint8_t, 32>, clock::time_point> punch_last;  // under punch_m: each device's last ask
   std::atomic<std::uint64_t> n_punched{0};
+  std::atomic<std::uint64_t> n_udp{0};
   std::optional<std::pair<end_code, std::string>> upgrade(conn& c, std::uint32_t id, std::string_view request);
   std::vector<candidate> gather_candidates(net::tcp_rendezvous& rz);
   void stop_punches();
@@ -498,7 +510,7 @@ struct server::state {
   // Takes a connection in through the limits, as the listener does (relayed:
   // keyed by its device token, never the service's own network).
   void admit(std::unique_ptr<link> l, const std::string& source, const std::string& block, const net::address& from,
-             bool relayed, const std::array<std::uint8_t, 32>& relay_device = {});
+             bool relayed, const std::array<std::uint8_t, 32>& relay_device = {}, bool over_udp = false);
   void stop_waiters();
   void relay_loop();
   void wait_at_relay(waiter& w, const std::string& relay_key);
@@ -1965,6 +1977,10 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       extra += (extra.empty() ? "" : ",") + a.substr(1, a.size() - 2);
     }
   }
+  if (udp) {
+    // Every paired session's: the port that takes sessions over UDP too (caps_msg::udp).
+    extra += (extra.empty() ? "" : ",") + std::string("\"") + kCapsUdp + "\":" + std::to_string(udp->port());
+  }
   if (!ch.send(msg::serve_caps, caps_json(version, ops, extra))) return;
   if (ops == 0) {
     // Nothing in common (one side too old). The answer said so.
@@ -2017,6 +2033,10 @@ void server::state::release_pending(conn& c) {
   if (c.pending_released) return;
   c.pending_released = true;
   c.stage.store(3);
+  if (c.udp) {
+    pending_udp.fetch_sub(1);
+    return;  // it was never in the per-address tables
+  }
   pending.fetch_sub(1);
   std::lock_guard lock(source_m);
   for (const std::string* key : {&c.source, &c.block}) {
@@ -2072,6 +2092,7 @@ void server::state::serve_connection(conn* c) {
     o.fresh_first = [this](std::span<const std::uint8_t> first) { return fresh(first); };
     auto ch = channel::open_library_server(c->l, std::move(*h), "0000000000000000", service_name, o);
     release_pending(*c);
+    if (ch) c->l->peer_proven();  // it answered the server's half of the handshake: not spoofed
     if (!ch) {
       if (ch.error() == status::permission_denied) n_key.fetch_add(1);
       c->l->shutdown();
@@ -2141,12 +2162,31 @@ void server::state::serve_connection(conn* c) {
     c->grant = acc.a == access::live ? acc.g : std::nullopt;
   }
   const int before = sessions.fetch_add(1);
-  // Held to the end of this function, however it ends.
+  int before_here = 0;
+  {
+    std::lock_guard lock(device_sessions_m);
+    before_here = device_sessions[*peer]++;
+  }
+  // Both held to the end of this function, however it ends.
   struct slot {
-    std::atomic<int>& n;
-    ~slot() { n.fetch_sub(1); }
-  } held{sessions};
-  if (before >= max_sessions) {
+    server::state& st;
+    std::array<std::uint8_t, 32> device;
+    bool holding = true;
+    void release() {
+      if (!holding) return;
+      holding = false;
+      st.sessions.fetch_sub(1);
+      std::lock_guard lock(st.device_sessions_m);
+      if (const auto it = st.device_sessions.find(device); it != st.device_sessions.end() && --it->second <= 0) {
+        st.device_sessions.erase(it);
+      }
+    }
+    ~slot() { release(); }
+  } held{*this, *peer};
+  if (before >= max_sessions || before_here >= max_per_device) {
+    // Given back before the refusal goes out: saying "busy" waits up to kCancelWaitMs, and a
+    // connection turned away must not take another's place meanwhile.
+    held.release();
     (void)opened->cancel(kCancelWaitMs, "busy");
     return;
   }
@@ -2163,6 +2203,7 @@ void server::state::serve_connection(conn* c) {
   }
   n_sessions.fetch_add(1);
   if (c->source.starts_with("punch:")) n_punched.fetch_add(1);  // moved: counted once its session is up
+  if (c->udp) n_udp.fetch_add(1);
   session(*c, std::move(hello));
   {
     std::lock_guard lock(c->m);
@@ -2216,14 +2257,15 @@ bool server::state::evict_oldest_hello(clock::time_point now) {
     n_evicted.fetch_add(1);
     return true;
   };
+  // A UDP one is never taken: it holds no TCP slot, so taking it makes no room.
   for (auto& c : conns) {  // in the order they arrived
     if (now - c->born < kMinHelloAge) break;  // and everything after it is younger
-    if (evict(*c, 0)) return true;
+    if (!c->udp && evict(*c, 0)) return true;
   }
   // Nothing silent to take: a handshake that holds the key but has stalled
   // (a revoked phone, a recording). Its reply went out at least this long ago.
   for (auto& c : conns) {
-    if (c->stage.load() == 1 && now - c->hello_at >= kMinReplyAge && evict(*c, 1)) return true;
+    if (!c->udp && c->stage.load() == 1 && now - c->hello_at >= kMinReplyAge && evict(*c, 1)) return true;
   }
   return false;
 }
@@ -2245,40 +2287,46 @@ void server::state::accept_loop() {
 }
 
 void server::state::admit(std::unique_ptr<link> accepted, const std::string& source, const std::string& block,
-                          const net::address& from, bool relayed, const std::array<std::uint8_t, 32>& relay_device) {
+                          const net::address& from, bool relayed, const std::array<std::uint8_t, 32>& relay_device,
+                          bool over_udp) {
   {
     // The global bucket and the eviction were the listener's alone; relayed
     // connections come in on the waiters' threads too.
     std::lock_guard admitting(admit_m);
     const auto now = clock::now();
     bool room = true;
-    {
-      // The coarser bucket first: a block over its limit never reaches the
-      // per-address table, so it cannot push other addresses out of it.
-      std::lock_guard lock(source_m);
-      if (!block.empty()) {
-        const auto at_block = in_flight.find(block);
-        room = at_block == in_flight.end() || at_block->second < per_block_pending;
+    if (over_udp) {
+      // Its source may be spoofed: none of TCP's budget is spent on it (pending_udp).
+      room = pending_udp.load() < max_pending_udp;
+    } else {
+      {
+        // The coarser bucket first: a block over its limit never reaches the
+        // per-address table, so it cannot push other addresses out of it.
+        std::lock_guard lock(source_m);
+        if (!block.empty()) {
+          const auto at_block = in_flight.find(block);
+          room = at_block == in_flight.end() || at_block->second < per_block_pending;
+        }
+        if (room) {
+          const auto at_source = in_flight.find(source);
+          room = at_source == in_flight.end() || at_source->second < per_source_pending;
+        }
       }
-      if (room) {
-        const auto at_source = in_flight.find(source);
-        room = at_source == in_flight.end() || at_source->second < per_source_pending;
+      // The block is charged only once the address has passed, so one address
+      // over its limit does not spend its neighbours' budget.
+      room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
+             pending.load() < 2 * max_pending;
+      // The desktop's nearby service: this network only, and silently.
+      if (room && lan_only && (relayed || !on_own_network(from))) room = false;
+      // The global budget is last, and only for a connection that gets in, so
+      // what the per-address limits drop never spends it. Full: the oldest
+      // connection still saying nothing makes way (from kMinHelloAge), else
+      // the oldest handshake waiting past kMinReplyAge.
+      if (room && !take_token(now)) room = false;
+      if (room && pending.load() >= max_pending && !evict_oldest_hello(now)) {
+        tokens = std::min(kGlobalBurst, tokens + 1.0);  // it did not get in
+        room = false;
       }
-    }
-    // The block is charged only once the address has passed, so one address
-    // over its limit does not spend its neighbours' budget.
-    room = room && block_limits.has_room(block, now) && limits.allow(source, now) && block_limits.allow(block, now) &&
-           pending.load() < 2 * max_pending;
-    // The desktop's nearby service: this network only, and silently.
-    if (room && lan_only && (relayed || !on_own_network(from))) room = false;
-    // The global budget is last, and only for a connection that gets in, so
-    // what the per-address limits drop never spends it. Full: the oldest
-    // connection still saying nothing makes way (from kMinHelloAge), else
-    // the oldest handshake waiting past kMinReplyAge.
-    if (room && !take_token(now)) room = false;
-    if (room && pending.load() >= max_pending && !evict_oldest_hello(now)) {
-      tokens = std::min(kGlobalBurst, tokens + 1.0);  // it did not get in
-      room = false;
     }
     if (!room) {
       n_over.fetch_add(1);
@@ -2288,11 +2336,14 @@ void server::state::admit(std::unique_ptr<link> accepted, const std::string& sou
     c->l = std::shared_ptr<link>(std::move(accepted));
     c->relayed = relayed;
     c->relay_device = relay_device;
+    c->udp = over_udp;
     c->source = source;
     c->block = block;
     c->from = from;
-    pending.fetch_add(1);
-    {
+    if (over_udp) {
+      pending_udp.fetch_add(1);
+    } else {
+      pending.fetch_add(1);
       std::lock_guard lock(source_m);
       ++in_flight[source];
       if (!block.empty()) ++in_flight[block];
@@ -3696,6 +3747,7 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.store = o.store;
   st.loopback_only = o.loopback_only;
   st.max_sessions = o.max_sessions;
+  st.max_per_device = o.max_per_device;
   st.max_pending = o.max_pending;
   st.per_minute = o.per_minute;
   st.limits = source_limit(o.per_minute, std::chrono::minutes(1), kLimitSources);
@@ -3730,6 +3782,19 @@ result<std::unique_ptr<server>> server::start(const options& o) {
   st.conv = o.converter;
   st.vpn_offered = o.vpn && !o.lan_only;
   st.vpn_tweak = o.vpn_tweak;
+  if (o.udp && !o.lan_only) {
+    // The same port number over UDP; one another program holds leaves TCP alone, as before.
+    // Opened here, after everything a session reads is set: a datagram may start one at once.
+    if (auto hub = udp_hub::open(st.port, o.loopback_only)) {
+      st.udp = std::move(*hub);
+      st.udp->on_open([&st](std::unique_ptr<link> l, const net::endpoint& from) {
+        const auto a = net::parse_address(from.address);
+        if (!a || st.stopping.load()) return;  // dropped: the stream closes
+        st.n_accepted.fetch_add(1);
+        st.admit(std::move(l), source_of(*a), block_of(*a), *a, false, {}, true);
+      });
+    }
+  }
   st.acceptor = std::thread([&st] { st.accept_loop(); });
   st.watcher = std::thread([&st] { st.watch_loop(); });
   if (!o.lan_only) st.relayer = std::thread([&st] { st.relay_loop(); });  // the nearby one never waits at a relay
@@ -3761,6 +3826,7 @@ counters server::stats() const noexcept {
   c.expired = st_->n_expired.load();
   c.relayed = st_->n_relayed.load();
   c.punched = st_->n_punched.load();
+  c.udp = st_->n_udp.load();
   return c;
 }
 
@@ -4184,6 +4250,7 @@ void server::stop() noexcept {
   if (!st_ || st_->stopping.exchange(true)) return;
   st_->watch_cv.notify_all();
   if (st_->listen) st_->listen->shutdown();  // a start that failed has none
+  if (st_->udp) st_->udp->on_open(nullptr);  // no new stream; the ones running end below
   if (st_->acceptor.joinable()) st_->acceptor.join();
   if (st_->watcher.joinable()) st_->watcher.join();
   {
@@ -4214,6 +4281,7 @@ void server::stop() noexcept {
   for (auto& c : all) {
     if (c->t.joinable()) c->t.join();
   }
+  if (st_->udp) st_->udp->stop();
 }
 
 server::~server() { stop(); }

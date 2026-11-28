@@ -192,6 +192,7 @@ std::optional<caps_msg> parse_caps(std::string_view text) {
       c.share_password = *p;
     }
   }
+  if (const auto u = doc->integer(kCapsUdp); u && *u > 0 && *u <= 65535) c.udp = static_cast<std::uint16_t>(*u);
   return c;
 }
 

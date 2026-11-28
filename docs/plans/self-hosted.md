@@ -130,6 +130,8 @@ NAT64), and in the relay line for the laptop.
 
 ### 5.1 Ports
 Two TCP ports at most: the service's (7878 by default, `serve.json`) and, with the VPN on, the relay's.
+The service's is mapped for UDP as well, at the same outside port (its sessions over UDP; the status
+line says "UDP too" or "not UDP").
 With the TLS look (on by default with the VPN, [vpn-stealth](vpn-stealth.md)), only the look's port is
 mapped, at outside 443, or 8443 when the router's 443 is someone else's (`mapping` never takes over a
 port already forwarded). Nothing else: never SMB, never RDP.
@@ -664,7 +666,7 @@ are read only when the stat changed; the start-at-login entry every minute. The 
 hosts' items, hear only a changed model. Nothing presents: the viewer is hidden as for any
 background. The verbs run on that thread through `io::child_process` (rule 1), up to 30 s; the app's
 quit does not wait for one. In the service, one relaxed atomic add per chunk sent or written; in the
-host, `usage()` walks at most eight sessions at each 2 s pass. Not measured against the PR 1 gates on
+host, `usage()` walks at most 32 sessions at each 2 s pass. Not measured against the PR 1 gates on
 this branch (nothing on the render path changed).
 
 ### Later, and not done

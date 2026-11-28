@@ -326,6 +326,9 @@ link_session::~link_session() {
   stop_upgrades(false);
   disconnect();
   stop_upgrades(true);
+  // Stopped here, not by whichever thread lets go of it last: a retired client's pinger may hold
+  // it, and ~udp_hub on that thread would join a thread waiting on that client's own lock.
+  stop_udp_hub();
 }
 
 expected link_session::connect(route_report& report, const cancel_flag* cancel, int timeout_ms) {
@@ -382,6 +385,7 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     }
     // Swapped, never closed here: reads already running on the old client hold
     // it and finish on it; it closes when the last of them lets go.
+    if (live_ && live_->closed()) udp_ending_locked();  // it died idle: dropped() never saw it
     previous = std::move(live_);
     if (previous) {
       std::erase_if(retired_, [](const auto& w) { return w.expired(); });
@@ -396,7 +400,12 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     if (!caps.public_name.empty()) config_.public_name = caps.public_name;
     if (!caps.relay.empty()) config_.relay = caps.relay;
   }
-  if (report.relayed && config_.upgrade && (live_caps_ops() & serve::kUpgradeOp) != 0) start_upgrades();
+  bool udp = false;
+  {
+    std::lock_guard lock(m_);
+    udp = wants_udp_locked();
+  }
+  if ((report.relayed && config_.upgrade && (live_caps_ops() & serve::kUpgradeOp) != 0) || udp) start_upgrades();
   return {};
 }
 
@@ -465,10 +474,17 @@ void link_session::upgrade_loop() {
     if (!up_now_ && clock::now() < next) continue;
     up_now_ = false;
     lock.unlock();
-    bool relayed = false;
+    bool relayed = false, udp = false;
     {
       std::lock_guard l(m_);
       relayed = live_ && !live_->closed() && last_report_.relayed && !shut_;
+      udp = wants_udp_locked();
+    }
+    if (udp) {
+      (void)try_udp();  // once for this client: TCP stays if it fails
+      lock.lock();
+      if (up_now_) continue;  // reconnected meanwhile: start_upgrades found this thread running
+      break;
     }
     bool moved = false;
     if (relayed && upgrade_allowed()) moved = try_upgrade();
@@ -592,6 +608,115 @@ bool link_session::upgrade_now_for_test() {
   return upgrade_allowed() && try_upgrade();
 }
 
+// ---- the same address over UDP (service_config::udp) ------------------------------------------
+
+// A UDP client that drops within kUdpShortLived of moving: TCP for kUdpHold before UDP again.
+constexpr auto kUdpShortLived = std::chrono::minutes(2);
+constexpr auto kUdpHold = std::chrono::minutes(10);
+
+bool link_session::wants_udp_locked() const {
+  if (!config_.udp || shut_ || !live_ || live_->closed() || live_->caps().udp == 0) return false;
+  if (last_report_.relayed || last_report_.upgraded || last_report_.udp) return false;
+  if (udp_tried_.lock() == live_) return false;  // once for each TCP client
+  return clock::now() >= udp_hold_until_;
+}
+
+bool link_session::try_udp() {
+  std::shared_ptr<serve::client> c;
+  std::string address;
+  {
+    std::lock_guard lock(m_);
+    if (!wants_udp_locked()) return false;
+    c = live_;
+    udp_tried_ = live_;
+    address = last_report_.address;
+  }
+  // Where the TCP session went, the same address and port over UDP: the service listens on its TCP
+  // port's number (caps' "udp" says it does), and through a router the outside port is the one the
+  // host's router keeper forwards for UDP too (host_ports' port_wanted::udp), whatever the inside one.
+  std::string host;
+  std::uint16_t udp_port = 0;
+  if (!split_host_port(address, host, udp_port)) return false;
+  std::vector<dw::net::endpoint> to;
+  if (const auto literal = dw::net::parse_address(host)) {
+    to.push_back({dw::net::address_text(*literal), udp_port});
+  } else {
+    for (const auto& a : dw::net::resolve(host)) {
+      if (to.size() >= 2) break;
+      to.push_back({dw::net::address_text(a), udp_port});
+    }
+  }
+  if (to.empty()) return false;
+  std::shared_ptr<dw::udp_hub> hub;
+  {
+    std::lock_guard lock(up_m_);
+    if (up_stop_) return false;
+    if (!udp_hub_) {
+      auto opened = dw::udp_hub::open(0, config_.loopback_only);
+      if (!opened) return false;
+      udp_hub_ = std::move(*opened);
+    }
+    hub = udp_hub_;
+  }
+  std::shared_ptr<serve::client> fresh;
+  for (const auto& e : to) {
+    std::shared_ptr<dw::link> l(hub->stream(e, randombytes_random()));
+    {
+      std::lock_guard lock(up_m_);
+      if (up_stop_) return false;
+      up_link_ = l;
+    }
+    auto opened = serve::client::open(l, options_for(config_));
+    {
+      std::lock_guard lock(up_m_);
+      up_link_.reset();
+    }
+    if (opened) {
+      fresh = std::move(*opened);
+      break;
+    }
+    l->shutdown();
+  }
+  if (!fresh) return false;
+  std::lock_guard single(connect_m_);
+  std::lock_guard lock(m_);
+  if (shut_ || live_ != c) {
+    fresh->close();  // reconnected meanwhile: that one stands
+    return false;
+  }
+  // As a reconnect swaps: reads running on the TCP client finish there; new ones go over UDP.
+  std::erase_if(retired_, [](const auto& w) { return w.expired(); });
+  retired_.push_back(live_);
+  live_ = std::move(fresh);
+  last_report_.udp = true;
+  udp_since_ = clock::now();
+  return true;
+}
+
+void link_session::udp_ending_locked() {
+  if (last_report_.udp && clock::now() - udp_since_ < kUdpShortLived) udp_hold_until_ = clock::now() + kUdpHold;
+}
+
+void link_session::stop_udp_hub() noexcept {
+  std::shared_ptr<dw::udp_hub> hub;
+  {
+    std::lock_guard lock(up_m_);
+    hub = std::move(udp_hub_);
+  }
+  if (hub) hub->stop();
+}
+
+bool link_session::udp_settled_for_test() {
+  std::thread t;
+  {
+    std::lock_guard lock(up_m_);
+    t = std::move(upgrader_);
+  }
+  if (t.joinable()) t.join();  // a direct link's thread returns after its one try
+  std::lock_guard lock(m_);
+  return last_report_.udp;
+}
+
 void link_session::shut_down() noexcept {
   stop_upgrades(false);
   std::vector<std::shared_ptr<serve::client>> still_reading;
@@ -607,6 +732,7 @@ void link_session::shut_down() noexcept {
   disconnect();
   streams_cv_.notify_all();
   stop_upgrades(true);
+  stop_udp_hub();
   std::vector<std::shared_ptr<link_session>> lanes;
   {
     std::lock_guard lock(m_);
@@ -646,10 +772,14 @@ std::unique_ptr<remote_file> link_session::open_lane(const cancel_flag* cancel) 
     std::lock_guard lock(m_);
     // Relayed: the relay holds one waiter per phone, and a second sender would only wait for it.
     // Upgraded: the direct path was punched for this connection; the addresses may not answer.
-    if (shut_ || !live_ || live_->closed() || last_report_.relayed || last_report_.upgraded) return nullptr;
+    // UDP: one stream that keeps its speed through loss; more would only share the same line.
+    if (shut_ || !live_ || live_->closed() || last_report_.relayed || last_report_.upgraded || last_report_.udp) {
+      return nullptr;
+    }
     c = config_;
   }
   c.relay.clear();
+  c.udp = false;  // a lane is a second TCP session, the case UDP does not reach
   c.upgrade = false;
   auto lane = std::make_shared<link_session>(std::move(c));
   route_report report;
@@ -722,6 +852,9 @@ bool link_session::connected() const {
 void link_session::dropped(const std::shared_ptr<serve::client>& c) noexcept {
   std::lock_guard lock(m_);
   if (live_ != c) return;
+  // A UDP client lost soon after it began: a network that let the handshake through, then stopped
+  // UDP. The next connects stay on TCP a while (one that ran long was lost as TCP would have been).
+  udp_ending_locked();
   // Other reads may still be on it: Forget must be able to cut them, as for a swapped-out client.
   std::erase_if(retired_, [](const auto& w) { return w.expired(); });
   retired_.push_back(live_);

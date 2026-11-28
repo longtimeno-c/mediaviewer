@@ -22,7 +22,7 @@
 #include <thread>
 #include <vector>
 
-#include "addons/driftwire/udp_hub.h"
+#include "wire/udp_hub.h"
 #include "driftwire_path.h"
 
 namespace sp = mv::driftwire;
@@ -37,6 +37,8 @@ constexpr pt::path_profile kProfiles[] = {
     {"intercontinental", 160, 30, 30, 0.003, 0},
     {"wifi-jitter", 30, 80, 60, 0.005, 15},
     {"bufferbloat", 40, 20, 500, 0, 0},
+    // PR #763's phone-copy path (tcp_path.h): 150 ms, 0.1 % loss; one CUBIC link 0.52-1.07 MB/s there.
+    {"phone-long-path", 150, 100, 50, 0.001, 0},
 };
 
 double env_num(const char* name, double fallback) {
