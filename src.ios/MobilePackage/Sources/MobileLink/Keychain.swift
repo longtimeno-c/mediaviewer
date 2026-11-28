@@ -83,6 +83,9 @@ enum DeviceKey {
     return Keychain.put(data, account: account) ? data : nil
   }
 
+  /// Whether this phone has its key already: it has paired before (Forget clears it).
+  static var exists: Bool { Keychain.get(account: account)?.count == 32 }
+
   static func clear() { Keychain.remove(account: account) }
 }
 

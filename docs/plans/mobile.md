@@ -403,6 +403,12 @@ short-lived, and the Mac shows which phone was added. The Mac provisions the ser
 beforehand. **Scanning is the only way to add a library** (owner, 2026-11-09): the code comes from
 MediaViewer on a Mac or a Windows PC.
 
+**A phone that has already paired is not stopped by an old code.** The service answers a device
+on its list whatever code it sends, and spends nothing, so the phone refuses a code past its time
+by itself only when it has never paired (`MobileLinkSupport/PairingCode`). A phone that paired,
+whose first copy then stopped while the code ran out, connects again by scanning the code still
+on the desktop; a phone the service does not know is told the code is no good by the service.
+
 **The phone shows the library's name and a short key fingerprint, and the desktop shows the same**, and the person confirms they match before pairing finishes, so a fake QR code cannot quietly pair the phone with someone else's server.
 
 ### 7.5 Nearby sync from the Mac
