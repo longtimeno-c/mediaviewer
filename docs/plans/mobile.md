@@ -749,8 +749,9 @@ over: native PhotoKit, and streaming rather than staging originals.
 
 **Changing files (built 2026-11-22; service: `serve_client.h` "changing the shared folders").** On a
 folder's page, a device whose role lets it change files there gets Add (from Photos or Files), New
-Folder, and Select: a bar of Move, Rename (one item) and Delete under what is chosen, and the same
-three on a tile's long press. Move picks a destination among only the folders this phone may change.
+Folder, and Select: a bar of Move, Rename (one item) and Delete under what is chosen. Holding a
+tile starts Select with it chosen, as Photos does (2026-11-27; it replaced a long-press menu of the
+same three). Move picks a destination among only the folders this phone may change.
 Delete asks first and says the items go to the trash on the server, where they can be restored. A
 file being sent shows on its folder's page with its progress and a stop; it keeps going when the
 folder is left, and Try again carries on from where the server's copy ended (a dropped link is

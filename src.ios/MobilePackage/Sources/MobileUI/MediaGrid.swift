@@ -190,6 +190,7 @@ struct MediaGrid<Header: View>: View {
           }
         }
       }
+      .dropsHold()
       .onChange(of: model.viewerFocus) { _, focus in
         guard let focus, focus.hasPrefix(context + "/") else { return }
         guard let position = Int(focus.dropFirst(context.count + 1)) else { return }

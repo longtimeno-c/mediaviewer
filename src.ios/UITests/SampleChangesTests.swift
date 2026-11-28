@@ -66,12 +66,12 @@ final class SampleChangesTests: XCTestCase {
     for _ in 0..<6 where !made.exists || made.frame.maxX > width { shelf.swipeLeft() }
     XCTAssertTrue(made.waitForExistence(timeout: 10), "The new folder is not on the page")
 
-    // Rename it from its long press: the dialog opens as the menu goes, and takes its own button.
+    // Rename it after holding it: the hold chooses it, and Rename is on Select's bar.
     made.press(forDuration: 1.0)
-    XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 5))
-    app.buttons["Rename"].tap()
+    XCTAssertTrue(app.navigationBars["1 selected"].waitForExistence(timeout: 5), "Holding the folder did not choose it")
+    app.toolbars.buttons["Rename"].tap()
     fill(app, "Best of")
-    app.alerts.textFields.firstMatch.typeText("\n")  // (see FolderChangeTests: the button after a long press)
+    app.alerts.textFields.firstMatch.typeText("\n")  // (see FolderChangeTests: the Rename dialog's button)
     expectation(for: NSPredicate(format: "label BEGINSWITH 'Best of'"), evaluatedWith: made)
     waitForExpectations(timeout: 10)
 
