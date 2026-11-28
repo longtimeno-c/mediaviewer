@@ -126,8 +126,10 @@ class server {
     int max_sessions = 8;
     int max_pending = 16;             // handshakes in progress; when full, the oldest hello still waiting goes
     int per_minute = 30;              // connections per address (a /64 for IPv6); a /48 gets four times this
-    int per_source_pending = 2;       // handshakes in progress per address (a /64 for IPv6)
-    int per_block_pending = 4;        // and per IPv6 /48
+    // Handshakes in progress per address (a /64 for IPv6), and per IPv6 /48: a phone's copy
+    // opens its lanes together (src/mobile/sync.h lanes, 3 beside its link; 2 and 4 before).
+    int per_source_pending = 4;
+    int per_block_pending = 8;
     // The tests: a listener of their own instead of the configured port.
     std::function<std::unique_ptr<net::listener>()> make_listener;
     // Who may do what (docs/design/28 "Claiming and pairing").

@@ -562,8 +562,9 @@ driftwire serve disown
 
 **Who gets in**, in order:
 
-1. Silent limits, coarsest first: per IPv6 /48 120/min, 4 in progress; per address (/64) 30/min, 2
-   in progress; 4096 sources per table; 200 admitted/s overall; ≤ 16 handshakes (evict an incomplete
+1. Silent limits, coarsest first: per IPv6 /48 120/min, 8 in progress; per address (/64) 30/min, 4
+   in progress (4 and 2 before 2026-11-28: a phone's copy opens its 3 lanes together, and sync
+   tries a lane turned away once more); 4096 sources per table; 200 admitted/s overall; ≤ 16 handshakes (evict an incomplete
    hello after 500 ms, else a handshake stalled > 1 s after reply; full hello gets 2 s).
 2. `read_library_hello`: `MVSP`, 2, `L`, a two-byte length equal to Noise message 1; all 1256 bytes
    read before judging.

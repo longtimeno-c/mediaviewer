@@ -571,12 +571,21 @@ void flush_close(int fd) {
   ::close(fd);
 }
 
-// Lanes opened side by side; those that come up.
+// Lanes opened side by side; those that come up. One that did not is tried once more when the
+// rest are up: a service from before 2026-11-28 takes 2 handshakes at once from one address
+// (serve.h per_source_pending) and closes the third unanswered.
 std::vector<std::unique_ptr<remote_file>> open_lanes(remote_file& remote, int n, const cancel_flag* cancel) {
   std::vector<std::unique_ptr<remote_file>> got(static_cast<std::size_t>(std::max(0, n)));
-  std::vector<std::thread> openers;
-  for (auto& slot : got) openers.emplace_back([&remote, &slot, cancel] { slot = remote.open_lane(cancel); });
-  for (auto& t : openers) t.join();
+  const auto open_missing = [&] {
+    std::vector<std::thread> openers;
+    for (auto& slot : got) {
+      if (!slot) openers.emplace_back([&remote, &slot, cancel] { slot = remote.open_lane(cancel); });
+    }
+    for (auto& t : openers) t.join();
+  };
+  open_missing();
+  const bool some = std::any_of(got.begin(), got.end(), [](const auto& l) { return l != nullptr; });
+  if (some && !(cancel && cancel->stopped())) open_missing();  // none at all: the link is the trouble
   std::erase_if(got, [](const std::unique_ptr<remote_file>& l) { return !l; });
   return got;
 }

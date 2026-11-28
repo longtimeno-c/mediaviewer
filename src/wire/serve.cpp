@@ -338,7 +338,7 @@ struct server::state {
   source_limit block_limits{120, std::chrono::minutes(1), kLimitSources};
   double tokens = kGlobalBurst;  // the accept thread's
   clock::time_point tokens_at = clock::now();
-  int per_source_pending = 2, per_block_pending = 4;
+  int per_source_pending = 4, per_block_pending = 8;
 
   std::atomic<int> pending{0}, sessions{0};
   std::mutex conns_m;

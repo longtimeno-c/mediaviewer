@@ -1031,6 +1031,13 @@ struct lane_record {
   std::uint64_t drop_after = 0;
   bool dropped = false;
   bool drop_all = false;           // every read of `gate_rel` ends so
+  // Reads of `gate_rel` from this offset on wait (10 s at most) until `released`.
+  std::uint64_t hold_from = UINT64_MAX;
+  bool released = false;
+  // A service from before: the first `wave` lane opens arrive together, and past
+  // `host_pending` of them the rest are closed unanswered (0: no such limit).
+  int wave = 0, host_pending = 0, arrived = 0, left_wave = 0, refused = 0;
+  bool wave_over = false;
   std::map<std::string, std::vector<std::pair<std::uint64_t, std::uint64_t>>> handed;  // rel: [from, to)
   std::uint64_t handed_bytes(const std::string& rel) {
     std::uint64_t n = 0;
@@ -1069,6 +1076,7 @@ class disk_remote final : public mob::remote_file {
       if (!rec_->overlapped) rec_->cv.wait_for(l, std::chrono::seconds(10), [&] { return rec_->active >= 2; });
       if (rec_->active >= 2) rec_->overlapped = true;
       drop = rec_->drop_all || (id_ == rec_->drop_lane && !rec_->dropped);
+      if (at >= rec_->hold_from) rec_->cv.wait_for(l, std::chrono::seconds(10), [&] { return rec_->released; });
     }
     const auto leave = [&] {
       if (!gated) return;
@@ -1106,7 +1114,17 @@ class disk_remote final : public mob::remote_file {
     return {};
   }
   std::unique_ptr<mob::remote_file> open_lane(const mob::cancel_flag*) override {
-    std::lock_guard l(rec_->m);
+    std::unique_lock l(rec_->m);
+    if (rec_->wave > 0 && !rec_->wave_over) {
+      const int me = ++rec_->arrived;
+      rec_->cv.notify_all();
+      rec_->cv.wait_for(l, std::chrono::seconds(5), [&] { return rec_->arrived >= rec_->wave; });
+      if (++rec_->left_wave == rec_->wave) rec_->wave_over = true;
+      if (me > rec_->host_pending) {
+        ++rec_->refused;
+        return nullptr;
+      }
+    }
     if (rec_->lanes <= 0) return nullptr;
     --rec_->lanes;
     return std::make_unique<disk_remote>(root_, rec_, ++rec_->opened);
@@ -1159,6 +1177,24 @@ TEST_CASE("sync: a big file comes over several lanes at once, and arrives whole"
     CHECK(one->handed[kExtraRel].front().first == 0);
     CHECK(one->handed_bytes(kExtraRel) == size);
   }
+}
+
+TEST_CASE("sync: a lane a service from before turns away is tried again, so the copy has them all", "[mobile-link]") {
+  // A service before 2026-11-28 takes 2 handshakes at once from one address; the copy opens 3
+  // lanes together, and the third was lost for the whole copy.
+  rig r(20 * 1024 * 1024);
+  auto rec = std::make_shared<lane_record>();
+  rec->lanes = 8;
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  REQUIRE(cfg.lanes - 1 == 3);
+  rec->wave = cfg.lanes - 1;
+  rec->host_pending = 2;
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto plan = mob::check_catalogue(remote, cfg);
+  REQUIRE(mob::copy_catalogue(remote, cfg, plan, nullptr, nullptr) == mob::sync_outcome::installed);
+  CHECK(rec->refused == 1);
+  CHECK(rec->opened == cfg.lanes - 1);
 }
 
 TEST_CASE("sync: a lane that drops mid-segment hands the rest of it to another", "[mobile-link]") {
@@ -1216,12 +1252,22 @@ TEST_CASE("sync: a copy over lanes stopped part-way leaves a prefix, and resumes
   cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
   auto plan = mob::check_catalogue(remote, cfg);
   mob::cancel_flag stop;
-  CHECK(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t done, std::uint64_t) {
-    if (done > 6 * 1024 * 1024) stop.stop.store(true);
-  }, &stop) == mob::sync_outcome::cancelled);
-  CHECK(rec->overlapped);
   const fs::path source = r.catalogue_home / ".mediaviewer" / kExtraRel;
   const fs::path part = fs::path(cfg.library_dir) / "staging" / "1-1" / "extra.bin.part";
+  // The file's first segment comes; every later one waits until the stop. Stopped by bytes
+  // arrived instead, lanes bringing segments out of order and far ahead left a prefix of
+  // nothing, or the whole file, now and then.
+  rec->hold_from = 2 * 1024 * 1024;  // sync.cpp kSegmentBytes
+  CHECK(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t, std::uint64_t) {
+    std::error_code ec;
+    if (fs::file_size(part, ec) > 0 && !ec && !stop.stopped()) {
+      stop.stop.store(true);
+      std::lock_guard l(rec->m);
+      rec->released = true;
+      rec->cv.notify_all();
+    }
+  }, &stop) == mob::sync_outcome::cancelled);
+  CHECK(rec->overlapped);
   REQUIRE(fs::exists(part));
   const std::string held = read_all(part);
   const std::string whole = read_all(source);
@@ -1234,6 +1280,7 @@ TEST_CASE("sync: a copy over lanes stopped part-way leaves a prefix, and resumes
   CHECK(again.done_bytes >= held.size());
   rec->handed.clear();
   rec->lanes = 3;
+  rec->hold_from = UINT64_MAX;
   REQUIRE(mob::copy_catalogue(remote, cfg, again, nullptr, nullptr) == mob::sync_outcome::installed);
   CHECK(rec->first_offset(kExtraRel) == held.size());  // nothing on the phone asked for again
   CHECK(rec->handed_bytes(kExtraRel) == whole.size() - held.size());
