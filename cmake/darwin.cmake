@@ -586,6 +586,12 @@ add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
   src/shell/browse_path.h
+  # docs/design/16 "Folder navigation" / "Drag and drop into folders": Back /
+  # Forward, what a drop becomes, and the copy / move worker (shared with Windows).
+  src/shell/browse_history.h
+  src/shell/file_drop.h
+  src/shell/file_transfer.cpp
+  src/shell/file_transfer.h
   # The one key router and command table, shared with Windows (docs/design/16): the
   # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
   # translates virtual keys. Pure C++, no platform header.
@@ -612,6 +618,8 @@ add_library(mv_shell STATIC
   # Check library: the backup's index is the Import add-on's, through mv.import.1.
   src/shell/photos_backup_library.cpp
   src/shell/photos_backup_library.h
+  src/shell/photos_backup_server.cpp
+  src/shell/photos_backup_server.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
@@ -748,6 +756,9 @@ set(MV_MAC_HOST_SOURCES
   # Text in images: the Vision half of shell/text_in_image.h's port.
   src/shell/text_recognition_mac.mm
   src/shell/text_recognition_mac.h
+  # docs/plans/desktop-client.md §6a: a paired server's SMB shares in the Finder (NetFS).
+  src/shell/lan_share_mac.mm
+  src/shell/lan_share_mac.h
 )
 set_source_files_properties(
   src/shell/main_mac.mm
@@ -758,6 +769,7 @@ set_source_files_properties(
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   src/shell/text_recognition_mac.mm
+  src/shell/lan_share_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 function(mv_mac_host target)
@@ -783,6 +795,7 @@ function(mv_mac_host target)
     "-framework QuartzCore"
     "-framework CoreServices"
     "-framework DiskArbitration"
+    "-framework NetFS"  # §6a: the server's shares in the Finder (shell/lan_share_mac.mm)
     "-framework UniformTypeIdentifiers"
     "-framework MediaPlayer"  # PR 15: Now Playing / MPRemoteCommandCenter
     # docs/design/26: the Photos library as a folder and its backup (shell/photos_items_mac.mm).
@@ -933,6 +946,10 @@ if(MV_BUILD_TESTS)
     tests/test_dino_game.cpp
     tests/test_browse_index.cpp
     tests/test_browse_path.cpp
+    tests/test_browse_history.cpp
+    tests/test_abi_text.cpp
+    tests/test_file_drop.cpp
+    tests/test_file_transfer.cpp
     tests/test_dir_tree.cpp
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
@@ -955,6 +972,8 @@ if(MV_BUILD_TESTS)
     src/shell/folder_model_mac.cpp
     # docs/plans/desktop-client.md: another desktop opens the host's drives (loopback).
     tests/test_desktop_client.cpp
+    # §6a: a paired server's LAN share in the Finder: when and what to mount.
+    tests/test_lan_share.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp

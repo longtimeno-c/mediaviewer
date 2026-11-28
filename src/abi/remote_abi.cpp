@@ -6,7 +6,9 @@
 // makes. Portable C++ (no Win32 here); only built into mediaviewer_core.
 #include <mediaviewer/mediaviewer.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -146,10 +148,26 @@ status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* nee
 }
 
 // The one pairing in flight and how the last one ended, for the chrome's poll.
+// 0.45's changing calls (add, make_folder, move) and fetch: the work is done, so a short
+// buffer is not a failure -- what fits, NUL-ended, and `needed` the whole size. A caller that
+// retried on a refusal here would upload or move a second time.
+status write_done(const std::string& text, char* out, uint32_t cap, uint32_t* needed) {
+  const auto need = static_cast<uint32_t>(text.size() + 1);
+  if (needed) *needed = need;
+  if (out && cap > 0) {
+    const uint32_t n = std::min(cap - 1, need - 1);
+    std::memcpy(out, text.data(), n);
+    out[n] = '\0';
+  }
+  return status::ok;
+}
+
 std::mutex g_pair_m;
 bool g_pair_busy = false;
 bool g_pair_ok = false;
 std::string g_pair_words;
+std::string g_pair_key;       // the server the last pairing that worked added
+std::uint64_t g_pair_seq = 0;  // pairings that worked this run
 
 }  // namespace
 
@@ -223,6 +241,10 @@ MV_API mv_status MV_CALL mv_remote_pair_start(const char* code_utf8) {
       std::lock_guard lock(g_pair_m);
       g_pair_busy = false;
       g_pair_ok = paired.has_value();
+      if (paired) {
+        g_pair_key = mv::remote::server_key(*paired);
+        ++g_pair_seq;
+      }
       g_pair_words = paired ? "Connected to " + name + ". Its folders are in the folder list."
                             : mv::remote::pair_problem_words(paired.error(), name);
     }).detach();
@@ -236,6 +258,7 @@ MV_API mv_status MV_CALL mv_remote_pair_state_json(char* utf8, uint32_t cap, uin
     {
       std::lock_guard lock(g_pair_m);
       w.begin_object().key("busy").boolean(g_pair_busy).key("ok").boolean(g_pair_ok).key("words").string(g_pair_words)
+          .key("key").string(g_pair_key).key("seq").integer(static_cast<std::int64_t>(g_pair_seq))
           .end_object();
     }
     return write_out(w.str(), utf8, cap, out_bytes);
@@ -252,6 +275,112 @@ MV_API mv_status MV_CALL mv_remote_forget(const char* server_key_utf8) {
       if (mv::remote::library* lib = rs::library()) (void)lib->forget(id);
     }).detach();
     return status::ok;
+  }));
+}
+
+// ---- 0.45: changing a server's folders (plan §6) -------------------------------------------
+
+namespace {
+// The bytes so far, and the caller's stop, as the library's cancel flag.
+struct progress_bridge {
+  mv_remote_progress_fn fn;
+  void* user;
+  mv::mobile::cancel_flag flag;
+  void operator()(std::uint64_t bytes) {
+    if (fn && fn(bytes, user) != 0) flag.stop.store(true);
+  }
+};
+}  // namespace
+
+MV_API mv_status MV_CALL mv_remote_can_write(const char* key_utf8, uint8_t* out_can) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_can_write", [&]() -> status {
+    MV_REQUIRE(key_utf8 && out_can, "key_utf8 and out_can are required");
+    mv::remote::library* lib = mv::remote::library::shared();
+    *out_can = lib && lib->can_write(key_utf8) ? 1 : 0;
+    return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_write_problem(const char* key_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_write_problem", [&]() -> status {
+    MV_REQUIRE(key_utf8, "key_utf8 is required");
+    mv::remote::library* lib = mv::remote::library::shared();
+    return write_out(lib ? lib->write_problem(key_utf8) : std::string(), utf8, cap, out_bytes);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_exists(const char* key_utf8, uint8_t* out_exists) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_exists", [&]() -> status {
+    MV_REQUIRE(key_utf8 && out_exists, "key_utf8 and out_exists are required");
+    mv::remote::library* lib = rs::library();
+    if (!lib) return status::internal;
+    auto r = lib->exists(key_utf8);
+    if (!r) return r.error();
+    *out_exists = r.value() ? 1 : 0;
+    return status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_make_folder(const char* parent_key_utf8, const char* name_utf8, char* out_key,
+                                               uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_make_folder", [&]() -> status {
+    MV_REQUIRE(parent_key_utf8 && name_utf8, "parent_key_utf8 and name_utf8 are required");
+    mv::remote::library* lib = rs::library();
+    if (!lib) return status::internal;
+    auto r = lib->make_folder(parent_key_utf8, name_utf8);
+    if (!r) return r.error();
+    return write_done(r.value(), out_key, cap, out_bytes);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_add(const char* parent_key_utf8, const char* local_path_utf8, const char* name_utf8,
+                                       mv_remote_progress_fn progress, void* user, char* out_key, uint32_t cap,
+                                       uint32_t* out_bytes) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_add", [&]() -> status {
+    MV_REQUIRE(parent_key_utf8 && local_path_utf8 && name_utf8, "parent, local path and name are required");
+    mv::remote::library* lib = rs::library();
+    if (!lib) return status::internal;
+    progress_bridge p{progress, user, {}};
+    auto r = lib->add_file(parent_key_utf8, local_path_utf8, name_utf8, &p.flag, [&](std::uint64_t n) { p(n); });
+    if (!r) return r.error();
+    return write_done(r.value(), out_key, cap, out_bytes);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_move(const char* key_utf8, const char* to_parent_key_utf8, const char* name_utf8,
+                                        uint8_t* out_taken, char* out_key, uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_move", [&]() -> status {
+    MV_REQUIRE(key_utf8 && to_parent_key_utf8 && name_utf8, "key, destination and name are required");
+    mv::remote::library* lib = rs::library();
+    if (!lib) return status::internal;
+    mv::remote::library::change_refused why;
+    auto r = lib->move(key_utf8, to_parent_key_utf8, name_utf8, &why);
+    if (out_taken) *out_taken = !r && why.why == mv::driftwire::serve::client::change_why::exists ? 1 : 0;
+    if (!r) return r.error();
+    return write_done(r.value(), out_key, cap, out_bytes);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_remove(const char* key_utf8) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_remove", [&]() -> status {
+    MV_REQUIRE(key_utf8, "key_utf8 is required");
+    mv::remote::library* lib = rs::library();
+    if (!lib) return status::internal;
+    auto r = lib->remove(key_utf8);
+    return r ? status::ok : r.error();
+  }));
+}
+
+MV_API mv_status MV_CALL mv_remote_fetch(const char* key_utf8, mv_remote_progress_fn progress, void* user,
+                                         char* out_path, uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(mv::abi::guard("mv_remote_fetch", [&]() -> status {
+    MV_REQUIRE(key_utf8, "key_utf8 is required");
+    mv::remote::library* lib = rs::library();
+    if (!lib) return status::internal;
+    progress_bridge p{progress, user, {}};
+    auto r = lib->fetch(key_utf8, &p.flag, [&](std::uint64_t got, std::uint64_t) { p(got); });
+    if (!r) return r.error();
+    return write_done(r.value(), out_path, cap, out_bytes);
   }));
 }
 

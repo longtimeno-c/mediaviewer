@@ -15,6 +15,8 @@
 #include <sodium.h>
 
 #include "wire/net.h"
+#include "io/content_hash.h"
+#include "io/file_port.h"
 #include "wire/serve_wire.h"
 #include "wire/splice.h"
 
@@ -46,7 +48,9 @@ serve::client::options options_for(const service_config& c) {
   o.id = c.device_id;
   o.name = c.device_name;
   // Backup (1.1) as well: a service from before it leaves `write` out of its caps.
-  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp;
+  // Changing the shared folders (docs/design/28 "Changing files"): asked for always; a
+  // service older than them, or a "view" device, leaves them out or refuses each request.
+  o.ops = serve::kAllOps | serve::kWriteOp | serve::kConvertOp | serve::kChangeOps;
   if (c.upgrade) o.ops |= serve::kUpgradeOp;  // granted only on a relayed link
   return o;
 }
@@ -385,6 +389,12 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
     }
     live_ = std::move(*c);
     last_report_ = report;
+    // The service's word on where it is now: the next race, and the host's saved copy, use it.
+    // Its key was pinned by this handshake, so these lead nowhere but here.
+    const auto& caps = live_->caps();
+    if (!caps.local.empty()) config_.local = caps.local;
+    if (!caps.public_name.empty()) config_.public_name = caps.public_name;
+    if (!caps.relay.empty()) config_.relay = caps.relay;
   }
   if (report.relayed && config_.upgrade && (live_caps_ops() & serve::kUpgradeOp) != 0) start_upgrades();
   return {};
@@ -597,6 +607,63 @@ void link_session::shut_down() noexcept {
   disconnect();
   streams_cv_.notify_all();
   stop_upgrades(true);
+  std::vector<std::shared_ptr<link_session>> lanes;
+  {
+    std::lock_guard lock(m_);
+    for (auto& w : lanes_) {
+      if (auto l = w.lock()) lanes.push_back(std::move(l));
+    }
+    lanes_.clear();
+  }
+  for (auto& l : lanes) l->shut_down();
+}
+
+namespace {
+
+// What open_lane hands out: the copy owns the lane, the session that opened it can still shut it.
+class lane_handle final : public remote_file {
+ public:
+  explicit lane_handle(std::shared_ptr<link_session> s) : s_(std::move(s)) {}
+  result<std::vector<serve::root_info>> roots() override { return s_->roots(); }
+  result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
+    return s_->list(root, rel);
+  }
+  result<serve::stat_info> stat(const std::string& root, const std::string& rel) override { return s_->stat(root, rel); }
+  expected read_range(const std::string& root, const std::string& rel, std::uint64_t at, std::uint64_t length,
+                      const byte_sink& sink, const cancel_flag* cancel, bool bulk) override {
+    return s_->read_range(root, rel, at, length, sink, cancel, bulk);
+  }
+
+ private:
+  std::shared_ptr<link_session> s_;
+};
+
+}  // namespace
+
+std::unique_ptr<remote_file> link_session::open_lane(const cancel_flag* cancel) {
+  service_config c;
+  {
+    std::lock_guard lock(m_);
+    // Relayed: the relay holds one waiter per phone, and a second sender would only wait for it.
+    // Upgraded: the direct path was punched for this connection; the addresses may not answer.
+    if (shut_ || !live_ || live_->closed() || last_report_.relayed || last_report_.upgraded) return nullptr;
+    c = config_;
+  }
+  c.relay.clear();
+  c.upgrade = false;
+  auto lane = std::make_shared<link_session>(std::move(c));
+  route_report report;
+  if (!lane->connect(report, cancel)) return nullptr;
+  {
+    std::lock_guard lock(m_);
+    if (!shut_) {
+      std::erase_if(lanes_, [](const std::weak_ptr<link_session>& w) { return w.expired(); });
+      lanes_.push_back(lane);
+      return std::make_unique<lane_handle>(std::move(lane));
+    }
+  }
+  lane->shut_down();  // Forget came while it connected
+  return nullptr;
 }
 
 void link_session::disconnect() noexcept {
@@ -630,6 +697,13 @@ int link_session::role(std::string& word) const {
   if (!live_ || live_->closed()) return -1;
   word = live_->caps().role;
   return 1;
+}
+
+void link_session::addresses(std::string& local, std::string& public_name, std::string& relay) const {
+  std::lock_guard lock(m_);
+  local = config_.local;
+  public_name = config_.public_name;
+  relay = config_.relay;
 }
 
 bool link_session::connected() const {
@@ -849,6 +923,157 @@ result<serve::client::write_done> link_session::write(const std::string& root, c
   if (!c) return err(c.error());
   const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
   auto r = (*c)->write(root, rel, size, hash_hex, at, read, progress, stop, why, meta);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<bool> link_session::changes_files() {
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  return (*c)->changes_files();
+}
+
+result<serve::client::change_done> link_session::add(const std::string& root, const std::string& rel,
+                                                    std::uint64_t size, const std::string& hash_hex,
+                                                    std::uint64_t at, const serve::client::read_fn& read,
+                                                    const std::function<void(std::uint64_t)>& progress,
+                                                    const cancel_flag* cancel, serve::client::change_refused* why) {
+  stream_slot slot(*this, cancel);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(cancel);
+  if (!c) return err(c.error());
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
+  auto r = (*c)->add(root, rel, size, hash_hex, at, read, progress, stop, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::add_file(const std::string& root, const std::string& rel,
+                                                          const std::string& local_path,
+                                                          const std::function<void(std::uint64_t, std::uint64_t)>& progress,
+                                                          const cancel_flag* cancel, serve::client::change_refused* why) {
+  // The phone's own file not there or unreadable is invalid_arg: never "not on the server", and
+  // never a lost link (which would cut browsing and backup on the same link).
+  io::file_reader in;
+  if (auto o = in.open(local_path, io::read_mode::sequential); !o) return err(status::invalid_arg);
+  const std::uint64_t size = in.size();
+  // The hash the service checks what reached its disk against (BLAKE3, as serve::backup::hash_file),
+  // read here so a stop ends a big file's hashing too.
+  std::string hashed;
+  {
+    io::hasher h;
+    std::vector<std::uint8_t> buf(1u << 20);
+    for (std::uint64_t at = 0; at < size;) {
+      if (cancel && cancel->stopped()) return err(status::cancelled);
+      auto got = in.read_at(at, std::span<std::uint8_t>(buf.data(), static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), size - at))));
+      if (!got || *got == 0) return err(status::invalid_arg);  // shorter than it said, or unreadable
+      h.update(std::span<const std::uint8_t>(buf.data(), *got));
+      at += *got;
+    }
+    hashed = h.finish().hex();
+  }
+  // A read of the phone's file that fails (or comes up short of its size) is remembered here: the
+  // client reports it as io, which is not the link's fault.
+  bool local_failed = false;
+  const serve::client::read_fn read = [&in, &local_failed, size](std::uint64_t at,
+                                                                  std::span<std::uint8_t> into) -> result<std::size_t> {
+    auto got = in.read_at(at, into);
+    if (!got || (*got == 0 && at < size)) {
+      local_failed = true;
+      return err(status::io);
+    }
+    return got;
+  };
+  serve::client::change_refused refused;
+  std::uint64_t at = 0;
+  bool reconnected = false;
+  bool resent = false;
+  int busy_waits = 0;
+  result<serve::client::change_done> done = err(status::io);
+  const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
+  for (int attempt = 0; attempt < 12; ++attempt) {
+    refused = {};
+    // On the live client directly (not add()), so a local read error does not drop the link.
+    stream_slot slot(*this, cancel);
+    if (!slot.held()) return err(status::cancelled);
+    auto c = client(cancel);
+    if (!c) return err(c.error());
+    done = (*c)->add(root, rel, size, hashed, at, read,
+                     [&](std::uint64_t sent) {
+                       if (progress) progress(sent, size);
+                     },
+                     stop, &refused);
+    if (done) break;
+    if (local_failed) return err(status::invalid_arg);
+    if (refused.why == serve::client::change_why::offset) {
+      at = refused.have;
+      continue;
+    }
+    if (refused.why == serve::client::change_why::hash && !resent) {
+      resent = true;  // once; a second is the server's disk, said as such
+      at = 0;
+      continue;
+    }
+    // "busy": the service still holds the stream a dropped link left on that name, until it
+    // notices it is gone. Asked again after a short wait (a second or two in all).
+    if (refused.why == serve::client::change_why::busy && reconnected && busy_waits < 6) {
+      ++busy_waits;
+      const auto until = clock::now() + std::chrono::milliseconds(100 * busy_waits);
+      while (clock::now() < until) {
+        if (cancel && cancel->stopped()) return err(status::cancelled);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      continue;
+    }
+    // The link dropped mid-file (or was closed under it, which ends the stream as cancelled though
+    // nobody asked): once more on a new one, from where the service's copy ends. add() has already
+    // A closed client is gone from live_ already.
+    const bool stopped = cancel && cancel->stopped();
+    const bool lost = done.error() == status::io || done.error() == status::timeout ||
+                      (done.error() == status::cancelled && !stopped);
+    if (done.error() == status::io || done.error() == status::timeout) dropped(*c);
+    if (lost && !reconnected) {
+      reconnected = true;
+      continue;
+    }
+    break;
+  }
+  if (why) *why = refused;
+  // A link that stayed lost is unreachable, never a cancel nobody asked for.
+  if (!done && done.error() == status::cancelled && !(cancel && cancel->stopped())) return err(status::io);
+  return done;
+}
+
+result<serve::client::change_done> link_session::make_folder(const std::string& root, const std::string& rel,
+                                                            serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->make_folder(root, rel, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::move(const std::string& root, const std::string& rel,
+                                                     const std::string& to_root, const std::string& to_rel,
+                                                     serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->move(root, rel, to_root, to_rel, why);
+  if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
+  return r;
+}
+
+result<serve::client::change_done> link_session::remove(const std::string& root, const std::string& rel,
+                                                       serve::client::change_refused* why) {
+  stream_slot slot(*this, nullptr);
+  if (!slot.held()) return err(status::cancelled);
+  auto c = client(nullptr);
+  if (!c) return err(c.error());
+  auto r = (*c)->remove(root, rel, why);
   if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
   return r;
 }

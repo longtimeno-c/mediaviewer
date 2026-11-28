@@ -27,6 +27,8 @@ struct sync_config {
   // A library.json with no catalogue is file mode (no_catalogue). Off for the sample library,
   // which always has one: anything else there is refused.
   bool file_mode = true;
+  // Connections the copy may use at once (remote_file::open_lane): 1 is the link alone.
+  int lanes = 4;
 };
 
 // On disk at <library_dir>/installed.json; the one record of what is here.
@@ -87,7 +89,8 @@ using sync_progress = std::function<void(std::uint64_t done, std::uint64_t total
 using sync_allowed = std::function<bool()>;
 
 // Reads only current.json and, when it is newer, the manifest: safe over any
-// connection. Never touches the installed catalogue.
+// connection. Changes nothing on the phone. `done_bytes` counts what the copy will take from an
+// older copy cut short, or from the installed generation (same name, size and hash).
 [[nodiscard]] sync_plan check_catalogue(remote_file& remote, const sync_config& c);
 
 // Brings a checked plan down and swaps it in. outcome is installed, or the

@@ -130,8 +130,9 @@ NAT64), and in the relay line for the laptop.
 
 ### 5.1 Ports
 Two TCP ports at most: the service's (7878 by default, `serve.json`) and, with the VPN on, the relay's.
-With the TLS look, the relay takes 443 instead (`--tls-port`), unless the router's 443 is someone
-else's (`mapping` never takes over a port already forwarded). Nothing else: never SMB, never RDP.
+With the TLS look (on by default with the VPN, [vpn-stealth](vpn-stealth.md)), only the look's port is
+mapped, at outside 443, or 8443 when the router's 443 is someone else's (`mapping` never takes over a
+port already forwarded). Nothing else: never SMB, never RDP.
 
 ### 5.2 The router
 `serve` deliberately "never touches a router's mapping" (`docs/design/28`). The host changes that, for
@@ -181,17 +182,15 @@ service. What is new is the drive being a PC's drive:
 ## 7. The VPN part: the PC as the exit
 
 The Tunnel/VPN client needs only a relay with forwarding. On the host, `host vpn on` turns forwarding
-on (`--forward-ports 80,443`, `--forward-udp-ports 53` as the relay's defaults) and maps the relay's
+on (every port, TCP and UDP, apart from the blocklisting ones: `relay::vpn_host_defaults`) and maps the relay's
 port. The laptop puts `name.duckdns.org:PORT#KEY` in **Relay (your own server)** once and turns on the
 Tunnel or **All traffic (VPN)**; the sites then see the home's address.
 
 - The relay already refuses to forward to private, loopback and link-local addresses, so the VPN is
   **not a way into the home network**. If the owner wants "VPN home to reach my own LAN" that is a
   different feature (§9 call 5), not this.
-- **The TLS look** with a real certificate passes a prober best. DuckDNS supports TXT records, so a
-  later slice can get a Let's Encrypt certificate for `name.duckdns.org` by DNS-01 with no port 80
-  needed. That is an ACME client (BoringSSL is already linked); out of the first slices, self-signed
-  until then (§9 call 4).
+- **The TLS look** is on by default with the VPN and gets a Let's Encrypt certificate by DNS-01
+  through DuckDNS's TXT (built 2026-11-19, [vpn-stealth](vpn-stealth.md); self-signed until then).
 - **Home upload speed** is the VPN's speed. `host status` shows the relay's measured totals only (never
   hosts, rule 6).
 
@@ -245,7 +244,8 @@ Tunnel or **All traffic (VPN)**; the sites then see the home's address.
    on the phone and desktop, demoable in SAMPLE. **Copy built 2026-11-14 (§15); the card (§16).**
 7. **`host vpn on`** and the relay line; `docs/design/28` gains "Self-hosting", `docs/DEVELOPMENT.md`
    the run recipe. **Built 2026-11-14** (§16).
-8. Later: Let's Encrypt via DNS-01; a custom DDNS URL; the laptop as a `serve` client.
+8. Let's Encrypt via DNS-01 and the person's own domain (by CNAME): **built 2026-11-19**
+   ([vpn-stealth](vpn-stealth.md)). Later: a custom DDNS update URL; the laptop as a `serve` client.
 
 **Verify (proposed):** on a Windows PC and a Mac, `driftwire host setup` with a DuckDNS name and a
 UPnP router makes the name resolve to the home's address, opens the service's port, and pairs a phone
@@ -290,8 +290,8 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   service takes new folders with `server::replace_config`; unsharing the last stops it.
 - **`host share PATH [--label L] [--backup]`, `unshare LABEL`, `status`, `start-at-login on|off`,
   `stay-awake on|off`.** A share is refused for the host's own folder or one holding it (its keys);
-  `--backup` has no limit of its own (the 1 GiB reserve keeps the drive from filling; a `--limit` is
-  owed if asked). `status` prints labels, ports, counts and switches, never a path or an address.
+  `--backup` has no limit of its own (the 1 GiB reserve keeps the drive from filling); `--limit GB|none`
+  sets one or takes it off, also on a folder shared already. `status` prints labels, ports, counts and switches, never a path or an address.
 - **Start at login**, one file per OS (`cli/autostart_win.cpp`, `_mac.cpp`, `_linux.cpp`; texts pure
   in `autostart.cpp`): a per-user Scheduled Task at log on (least privilege, retried every 5 min while
   not running, since Task Scheduler's restart-on-failure does not cover an exit), a LaunchAgent with
@@ -434,7 +434,7 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   desktop's card and get its library, since a phone that pinned the host library would be refused
   once the desktop published. `host unshare` takes only the host library's Catalogue with the last
   folder, never a desktop's.
-- **`host vpn on`**: forwarding on in the running host's relay (TCP 80, 443, UDP 53; private,
+- **`host vpn on`**: forwarding on in the running host's relay (every port but 23, 25, 135-139 and 445, TCP and UDP; private,
   loopback and link-local refused, call 5), the relay's port mapped, the relay line
   `name.duckdns.org:PORT#KEY` printed (the LAN address without a name). `--tls-port 443`: the
   relay's TLS look with its own self-signed certificate for the name (call 4); a look that cannot
@@ -528,6 +528,31 @@ duckdns.org, no real router). Both present-loop gates still hold (nothing here t
   `host stay-awake` would drop it; the router and DuckDNS status lines likewise; the phone's LAN address is this computer's IPv4 at setup and is not followed
   if DHCP moves it (the card's address field still changes it); a host set up from the terminal shows its
   status row but the card offers no unshare or rename (the terminal does).
+
+## 18. The VPN switch on the desktop card, as built (2026-11-15)
+
+Ask: the VPN that slice 7 built for the command line (`host vpn on|off`), available from Phone access too.
+- **Settings → Add-ons → Phone access**, this computer's server: a **VPN through this Mac/PC** row with a
+  **Use as VPN** switch, its status and **Relay line…** ([28](../design/28-driftwire.md#the-vpn-exit-driftwire-host-vpn-onoff-slice-7-2026-11-14)).
+  The switch runs the installed program's own `host vpn on|off`, so the CLI's forwarding rules, ports and
+  words are the only ones (no second implementation); the line is the one `vpn on` prints. Drawn by the
+  add-on's own tree: both chromes, no chrome code. Built on PR #706 (the add-on page).
+- **Phones**: unchanged. The iPhone app has no VPN yet ([phone-vpn.md](phone-vpn.md), plan only, its owner
+  calls open), and the code carries no relay route for a host. Turning the VPN on does not change how a
+  phone reaches the library; the test pairs a phone and reads a photo with it on.
+- **Tests**: `"[phone-addon]"` (the row's states, the switch's requests, the line copyable and hidden, the
+  error), `"[phone-self-host]"` (host.json and state.json read as the program writes them, the line found in
+  its output and nothing else), and the switch end to end against the test build of the program
+  (on, the running relay taking it, the line, hidden, asked again, a phone paired and reading, off).
+- **Measured**: `"[.phone-host-bench]"`, below in DEVELOPMENT.md; numbers in the PR.
+- **Not done**: the card driven on screen on either host (the tree is tested, the chromes draw its node
+  types already); the web-site look's port from the card (`--tls-port`: the terminal only; the card shows it).
+- **Then (owner, 2026-11-15: "do it in desktop app first so my macbook can connect to a vpn host on windows /
+  synology")**: the card's line became a code (`mediaviewer://relay#…`), the MacBook's Driftwire add-on
+  gained **Connect to a VPN host…**, and a Synology became a VPN host too (`set_vpn`, the relay inside
+  `driftwire serve`, the SPK's port section), all in the same PR at the owner's choice
+  ([28](../design/28-driftwire.md) "The NAS as a VPN host", "Connect to a VPN host"). The phone's own VPN
+  stays [phone-vpn.md](phone-vpn.md)'s, after this.
 
 ## Tray: the server menu while hosting (issue #686 §4, owner 2026-11-14)
 

@@ -40,6 +40,84 @@ final class SampleLibraryModelTests: XCTestCase {
                    "The drive with “Travel drive” isn't connected to your server. Connect it, then try again.")
   }
 
+  /// The backup folder chooser: "no backup folder" only once the server has answered with none;
+  /// while asking it says nothing of the kind, and a phone limited away from them is "not allowed".
+  func testTheFolderChooserSaysTheRealReason() {
+    let nas = BackupFolder(id: "b0b0b0b0b0b0b0b0", label: "Phone backup", writable: true)
+    XCTAssertNil(FailureCopy.backupChoiceLine(folders: nil, failure: nil, sample: false))
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: [], failure: nil, sample: false), FailureCopy.backupNoFolders)
+    XCTAssertNil(FailureCopy.backupChoiceLine(folders: [nas], failure: nil, sample: false))
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .folderNotAllowed, sample: false),
+                   FailureCopy.backupNoFolderAllowed)
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .unreachable, sample: false),
+                   FailureCopy.synologyUnreachable)
+    XCTAssertEqual(FailureCopy.backupChoiceLine(folders: nil, failure: .serviceTooOld, sample: false),
+                   FailureCopy.backupServiceTooOld)
+    for line in [FailureCopy.backupNoFolderAllowed, FailureCopy.backupAskingForFolders] {
+      XCTAssertFalse(line.contains("NAS"), line)
+    }
+  }
+
+  /// The chooser's selection follows each answer: a folder no longer offered, or no longer one this
+  /// phone may write, is let go, so Done never saves it; while asking a pick is held for the answer.
+  func testTheFolderChooserLetsGoOfAFolderNoLongerOffered() {
+    let a = BackupFolder(id: "a", label: "Phone backup", writable: true)
+    let b = BackupFolder(id: "b", label: "Family backup", writable: true)
+    let bLocked = BackupFolder(id: "b", label: "Family backup", writable: false)
+    XCTAssertEqual(BackupFolderPick.kept(b, in: [a, b], current: nil), b)
+    // Picked, then Ask again: held while asking, kept when the answer still offers it.
+    let held = BackupFolderPick.kept(b, in: nil, current: a)
+    XCTAssertEqual(held, b)
+    XCTAssertEqual(BackupFolderPick.kept(held, in: [a, b], current: a), b)
+    XCTAssertNil(BackupFolderPick.kept(nil, in: nil, current: a))
+    XCTAssertNil(BackupFolderPick.kept(b, in: [a, bLocked], current: nil))
+    XCTAssertEqual(BackupFolderPick.kept(b, in: [a], current: nil), a)  // the only one left
+    XCTAssertEqual(BackupFolderPick.kept(nil, in: [a, b], current: b), b)
+    XCTAssertNil(BackupFolderPick.kept(nil, in: [a, bLocked], current: bLocked))
+    XCTAssertNil(BackupFolderPick.kept(nil, in: [], current: a))
+  }
+
+  /// A family on one server: each person backs up into their own folder inside the backup folder.
+  /// That pick lives as long as its backup folder does, and is never a path out of it.
+  func testTheFolderChooserKeepsAPersonsFolderInsideABackupFolder() {
+    let a = BackupFolder(id: "a", label: "4.iPhone", writable: true)
+    let b = BackupFolder(id: "b", label: "Family backup", writable: true)
+    let bLocked = BackupFolder(id: "b", label: "Family backup", writable: false)
+    let tristan = try! XCTUnwrap(a.child(named: "  Tristan "))
+    XCTAssertEqual(tristan.id, "a/Tristan")
+    XCTAssertEqual(tristan.label, "4.iPhone/Tristan")
+    XCTAssertEqual(tristan.rootID, "a")
+    XCTAssertEqual(tristan.name, "Tristan")
+    let phone = try! XCTUnwrap(tristan.child(named: "iPhone 16"))
+    XCTAssertEqual(phone.id, "a/Tristan/iPhone 16")
+    XCTAssertEqual(phone.rootID, "a")
+    XCTAssertEqual(a.rootID, "a")
+
+    XCTAssertEqual(BackupFolderPick.kept(tristan, in: [a, b], current: nil), tristan)
+    XCTAssertEqual(BackupFolderPick.kept(nil, in: [a, b], current: phone), phone)  // the folder in use
+    XCTAssertEqual(BackupFolderPick.kept(tristan, in: nil, current: nil), tristan)  // held while asking
+    let samInB = try! XCTUnwrap(b.child(named: "Sam"))
+    XCTAssertNil(BackupFolderPick.kept(samInB, in: [a, bLocked], current: nil))  // its folder no longer writable
+    XCTAssertEqual(BackupFolderPick.kept(samInB, in: [a], current: tristan), tristan)  // its folder gone
+    // The backup folder renamed on the server: picking the folder itself takes its new name.
+    let renamed = BackupFolder(id: "a", label: "iPhones", writable: true)
+    XCTAssertEqual(BackupFolderPick.kept(a, in: [renamed], current: nil)?.label, "iPhones")
+  }
+
+  /// New Folder takes only a name the server takes: one plain folder name, never a path out of the
+  /// backup folder, a hidden one or one Windows cannot keep.
+  func testNewFolderTakesOnlyAPlainFolderName() {
+    XCTAssertEqual(BackupFolder.folderName(" Tristan "), "Tristan")
+    XCTAssertEqual(BackupFolder.folderName("Ana María"), "Ana María")
+    XCTAssertEqual(BackupFolder.folderName("iPhone 16 (old)"), "iPhone 16 (old)")
+    XCTAssertEqual(BackupFolder.folderName("console"), "console")
+    for bad in ["", "   ", ".", "..", "../Sam", "a/b", "a\\b", ".hidden", "trailing.", "C:", "what?", "con", "NUL.txt",
+                "com1", "LPT9", "a\u{0}b", "tab\there", String(repeating: "x", count: 256)] {
+      XCTAssertNil(BackupFolder.folderName(bad), bad)
+      XCTAssertNil(BackupFolder(id: "a", label: "A", writable: true).child(named: bad), bad)
+    }
+  }
+
   /// An offline folder joins the top level after its own folders, once; one already listed stays.
   func testOfflineFoldersJoinTheTopLevel() {
     let own = [Folder(id: "a", name: "Photos", itemCount: 3, hasSubfolders: true)]
@@ -58,7 +136,7 @@ final class SampleLibraryModelTests: XCTestCase {
     let model = LibraryModel(store: OfflineStore())
     model.enter(Folder(id: "t", name: "Travel drive", itemCount: -1, hasSubfolders: false, offline: true))
     XCTAssertTrue(model.trail.isEmpty)
-    XCTAssertEqual(model.failure, FailureCopy.driveNotConnected("Travel drive"))
+    XCTAssertEqual(model.current.failure, FailureCopy.driveNotConnected("Travel drive"))
   }
 
   func testAnIdentityFromAComputerIsNotTheSample() {

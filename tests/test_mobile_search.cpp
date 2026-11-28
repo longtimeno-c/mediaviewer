@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -298,6 +299,63 @@ TEST_CASE("a layout whose files have gone leaves no half work folder", "[mobile]
   CHECK_FALSE(fs::exists(work));
 }
 
+struct person_row {
+  std::string key, name;
+  uint32_t items;
+  int64_t asset;
+  bool has_face;
+};
+void add_person(void* user, const mv_mobile_person* p) {
+  static_cast<std::vector<person_row>*>(user)->push_back(
+      {p->key, p->name, p->item_count, p->face_asset_id, p->has_face != 0});
+}
+void take_bytes(void* user, const uint8_t* bytes, uint32_t length) {
+  static_cast<std::string*>(user)->assign(reinterpret_cast<const char*>(bytes), length);
+}
+
+// The People page's round icon is the person's own face, as the desktop's is: not a centre crop
+// of a photo someone else fills (2026-11-27: "Nigel" showed as the baby in the middle). The
+// publisher cuts it from the desktop's cover face; no face box leaves the Mac (call 7).
+TEST_CASE("a person's cover is their own face, cut from the desktop's cover, and no box is sent", "[mobile]") {
+  generation_fixture g("people-cover");
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open_v2((g.gen / "faces.db").string().c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* s = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "SELECT COUNT(*), COALESCE(SUM(x + y + w + h), 0), COALESCE(SUM(pinned), 0) FROM faces",
+                               -1, &s, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_step(s) == SQLITE_ROW);
+    CHECK(sqlite3_column_int(s, 0) == 3);         // Anna's three: the unnamed baby is not published
+    CHECK(sqlite3_column_double(s, 1) == 0.0);    // no box
+    CHECK(sqlite3_column_int(s, 2) == 0);
+    sqlite3_finalize(s);
+    sqlite3_close_v2(db);
+  }
+
+  mv_mobile_library* lib = g.open();
+  REQUIRE(lib);
+  std::vector<person_row> people;
+  REQUIRE(mv_mobile_library_people(lib, &add_person, &people) == MV_MOBILE_OK);
+  REQUIRE(people.size() == 1);
+  CHECK(people[0].name == "Anna");
+  CHECK(people[0].items == 3);
+  CHECK(people[0].has_face);
+  std::string face;
+  REQUIRE(mv_mobile_library_person_face(lib, people[0].key.c_str(), &take_bytes, &face) == MV_MOBILE_OK);
+  REQUIRE(face.size() > 2);
+  CHECK(static_cast<unsigned char>(face[0]) == 0xFF);
+  CHECK(static_cast<unsigned char>(face[1]) == 0xD8);
+  // Cut from the face she was named by (pinned), not her highest-scoring one in b.jpg, her
+  // clearest in the clip, or the baby's in the middle of a.jpg.
+  CHECK(face.substr(face.find("|face")) == "|face a.jpg -1 0.70 0.05 0.20 0.25");
+
+  std::string none;
+  CHECK(mv_mobile_library_person_face(lib, "99", &take_bytes, &none) == MV_MOBILE_ERR_NOT_FOUND);
+  CHECK(mv_mobile_library_person_face(lib, "1; DROP", &take_bytes, &none) == MV_MOBILE_ERR_INVALID_ARG);
+  CHECK(none.empty());
+  mv_mobile_library_close(lib);
+}
+
 TEST_CASE("a truncated catalogue is refused", "[mobile]") {
   generation_fixture g("truncated");
   fs::resize_file(g.gen / "catalog.db", fs::file_size(g.gen / "catalog.db") - 1);
@@ -394,8 +452,8 @@ TEST_CASE("names, dates and files answer without a model; meaning waits for one"
   for (const char* q : {"@Anna", "person:Anna"}) {
     const auto by_name = paths(q, &st);
     CHECK(st == MV_MOBILE_OK);
-    REQUIRE(by_name.size() == 1);
-    CHECK(by_name[0] == "/" + g.uuid + "/a.jpg");
+    CHECK(std::set<std::string>(by_name.begin(), by_name.end()) ==
+          std::set<std::string>{"/" + g.uuid + "/a.jpg", "/" + g.uuid + "/trip/b.jpg", "/" + g.uuid + "/trip/day1/c.mov"});
   }
   // A picture's meaning needs the tower: an error, never a silent "nothing found".
   CHECK(paths("mountains", &st).empty());

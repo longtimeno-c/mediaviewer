@@ -799,6 +799,7 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
 // #405: a host from before the rating and exposure fields: its tag_facts
 // answers the shorter struct, as an app not yet updated under a newer pack.
 std::atomic<bool> g_old_tag_host{false};
+std::atomic<bool> g_old_tag_host_v2{false};  // a host from before the clip length
 std::mutex g_tag_m;
 std::map<void*, decltype(mv_host_api::tag_facts)> g_tag_facts;  // by host
 
@@ -811,6 +812,7 @@ mv_status MV_CALL tag_facts_maybe_old(void* host, const char* path, mv_addon_tag
     real = it->second;
   }
   if (g_old_tag_host.load() && out) out->struct_size = MV_ADDON_TAG_FACTS_V1_SIZE;
+  if (g_old_tag_host_v2.load() && out) out->struct_size = MV_ADDON_TAG_FACTS_V2_SIZE;
   return real(host, path, out);
 }
 
@@ -828,6 +830,7 @@ struct rig {
   std::function<void(const std::string& name)> thumb_hook;  // the thumbnail-maker's fake, inside it
   std::vector<std::vector<std::pair<double, double>>> label_batches;  // every place_labels batch
   bool places_answer = true;
+  std::vector<std::array<float, 4>> face_crops;  // every jpeg_face_crop's box
   std::atomic<bool> busy{false};
   std::atomic<bool> on_battery{false};  // the fake power source
   std::atomic<int> battery_percent{100};
@@ -938,8 +941,17 @@ struct rig {
     svc.open_sampler = [this](const std::string& path, const mv::addon::sampler_options& o)
         -> mv::result<std::unique_ptr<mv::addon::video_sampler>> {
       ++samplers_opened;
-      return std::unique_ptr<mv::addon::video_sampler>(
-          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
+      // "noopen": a clip the decoder cannot open (its length still comes from the tag pass).
+      // Spelled plainly: MSVC 14.52 hit an internal compiler error (C1001) on
+      // the one-line `if (...) return mv::err(...)` here.
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("noopen") != std::string::npos) {
+        mv::result<std::unique_ptr<mv::addon::video_sampler>> refused = mv::err(mv::status::io);
+        return refused;
+      }
+      std::unique_ptr<mv::addon::video_sampler> sampler =
+          std::make_unique<fake_sampler>(name, o.start_ms, o.min_gap_ms);
+      return sampler;
     };
     svc.video_frame = [this](const std::string& path, std::int64_t ms,
                              std::uint32_t) -> mv::result<mv::addon::rgb_image> {
@@ -1036,6 +1048,8 @@ struct rig {
         std::strcpy(out.label_utf8, "Red");
       }
       if (name.find("reject") != std::string::npos) out.rating = -1;
+      // A clip's header length: "len42" is 42 s.
+      if (name.find("len42") != std::string::npos) out.duration_ms = 42000;
       // #355: a song's tags (title, artist, album).
       if (name.find("song") != std::string::npos) fields = "Hey Jude\x1fThe Beatles\x1fPast Masters";
       // #404: "y2019" was taken on 2019-06-15 12:00 (wall clock read as UTC).
@@ -1119,6 +1133,13 @@ struct rig {
                          std::uint32_t) -> mv::result<std::vector<std::uint8_t>> {
       if (j.size() < 2 || j[0] != 0xFF || j[1] != 0xD8) return mv::err(mv::status::corrupt);
       return std::vector<std::uint8_t>{0xFF, 0xD8, static_cast<std::uint8_t>(edge)};
+    };
+    // The phone's People covers: a JPEG that says it is a face.
+    svc.jpeg_face_crop = [this](std::span<const std::uint8_t> j, std::array<float, 4> box, std::uint32_t,
+                                std::uint32_t) -> mv::result<std::vector<std::uint8_t>> {
+      if (j.size() < 2 || j[0] != 0xFF || j[1] != 0xD8) return mv::err(mv::status::corrupt);
+      face_crops.push_back(box);
+      return std::vector<std::uint8_t>{0xFF, 0xD8, 'F'};
     };
     svc.place_labels = [this](std::span<const std::pair<double, double>> at)
         -> mv::result<std::vector<std::string>> {
@@ -2272,8 +2293,75 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
 }
 
+TEST_CASE("settings attach without models: folders and settings work until start", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; }, kSettleMs));
+  CHECK(r.status().state == MV_AI_STATE_IDLE);
+  CHECK(r.eng->settings_json().find("\"models_held\":true") != std::string::npos);
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  const auto roots = mv::json::parse(r.eng->roots_json());
+  REQUIRE(roots);
+  CHECK_FALSE(roots->a.empty());
+  REQUIRE(r.eng->set_setting("precision", "3"));
+  CHECK(r.eng->settings_json().find("\"precision\":3") != std::string::npos);
+  CHECK((r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0);
+  REQUIRE(r.eng->clear_index());
+  {
+    const auto unknown = mv::json::parse(r.eng->unknown_faces_json(0, 10));
+    REQUIRE(unknown);
+    CHECK(unknown->integer("total").value_or(-1) == 0);
+  }
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  CHECK((r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0);
+  REQUIRE(r.eng->set_setting("start", "1"));
+  REQUIRE(wait_for(
+      [&] {
+        return (r.status().flags & MV_AI_STATUS_MODELS_HELD) == 0 && r.status().state != MV_AI_STATE_LOADING;
+      },
+      kSettleMs));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
+TEST_CASE("held models: the first search opens the towers and indexing follows", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; }, kSettleMs));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  // Asked before anything is indexed: it finds nothing, and it is what starts the work.
+  (void)r.search("red");
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) == 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
+TEST_CASE("held models: asking for work opens the towers", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.start(mv::ai::engine_options{.background_threads = false, .defer_models = true});
+  const auto held = [&] { return (r.status().flags & MV_AI_STATUS_MODELS_HELD) != 0; };
+  REQUIRE(wait_for(held, kSettleMs));
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(held());
+  SECTION("Resume (the launch notice, a folder's row)") { REQUIRE(r.eng->set_setting("resume_root", "0")); }
+  SECTION("Rescan") { REQUIRE(r.eng->root_rescan(*root)); }
+  SECTION("typing in the search field") { (void)r.eng->suggest_json("re"); }
+  SECTION("an export, which the control loop runs") {
+    // Renamed into place when the job ends: held, it never ran.
+    REQUIRE(r.eng->export_index(utf8(r.dir / "held.mvindex"), {}, 0));
+    CHECK(wait_for([&] { return fs::exists(r.dir / "held.mvindex"); }, kSettleMs));
+  }
+  REQUIRE(wait_for([&] { return !held(); }, kSettleMs));  // the status is a snapshot
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("red").empty());
+}
+
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
-constexpr const char* kSchemaNow = "11";
+constexpr const char* kSchemaNow = "12";
 
 TEST_CASE("schema 8 migrates to 9: documents' passages, their words and a folder's choice (#354)",
           "[ai][engine][documents]") {
@@ -2830,6 +2918,105 @@ TEST_CASE("a clip's telemetry route is kept and streamed after its position", "[
   }
 }
 
+// The phone's catalogue shows a clip's length from assets.duration_ms: the tag
+// backfill (level 4, schema 12) takes it from the host's header read, so a clip
+// the content pass has not reached, or cannot open, has it too.
+TEST_CASE("a clip's length comes from the tag pass, before the content pass", "[ai][engine][tags][phone]") {
+  SECTION("index_db: schema 11 migrates, only clips without a length are read again") {
+    scratch_dir dir{"ai-lengths"};
+    const std::string path = utf8(dir / "index.db");
+    std::int64_t photo = 0, clip = 0, known = 0, song = 0;
+    {
+      auto d = mv::ai::index_db::open(path);
+      REQUIRE(d);
+      auto root = (*d)->add_root("/library", true);
+      REQUIRE(root);
+      const std::vector<mv::ai::index_db::seen_file> files = {{"/library/a.jpg", 1, 100, mv::ai::asset_kind::photo},
+                                                              {"/library/b.mp4", 1, 100, mv::ai::asset_kind::video},
+                                                              {"/library/c.mp4", 1, 100, mv::ai::asset_kind::video},
+                                                              {"/library/d.mp3", 1, 100, mv::ai::asset_kind::audio}};
+      auto ups = (*d)->see_assets(*root, files, (*d)->next_generation());
+      REQUIRE(ups);
+      photo = (*ups)[0].id;
+      clip = (*ups)[1].id;
+      known = (*ups)[2].id;
+      song = (*ups)[3].id;
+      std::vector<mv::ai::asset_tags> tags(4);
+      for (int i = 0; i < 4; ++i) {
+        tags[i].id = (*ups)[i].id;
+        tags[i].mtime = 1;
+        tags[i].size = 100;
+        tags[i].level = 3;  // as a schema 11 pack read them
+      }
+      REQUIRE((*d)->commit_tags(tags));
+      REQUIRE((*d)->set_duration(known, 5000));  // its content pass already ran
+      REQUIRE((*d)->set_meta("schema", "11"));
+    }
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == kSchemaNow);
+    std::set<std::int64_t> todo;
+    for (const auto& a : (*d)->assets_needing_tags(10)) todo.insert(a.id);
+    CHECK(todo == std::set<std::int64_t>{clip, song});
+    const std::string before = (*d)->content_stamp("", std::vector<std::int64_t>{(*d)->roots().front().id});
+    mv::ai::asset_tags t;
+    t.id = clip;
+    t.mtime = 1;
+    t.size = 100;
+    t.duration_ms = 61000;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->asset_by_id(clip)->duration_ms == 61000);
+    // The phone's publish sees the change.
+    CHECK((*d)->content_stamp("", std::vector<std::int64_t>{(*d)->roots().front().id}) != before);
+    // A header that says nothing leaves a known length be.
+    t.id = known;
+    t.duration_ms = 0;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->asset_by_id(known)->duration_ms == 5000);
+    // Read below level 4 (an older host): nothing is written.
+    t.id = song;
+    t.level = 3;
+    t.duration_ms = 1234;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->asset_by_id(song)->duration_ms == 0);
+    (void)photo;
+  }
+  SECTION("engine: a clip the content pass cannot open still has its length") {
+    rig r;
+    r.file("trip_len42_noopen.mp4");
+    r.file("plain_rgb.mp4");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    r.eng.reset();
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    auto len = (*d)->asset_by_path(utf8(r.photos() / "trip_len42_noopen.mp4"));
+    REQUIRE(len);
+    CHECK(len->duration_ms == 42000);
+    // No header length: the content pass's own (the fake sampler's 9 s).
+    auto plain = (*d)->asset_by_path(utf8(r.photos() / "plain_rgb.mp4"));
+    REQUIRE(plain);
+    CHECK(plain->duration_ms == 9000);
+    CHECK((*d)->tags_pending() == 0);
+  }
+  SECTION("engine: a host from before the length is read to level 3, and not asked again this run") {
+    rig r;
+    r.file("trip_len42_noopen.mp4");
+    g_old_tag_host_v2 = true;
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    r.eng.reset();
+    g_old_tag_host_v2 = false;
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    CHECK((*d)->tags_pending(3) == 0);
+    CHECK((*d)->tags_pending() == 1);  // level 4 owed to the next host
+    CHECK((*d)->asset_by_path(utf8(r.photos() / "trip_len42_noopen.mp4"))->duration_ms == 0);
+  }
+}
+
 TEST_CASE("date terms use the date taken, and the file's time only when there is none", "[ai][engine][tags][dates]") {
   rig r;
   r.file("red_y2019.jpg");  // taken in 2019, written (mtime) today
@@ -3306,6 +3493,20 @@ TEST_CASE("people: the sheet's review, move to, yes, not this person, merge and 
   auto unknown = mv::json::parse(r.eng->unknown_faces_json(0, 50));
   REQUIRE(unknown);
   CHECK(unknown->integer("total"));
+  std::atomic<bool> stop{false};
+  std::thread reader([&] {
+    while (!stop.load()) {
+      (void)r.eng->unknown_faces_json(0, 1);
+      (void)r.eng->people_json();
+    }
+  });
+  REQUIRE(r.eng->clear_index());
+  stop.store(true);
+  reader.join();
+  auto gone = mv::json::parse(r.eng->unknown_faces_json(0, 50));
+  REQUIRE(gone);
+  CHECK(gone->integer("total").value_or(-1) == 0);
+  CHECK(mv::json::parse(r.eng->people_json())->a.empty());
 }
 
 TEST_CASE("people in the open folder: only those with a face there, counted and covered there",
@@ -5282,6 +5483,40 @@ TEST_CASE("the reader never writes: the index is byte-identical and every change
   CHECK_FALSE(fs::exists(empty / "data" / "index.db"));
 }
 
+TEST_CASE("a reader searches an index an older app left at schema 11 but refuses a newer one",
+          "[ai][search-agent]") {
+  // A phone opens the catalogue its desktop published, read-only and immutable:
+  // a desktop from before schema 12 publishes schema 11 (the sample library did).
+  rig r;
+  r.file("red_car.jpg");
+  r.file("green_field.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  const std::string path = utf8(r.dir / "data" / "index.db");
+  const auto set_schema = [&](const char* v) {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    const std::string sql = std::string("UPDATE meta SET value = '") + v + "' WHERE key = 'schema';";
+    REQUIRE(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  };
+
+  set_schema("11");
+  for (const bool immutable : {false, true}) {
+    INFO("immutable " << immutable);
+    auto rd = r.start_reader({.read_only = true, .immutable = immutable, .background_threads = false});
+    CHECK(ranked(*rd, "red").size() == 1);
+  }
+
+  set_schema("99");
+  engine rd(r.table->api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
+  auto started = rd.start();
+  REQUIRE_FALSE(started);
+  CHECK(started.error() == mv::status::unsupported_format);
+}
+
 TEST_CASE("the reader catches up with what the app indexes after it started", "[ai][search-agent]") {
   rig r;
   r.file("red_car.jpg");
@@ -6497,6 +6732,30 @@ TEST_CASE("people travel as names and links, never as embeddings", "[ai][engine]
   CHECK(only_cell(file, "SELECT COUNT(*) FROM faces") == "2");
   CHECK(only_cell(file, "SELECT COALESCE(SUM(length(emb)), 0) FROM faces") == "0");
   CHECK(only_cell(file, "SELECT COALESCE(SUM(w + h), 0) FROM faces") == "0.0");
+  // Their own face instead, cut from the desktop's cover of them (call 7: a crop, never a box).
+  CHECK(only_cell(file, "SELECT COUNT(*) FROM covers") == "1");
+  CHECK(only_cell(file, "SELECT hex(jpeg) FROM covers") == "FFD846");
+  {
+    auto now = mv::json::parse(p.a.eng->people_json());
+    REQUIRE(now);
+    const mv::json::value* cover = nullptr;
+    for (const auto& v : now->a) {
+      if (*v.integer("id") == anna) cover = v.find("cover_box");
+    }
+    REQUIRE(cover);
+    REQUIRE(cover->a.size() == 4);
+    REQUIRE(p.a.face_crops.size() == 1);
+    for (int i = 0; i < 4; ++i) CHECK(std::abs(p.a.face_crops[0][i] - cover->a[i].d) < 1e-6);
+    auto cat = mv::mobile::catalogue::open(utf8(p.gen()), utf8(p.base));
+    REQUIRE(cat);
+    auto people = (*cat)->people();
+    REQUIRE(people);
+    REQUIRE(people->size() == 1);
+    CHECK((*people)[0].has_face);
+    auto face = (*cat)->person_face((*people)[0].key);
+    REQUIRE(face);
+    CHECK(*face == std::vector<std::uint8_t>{0xFF, 0xD8, 'F'});
+  }
   CHECK(only_cell(file, "SELECT path FROM faces LIMIT 1").rfind("/", 0) == 0);
   CHECK(only_cell(file, "SELECT path FROM faces LIMIT 1").find(utf8(p.a.photos())) == std::string::npos);
   auto settings = mv::json::parse(read_all(p.gen() / "settings.json"));
@@ -6810,6 +7069,58 @@ TEST_CASE("jpeg_shrink makes a real small JPEG, about the size the plan counted"
   CHECK_FALSE(mv::addon::media::jpeg_shrink(std::vector<std::uint8_t>{1, 2, 3}, 64, 72));
 }
 
+
+// The phone's People cover (2026-11-27): "Nigel" at the top right of his cover photo, a baby in
+// the middle of it. The circle is his face, cut as the desktop cuts it (AIChrome Thumbs.crop).
+TEST_CASE("jpeg_face_crop cuts the face at the box, squared with the desktop's margin", "[ai][engine][phone]") {
+  constexpr std::uint32_t W = 512, H = 384;
+  const std::array<float, 4> nigel{0.7f, 0.05f, 0.2f, 0.25f}, baby{0.4f, 0.4f, 0.2f, 0.2f};
+  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(W) * H * 4u);
+  const auto inside = [](const std::array<float, 4>& b, std::uint32_t x, std::uint32_t y) {
+    return x >= b[0] * W && x < (b[0] + b[2]) * W && y >= b[1] * H && y < (b[1] + b[3]) * H;
+  };
+  for (std::uint32_t y = 0; y < H; ++y) {
+    for (std::uint32_t x = 0; x < W; ++x) {
+      std::uint8_t* p = rgba.data() + (static_cast<std::size_t>(y) * W + x) * 4u;
+      const bool red = inside(nigel, x, y), blue = inside(baby, x, y);
+      p[0] = red ? 230 : 128;
+      p[1] = red || blue ? 20 : 128;
+      p[2] = blue ? 230 : red ? 20 : 128;
+      p[3] = 255;
+    }
+  }
+  auto photo = mv::codec::encode_jpeg_rgba(rgba, W, H, 92);
+  REQUIRE(photo);
+
+  const auto centre_of = [](const std::vector<std::uint8_t>& jpeg) {
+    auto r = mv::codec::decode_jpeg(jpeg);
+    REQUIRE(r);
+    CHECK(r->width == r->height);
+    const std::uint8_t* p = r->rgba.data() + (static_cast<std::size_t>(r->height / 2) * r->width + r->width / 2) * 4u;
+    return std::array<int, 3>{p[0], p[1], p[2]};
+  };
+  // 1.6 times the face's longer side (0.2 x 512 = 102.4 px): 164 px, under the 320 asked for.
+  auto face = mv::addon::media::jpeg_face_crop(*photo, nigel, 320, 85);
+  REQUIRE(face);
+  auto dim = mv::codec::jpeg_dimensions(*face);
+  REQUIRE(dim);
+  CHECK(dim->width == 164);
+  CHECK(dim->height == 164);
+  const auto c = centre_of(*face);
+  CHECK(c[0] > 180);  // his red, not the baby's blue nor the grey around them
+  CHECK(c[2] < 80);
+  // A smaller edge averages down; the square stays his.
+  auto small = mv::addon::media::jpeg_face_crop(*photo, nigel, 64, 85);
+  REQUIRE(small);
+  CHECK(mv::codec::jpeg_dimensions(*small)->width == 64);
+  CHECK(centre_of(*small)[0] > 180);
+  // A face too big for its margin is the picture's short side, kept inside it.
+  auto big = mv::addon::media::jpeg_face_crop(*photo, {0.3f, 0.1f, 0.5f, 0.8f}, 512, 85);
+  REQUIRE(big);
+  CHECK(mv::codec::jpeg_dimensions(*big)->width == H);
+  CHECK_FALSE(mv::addon::media::jpeg_face_crop(std::vector<std::uint8_t>{1, 2, 3}, nigel, 64, 85));
+  CHECK_FALSE(mv::addon::media::jpeg_face_crop(*photo, {0.5f, 0.5f, 0.0f, 0.2f}, 64, 85));
+}
 
 TEST_CASE("tiny.pack and thumbs.idx agree even when the index moves mid-build", "[ai][engine][phone]") {
   phone_rig p;

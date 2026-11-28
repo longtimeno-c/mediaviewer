@@ -144,10 +144,17 @@ typedef struct mv_mobile_person {
   const char* name;
   uint32_t item_count;
   int64_t face_asset_id;  /* the item whose picture stands for this person */
+  uint32_t has_face;      /* 1: mv_mobile_library_person_face has their own face; 0: an older desktop */
 } mv_mobile_person;
 typedef void (*mv_mobile_person_fn)(void* user, const mv_mobile_person* person);
 /* Named people, in name order. None when the generation has no faces.db. */
 mv_mobile_status mv_mobile_library_people(mv_mobile_library* library, mv_mobile_person_fn visit, void* user);
+/* A person's round cover: a small JPEG of their own face, cut by the desktop as its People covers
+ * are. `visit` is called once, before this returns, with bytes valid only during the call.
+ * MV_MOBILE_ERR_NOT_FOUND when the desktop sent none. [worker-thread]: reads the catalogue. */
+typedef void (*mv_mobile_bytes_fn)(void* user, const uint8_t* bytes, uint32_t length);
+mv_mobile_status mv_mobile_library_person_face(mv_mobile_library* library, const char* person_key,
+                                               mv_mobile_bytes_fn visit, void* user);
 
 typedef struct mv_mobile_details {
   char place[256];

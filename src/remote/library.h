@@ -8,8 +8,10 @@
 // (remote/key.h), tiles made here from range reads, and originals fetched into
 // a disk cache by content identity (remote/cache.h).
 //
-// Read-only (owner call 1, 2026-11-14): nothing here calls the service's
-// write op. Every call that can block says so and runs on a worker, never the
+// Changing files (plan §6): a device the server lets "change" adds, makes
+// folders, moves, renames and deletes (into the server's trash) through the
+// service's change ops, in the named folders it marks writable; every other
+// device is read-only, as before. Every call that can block says so and runs on a worker, never the
 // UI or render thread (rule 1). Nothing here logs a path, a name or an
 // address (rule 6). Portable (D9): no OS header, no host type.
 #pragma once
@@ -62,6 +64,9 @@ struct server_info {
   // so, owner call 1), "change" or "admin" once a host's admin grants it; "" until it has
   // answered this run, or from a service older than roles.
   std::string role;
+  // The server's LAN "host:port" as last kept (servers.json), "" without one: where its SMB
+  // shares are at home (remote/lan_share.h), also when it has not answered this run.
+  std::string local;
 };
 
 struct folder {
@@ -102,6 +107,9 @@ struct config {
   std::string device_name = "Computer";  // what the service lists this desktop as
   // Keys live here; null: the OS store (Keychain, DPAPI) under kAppService.
   driftwire::secrets::store* store = nullptr;
+  // A dev build tried against a throwaway server: keys in files in this folder instead (used
+  // only when `store` is null and the folder is, or can be made, owner-only).
+  std::string dev_keys_dir;
   bool loopback_only = false;  // the tests
   int connect_timeout_ms = 5000;
   // After a server failed to answer, calls fail at once for this long unless
@@ -114,6 +122,17 @@ struct config {
   // that kind without a tile.
   std::function<result<std::vector<std::uint8_t>>(std::span<const std::uint8_t>, const job_context*)> still_tile;
   std::function<result<std::vector<std::uint8_t>>(range_reader&, const job_context*)> clip_tile;
+  // A server answered after it had not this run (unknown, unreachable, ...): its id. Called on
+  // the worker that connected, never under the library's locks; the host hands it on (the
+  // Mac mounts the server's LAN share, remote/lan_share.h). Null: nothing.
+  std::function<void(const std::string& server_id)> on_online;
+};
+
+// How the last connect reached a server (mobile::route_report, without the failures).
+struct route_seen {
+  std::string address;  // "host:port" that answered
+  bool over_internet = false;
+  bool relayed = false;
 };
 
 // What a code says before it is redeemed: shown so the person can compare
@@ -159,6 +178,8 @@ class library {
   // ---- what the rows show; never blocks --------------------------------------
   [[nodiscard]] std::vector<server_info> servers() const;
   [[nodiscard]] std::optional<server_info> server(std::string_view id) const;
+  // How this run's latest connect to the server reached it; nullopt before one answered.
+  [[nodiscard]] std::optional<route_seen> last_route(std::string_view id) const;
   // The name a folder key is shown under: a named folder's label, a
   // subfolder's leaf, the server's name. "" when unknown.
   [[nodiscard]] std::string display_name(std::string_view key) const;
@@ -192,9 +213,38 @@ class library {
   [[nodiscard]] expected read_range(std::string_view file_key, std::uint64_t at, std::uint64_t length,
                                     const mobile::byte_sink& sink, const mobile::cancel_flag* cancel = nullptr);
 
-  // False always: the role a host's admin grants ("change", server_info::role) is shown, but the
-  // service takes writes only into a backup folder today, so this client writes nothing yet.
+  // ---- changing a server's folders (plan §6); docs/design/16 "Drag and drop into folders") ----
+  // Whether this desktop may change files at `key` (a folder or a file in one) now: its
+  // service has the change ops and says that named folder is writable for this device (which
+  // a "view" role never is). Known once the server's folders were listed this run, read again
+  // after a reconnect whose role changed; false until then. Never blocks.
   [[nodiscard]] bool can_write(std::string_view key) const noexcept;
+  // Why not, in words a command can show: "" when it may.
+  [[nodiscard]] std::string write_problem(std::string_view key) const;
+  using change_refused = driftwire::serve::client::change_refused;
+  // Each BLOCKS (a worker) and answers the new key. A refusal is the service's, typed in
+  // `why` (serve_client.h): status::busy (something there is being written now: try again),
+  // ::permission_denied (exists, not_allowed, path, ...), ::not_found, ::unsupported_format
+  // (an older service), ::io. Afterwards the kept listings of the
+  // folders it touched are dropped, and a moved or deleted file's stamp, so the next list
+  // is the server's.
+  // A local file into `folder_key` as `name` (" (2)" if that is taken: never a replace).
+  // Resumes by itself after a dropped link or an offset refusal; `cancel` stops it, and a
+  // later call with the same file goes on from what reached the server.
+  [[nodiscard]] result<std::string> add_file(std::string_view folder_key, const std::string& local_path,
+                                             const std::string& name, const mobile::cancel_flag* cancel = nullptr,
+                                             const std::function<void(std::uint64_t sent)>& progress = {},
+                                             change_refused* why = nullptr);
+  [[nodiscard]] result<std::string> make_folder(std::string_view parent_key, const std::string& name,
+                                                change_refused* why = nullptr);
+  // A file or folder to `name` in `to_folder_key` (the same server): a rename when the folder
+  // is its own. A taken name is `exists`; nothing is replaced.
+  [[nodiscard]] result<std::string> move(std::string_view key, std::string_view to_folder_key, const std::string& name,
+                                         change_refused* why = nullptr);
+  // Into the folder's trash on the server (only its owner empties it): where it went there.
+  [[nodiscard]] result<std::string> remove(std::string_view key, change_refused* why = nullptr);
+  // BLOCKS: one stat. Whether something is at `key` now.
+  [[nodiscard]] result<bool> exists(std::string_view key);
 
   [[nodiscard]] disk_cache& cache() noexcept { return cache_; }
 
@@ -217,7 +267,12 @@ class library {
   // The live link, connecting when there is none; sets the server's state.
   [[nodiscard]] expected connect(server_rt& s, bool person, const mobile::cancel_flag* cancel);
   void set_state(server_rt& s, reach r);
-  [[nodiscard]] expected save_locked() const;  // m_ held
+  void keep_addresses(server_rt& s);  // after a connect: the caps' addresses into servers.json
+  // servers.json: the text made under m_, written after it is let go, so a
+  // row's name (display_name, on the main thread) never waits on the disk.
+  // save_m_ is held across both, so two saves land in the order made.
+  [[nodiscard]] std::string servers_json_locked() const;  // m_ held
+  [[nodiscard]] expected write_servers(const std::string& text) const;
   [[nodiscard]] std::optional<identity> identity_of(std::string_view file_key);
   [[nodiscard]] std::string servers_file() const;
   [[nodiscard]] result<listing> list_live(server_rt& s, const key_parts& k, std::string_view folder_key, bool person,
@@ -228,17 +283,28 @@ class library {
   [[nodiscard]] std::optional<listing> kept_listing(std::string_view server, std::string_view folder_key);
   [[nodiscard]] expected fetch_into(server_rt& s, const key_parts& k, const identity& id,
                                     const mobile::cancel_flag* cancel, const progress_fn& progress);
-  [[nodiscard]] driftwire::secrets::store& store();
+  // The keys' store; nullptr where the OS has none (a build without its keychain group).
+  [[nodiscard]] driftwire::secrets::store* store();
+  // What the service says this device may change: from a roots() answer.
+  void note_rights(server_rt& s, const std::vector<driftwire::serve::root_info>& roots);
+  void forget_rights(server_rt& s);  // nothing may be changed there until asked again
+  void recheck_rights(server_rt& s);  // after a not_allowed: a fresh hello and the roots
+  // After a change: the kept listing of `folder_key` and, for a file key, its stamp.
+  void forget_changed(std::string_view server, std::string_view folder_key, std::string_view item_key);
+  [[nodiscard]] result<std::shared_ptr<server_rt>> live_server(const key_parts& k, const mobile::cancel_flag* cancel);
 
   config cfg_;
   disk_cache cache_;
   std::unique_ptr<driftwire::secrets::store> own_store_;
   mutable std::mutex m_;
+  std::mutex save_m_;  // a whole save: its text under m_, then the write
   std::map<std::string, std::shared_ptr<server_rt>> servers_;  // under m_
   // The last listing's size and mtime per file key, and each named folder's label.
   mutable std::mutex stamps_m_;
   std::map<std::string, std::pair<std::uint64_t, std::int64_t>, std::less<>> stamps_;
   std::map<std::string, std::string, std::less<>> labels_;  // folder key -> label
+  // Per server: the named folders this device may change ("<server>/<root>"), under stamps_m_.
+  std::map<std::string, bool, std::less<>> writable_;
   std::mutex fetch_m_;
   std::map<std::string, std::shared_ptr<fetch_state>, std::less<>> fetching_;  // by file key
   std::atomic<std::uint64_t> gen_{1};

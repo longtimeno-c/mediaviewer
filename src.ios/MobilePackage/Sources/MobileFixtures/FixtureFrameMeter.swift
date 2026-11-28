@@ -23,6 +23,9 @@ final class FixtureFrameMeter: NSObject {
   private var window: UIWindow?
   private let label = UILabel()
 
+  /// The figures so far ("frames=… hitches=… hitchMs=…"), or nil when the meter is off.
+  static var line: String? { shared?.label.accessibilityLabel }
+
   static func startIfAsked(in scene: UIWindowScene) {
     guard UserDefaults.standard.bool(forKey: "fixtureFrameMeter"), shared == nil else { return }
     let meter = FixtureFrameMeter()

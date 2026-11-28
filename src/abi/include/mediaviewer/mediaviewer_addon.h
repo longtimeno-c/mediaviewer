@@ -204,10 +204,16 @@ typedef struct mv_addon_tag_facts {
   int32_t reserved;
   int64_t shutter_us;       /* the exposure time in microseconds */
   char label_utf8[64];      /* the colour label as written: "Red" */
+  /* (appended 2026-11-15): a clip's or an audio file's length from its
+   * container header, read in the same bounded open as the rest (no decode);
+   * 0 for a still, or when the header does not say. A host that knows it
+   * returns a struct_size of MV_ADDON_TAG_FACTS_V3_SIZE. */
+  int64_t duration_ms;
 } mv_addon_tag_facts;
 /* The size before #405's fields: what an older host or add-on passes. */
 #define MV_ADDON_TAG_FACTS_V1_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, rating))
-#define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
+#define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, duration_ms))
+#define MV_ADDON_TAG_FACTS_V3_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
 
 /* #297 (Enhance, slice 4): a file's sound at full quality, and a new file
  * beside it with sound the add-on made (sound_open ... sound_write_close). */
@@ -1136,6 +1142,24 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* catalogue_publish)(void* host, const char* destination_utf8);
   mv_status(MV_CALL* catalogue_cancel)(void* host);
   mv_status(MV_CALL* catalogue_json)(void* host, char* out_utf8, uint32_t capacity, uint32_t* out_size);
+  /* [any-thread] 1: this load of Local search should attach for Settings
+   * (folders and settings) without opening the towers, starting indexing
+   * threads, or downloading weights. 0 or NULL: load models as today. The
+   * first search or set_setting "start" then opens them, as does anything
+   * else that asks for work (Resume, Rescan, an export or import). Appended
+   * after catalogue_json: the pack reads it only when `struct_size` covers it. */
+  uint32_t(MV_CALL* ai_models_held)(void* host);
+  /* [any-thread, CPU only] A person's round cover cut from a JPEG, as the
+   * desktop's People covers are: `box` (x, y, w, h in 0..1 of the picture as
+   * shown) squared at 1.6 times its longer side, kept inside the picture,
+   * averaged down to at most `max_edge` (8..512) and encoded at `quality`
+   * 1..100. `*out_size` is always the bytes needed; MV_ERR_INVALID_ARG with it
+   * larger than `capacity`: call again. MV_ERR_CORRUPT: not a JPEG.
+   * Appended after ai_models_held: read only when `struct_size` covers it and
+   * the pointer is non-NULL. */
+  mv_status(MV_CALL* jpeg_face_crop)(void* host, const uint8_t* jpeg, uint64_t jpeg_size, const float box[4],
+                                     uint32_t max_edge, uint32_t quality, uint8_t* out, uint64_t capacity,
+                                     uint64_t* out_size);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1237,6 +1261,12 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
  * Windows, the chrome assembly). Events post to `session`'s queue. A second
  * load of a loaded add-on returns the same interface. MV_ERR_UNSUPPORTED_FORMAT:
  * the add-on needs an update. MV_ERR_CORRUPT: it failed verification. */
+/* 0.46: one-shot for the next mv_addon_load of "ai" through the host door:
+ * the pack attaches without opening the towers (Settings → Local search).
+ * 0 (the default) loads models as today. Search, install, Resume and Faces
+ * leave this at 0. Consumed by that load. [any-thread, no-block] */
+MV_API void MV_CALL mv_ai_hold_models(uint32_t hold);
+
 MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap);

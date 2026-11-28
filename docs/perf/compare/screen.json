@@ -1,11 +1,11 @@
 ﻿{
     "pan":  [
                 {
-                    "p99_ms":  49.7,
+                    "p99_ms":  51.2,
                     "app":  "mv",
-                    "p50_ms":  16.7,
-                    "fps":  56.9,
-                    "changes":  684,
+                    "p50_ms":  16.8,
+                    "fps":  56.4,
+                    "changes":  678,
                     "file":  "sony_ilce7rm3.arw"
                 },
                 {
@@ -17,11 +17,11 @@
                     "file":  "sony_ilce7rm3.arw"
                 },
                 {
-                    "p99_ms":  83.7,
+                    "p99_ms":  85.2,
                     "app":  "mv",
                     "p50_ms":  16.7,
-                    "fps":  53.2,
-                    "changes":  638,
+                    "fps":  52.5,
+                    "changes":  631,
                     "file":  "nikon_d7500.nef"
                 },
                 {
@@ -33,11 +33,11 @@
                     "file":  "nikon_d7500.nef"
                 },
                 {
-                    "p99_ms":  49,
+                    "p99_ms":  20,
                     "app":  "mv",
                     "p50_ms":  16.7,
-                    "fps":  51.9,
-                    "changes":  623,
+                    "fps":  54.7,
+                    "changes":  658,
                     "file":  "libheif-example.heic"
                 },
                 {
@@ -52,27 +52,27 @@
     "method":  "screen grab, about 17 ms",
     "play":  [
                  {
-                     "p99_ms":  66.3,
-                     "app":  "mv",
-                     "p50_ms":  33.3,
-                     "fps":  29,
-                     "changes":  348,
-                     "file":  "av_transport.mp4"
-                 },
-                 {
-                     "p99_ms":  43.6,
-                     "app":  "wmp",
-                     "p50_ms":  33.3,
-                     "fps":  29.2,
-                     "changes":  350,
-                     "file":  "av_transport.mp4"
-                 },
-                 {
-                     "p99_ms":  366.9,
+                     "p99_ms":  167,
                      "app":  "mv",
                      "p50_ms":  33.4,
-                     "fps":  24.1,
-                     "changes":  289,
+                     "fps":  27.4,
+                     "changes":  329,
+                     "file":  "av_transport.mp4"
+                 },
+                 {
+                     "p99_ms":  165.7,
+                     "app":  "wmp",
+                     "p50_ms":  33.4,
+                     "fps":  27.6,
+                     "changes":  331,
+                     "file":  "av_transport.mp4"
+                 },
+                 {
+                     "p99_ms":  635.8,
+                     "app":  "mv",
+                     "p50_ms":  33.4,
+                     "fps":  22.1,
+                     "changes":  265,
                      "file":  "hevc_4k_8bit_bt709.mp4"
                  },
                  {
@@ -88,73 +88,73 @@
                  {
                      "rep":  0,
                      "app":  "mv",
-                     "first_pixel_ms":  896.7,
+                     "first_pixel_ms":  1087.7,
                      "file":  "sony_ilce7rm3.arw"
                  },
                  {
                      "rep":  1,
                      "app":  "mv",
-                     "first_pixel_ms":  838,
+                     "first_pixel_ms":  935.8,
                      "file":  "sony_ilce7rm3.arw"
                  },
                  {
                      "rep":  0,
                      "app":  "photos",
-                     "first_pixel_ms":  1016.1,
+                     "first_pixel_ms":  1210.2,
                      "file":  "sony_ilce7rm3.arw"
                  },
                  {
                      "rep":  1,
                      "app":  "photos",
-                     "first_pixel_ms":  745.6,
+                     "first_pixel_ms":  741.9,
                      "file":  "sony_ilce7rm3.arw"
                  },
                  {
                      "rep":  0,
                      "app":  "mv",
-                     "first_pixel_ms":  897.8,
+                     "first_pixel_ms":  969,
                      "file":  "nikon_d7500.nef"
                  },
                  {
                      "rep":  1,
                      "app":  "mv",
-                     "first_pixel_ms":  551.9,
+                     "first_pixel_ms":  944.3,
                      "file":  "nikon_d7500.nef"
                  },
                  {
                      "rep":  0,
                      "app":  "photos",
-                     "first_pixel_ms":  784,
+                     "first_pixel_ms":  745.9,
                      "file":  "nikon_d7500.nef"
                  },
                  {
                      "rep":  1,
                      "app":  "photos",
-                     "first_pixel_ms":  770,
+                     "first_pixel_ms":  762.3,
                      "file":  "nikon_d7500.nef"
                  },
                  {
                      "rep":  0,
                      "app":  "mv",
-                     "first_pixel_ms":  945.2,
+                     "first_pixel_ms":  389.1,
                      "file":  "libheif-example.heic"
                  },
                  {
                      "rep":  1,
                      "app":  "mv",
-                     "first_pixel_ms":  982.6,
+                     "first_pixel_ms":  356.9,
                      "file":  "libheif-example.heic"
                  },
                  {
                      "rep":  0,
                      "app":  "photos",
-                     "first_pixel_ms":  919.7,
+                     "first_pixel_ms":  883.3,
                      "file":  "libheif-example.heic"
                  },
                  {
                      "rep":  1,
                      "app":  "photos",
-                     "first_pixel_ms":  700.5,
+                     "first_pixel_ms":  682.7,
                      "file":  "libheif-example.heic"
                  }
              ],

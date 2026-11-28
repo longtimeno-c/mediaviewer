@@ -5,6 +5,7 @@
 // of the core (docs/design/18 "does not link the core statically").
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -145,6 +146,12 @@ class host {
   [[nodiscard]] bool has_jpeg_shrink() const noexcept;
   [[nodiscard]] result<std::vector<std::uint8_t>> jpeg_shrink(std::span<const std::uint8_t> jpeg, std::uint32_t max_edge,
                                                               std::uint32_t quality) const;
+  // A person's round cover cut from a JPEG, as the desktop's People covers
+  // (`box` in 0..1 of the picture); an older host has none.
+  [[nodiscard]] bool has_jpeg_face_crop() const noexcept;
+  [[nodiscard]] result<std::vector<std::uint8_t>> jpeg_face_crop(std::span<const std::uint8_t> jpeg,
+                                                                 const std::array<float, 4>& box, std::uint32_t max_edge,
+                                                                 std::uint32_t quality) const;
   // A JPEG-512 made now and stored nowhere; an older host has none.
   [[nodiscard]] bool has_thumbnail_make() const noexcept;
   [[nodiscard]] result<std::vector<std::uint8_t>> thumbnail_make(const std::string& path, std::int64_t pts_ms) const;

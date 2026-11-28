@@ -378,6 +378,7 @@ final class StorageStore: ObservableObject {
       case "places": return ("Places", "The add-on and its place database.")
       case "import": return ("Import", "The add-on.")
       case "driftwire": return ("Driftwire", "The add-on.")
+      case "vpn": return ("VPN", "The add-on.")
       case "enhance": return ("Enhance", "The add-on and the models it downloaded.")
       default: return (folder, "An add-on and its data.")
       }
@@ -431,6 +432,56 @@ final class StorageStore: ObservableObject {
 
   static func sizeText(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+  }
+}
+
+/// A paired server's SMB shares, mounted in the Finder when it answers at home (on by default).
+/// The File menu has the same Mount and Unmount, for the keyboard.
+private struct ServerSharesSection: View {
+  // Settings stays built while hidden: read again each time it shows, so a server paired (or
+  // loaded) since is seen.
+  @ObservedObject var settings = SettingsStore.shared
+  @State private var paired = ServerSharesSection.hasServers()
+  @State private var auto = mv_chrome_lan_share_auto()
+
+  var body: some View {
+    // A view that is always there: an empty Group never appears, so it could not read again.
+    VStack(alignment: .leading, spacing: 0) {
+      if paired {
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+          SettingsSectionTitle(title: "Servers")
+          SettingsRow(title: "Mount shares in the Finder at home",
+                      detail: "When a paired server answers on your home network, its shared folders appear in the Finder too, signed in with what your Keychain has. Never over the internet.") {
+            Toggle("Mount shares in the Finder at home", isOn: Binding(
+              get: { auto },
+              set: { auto = $0; mv_chrome_set_lan_share_auto($0) }))
+              .toggleStyle(.switch).fixedSize()
+          }
+          SettingsRow(title: "Shares now", detail: "Mount signs in with macOS's own dialog the first time; tick \"Remember this password in my keychain\" to mount by itself after that.",
+                      labelsContent: false) {
+            HStack(spacing: MVTheme.space(8)) {
+              SettingsButton(title: "Mount") { mv_chrome_lan_share_mount() }
+                .accessibilityLabel("Mount server shares")
+              SettingsButton(title: "Unmount") { mv_chrome_lan_share_unmount() }
+                .accessibilityLabel("Unmount server shares")
+            }
+          }
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onAppear(perform: read)
+    .onChange(of: settings.visible) { if $0 { read() } }
+  }
+
+  private static func hasServers() -> Bool {
+    var buf = [CChar](repeating: 0, count: 4096)
+    return buf.withUnsafeMutableBufferPointer { mv_chrome_remote_servers($0.baseAddress, Int32($0.count)) } > 0
+  }
+
+  private func read() {
+    paired = Self.hasServers()
+    auto = mv_chrome_lan_share_auto()
   }
 }
 
@@ -603,6 +654,9 @@ struct SettingsView: View {
             .pickerStyle(.menu).frame(width: 180)
           }
         }
+        // docs/plans/desktop-client.md §6a: a paired server's shares in the Finder; absent
+        // until a server is paired (File → Connect to a Server…).
+        ServerSharesSection()
         // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
         section("Storage")
         StorageSection()

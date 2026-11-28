@@ -13,13 +13,17 @@
 #include <sodium.h>
 
 #include <atomic>
+#include <cstdlib>
+#include <cstdio>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,13 +34,16 @@
 #include "addons/driftwire/cli/host_setup.h"
 #include "addons/driftwire/cli/qr.h"
 #include "addons/driftwire/ddns.h"
-#include "addons/driftwire/tunnel.h"
+#include "addons/vpn/tunnel.h"
 #include "core/json.h"
 #include "import_fixture.h"
+#include "io/child_process.h"
+#include "tunnel_fixture.h"
 #include "mobile/link_payload.h"
 #include "wire/link.h"
 #include "wire/net.h"
 #include "wire/pair_check.h"
+#include "wire/secrets.h"
 #include "wire/serve.h"
 #include "wire/serve_client.h"
 #include "wire/splice.h"
@@ -202,73 +209,6 @@ std::string read_all(serve::client& c, const std::string& root, const std::strin
   }
 }
 
-// An echo server on loopback (upper-cases what it hears), the far end of a forward.
-struct echo_server {
-  std::unique_ptr<net::listener> l;
-  std::thread t;
-  std::atomic<bool> stop{false};
-  std::vector<std::thread> conns;
-  echo_server() {
-    auto x = net::listen(true);
-    REQUIRE(x);
-    l = std::move(*x);
-    t = std::thread([this] {
-      while (!stop.load()) {
-        auto c = l->accept(200);
-        if (!c) {
-          if (c.error() == mv::status::cancelled) return;
-          continue;
-        }
-        std::shared_ptr<mv::driftwire::link> one(std::move(*c));
-        conns.emplace_back([this, one] {
-          std::vector<std::uint8_t> b(4096);
-          while (!stop.load()) {
-            auto n = one->read_some(b, 200);
-            if (!n && n.error() == mv::status::timeout) continue;
-            if (!n || *n == 0) break;
-            for (std::size_t i = 0; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
-            if (!one->write_all(std::span<const std::uint8_t>(b.data(), *n))) break;
-          }
-          one->shutdown();
-        });
-      }
-    });
-  }
-  ~echo_server() {
-    stop.store(true);
-    l->shutdown();
-    t.join();
-    for (auto& c : conns) c.join();
-  }
-  std::uint16_t port() const { return l->port(); }
-};
-
-// An HTTP CONNECT through the laptop's Tunnel proxy, and bytes both ways:
-// the proxy's status line ("" when nothing answered), echo checked when 200.
-std::string connect_through(std::uint16_t proxy_port, const std::string& authority, bool* echoed = nullptr) {
-  if (echoed) *echoed = false;
-  auto c = net::connect({"127.0.0.1", proxy_port}, 2000);
-  if (!c) return {};
-  auto& l = **c;
-  const std::string ask = "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\n";
-  if (!l.write_all({reinterpret_cast<const std::uint8_t*>(ask.data()), ask.size()})) return {};
-  std::string head;
-  std::uint8_t b = 0;
-  while (head.find("\r\n\r\n") == std::string::npos && head.size() < 4096) {
-    if (!mv::driftwire::read_exact(l, {&b, 1}, 15000)) return head.substr(0, head.find("\r\n"));
-    head.push_back(static_cast<char>(b));
-  }
-  const std::string status = head.substr(0, head.find("\r\n"));
-  if (status.rfind("HTTP/1.1 200", 0) == 0 && echoed) {
-    const std::string hello = "through the home computer";
-    if (l.write_all({reinterpret_cast<const std::uint8_t*>(hello.data()), hello.size()})) {
-      std::vector<std::uint8_t> back(hello.size());
-      if (mv::driftwire::read_exact(l, back, 10000)) *echoed = std::string(back.begin(), back.end()) == "THROUGH THE HOME COMPUTER";
-    }
-  }
-  return status;
-}
-
 // The matrix as '0'/'1' rows, hashed: the C# tests' pin (QrCodeTests.cs).
 std::string matrix_sha(const cli::qr_code& q) {
   std::string rows;
@@ -343,6 +283,12 @@ TEST_CASE("host setup: the arguments; nothing secret is one", "[host-setup][host
   CHECK(p.a.host == cli::host_action::vpn);
   CHECK(p.a.on);
   CHECK(p.a.tls_port == 443);
+  CHECK_FALSE(p.a.tls_off);
+  p = parse({"host", "vpn", "on", "--tls-port", "off"});
+  REQUIRE(p.error.empty());
+  CHECK(p.a.tls_off);
+  CHECK(p.a.tls_port == 0);
+  CHECK_FALSE(parse({"host", "vpn", "off", "--tls-port", "off"}).error.empty());
   p = parse({"host", "vpn", "off"});
   REQUIRE(p.error.empty());
   CHECK_FALSE(p.a.on);
@@ -381,6 +327,92 @@ TEST_CASE("host setup: host.json keeps the name, the web-site look and the libra
   CHECK_FALSE(cli::parse_host_settings(R"({"tls_port":70000})"));
   CHECK_FALSE(cli::parse_host_settings(R"({"library_id":"../x"})"));
   CHECK(cli::host_settings_json(cli::host_settings{}).find("ddns") == std::string::npos);
+  // The web-site look: on with the VPN by default, on the relay's port + 1, or as set; "look": false is off.
+  cli::host_settings v;
+  CHECK(cli::look_port(v) == 0);  // no VPN
+  v.vpn = true;
+  CHECK(cli::look_port(v) == 47615);
+  v.tls_port = 443;
+  CHECK(cli::look_port(v) == 443);
+  v.look = false;
+  CHECK(cli::look_port(v) == 0);
+  const auto off = cli::parse_host_settings(cli::host_settings_json(v));
+  REQUIRE(off);
+  CHECK_FALSE(off->look);
+  CHECK(cli::parse_host_settings(R"({"vpn":true})")->look);
+  CHECK_FALSE(cli::parse_host_settings(R"({"look":"no"})"));
+}
+
+TEST_CASE("host setup: your own domain for the VPN, beside DuckDNS", "[host-setup][host][vpn-stealth]") {
+  CHECK(cli::parse_domain("vpn.example.com") == "vpn.example.com");
+  CHECK(cli::parse_domain(" VPN.Example.COM. ") == "vpn.example.com");
+  CHECK(cli::parse_domain("https://vpn.example.com/") == "vpn.example.com");
+  CHECK(cli::parse_domain("a-b.c1.example.co.uk") == "a-b.c1.example.co.uk");
+  for (const char* bad : {"", "localhost", "vpn..example.com", "-vpn.example.com", "vpn-.example.com", "vpn example.com",
+                          "vpn.example.com:443", "vpn.example.com/path", "v_pn.example.com", "ex\xC3\xA4mple.com"}) {
+    INFO(bad);
+    CHECK_FALSE(cli::parse_domain(bad));
+  }
+  // The name the VPN is reached by: the own domain first, else DuckDNS's, else none.
+  cli::host_settings s;
+  CHECK(cli::vpn_name(s).empty());
+  s.ddns = "home";
+  CHECK(cli::vpn_name(s) == "home.duckdns.org");
+  s.domain = "vpn.example.com";
+  CHECK(cli::vpn_name(s) == "vpn.example.com");
+  const auto back = cli::parse_host_settings(cli::host_settings_json(s));
+  REQUIRE(back);
+  CHECK(back->domain == "vpn.example.com");
+  CHECK_FALSE(cli::parse_host_settings(R"({"domain":"not a domain"})"));
+  // `host name domain NAME|none`, and the two CNAMEs it asks for.
+  scratch_dir dir("host_domain");
+  const cli::host_layout l = new_host(dir / "data");
+  cli::host_settings with_duck;
+  with_duck.ddns = "home";
+  REQUIRE(cli::host_files::save_settings(l, with_duck));
+  script t;
+  cli::setup_io io = t.io();
+  REQUIRE(cli::host_domain(l, "VPN.Example.com", io) == 0);
+  CHECK(cli::host_files::settings(l).domain == "vpn.example.com");
+  CHECK(contains(t.said, "vpn.example.com  CNAME  home.duckdns.org"));
+  CHECK(contains(t.said, "_acme-challenge.vpn.example.com  CNAME  _acme-challenge.home.duckdns.org"));
+  CHECK(cli::host_domain(l, "home.duckdns.org", io) == 1);  // that one is `host name duckdns`
+  CHECK(cli::host_domain(l, "nope", io) == 1);
+  CHECK(cli::host_files::settings(l).domain == "vpn.example.com");
+  REQUIRE(cli::host_domain(l, "none", io) == 0);
+  CHECK(cli::host_files::settings(l).domain.empty());
+  CHECK(cli::host_files::settings(l).ddns == "home");  // DuckDNS stays
+  // The command line's words.
+  const auto parse = [](std::vector<std::string> v) { return cli::parse_args(v, true); };
+  const auto p = parse({"host", "name", "domain", "vpn.example.com"});
+  REQUIRE(p.error.empty());
+  CHECK(p.a.host == cli::host_action::name);
+  CHECK(p.a.host_words == std::vector<std::string>{"domain", "vpn.example.com"});
+  CHECK_FALSE(parse({"host", "name", "domain"}).error.empty());
+}
+
+TEST_CASE("host vpn: the code's port: the router's outside one for a name, the one it listens on for the LAN",
+          "[host-setup][host][vpn-stealth]") {
+  if (!mv::driftwire::tls::available()) SKIP("this build has no BoringSSL");
+  scratch_dir dir("host_vpn_code_port");
+  const cli::host_layout l = new_host(dir / "data");
+  cli::host_settings s;
+  s.vpn = true;
+  REQUIRE(cli::host_files::save_settings(l, s));
+  const auto lock = net::try_lock_instance(l.lock);  // a running host's
+  REQUIRE(lock);
+  // The router mapped outside 443 to the look's 47615; on the home network nothing listens on 443.
+  REQUIRE(cli::host_files::write(l.state, R"({"relay_port":47614,"relay_tls_port":47615,"tls_outside_port":443,)"
+                                          R"("relay_outside_port":47614,"vpn":true})"));
+  std::string why;
+  bool tls = false;
+  const std::string line = cli::host_relay_line(l, loopback_world(), why, &tls);
+  CHECK(tls);
+  CHECK(line.rfind("127.0.0.1:47615#", 0) == 0);
+  // The look could not listen: the plain relay's port.
+  REQUIRE(cli::host_files::write(l.state, R"({"relay_port":47614,"tls_failed":true,"vpn":true})"));
+  CHECK(cli::host_relay_line(l, loopback_world(), why, &tls).rfind("127.0.0.1:47614#", 0) == 0);
+  CHECK_FALSE(tls);
 }
 
 TEST_CASE("host setup: what the router is asked for, and the status words", "[host-setup][host]") {
@@ -393,14 +425,19 @@ TEST_CASE("host setup: what the router is asked for, and the status words", "[ho
   CHECK(w[0].internal_port == 7878);
   CHECK(w[0].what == "service");
   k.vpn = true;
-  k.relay_tls_port = 8443;
-  w = cli::wanted_ports(k);
-  REQUIRE(w.size() == 3);
+  w = cli::wanted_ports(k);  // the VPN without the look: the plain relay's port
+  REQUIRE(w.size() == 2);
   CHECK(w[1].internal_port == 47614);
   CHECK(w[1].what == "relay");
-  CHECK(w[2].internal_port == 8443);
-  CHECK(w[2].external_port == 443);
-  CHECK(w[2].fallback_external == 8443);
+  // With the look, only it is open outside (the plain relay's cleartext head never is):
+  // outside 443, else 8443.
+  k.relay_tls_port = 47615;
+  w = cli::wanted_ports(k);
+  REQUIRE(w.size() == 2);
+  CHECK(w[1].internal_port == 47615);
+  CHECK(w[1].external_port == 443);
+  CHECK(w[1].fallback_external == cli::kLookFallbackPort);
+  CHECK(cli::kLookFallbackPort == 8443);
   CHECK(cli::ago_words(1000, 1030) == "just now");
   CHECK(cli::ago_words(1000, 1000 + 180) == "3 min ago");
   CHECK(cli::ago_words(1000, 1000 + 7200) == "2 h ago");
@@ -475,7 +512,12 @@ TEST_CASE("host setup: the guided run, then a phone pairs from its QR over loopb
   CHECK(contains(t.said, "The phone then shows a check"));
   const auto key = cli::host_files::relay_secret(l);
   REQUIRE(key);
-  CHECK(contains(t.said, "127.0.0.1:47614#" + *key));
+  // With the web-site look (on by default), its code on the look's port; else the plain line.
+  if (mv::driftwire::tls::available()) {
+    CHECK(contains(t.said, "mediaviewer://relay-tls#127.0.0.1:47615#" + *key));
+  } else {
+    CHECK(contains(t.said, "127.0.0.1:47614#" + *key));
+  }
   CHECK(contains(t.said, "never into your home network"));
 
   // The host runs (the lock as the supervisor holds it), and a phone pairs from a new code.
@@ -684,6 +726,66 @@ TEST_CASE("host setup: a DuckDNS name skipped, refused, mistyped, then kept; and
   }
 }
 
+// A secrets store whose read waits: the keeper's worker held where the host's
+// first state.json is written (the token not read yet).
+struct held_store final : mv::driftwire::secrets::store {
+  std::mutex m;
+  std::condition_variable cv;
+  int reads = 0;
+  bool open = false;
+  bool put(const std::string&, std::span<const std::uint8_t>) override { return false; }
+  std::optional<std::vector<std::uint8_t>> get(const std::string&) override {
+    std::unique_lock lock(m);
+    ++reads;
+    cv.notify_all();
+    cv.wait(lock, [this] { return open; });
+    return std::nullopt;
+  }
+  bool erase(const std::string&) override { return false; }
+  void wait_reads(int n) {
+    std::unique_lock lock(m);
+    cv.wait(lock, [&] { return reads >= n; });
+  }
+  void let_go() {
+    {
+      std::lock_guard lock(m);
+      open = true;
+    }
+    cv.notify_all();
+  }
+};
+
+TEST_CASE("host keepers: a status asked before the worker has looked names what is wanted, never \"none\"",
+          "[host-setup][host]") {
+  REQUIRE(sodium_init() >= 0);
+  // The router: not asked yet, not "nothing to open".
+  CHECK(cli::make_router_keeper()->status_line() == "router      not asked yet");
+
+  held_store store;
+  cli::ddns_keeper_config c;
+  c.fetch = [](const std::string&, int) { return ddns::fetch_answer{}; };
+  c.on_loopback = true;
+  auto k = cli::make_ddns_keeper(std::move(c));
+  cli::keeper_context ctx;
+  ctx.secrets = &store;
+  ctx.loopback_only = true;
+  ctx.ddns_subdomain = "home";
+  k->start(ctx);
+  store.wait_reads(1);  // the worker is reading the token: nothing built yet
+  CHECK(k->status_line() == "DuckDNS     home.duckdns.org, updating");
+  // A new name while it still works on the old one: the new one at once.
+  ctx.ddns_subdomain = "cabin";
+  k->ports_changed(ctx);
+  CHECK(k->status_line() == "DuckDNS     cabin.duckdns.org, updating");
+  store.let_go();
+  CHECK(eventually([&] { return contains(k->status_line(), "cabin.duckdns.org: no token kept"); }));
+  // The name taken away: none, and said so.
+  ctx.ddns_subdomain.clear();
+  k->ports_changed(ctx);
+  CHECK(contains(k->status_line(), "DuckDNS     none: "));
+  k->stop();
+}
+
 TEST_CASE("host setup: the DuckDNS keeper in the running host; host status shows it, never the token",
           "[host-setup][host]") {
   REQUIRE(sodium_init() >= 0);
@@ -739,6 +841,73 @@ TEST_CASE("host setup: the DuckDNS keeper in the running host; host status shows
   host2->stop();
 }
 
+// The VPN host end to end, measured (docs/DEVELOPMENT.md "VPN host bench"): this
+// host's relay with the VPN on and the shipped forwarding (public sites only),
+// a laptop's Tunnel proxy with the relay line, and curl fetching a public URL
+// through it and directly, alternated. One JSON line per fetch. Reaches the internet.
+//   mv_import_tests "[.vpn-host-bench]"
+//     MV_VPN_BENCH_URL     what to fetch (default 25 MB from speed.cloudflare.com)
+//     MV_VPN_BENCH_ROUNDS  fetches of each (default 5)
+TEST_CASE("host vpn: a public site through this host's relay, against direct", "[.vpn-host-bench]") {
+  REQUIRE(sodium_init() >= 0);
+  const char* u = std::getenv("MV_VPN_BENCH_URL");
+  const std::string url = u && *u ? u : "https://speed.cloudflare.com/__down?bytes=25000000";
+  const char* r = std::getenv("MV_VPN_BENCH_ROUNDS");
+  const int rounds = r && *r ? std::atoi(r) : 5;
+  scratch_dir s("host_vpn_bench");
+  const cli::host_layout l = new_host(s / "data");
+  const cli::setup_world w = loopback_world();
+  const auto lock = net::try_lock_instance(l.lock);
+  REQUIRE(lock);
+  std::string why;
+  auto host = cli::host_service::start(service_options(l), why);
+  REQUIRE(host);
+  script t;
+  cli::setup_io io = t.io();
+  REQUIRE(cli::host_vpn(l, true, 0, io, w) == 0);
+  REQUIRE(eventually([&] { return host->snapshot().vpn && host->snapshot().relay_port != 0; }));
+  REQUIRE(eventually([&] { return contains(read_text(l.state), "\"vpn\":true"); }));
+  REQUIRE(eventually([&] { return !mv::driftwire::tls::available() || host->snapshot().relay_tls_port != 0; }));
+  tunnel::proxy::options po;
+  po.relay = cli::host_relay_line(l, w, why, &po.tls);
+  if (po.tls) po.tls_port = host->snapshot().relay_tls_port;
+  REQUIRE_FALSE(po.relay.empty());
+  auto proxy = tunnel::proxy::start(po);
+  REQUIRE(proxy);
+  const std::string through = "http://127.0.0.1:" + std::to_string((*proxy)->port());
+  const auto fetch = [&](bool via) {
+    std::vector<std::string> args = {"-s", "-o", "/dev/null", "--max-time", "120", "-w",
+                                     "%{http_code} %{time_connect} %{time_starttransfer} %{time_total} %{speed_download}"};
+    if (via) {
+      args.push_back("-x");
+      args.push_back(through);
+    }
+    args.push_back(url);
+    mv::io::child_process c;
+    REQUIRE(c.start("/usr/bin/curl", args));
+    std::string line, out;
+    while (c.read_line(line)) out += line;
+    (void)c.wait();
+    return out;
+  };
+  for (int i = 0; i < rounds * 2; ++i) {
+    const bool via = i % 2 == 1;
+    const std::string got = fetch(via);
+    int code = 0;
+    double connect = 0, first = 0, total = 0, speed = 0;
+    REQUIRE(std::sscanf(got.c_str(), "%d %lf %lf %lf %lf", &code, &connect, &first, &total, &speed) == 5);
+    CHECK(code == 200);
+    std::printf("{\"round\":%d,\"via\":\"%s\",\"code\":%d,\"connect_ms\":%.1f,\"first_byte_ms\":%.1f,\"total_ms\":%.1f,"
+                "\"mb_s\":%.2f}\n",
+                i, via ? "vpn_host" : "direct", code, connect * 1000, first * 1000, total * 1000, speed / (1 << 20));
+    std::fflush(stdout);
+  }
+  const auto st = host->snapshot();
+  CHECK(st.vpn);
+  (*proxy).reset();
+  host->stop();
+}
+
 TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loopback; never into the LAN",
           "[host-setup][host]") {
   REQUIRE(sodium_init() >= 0);
@@ -771,26 +940,39 @@ TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loo
 
   script t;
   cli::setup_io io = t.io();
+  const bool look = mv::driftwire::tls::available();
   REQUIRE(cli::host_vpn(l, true, 0, io, w) == 0);
   REQUIRE(eventually([&] { return host->snapshot().vpn && host->snapshot().relay_port != 0; }));
+  // The web-site look is on by default with the VPN, and the line is its port.
+  REQUIRE(eventually([&] { return !look || host->snapshot().relay_tls_port != 0; }));
+  const std::uint16_t line_port = look ? host->snapshot().relay_tls_port : host->snapshot().relay_port;
   REQUIRE(eventually([&] {
     return contains(read_text(l.state), "\"relay_port\":" + std::to_string(host->snapshot().relay_port)) &&
+           contains(read_text(l.state), "\"relay_tls_port\":" + std::to_string(look ? line_port : 0)) &&
            contains(read_text(l.state), "\"vpn\":true");
   }));
-  std::string line = cli::host_relay_line(l, w, why);
+  bool tls = !look;
+  std::string line = cli::host_relay_line(l, w, why, &tls);
   REQUIRE_FALSE(line.empty());
-  CHECK(line.rfind("127.0.0.1:" + std::to_string(host->snapshot().relay_port) + "#", 0) == 0);
-  CHECK(contains(t.said, "Relay (your own server)"));
+  CHECK(tls == look);
+  CHECK(line.rfind("127.0.0.1:" + std::to_string(line_port) + "#", 0) == 0);
+  // With the look, `vpn on` prints the code that says so (Connect turns the look on).
+  if (look) {
+    CHECK(contains(t.said, "mediaviewer://relay-tls#127.0.0.1:"));  // printed before the relay took it
+    CHECK(contains(t.said, "Connect to a VPN host"));
+  }
   {
     std::lock_guard g(seen_m);
-    CHECK(seen_tcp == std::vector<std::uint16_t>{80, 443});  // the relay's defaults with the VPN on
-    CHECK(seen_udp == std::vector<std::uint16_t>{53});
+    CHECK(seen_tcp == std::vector<std::uint16_t>{relay::kAnyPort});  // all traffic with the VPN on
+    CHECK(seen_udp == std::vector<std::uint16_t>{relay::kAnyPort});
     CHECK_FALSE(seen_private);
   }
 
-  // The laptop: its Tunnel proxy with that line, and a site through it.
+  // The laptop: its Tunnel proxy with that line (and the look, as Connect sets it), and a site through it.
   tunnel::proxy::options po;
   po.relay = line;
+  po.tls = tls;
+  po.tls_port = line_port;
   auto proxy = tunnel::proxy::start(po);
   REQUIRE(proxy);
   bool echoed = false;
@@ -804,7 +986,8 @@ TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loo
   REQUIRE(eventually([&] { return !host->snapshot().vpn; }));
   CHECK(contains(t.said, "The VPN is off"));
   (*proxy).reset();
-  po.relay = cli::host_relay_line(l, w, why);
+  po.relay = cli::host_relay_line(l, w, why, &po.tls);
+  CHECK_FALSE(po.tls);  // the look goes with the VPN
   auto proxy2 = tunnel::proxy::start(po);
   REQUIRE(proxy2);
   CHECK(connect_through((*proxy2)->port(), "127.0.0.1:" + std::to_string(echo.port())).rfind("HTTP/1.1 200", 0) != 0);
@@ -826,22 +1009,32 @@ TEST_CASE("host vpn: a laptop's Tunnel forwards through this host's relay on loo
   cli::setup_io io2 = t2.io();
   REQUIRE(cli::host_vpn(l2, true, 0, io2, w) == 0);
   REQUIRE(eventually([&] { return host2->snapshot().vpn && contains(read_text(l2.state), "\"vpn\":true"); }));
-  po.relay = cli::host_relay_line(l2, w, why);
+  REQUIRE(eventually([&] {
+    return !look || contains(read_text(l2.state), "\"relay_tls_port\":" +
+                                                      std::to_string(host2->snapshot().relay_tls_port));
+  }));
+  po.relay = cli::host_relay_line(l2, w, why, &po.tls);
+  po.tls_port = host2->snapshot().relay_tls_port;
   auto proxy3 = tunnel::proxy::start(po);
   REQUIRE(proxy3);
   const std::string refused = connect_through((*proxy3)->port(), "127.0.0.1:" + std::to_string(echo.port()));
   CHECK(refused.rfind("HTTP/1.1 403", 0) == 0);
   (*proxy3).reset();
 
-  // The web-site look: a TLS port of its own beside the relay's (self-signed).
-  if (mv::driftwire::tls::available()) {
+  // The web-site look: `--tls-port off` turns it off, and `vpn on` alone (as the desktop's VPN
+  // code asks it) leaves it off; `--tls-port N` brings it back on that port.
+  if (look) {
+    REQUIRE(cli::host_vpn(l2, true, 0, io2, w, true) == 0);
+    CHECK_FALSE(cli::host_files::settings(l2).look);
+    REQUIRE(eventually([&] { return host2->snapshot().relay_tls_port == 0 && host2->snapshot().vpn; }));
+    REQUIRE(cli::host_vpn(l2, true, 0, io2, w) == 0);
+    CHECK_FALSE(cli::host_files::settings(l2).look);
     REQUIRE(cli::host_vpn(l2, true, 443, io2, w) == 0);
-    REQUIRE(eventually([&] { return host2->snapshot().relay_tls_port != 0; }));
+    CHECK(cli::host_files::settings(l2).look);
     CHECK(cli::host_files::settings(l2).tls_port == 443);
-    CHECK(contains(t2.said, "Look like a web site: port 443"));
-    // Off takes the look with it.
+    REQUIRE(eventually([&] { return host2->snapshot().relay_tls_port != 0; }));
+    // Off: no look while the VPN is off.
     REQUIRE(cli::host_vpn(l2, false, 0, io2, w) == 0);
-    CHECK(cli::host_files::settings(l2).tls_port == 0);
     REQUIRE(eventually([&] { return host2->snapshot().relay_tls_port == 0 && !host2->snapshot().vpn; }));
   }
   host2->stop();

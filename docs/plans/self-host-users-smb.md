@@ -216,13 +216,16 @@ needed:
 
 | Role | What it is in the grants | What the service lets it do |
 |---|---|---|
-| `view` (can view files) | a grant with `backup` off (no end, all folders, unless also timed or scoped) | read only; every write is refused (`not-allowed`) |
-| `change` (can change files) | unlimited (the paired list), or a grant with `backup` on | read, and write. Today the service's only write is phone backup, into backup folders |
+| `view` (can view files) | a grant with `backup` off (no end, all folders, unless also timed or scoped) | read only; every write, `mkdir`, `move` and `delete` is refused (`not-allowed`) |
+| `change` (can change files) | unlimited (the paired list), or a grant with `backup` on | read; add files (`write`), make folders, move/rename and delete (into the folder's trash) in every folder its grant sees, never the Catalogue (docs/design/28 "Changing files"). Backup folders keep their limit |
 | `admin` | the owner's session | the owner's requests (the passphrase still gates what adds access) |
 
 - **Caps** carry it to every client: `"role":"view"|"change"|"admin"` (`caps_msg::role`,
   `kCapsRole`). A service from before roles sends none. A client then treats a paired device as
-  `change`, because it could write. The desktop client stays read-only whatever the role.
+  `change`, because it could write. Per folder, `root_info.writable` says whether this device may
+  change files there now; a client offers New folder, Move, Rename and Delete only when the caps
+  list all of `kChangeOps` (`serve::client::changes_files()`) and the folder is writable. The
+  service checks the role again at every request.
 - **A desktop starts as `view`.** It pairs with `serve_pair {code, name, kind:"desktop"}`
   (`serve::kDeviceDesktop`, `client::options::device_kind`, `mobile::service_config::device_kind`).
   Whatever the code gave, its grant has `backup` off. A plain code's desktop is no guest. A phone

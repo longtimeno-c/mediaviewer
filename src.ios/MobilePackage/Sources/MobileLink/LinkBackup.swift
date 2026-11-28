@@ -126,6 +126,44 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       switch status {
       case Int32(MV_LINK_OK.rawValue): return box.list
       case Int32(MV_LINK_TOO_OLD.rawValue): throw BackupState.serviceTooOld
+      // None because this phone is limited to other folders (mv_backup_folders).
+      case Int32(MV_LINK_NO_FOLDER.rawValue): throw BackupState.folderNotAllowed
+      default: throw BackupState.unreachable
+      }
+    }
+  }
+
+  public func subfolders(of folder: BackupFolder) async throws -> [BackupFolder] {
+    guard let h = await openHandle() else { throw BackupState.unreachable }
+    return try await onQueue {
+      final class Box { var names: [String] = [] }
+      let box = Box()
+      let status = folder.id.withCString { id in
+        mv_backup_subfolders(h.raw, id, { ctx, name in
+          guard let ctx, let name else { return }
+          Unmanaged<Box>.fromOpaque(ctx).takeUnretainedValue().names.append(String(cString: name))
+        }, Unmanaged.passUnretained(box).toOpaque())
+      }
+      switch status {
+      case Int32(MV_LINK_OK.rawValue): return box.names.compactMap { folder.child(named: $0) }
+      case Int32(MV_LINK_NOT_FOUND.rawValue): return []  // chosen but not made yet: the first backup makes it
+      case Int32(MV_LINK_DENIED.rawValue): throw BackupState.folderNotAllowed
+      default: throw BackupState.unreachable
+      }
+    }
+  }
+
+  public func makeFolder(named name: String, in folder: BackupFolder) async throws -> BackupFolder {
+    guard let child = folder.child(named: name) else { throw BackupFolderRefused() }
+    guard let h = await openHandle() else { throw BackupState.unreachable }
+    return try await onQueue {
+      let status = folder.id.withCString { id in
+        child.name.withCString { n in mv_backup_make_folder(h.raw, id, n, { _, _ in }, nil) }
+      }
+      switch status {
+      case Int32(MV_LINK_OK.rawValue): return child
+      case Int32(MV_LINK_INVALID.rawValue): throw BackupFolderRefused()
+      case Int32(MV_LINK_DENIED.rawValue): throw BackupState.folderNotAllowed
       default: throw BackupState.unreachable
       }
     }
@@ -278,6 +316,7 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     let b = h.raw
     let final: Int32 = await onQueue { [self] in
       let total = listPhotos(into: b)
+      noteDeletions(into: b)
       if mv_backup_cancelled(cancel.raw) != 0 { return 0 }
       change { $0.total = total }
       let ctx = Unmanaged.passUnretained(self).toOpaque()
@@ -295,6 +334,10 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
       return status == Int32(MV_LINK_OK.rawValue) ? state : 8
     }
     withExtendedLifetime(h) {}
+    _ = await onQueue { [self] in
+      deletionsHandled(by: b)
+      return 0
+    }
     var failures: [BackupFailureRow] = []
     _ = await onQueue {
       final class Box { var rows: [BackupFailureRow] = [] }
@@ -380,6 +423,78 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     }
     lock.withLock { localIDs = keys }
     return count
+  }
+
+  // MARK: Photos deleted on this phone
+
+  /// Photos deleted on this phone, from Photos' own change history (never a photo merely missing
+  /// from the listing: hidden ones and a burst's other frames are left out of it). Their keys wait
+  /// here until a run has moved their copies into the trash of the server's backup folder.
+  struct Deletions: Codable {
+    var token: Data?
+    var pending: [String] = []
+    var keys: [String: String] = [:]  // Photos local identifier -> ledger key, as of the last listing
+  }
+  static var deletionsFile: URL { root.appendingPathComponent("deletions.json") }
+
+  static func loadDeletions() -> Deletions {
+    (try? Data(contentsOf: deletionsFile)).flatMap { try? JSONDecoder().decode(Deletions.self, from: $0) } ?? Deletions()
+  }
+
+  static func save(_ d: Deletions) {
+    guard let data = try? JSONEncoder().encode(d) else { return }
+    try? data.write(to: deletionsFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+  }
+
+  /// Reads what Photos deleted since the last run and hands the core every key still waiting.
+  private func noteDeletions(into b: OpaquePointer) {
+    var d = Self.loadDeletions()
+    let library = PHPhotoLibrary.shared()
+    if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
+      if let data = d.token,
+         let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: data),
+         let changes = try? library.fetchPersistentChanges(since: token) {
+        var gone = Set(d.pending)
+        // The token of the last change read, not the library's current one: a deletion made
+        // while these were being read is then in the next run's history, never skipped.
+        var read: PHPersistentChangeToken? = token
+        for change in changes {
+          read = change.changeToken
+          guard let details = try? change.changeDetails(for: .asset) else { continue }
+          for id in details.deletedLocalIdentifiers {
+            if let key = d.keys[id] { gone.insert(key) }
+          }
+        }
+        d.pending = gone.sorted()
+        d.token = read.flatMap { try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true) }
+      } else {
+        // No history yet, or too old to read: from now on (nothing is taken for deleted).
+        d.token = try? NSKeyedArchiver.archivedData(withRootObject: library.currentChangeToken, requiringSecureCoding: true)
+      }
+    } else {
+      // Limited access: a photo taken out of the selection would read as deleted. Start again
+      // from full access, if it is given.
+      d.token = nil
+    }
+    var keys: [String: String] = [:]
+    for (key, local) in lock.withLock({ localIDs }) { keys[local] = key }
+    d.keys = keys
+    Self.save(d)
+    for key in d.pending { _ = key.withCString { mv_backup_add_deleted(b, $0) } }
+  }
+
+  /// Drops the keys the run finished with: in the trash now, never backed up there, or in Photos again.
+  private func deletionsHandled(by b: OpaquePointer) {
+    final class Box { var keys = Set<String>() }
+    let box = Box()
+    mv_backup_deleted_done(b, { ctx, key in
+      guard let ctx, let key else { return }
+      Unmanaged<Box>.fromOpaque(ctx).takeUnretainedValue().keys.insert(String(cString: key))
+    }, Unmanaged.passUnretained(box).toOpaque())
+    guard !box.keys.isEmpty else { return }
+    var d = Self.loadDeletions()
+    d.pending.removeAll { box.keys.contains($0) }
+    Self.save(d)
   }
 
   /// The originals as shot (§10b): the photo or video, a Live Photo's video, a RAW. Not Photos' edits.
@@ -599,6 +714,7 @@ public final class LinkBackup: BackupService, @unchecked Sendable {
     _ = old
     await onQueue {
       Self.sampleNAS.path.withCString { nas in Self.ledger.path.withCString { mv_backup_remove_local(nas, $0) } }
+      try? FileManager.default.removeItem(at: Self.deletionsFile)
       try? FileManager.default.removeItem(at: Self.scratch)
     }
     for key in [Key.folderID, Key.folderLabel, Key.library] { defaults.removeObject(forKey: key) }

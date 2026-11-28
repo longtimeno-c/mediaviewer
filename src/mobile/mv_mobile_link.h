@@ -152,6 +152,18 @@ void mv_link_close(mv_mobile_link* link);
  * Never blocks. */
 int32_t mv_link_grant(mv_mobile_link* link, int64_t* expires_unix, int32_t* scoped);
 
+/* Where the service is (docs/design/28-driftwire.md, "Addresses after pairing"): the addresses the link was opened with,
+ * each replaced by the one the latest connect's caps gave ("host:port"; empty for none). Keep them
+ * with the pairing and pass them to mv_link_open next time, so a DuckDNS name, a relay or a new LAN
+ * address set after pairing is dialled without pairing again. Never blocks. 0, or -1 (nothing:
+ * the sample library, or no link). */
+typedef struct mv_link_addresses {
+  char local[256];
+  char public_name[256];
+  char relay[256];
+} mv_link_addresses;
+int32_t mv_link_addresses_now(mv_mobile_link* link, mv_link_addresses* out);
+
 /* The server's combined drives (docs/plans/self-host-drives.md 4), as its caps said at connect:
  * 0 healthy or none, 1 rebuilding, 2 degraded (a mirror lost a drive), 3 offline, 4 a drive failing;
  * -1 when there is no live connection (keep what you had). Never blocks. */
@@ -307,6 +319,57 @@ int32_t mv_files_folder_place(mv_mobile_link* link, const char* folder_key, char
 int32_t mv_files_read(mv_mobile_link* link, const char* root, const char* rel, uint64_t at, uint64_t length, int32_t bulk,
                       mv_cancel* cancel, mv_sink_fn sink, void* ctx);
 
+/* ---- changing the shared folders (file mode; serve_client.h "changing the shared folders") ----
+ * Add, New folder, Move, Rename and Delete, for a device the service lets change files: shown only
+ * when mv_files_can_change says the service offers them, and in a folder only when its root is
+ * writable for this device (mv_files_writable_roots, asked again after a role change). Paths as
+ * mv_files_list; `rel` is never "" (not the folder itself). Each BLOCKS until the service answers
+ * (a move across drives copies, which can take minutes). Never logged.
+ *
+ * A refusal returns MV_LINK_DENIED (or MV_LINK_NOT_FOUND for not_found and offline) with `why`: */
+typedef enum mv_change_why {
+  MV_CHANGE_NONE = 0,
+  MV_CHANGE_UNSUPPORTED = 1,  /* the service is older than these (also MV_LINK_UNSUPPORTED) */
+  MV_CHANGE_NOT_ALLOWED = 2,  /* this device may not change files there now */
+  MV_CHANGE_PATH = 3,         /* the folder itself, a hidden or unsafe name, a folder into itself */
+  MV_CHANGE_EXISTS = 4,       /* the destination is taken; nothing was replaced */
+  MV_CHANGE_BUSY = 5,         /* another request is on that name now */
+  MV_CHANGE_NAME = 6,         /* the name is too long */
+  MV_CHANGE_LIMIT = 7,        /* past a backup folder's storage limit */
+  MV_CHANGE_FULL = 8,         /* the server's disk is full */
+  MV_CHANGE_OFFLINE = 9,      /* the folder's drive is not connected */
+  MV_CHANGE_NOT_FOUND = 10,   /* not there any more (moved or deleted elsewhere) */
+  MV_CHANGE_HASH = 11,        /* add: what arrived was not what was sent, again */
+  MV_CHANGE_OFFSET = 12,      /* (resumed inside mv_files_add; never returned) */
+  MV_CHANGE_FAILED = 13,      /* the server's disk failed it */
+  MV_CHANGE_LOCAL = 14,       /* add: the file on the phone could not be read (MV_LINK_INVALID) */
+} mv_change_why;
+typedef struct mv_change_result {
+  int32_t why;       /* mv_change_why */
+  int32_t existing;  /* mkdir: the folder was there; add: this very file was there */
+  /* Where it is now, under its folder: the new folder, the file (a taken name gets " (2)"), the
+   * destination, or its place in the folder's trash on the server ("YYYY-MM-DD/<rel>"). "" when
+   * it is too long for this buffer (the change still worked). */
+  char rel[4096];
+} mv_change_result;
+/* BLOCKS. 1 in *out when the service offers the changes (0 from an older one, and the sample library). */
+int32_t mv_files_can_change(mv_mobile_link* link, int32_t* out);
+typedef void (*mv_writable_fn)(void* ctx, const char* id, int32_t writable);
+/* BLOCKS. Every named folder (the catalogue's own too), and whether this device may change files in it now. */
+int32_t mv_files_writable_roots(mv_mobile_link* link, mv_writable_fn fn, void* ctx);
+typedef void (*mv_change_progress_fn)(void* ctx, uint64_t done_bytes, uint64_t total_bytes);
+/* BLOCKS. Sends the phone's file at `local_path` to `rel` in `root` (its folders made). Never replaces.
+ * Carries on from this device's unfinished copy after a cancel or a dropped link: call it again. */
+int32_t mv_files_add(mv_mobile_link* link, const char* root, const char* rel, const char* local_path, mv_cancel* cancel,
+                     mv_change_progress_fn progress, void* ctx, mv_change_result* out);
+/* BLOCKS. Makes the folder `rel` (and any missing above it). */
+int32_t mv_files_mkdir(mv_mobile_link* link, const char* root, const char* rel, mv_change_result* out);
+/* BLOCKS. Moves or renames a file or a folder to `to_rel` in `to_root` (this root or another writable one). */
+int32_t mv_files_move(mv_mobile_link* link, const char* root, const char* rel, const char* to_root, const char* to_rel,
+                      mv_change_result* out);
+/* BLOCKS. Deletes a file or a folder: it goes to the folder's trash on the server, where its owner can restore it. */
+int32_t mv_files_delete(mv_mobile_link* link, const char* root, const char* rel, mv_change_result* out);
+
 /* ---- clips this phone can't play (docs/plans/phone-clip-convert.md) ------------------------
  * The service converts them on its graphics hardware: H.264 and AAC in MPEG-TS segments of
  * `segment_ms` of the clip each (the last runs to the end), for an HLS playlist. */
@@ -375,7 +438,8 @@ void mv_backup_close(mv_backup* b);
 
 /* A backup folder the service offers. writable 0: not one this phone may write to. */
 typedef void (*mv_backup_folder_fn)(void* ctx, const char* id, const char* label, int32_t writable);
-/* BLOCKS. MV_LINK_TOO_OLD: the service is from before 1.1. */
+/* BLOCKS. MV_LINK_TOO_OLD: the service is from before 1.1. MV_LINK_NO_FOLDER: none, because this
+   phone is limited to folders none of which is a backup folder (the server may still have one). */
 int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx);
 
 typedef struct mv_backup_space {
@@ -383,8 +447,19 @@ typedef struct mv_backup_space {
   uint64_t used;
   uint64_t room;  /* what may still be written: the limit or the NAS's free space, whichever is less */
 } mv_backup_space;
-/* BLOCKS. */
+/* BLOCKS. folder_id may be a destination (below): the space is its backup folder's. */
 int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out);
+
+/* A destination is a backup folder's id, or "<id>/<subfolder>" (a path inside it), so the people
+ * sharing one backup folder each back up to their own. Wherever these functions and mv_backup_run
+ * take a folder_id, a destination will do; one that would leave its backup folder is MV_LINK_INVALID. */
+typedef void (*mv_backup_name_fn)(void* ctx, const char* name);
+/* BLOCKS. The folders directly inside a destination, by name. MV_LINK_NOT_FOUND: not made yet. */
+int32_t mv_backup_subfolders(mv_backup* b, const char* folder_id, mv_backup_name_fn fn, void* ctx);
+/* BLOCKS. Makes the folder `name` inside the destination (there already is fine) and gives the new
+ * destination through fn. MV_LINK_INVALID: not one plain folder name, or a file has that name;
+ * MV_LINK_DENIED: this phone may not change that folder. */
+int32_t mv_backup_make_folder(mv_backup* b, const char* folder_id, const char* name, mv_backup_name_fn fn, void* ctx);
 
 /* The photos to back up, newest first. MV_LINK_INVALID for no resources, a name that is a path, or a
  * year outside 1900-9999. resources_json: [{"kind":"photo|video|live_video|raw|other","name":"IMG_0412.HEIC"}].
@@ -393,6 +468,10 @@ int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space*
 int32_t mv_backup_clear_items(mv_backup* b);
 int32_t mv_backup_add_item(mv_backup* b, const char* key, const char* local_id, int32_t year, int32_t month, int32_t day,
                            const char* resources_json);
+/* The key of a photo Photos says was deleted (cleared with the items): the next run moves its files
+ * in the folder into the folder's trash on the server, unless it is among the items again. Never a
+ * photo merely missing from the items (hidden ones and a burst's other frames are left out of them). */
+int32_t mv_backup_add_deleted(mv_backup* b, const char* key);
 
 /* BLOCKS (the core's run thread calls it). Writes resource `index` of the photo `local_id`, the
  * original as shot (from iCloud first if need be), to `path`. MV_LINK_OK, MV_LINK_NOT_FOUND (gone from
@@ -429,6 +508,7 @@ typedef struct mv_backup_status {
   double current_fraction;
   char current[256];        /* the file being copied: this phone's own screen only */
   uint64_t failed;
+  uint64_t trashed;         /* files moved into the folder's trash this run (photos deleted from Photos) */
 } mv_backup_status;
 typedef void (*mv_backup_status_fn)(void* ctx, const mv_backup_status* status);
 
@@ -444,6 +524,9 @@ int32_t mv_backup_failures(mv_backup* b, mv_backup_failure_fn fn, void* ctx);
 /* Keys of the photos not backed up yet, as of the last run. */
 typedef void (*mv_backup_key_fn)(void* ctx, const char* key);
 int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx);
+/* Keys of the deleted photos the last run finished with: their files are in the trash, or were never
+ * backed up to that folder, or the photo is in Photos again. The rest wait for the next run. */
+int32_t mv_backup_deleted_done(mv_backup* b, mv_backup_key_fn fn, void* ctx);
 
 /* Forget: removes the sample library's on-phone "NAS" and a ledger. Nothing on a real NAS is touched. */
 void mv_backup_remove_local(const char* sample_folder, const char* ledger_path);

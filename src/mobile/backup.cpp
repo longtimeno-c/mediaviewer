@@ -92,6 +92,7 @@ namespace {
 class over_link final : public target {
  public:
   explicit over_link(link_session& l) : l_(l) {}
+  // (limited_: as of the last folders() answer.)
 
   result<std::vector<folder>> folders() override {
     auto can = l_.can_write();
@@ -103,7 +104,31 @@ class over_link final : public target {
     for (const auto& r : *roots) {
       if (r.backup) out.push_back({r.id, r.label, r.writable});
     }
+    // Read with the list: a link gone since answers nothing about the scope (unreachable).
+    std::int64_t expires = 0;
+    bool scoped = false;
+    const int g = l_.grant(expires, scoped);
+    if (g < 0) return err(status::io);
+    limited_ = g == 1 && scoped;
     return out;
+  }
+  bool limited_to_some_folders() const override { return limited_.load(std::memory_order_acquire); }
+  result<bool> trash(const std::string& root, const std::string& rel) override {
+    serve::client::change_refused why;
+    auto r = l_.remove(root, rel, &why);
+    if (r) return true;
+    // Gone already is done; an offline folder is not.
+    if (r.error() == status::not_found && why.why == serve::client::change_why::not_found) return false;
+    return err(r.error());
+  }
+  expected make_folder(const std::string& root, const std::string& rel) override {
+    serve::client::change_refused why;
+    auto r = l_.make_folder(root, rel, &why);
+    if (r) return {};
+    using w = serve::client::change_why;
+    if (why.why == w::unsupported) return err(status::unsupported_format);
+    if (why.why == w::exists || why.why == w::path) return err(status::invalid_arg);
+    return err(r.error());
   }
   result<serve::stat_info> space(const std::string& root) override { return l_.stat(root, ""); }
   result<std::vector<serve::list_entry>> list(const std::string& root, const std::string& rel) override {
@@ -141,6 +166,8 @@ class over_link final : public target {
 
  private:
   link_session& l_;
+  // The run's thread and the chooser's both ask folders(): each reads what the last answer said.
+  std::atomic<bool> limited_{false};
 };
 
 // ---- the sample library's folder on this phone ---------------------------------------------
@@ -187,6 +214,44 @@ class on_phone final : public target {
       out.push_back({c.name, c.size, c.mtime_unix, c.is_directory});
     }
     return out;
+  }
+
+  // The service's mkdir (serve.cpp make_folder), on this phone.
+  expected make_folder(const std::string& root, const std::string& rel) override {
+    if (root != root_.id || !driftwire::safe_relative(rel)) return err(status::permission_denied);
+    if (auto st = io::stat_beneath(root_.path, rel)) {
+      return st->is_directory ? expected{} : expected(err(status::invalid_arg));
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(fs_path(root_.path), ec);
+    auto made = io::make_directories_beneath(root_.path, rel);
+    if (!made) return err(made.error());
+    return {};
+  }
+
+  // The service's delete (serve.cpp trash_entry), on this phone: into the folder's hidden trash,
+  // `<kTrashFolder>/<YYYY-MM-DD>/<rel>`, by a rename; a taken name gets a number.
+  result<bool> trash(const std::string& root, const std::string& rel) override {
+    if (root != root_.id || !driftwire::safe_relative(rel)) return err(status::permission_denied);
+    const std::string from = io::join_path(root_.path, io::native_relative(rel));
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(fs_path(from), ec)) return false;
+    using namespace std::chrono;
+    const year_month_day d{floor<days>(system_clock::now())};
+    char day[16];
+    std::snprintf(day, sizeof day, "%04d-%02u-%02u", static_cast<int>(d.year()), static_cast<unsigned>(d.month()),
+                  static_cast<unsigned>(d.day()));
+    const auto slash = rel.rfind('/');
+    const std::string name = slash == std::string::npos ? rel : rel.substr(slash + 1);
+    const std::string in_trash = std::string(serve::kTrashFolder) + "/" + day + (slash == std::string::npos ? "" : "/" + rel.substr(0, slash));
+    auto dir = io::make_directories_beneath(root_.path, in_trash);
+    if (!dir) return err(dir.error());
+    for (int n = 1; n <= serve::backup::kMaxNumbered; ++n) {
+      auto renamed = io::rename_no_replace(from, io::join_path(*dir, serve::backup::numbered(name, n)));
+      if (!renamed) return err(renamed.error());
+      if (*renamed == io::rename_outcome::renamed) return true;
+    }
+    return err(status::busy);
   }
 
   // The service's write, step for step (serve.cpp open_write and commit), on this phone.
@@ -343,6 +408,38 @@ class on_phone final : public target {
 };
 
 }  // namespace
+
+std::optional<destination> parse_destination(std::string_view dest) {
+  const auto slash = dest.find('/');
+  destination d{std::string(dest.substr(0, slash)), slash == std::string_view::npos ? std::string() : std::string(dest.substr(slash + 1))};
+  if (d.root.empty() || d.root.size() > 128) return std::nullopt;
+  if (slash != std::string_view::npos && !driftwire::safe_relative(d.sub)) return std::nullopt;
+  return d;
+}
+
+result<std::vector<std::string>> subfolders(target& t, std::string_view dest) {
+  const auto d = parse_destination(dest);
+  if (!d) return err(status::invalid_arg);
+  auto listing = t.list(d->root, d->sub);
+  if (!listing) return err(listing.error());
+  std::vector<std::string> out;
+  for (const auto& e : *listing) {
+    if (e.dir && valid_name(e.name)) out.push_back(e.name);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+result<std::string> make_subfolder(target& t, std::string_view dest, std::string_view name) {
+  const auto d = parse_destination(dest);
+  if (!d) return err(status::invalid_arg);
+  if (!valid_name(name)) return err(status::invalid_arg);
+  const std::string rel = d->sub.empty() ? std::string(name) : d->sub + "/" + std::string(name);
+  if (auto made = t.make_folder(d->root, rel); !made && made.error() != status::unsupported_format) {
+    return err(made.error());
+  }
+  return d->root + "/" + rel;
+}
 
 std::unique_ptr<target> link_target(link_session& link) { return std::make_unique<over_link>(link); }
 
@@ -549,9 +646,78 @@ struct engine::present_set {
   std::map<std::string, std::uint64_t> files;  // rel -> size, of the folders the ledger points into
 };
 
-engine::engine(options o, target& t, source& s, ledger& l) : o_(std::move(o)), t_(t), s_(s), l_(l) {}
+engine::engine(options o, target& t, source& s, ledger& l)
+    : o_(std::move(o)), d_(parse_destination(o_.root).value_or(destination{})), t_(t), s_(s), l_(l) {}
+
+std::string engine::in_dest(const std::string& rel) const {
+  if (d_.sub.empty()) return rel;
+  return rel.empty() ? d_.sub : d_.sub + "/" + rel;
+}
 
 void engine::set_items(std::vector<item> items) { items_ = std::move(items); }
+
+void engine::set_deleted(std::vector<std::string> keys) { deleted_ = std::move(keys); }
+
+std::vector<std::string> engine::deleted_done() const {
+  std::lock_guard lock(m_);
+  return deleted_done_;
+}
+
+void engine::trash_deleted(const cancel_flag* cancel) {
+  if (deleted_.empty()) return;
+  std::set<std::string> in_photos;
+  for (const auto& it : items_) in_photos.insert(it.key);
+  std::map<std::string, std::vector<row>> rows;
+  const std::set<std::string> wanted(deleted_.begin(), deleted_.end());
+  for (auto& r : l_.all(o_.root)) {
+    if (wanted.count(r.key)) rows[r.key].push_back(std::move(r));
+  }
+  // Which of them are really to go: backed up here, and not in Photos again (restored from
+  // Recently Deleted: its copy stays).
+  std::set<std::string> going;
+  for (const auto& key : deleted_) {
+    if (!in_photos.count(key) && !rows[key].empty()) going.insert(key);
+  }
+  // Many at once is not someone deleting photos: iCloud Photos turned off with "Remove from
+  // iPhone", signing out of iCloud, a library reset. Their backups are exactly what a backup is
+  // for, so they stay where they are and the keys are done with (never mirrored later either).
+  const bool bulk = going.size() > kMaxDeletedAtOnce;
+  // A file another photo still in the ledger relies on (the same picture twice in Photos is sent
+  // once and recorded for both): it stays for that one; only this photo's row goes.
+  std::set<std::string> relied_on;
+  for (const auto& r : l_.all(o_.root)) {
+    if (!going.count(r.key)) relied_on.insert(r.rel);
+  }
+  bool changed = false;
+  bool out_of_reach = false;
+  for (const auto& key : deleted_) {
+    if (cancel && cancel->stopped()) break;
+    bool finished = true;
+    if (going.count(key) && !bulk) {
+      for (const auto& r : rows[key]) {
+        if (!relied_on.count(r.rel)) {
+          auto moved = t_.trash(d_.root, r.rel);
+          if (!moved) {
+            finished = false;
+            // Refused for this one file (not allowed, a name the service will not move): it
+            // waits, and the others are not held up behind it. Anything else is the folder,
+            // the service or the link: all of it next time.
+            if (moved.error() != status::permission_denied) out_of_reach = true;
+            break;
+          }
+          if (*moved) ++st_.trashed;
+        }
+        (void)l_.remove(r.root, r.key, r.kind, r.name);
+        changed = true;
+      }
+    }
+    if (out_of_reach) break;
+    if (!finished) continue;
+    std::lock_guard lock(m_);
+    deleted_done_.push_back(key);
+  }
+  if (changed) copy_ledger();
+}
 
 std::vector<std::string> engine::remaining() const {
   std::lock_guard lock(m_);
@@ -568,10 +734,10 @@ bool engine::item_done(const item& it) const {
 
 bool engine::restore_if_empty() {
   if (l_.size(o_.root) != 0) return true;
-  auto ids = t_.ledger_ids(o_.root);
+  auto ids = t_.ledger_ids(d_.root);
   if (!ids) return false;
   for (const auto& id : *ids) {
-    auto text = t_.read_ledger(o_.root, id);
+    auto text = t_.read_ledger(d_.root, id);
     if (!text) continue;
     const auto rows = ledger::parse_json(*text, o_.library_id);
     if (!rows) continue;
@@ -593,10 +759,10 @@ result<engine::present_set> engine::check_folder() {
   std::set<std::string> dirs;
   for (const auto& r : rows) dirs.insert(dir_of(r.rel));
   // The folder itself first: refused there is the folder not being this phone's to write.
-  if (auto top = t_.list(o_.root, ""); !top && top.error() != status::not_found) return err(top.error());
+  if (auto top = t_.list(d_.root, ""); !top && top.error() != status::not_found) return err(top.error());
   // One listing per folder (§10b).
   for (const auto& d : dirs) {
-    auto listing = t_.list(o_.root, d);
+    auto listing = t_.list(d_.root, d);
     if (!listing) {
       // Gone, or a subfolder refused (a row that named a path it may not): its rows are copied again.
       if (listing.error() == status::not_found || listing.error() == status::permission_denied) continue;
@@ -627,7 +793,7 @@ void engine::copy_ledger() {
   std::uint64_t at = 0;
   for (int attempt = 0; attempt < 3; ++attempt) {
     serve::client::write_refused why;
-    auto r = t_.write(o_.root, t_.device_id() + "/" + serve::kLedgerFile, text.size(), hash, at, read, {}, nullptr, &why, true);
+    auto r = t_.write(d_.root, t_.device_id() + "/" + serve::kLedgerFile, text.size(), hash, at, read, {}, nullptr, &why, true);
     if (r) return;
     // An older copy's unfinished part: going on from it fails the hash, which removes it; then from 0.
     if (why.why == serve::kWhyOffset) {
@@ -655,18 +821,22 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
   st_.now = state::checking;
   say();
 
+  if (d_.root.empty()) return stop_with(state::no_folder);  // not a destination
   auto folders = t_.folders();
   if (!folders) {
     if (folders.error() == status::unsupported_format) return stop_with(state::too_old);
     return stop_with(state::unreachable);
   }
-  const auto chosen = std::find_if(folders->begin(), folders->end(), [&](const folder& f) { return f.id == o_.root; });
+  const auto chosen = std::find_if(folders->begin(), folders->end(), [&](const folder& f) { return f.id == d_.root; });
+  // Gone, or (to a phone limited to some folders) no longer named to it: the two look the same
+  // from here, so "choose another", whose list then says which.
   if (chosen == folders->end()) return stop_with(state::no_folder);
   if (!chosen->writable) return stop_with(state::not_allowed);
   if (!restore_if_empty()) return stop_with(state::unreachable);
   if (auto checked = check_folder(); !checked) {
     return stop_with(checked.error() == status::permission_denied ? state::not_allowed : state::unreachable);
   }
+  trash_deleted(cancel);
 
   {
     std::lock_guard lock(m_);
@@ -747,13 +917,13 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
         continue;
       }
       const std::string dir = subdir(ymd[0], ymd[1], ymd[2], o_.folders);
-      const std::string rel = dir.empty() ? res.name : dir + "/" + res.name;
+      const std::string rel = in_dest(dir.empty() ? res.name : dir + "/" + res.name);
       const auto read = file_read_fn(in);
       std::uint64_t at = 0;
       result<serve::client::write_done> written = err(status::io);
       serve::client::write_refused why;
       for (int attempt = 0; attempt < 4; ++attempt) {
-        written = t_.write(o_.root, rel, size, hash, at, read,
+        written = t_.write(d_.root, rel, size, hash, at, read,
                            [&](std::uint64_t sent) {
                              st_.current_fraction = size ? static_cast<double>(sent) / static_cast<double>(size) : 1.0;
                              say();

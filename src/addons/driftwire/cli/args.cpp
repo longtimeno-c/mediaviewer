@@ -61,14 +61,17 @@ std::string help_text() {
          "  driftwire host               host the service and a relay on this computer, from\n"
          "         [--data DIR]          its own folder (DIR/host), until stopped: what starts at\n"
          "                               login; host share PATH [--label L] [--backup] gives phones\n"
-         "                               a folder (--backup: they may back up into it), host unshare\n"
+         "                               a folder (--backup: they may back up into it; --limit GB\n"
+         "                               caps it, none (the default) leaves only 1 GB free; given\n"
+         "                               for a folder shared already, it changes that), host unshare\n"
          "                               LABEL takes one back, host status shows it, host\n"
          "                               start-at-login on|off and host stay-awake on|off change\n"
          "                               how it runs (no administrator needed); host setup walks\n"
          "                               through it all (a DuckDNS name, a folder, the router, a\n"
          "                               phone, the VPN), host name duckdns|none sets the name (the\n"
-         "                               token is typed), host pair shows a phone's pairing QR, host\n"
-         "                               vpn on [--tls-port 443]|off makes it the laptop's VPN exit;\n"
+         "                               token is typed), host name domain NAME|none your own domain\n"
+         "                               for the VPN (a CNAME to the DuckDNS name), host pair shows a phone's pairing QR, host\n"
+         "                               vpn on [--tls-port N|off]|off makes it the laptop's VPN exit;\n"
          "                               host users [add NAME [--role view|change|admin] [--folders\n"
          "                               L1,L2] | role NAME ROLE | password NAME | remove NAME | apply]\n"
          "                               keeps who may open its folders from other computers at home\n"
@@ -107,7 +110,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
   std::vector<std::string> words;  // after the command
   std::string first_word;          // a word that is not a command, for the error
   bool want_to = false, want_once = false;
-  bool want_label = false, want_backup = false;
+  bool want_label = false, want_backup = false, want_limit = false;
   bool want_users_opts = false;  // --folders, --input-stdin (host users only)
   bool want_role = false;        // --role: host users, or a device's role (serve grant)
   bool want_drives_flag = false;  // --json, --confirm-stdin: host drives only
@@ -163,10 +166,14 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--tls-port") {
         std::string v;
         if (!value(v, "a port")) return out;
+        if (v == "off") {
+          a.tls_off = true;
+          continue;
+        }
         char* end = nullptr;
         const long p = std::strtol(v.c_str(), &end, 10);
         if (v.empty() || *end != '\0' || p < 1 || p > 65535) {
-          out.error = "--tls-port takes a port, 1 to 65535";
+          out.error = "--tls-port takes a port, 1 to 65535, or off";
           return out;
         }
         a.tls_port = static_cast<std::uint16_t>(p);
@@ -179,6 +186,17 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       } else if (t.name == "--backup" && flag) {
         a.backup = true;
         want_backup = true;
+      } else if (t.name == "--limit") {
+        if (!value(a.limit, "GB or none")) return out;
+        if (a.limit != "none") {
+          char* end = nullptr;
+          const double gb = std::strtod(a.limit.c_str(), &end);
+          if (!end || *end != '\0' || !(gb > 0) || gb >= 1e6) {
+            out.error = "--limit takes GB (like 500) or none";
+            return out;
+          }
+        }
+        want_limit = true;
       } else if (t.name == "--role") {  // ---- host users (self-host-users-smb.md) ----
         if (!value(a.role, "a role (view, change or admin)")) return out;
         want_role = true;
@@ -386,11 +404,15 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         // Only the provider: the subdomain and the token are typed or pasted, never arguments.
         a.host = host_action::name;
         a.on = words[1] == "duckdns";
+      } else if (what == "name" && words.size() == 3 && words[1] == "domain") {
+        // The person's own domain for the VPN (not a secret): NAME, or none.
+        a.host = host_action::name;
+        a.host_words.assign(words.begin() + 1, words.end());
       } else if (parse_host_control(words, a)) {
         // pause, resume, quit: the tray's control (host_control.h)
       } else {
-        out.error = "host takes setup, share PATH [--label L] [--backup], unshare LABEL, status, pair, "
-                    "name duckdns|none, vpn on [--tls-port N]|off, convert on [--helper PATH]|off, "
+        out.error = "host takes setup, share PATH [--label L] [--backup [--limit GB|none]], unshare LABEL, status, pair, "
+                    "name duckdns|none, name domain NAME|none, vpn on [--tls-port N|off]|off, convert on [--helper PATH]|off, "
                     "start-at-login on|off, stay-awake on|off, "
                     "users …, drives …, pause, resume or quit";
         return out;
@@ -403,7 +425,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         out.error = "--helper goes with host convert on";
         return out;
       }
-      if (a.tls_port != 0 && !(a.host == host_action::vpn && a.on)) {
+      if ((a.tls_port != 0 || a.tls_off) && !(a.host == host_action::vpn && a.on)) {
         out.error = "--tls-port goes with host vpn on";
         return out;
       }
@@ -414,6 +436,10 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       if (want_label && a.host == host_action::drives && !want_backup) break;  // the combined drive's name
       if ((want_label || want_backup) && a.host != host_action::share) {
         out.error = "--label and --backup go with host share";
+        return out;
+      }
+      if (want_limit && !(a.host == host_action::share && a.backup)) {
+        out.error = "--limit goes with host share --backup";
         return out;
       }
       if ((want_users_opts || want_role) && a.host != host_action::users) {
@@ -431,12 +457,16 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
     out.error = "--convert-helper goes with serve (running it)";
     return out;
   }
-  if (a.tls_port != 0 && a.cmd != command::host) {
+  if ((a.tls_port != 0 || a.tls_off) && a.cmd != command::host) {
     out.error = "--tls-port goes with host vpn on";
     return out;
   }
   if ((want_label || want_backup) && a.cmd != command::host) {
     out.error = "--label and --backup go with host share";
+    return out;
+  }
+  if (want_limit && a.cmd != command::host) {
+    out.error = "--limit goes with host share --backup";
     return out;
   }
   if ((want_users_opts || (want_role && a.cmd != command::serve)) && a.cmd != command::host) {

@@ -24,6 +24,8 @@ struct MediaTile: View {
   @State private var loaded: Loaded?
   /// The thumbnail could not be had: a quiet glyph says what the tile is instead of an empty square.
   @State private var missing = false
+  /// A clip's length learnt after the tile was listed (a folder's clip), and whose it is.
+  @State private var learnt: (id: MediaID, seconds: TimeInterval)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Whether the last drawing painted a picture. A box, not state: written while drawing, read
   /// when a picture arrives, and never a reason to draw again.
@@ -78,6 +80,11 @@ struct MediaTile: View {
       show(sharper, of: item.id)
     }
     if loaded?.id != item.id, !drawn.painted, !Task.isCancelled { missing = true }
+    // After the picture: a folder's clip learns its length from the header its poster read.
+    if item.kind == .clip, item.duration == nil, entry.moment == nil, learnt?.id != item.id,
+       let seconds = await images.length(for: item), !Task.isCancelled, item.id == entry.item.id {
+      learnt = (item.id, seconds)
+    }
   }
 
   /// Fades in only the first picture a tile gets (`fadesIn`); a sharper one replaces it in place.
@@ -124,8 +131,14 @@ struct MediaTile: View {
   }
 
   private var badgeText: String? {
+    Self.badgeText(entry, learnt: learnt?.id == entry.item.id ? learnt?.seconds : nil)
+  }
+
+  /// A moment's time, else the clip's length: the one it was listed with, else one learnt since.
+  /// No length known says nothing (never 0:00).
+  static func badgeText(_ entry: GridEntry, learnt: TimeInterval?) -> String? {
     if let moment = entry.moment { return .clockFrom(moment.seconds) }
-    return entry.item.duration.map { .clockFrom($0) }
+    return (entry.item.duration ?? learnt).map { .clockFrom($0) }
   }
 }
 
@@ -143,6 +156,7 @@ struct MediaGrid<Header: View>: View {
 
   @Environment(AppModel.self) private var model
   @Environment(\.viewerNamespace) private var namespace
+  @Environment(\.editingPage) private var editingPage
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private let columns = [GridItem(.adaptive(minimum: 120), spacing: 2)]
@@ -176,6 +190,7 @@ struct MediaGrid<Header: View>: View {
           }
         }
       }
+      .dropsHold()
       .onChange(of: model.viewerFocus) { _, focus in
         guard let focus, focus.hasPrefix(context + "/") else { return }
         guard let position = Int(focus.dropFirst(context.count + 1)) else { return }
@@ -193,11 +208,12 @@ struct MediaGrid<Header: View>: View {
   private func tile(_ entry: GridEntry) -> some View {
     let source = "\(context)/\(entry.position)"
     Button {
-      open(entry)
+      TileTap(page: editingPage, model: model).run(.item(entry.item)) { open(entry) }
     } label: {
       MediaTile(entry: entry, images: model.services.images, fadesIn: entries.ids != nil)
     }
     .buttonStyle(TileButtonStyle())
+    .choosable(.item(entry.item))
     .accessibilityLabel(entry.caption.map { "\(entry.accessibilityName), \($0)" } ?? entry.accessibilityName)
     // Never spoken: lets a test name which item a tile is (the live parity run).
     .accessibilityIdentifier(answering.isEmpty ? "tile:\(entry.item.id.raw)" : "tile:\(entry.item.id.raw)|\(answering)")
@@ -229,7 +245,7 @@ private struct TransitionSource: ViewModifier {
   }
 }
 
-/// A wait past a second shows the content's own empty geometry.
+/// The content's own empty geometry while a listing is awaited.
 struct GridSkeleton: View {
   var body: some View {
     GeometryReader { geo in

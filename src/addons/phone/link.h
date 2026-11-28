@@ -128,6 +128,8 @@ class link {
   //                        are what the person typed, one per drive, handed to the program's
   //                        stdin (--confirm-stdin). The OS's administrator prompt shows meanwhile.
   //   host_drives_replace {set, id, name}   a new drive in a mirror
+  //   host_drives_copy {ids:[from, to]}      keeps a copy of one drive on the other, nothing erased
+  //   host_drives_copy_stop {label}          stops keeping it (the copied files stay)
   // A passphrase or token is handed on and never kept here or shown in state_json.
   [[nodiscard]] expected request(const std::string& request_json);
   // The card's state, one JSON object (docs/plans/phone-in-the-app.md §3). [no-block]
@@ -192,6 +194,9 @@ class link {
     std::string nas_passphrase;
     std::vector<std::string> nas_features;
     std::string relay;  // the person's own relay the service waits at ("" for none)
+    // The NAS as a VPN host (owner_status): the port asked for (0: off), and whether it listens.
+    std::int64_t nas_vpn_port = 0;
+    bool nas_vpn_running = false;
     std::int64_t unlocked_s = 0, locked_until = 0;
     // When the unlock read as unlocked_s runs out: the card's countdown is the
     // time left from now, not the snapshot (state_json).
@@ -203,6 +208,9 @@ class link {
     self_host::host_status host;
     bool host_read = false;
     std::string host_step, host_said;
+    // The relay line `host vpn on` printed (it holds the relay's key), shown
+    // until the card hides it, the VPN goes off or Settings closes. Screen only.
+    std::string relay_line;
     // The host's users (names and roles only) and its LAN share's addresses.
     struct user_row {
       std::string name, role;

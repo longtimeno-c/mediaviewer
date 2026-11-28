@@ -61,15 +61,25 @@ public protocol ImageLadder: Sendable {
   func placeholder(for item: MediaItem) async -> UIImage?
   /// A grid-sized picture.
   func thumbnail(for item: MediaItem) async -> UIImage?
+  /// The person's own face for their round icon, when the desktop sent one (`Person.hasFace`).
+  func face(for person: Person) async -> UIImage?
+  /// `face(for:)` when it is already in memory. Called on the main thread for first paint.
+  func cachedFace(for person: Person) -> UIImage?
   /// Each better picture as it arrives, in place of the last. Throws `MediaFailure` when the
   /// original will not come; whatever was already sent stays on screen.
   func ladder(for item: MediaItem, fittingPixels: CGSize) -> AsyncThrowingStream<LadderEvent, Error>
   /// §8.2 net lane 2: the viewer's ±2.
   func prefetch(_ items: [MediaItem], fittingPixels: CGSize)
+  /// A clip's length when the item does not carry one (a folder's clip, before anything measured
+  /// it). nil when it cannot be had.
+  func length(for item: MediaItem) async -> TimeInterval?
 }
 
 public extension ImageLadder {
   func placeholder(for item: MediaItem) async -> UIImage? { nil }
+  func face(for person: Person) async -> UIImage? { nil }
+  func cachedFace(for person: Person) -> UIImage? { nil }
+  func length(for item: MediaItem) async -> TimeInterval? { nil }
 }
 
 public enum SearchCapability: Hashable, Sendable {
@@ -178,6 +188,18 @@ public struct Services: Sendable {
   public let saver: PhotoSaver
   /// Phone backup (1.1, §10b).
   public private(set) var backup: BackupService = NoBackup()
+  /// Changing the files in the server's folders (file mode, a device that may): none by default.
+  public var changes: FolderChanges = NoFolderChanges()
+
+  /// The VPN through your server (docs/plans/phone-vpn.md). `NoVPN` until the tunnel extension ships.
+  public private(set) var vpn: VPNService = NoVPN()
+
+  /// The same services with this VPN.
+  public func with(vpn: VPNService) -> Services {
+    var copy = self
+    copy.vpn = vpn
+    return copy
+  }
 
   public init(library: LibraryStore, images: ImageLadder, search: SearchService,
               connection: ConnectionService, sync: CatalogueSync, clips: ClipService,

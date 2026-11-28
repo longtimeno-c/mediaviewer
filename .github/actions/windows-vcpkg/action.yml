@@ -48,10 +48,11 @@ runs:
     # host tools above do the rest, so a runner on a different image version
     # reuses the tree instead of rebuilding it. -pinned-tools: trees from
     # before the pin have different ABIs and must not be restored. The macOS
-    # overlay triplets are excluded: they cannot change a Windows package.
+    # and iOS overlay triplets are excluded: they cannot change a Windows
+    # package (the iPhone VPN's triplet change rebuilt this tree, 2026-11-24).
     - name: Restore installed packages
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: build/vcpkg_installed
-        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'tools/vcpkg/**', '!tools/vcpkg/triplets/*-osx.cmake') }}-msvc-pinned-tools
+        key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'tools/vcpkg/**', '!tools/vcpkg/triplets/*-osx.cmake', '!tools/vcpkg/triplets/*-ios*.cmake') }}-msvc-pinned-tools

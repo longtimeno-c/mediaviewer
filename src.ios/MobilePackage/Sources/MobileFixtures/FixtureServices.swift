@@ -33,6 +33,15 @@ final class FixtureWorld: @unchecked Sendable {
   var identifyFailures = 0
   var personFailures = 0
   var foldersFail = false
+  /// How long a folder takes to list, as over a slow connection.
+  var folderListDelay: Duration?
+  /// This device's role lets it change files in the folders (library.change).
+  var mayChange = false
+  /// What was added, made, moved, renamed and deleted (FixtureChanges.swift).
+  let changeBook = LocalChanges(directory: nil)
+  /// A sent file's pretend link: this many steps, this long each.
+  var uploadSteps = 8
+  var uploadStep = Duration.milliseconds(150)
   /// Save to Photos is refused, as when the person said no to adding to Photos.
   var photosRefused = false
   var searchFails = false
@@ -42,8 +51,9 @@ final class FixtureWorld: @unchecked Sendable {
   var backupState: BackupState?
   var backupSample = false
   var backupNoFolder = false
+  /// The VPN through your server: nil is a build without the tunnel (NoVPN).
+  var vpn: FixtureVPN?
   var recents = ["boats at sunset", "mountains by a lake", "birthday cake", "receipt from the hardware shop"]
-  var downloadedClips: Set<MediaID> = []
   private var listeners: [UUID: AsyncStream<ConnectionSnapshot>.Continuation] = [:]
 
   init(snapshot: ConnectionSnapshot) { self.snapshot = snapshot }
@@ -73,9 +83,11 @@ final class FixtureWorld: @unchecked Sendable {
 
   func services() -> Services {
     let images = FixtureImages(world: self)
-    return Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
-                    connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
-                    clips: FixtureClips(world: self), saver: FixtureSaver(world: self), backup: FixtureBackup(world: self))
+    var services = Services(library: FixtureStore(world: self), images: images, search: FixtureSearch(world: self),
+                            connection: FixtureConnection(world: self), sync: FixtureSync(world: self),
+                            clips: FixtureClips(world: self), saver: FixtureSaver(world: self), backup: FixtureBackup(world: self))
+    services.changes = FixtureFolderChanges(world: self)
+    return services.with(vpn: vpn ?? NoVPN())
   }
 }
 
@@ -123,6 +135,8 @@ enum FixtureLibrary {
     guard let source = sources.firstIndex(of: path[0]) else { return [] }
     let year = path.count > 1 ? Int(path[1]) : nil
     let month = path.count > 2 ? Int(path[2]) : nil
+    // A folder the generator never made (one made on the phone) holds only what was put in it.
+    if (path.count > 1 && year == nil) || (path.count > 2 && month == nil) || path.count > 3 { return [] }
     return items.indices.filter { i in
       i % 2 == source && (year == nil || dateParts[i].year == year) && (month == nil || dateParts[i].month == month)
     }.map { items[$0] }
@@ -201,7 +215,8 @@ struct FixtureStore: LibraryStore {
       return FixtureLibrary.everything
     case .folder(let folder):
       if world.foldersFail { throw MediaFailure.synologyUnreachable }
-      return ArrayMediaList(FixtureLibrary.items(under: folder.id))
+      if let delay = world.folderListDelay { try await Task.sleep(for: delay) }
+      return ArrayMediaList(world.changeBook.items(FixtureLibrary.items(under: folder.id), in: folder.id))
     case .person(let person):
       if world.personFailures > 0 {
         world.personFailures -= 1
@@ -212,7 +227,13 @@ struct FixtureStore: LibraryStore {
   }
 
   func folders(under parent: Folder?) async throws -> [Folder] {
-    FixtureLibrary.folders[parent?.id ?? ""] ?? []
+    let id = parent?.id ?? ""
+    let base = FixtureLibrary.folders[id] ?? []
+    // The top level keeps the generated order (sources, then the rest); a changed folder sorts by name.
+    guard world.mayChange else { return base }
+    return id.isEmpty ? base.map { Folder(id: $0.id, name: $0.name, itemCount: $0.itemCount, hasSubfolders: !$0.offline,
+                                          offline: $0.offline) }
+                      : world.changeBook.folders(base, in: id)
   }
 
   func preview(of folder: Folder, count: Int) async -> FolderPreview {
@@ -238,7 +259,9 @@ struct FixtureStore: LibraryStore {
     }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
 
-  func otherFiles(in folder: Folder) async throws -> [OtherFile] { Self.others(in: folder.id) }
+  func otherFiles(in folder: Folder) async throws -> [OtherFile] {
+    world.changeBook.files(Self.others(in: folder.id), in: folder.id)
+  }
 
   /// A one-page PDF (or a line of text) under the file's name, after a short wait with progress.
   func download(_ file: OtherFile, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws -> URL {
@@ -271,7 +294,9 @@ struct FixtureStore: LibraryStore {
       world.peopleFailures -= 1
       throw MediaFailure.synologyUnreachable
     }
-    return world.hasPeople ? FixtureLibrary.people : []
+    guard world.hasPeople else { return [] }
+    await MainActor.run { FixtureKeyboardMeter.notePeopleServed() }
+    return FixtureLibrary.people
   }
 
   func details(for item: MediaItem) async throws -> MediaDetails {
@@ -300,7 +325,8 @@ final class FixtureImages: ImageLadder, @unchecked Sendable {
   }
 
   private func draw(_ item: MediaItem, longest: CGFloat) -> UIImage {
-    let aspect = CGFloat(item.aspect)
+    // A picture has its own shape even when it was listed without one (viewer.folderFile).
+    let aspect = CGFloat((item.pixelWidth == 0 ? self.item(item.id) : nil)?.aspect ?? item.aspect)
     let size = aspect >= 1 ? CGSize(width: longest, height: (longest / aspect).rounded())
                            : CGSize(width: (longest * aspect).rounded(), height: longest)
     let seed = FixtureLibrary.seed(item.id)
@@ -579,7 +605,6 @@ struct FixtureClips: ClipService {
   let world: FixtureWorld
 
   func route(for item: MediaItem) async -> ClipRoute {
-    if world.downloadedClips.contains(item.id) { return await .stream(AVURLAsset(url: FixtureClip.url())) }
     switch world.clipMode {
     case .stream: return await .stream(AVURLAsset(url: FixtureClip.url()))
     case .tooBig: return .tooBigToStream(neededMbps: 100, availableMbps: 30, fileBytes: 1_260_000_000)
@@ -608,7 +633,6 @@ struct FixtureClips: ClipService {
             continuation.yield(.progress(TransferProgress(doneBytes: total * Int64(step) / 48, totalBytes: total)))
             try await Task.sleep(for: .milliseconds(250))
           }
-          world.downloadedClips.insert(item.id)
           continuation.yield(.finished(await FixtureClip.url()))
           continuation.finish()
         } catch {
@@ -674,6 +698,7 @@ final class FixtureBackup: BackupService, @unchecked Sendable {
         try? await Task.sleep(for: .seconds(1))
         if Task.isCancelled { return }
         change { $0.backedUp = min($0.total, $0.backedUp + 1); $0.currentName = "IMG_\(4000 + $0.backedUp).HEIC" }
+        await MainActor.run { FixtureKeyboardMeter.noteBackupTick() }
       }
       change { $0.state = .done; $0.currentName = nil; $0.backedUp = $0.total }
     }
@@ -684,6 +709,18 @@ final class FixtureBackup: BackupService, @unchecked Sendable {
     return [Self.nas, BackupFolder(id: "d4d4d4d4d4d4d4d4", label: "Family backup", writable: false)]
   }
   func requestPhotosAccess() async -> Bool { true }
+  /// Folders made in the chooser, by the folder they are in.
+  private var made: [String: [String]] = ["c3c3c3c3c3c3c3c3": ["Sam", "Tristan"]]
+  func subfolders(of folder: BackupFolder) async throws -> [BackupFolder] {
+    lock.withLock { made[folder.id] ?? [] }.sorted().compactMap { folder.child(named: $0) }
+  }
+  func makeFolder(named name: String, in folder: BackupFolder) async throws -> BackupFolder {
+    guard let child = folder.child(named: name) else { throw BackupFolderRefused() }
+    lock.withLock {
+      if !(made[folder.id] ?? []).contains(child.name) { made[folder.id, default: []].append(child.name) }
+    }
+    return child
+  }
   func choose(folder: BackupFolder, layout: BackupLayout) async {
     change { $0.folder = folder; $0.layout = layout; $0.state = .off }
   }
@@ -815,5 +852,84 @@ enum FixtureClip {
     done.wait()
     try? FileManager.default.moveItem(at: temp, to: url)
     return url
+  }
+}
+
+/// A stand-in for the tunnel: takes a code shaped like the server's (`mediaviewer://relay#host:port#KEY`),
+/// asks for the consent before the first switch-on, and connects at once. Routes nothing.
+final class FixtureVPN: VPNService, @unchecked Sendable {
+  static let host = "home.example.net:51820"
+  static let code = "mediaviewer://relay#home.example.net:51820#Zml4dHVyZS12cG4ta2V5LTEyMzQ1Njc4"
+
+  private let delivery = NSLock()
+  private let lock = NSLock()
+  private var snapshot: VPNSnapshot
+  private var listeners: [UUID: AsyncStream<VPNSnapshot>.Continuation] = [:]
+
+  init(_ start: VPNSnapshot = VPNSnapshot(status: .notSetUp)) { snapshot = start }
+
+  /// The "host:port" in a VPN code, or nil when it is not one.
+  static func host(inCode code: String) -> String? {
+    let prefix = "mediaviewer://relay#"
+    guard code.hasPrefix(prefix) else { return nil }
+    let parts = code.dropFirst(prefix.count).split(separator: "#", omittingEmptySubsequences: false)
+    guard parts.count == 2, parts[1].count >= 16, let colon = parts[0].lastIndex(of: ":") else { return nil }
+    let name = parts[0][..<colon], port = parts[0][parts[0].index(after: colon)...]
+    guard !name.isEmpty, let p = Int(port), (1...65_535).contains(p) else { return nil }
+    return String(parts[0])
+  }
+
+  var current: VPNSnapshot { lock.withLock { snapshot } }
+
+  func updates() -> AsyncStream<VPNSnapshot> {
+    AsyncStream { continuation in
+      let id = UUID()
+      // Told outside the lock and in order, as DemoVPN does: onTermination takes the lock.
+      delivery.withLock {
+        let first = lock.withLock {
+          listeners[id] = continuation
+          return snapshot
+        }
+        continuation.yield(first)
+      }
+      continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
+    }
+  }
+
+  func connect(code: String) async throws {
+    guard let host = Self.host(inCode: code) else { throw VPNCodeError.notACode }
+    publish { $0.status = .off; $0.host = host }
+  }
+
+  func acceptConsent() async { publish { $0.consented = true } }
+
+  func setOn(_ on: Bool) async {
+    guard on else { publish { $0.status = .off }; return }
+    guard current.isSetUp, current.consented, !current.isOn else { return }
+    publish { $0.status = .connecting }
+    await Task.yield()
+    guard current.status == .connecting else { return }
+    publish { $0.status = .connected(since: Date()) }
+  }
+
+  func setAutoConnect(_ on: Bool, homeNetworks: [String]) async {
+    let home = VPNHomeNetworks.cleaned(homeNetworks)
+    publish {
+      guard $0.isSetUp else { return }
+      $0.autoConnect = on
+      $0.homeNetworks = home
+    }
+  }
+
+  func remove() async { publish { $0 = VPNSnapshot(status: .notSetUp) } }
+
+  private func publish(_ change: (inout VPNSnapshot) -> Void) {
+    delivery.withLock {
+      let (value, list) = lock.withLock {
+        change(&snapshot)
+        return (snapshot, Array(listeners.values))
+      }
+      list.forEach { $0.yield(value) }
+    }
   }
 }

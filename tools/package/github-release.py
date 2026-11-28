@@ -73,6 +73,12 @@ def prepare():
                              + ', '.join(name for name in azure if name not in configured))
         if not configured:
             print('::warning::Windows installers will be unsigned; SmartScreen may warn.')
+        # publish refuses a version already used, but only after both builds:
+        # check here, before them.
+        highest = highest_release_version(os.environ['GITHUB_REPOSITORY'])
+        if highest and highest >= current:
+            raise ValueError(f'Bump CMakeLists.txt: {version} is not above the published '
+                             f'v{".".join(map(str, highest))} (previews included)')
     # MV_DRIFTWIRE_REPO=1 publishes the command line from a stable release: after publish,
     # driftwire-repo signs the package repository with DRIFTWIRE_REPO_GPG_KEY and
     # driftwire-homebrew pushes the formula with HOMEBREW_TAP_TOKEN. Without either, that job
@@ -103,7 +109,7 @@ def prepare():
 # The optional add-ons, one signed package per add-on and platform. The apps
 # fetch them from releases/latest. MV_RELEASE_ADDONS=1 requires Import
 # (docs/design/18), Driftwire (docs/design/28, code only, like Import) and Phone
-# access (docs/plans/phone-access-addon.md): a stable release missing any of them is refused. MV_RELEASE_AI=1 requires the Local
+# access (docs/plans/phone-access-addon.md) and the VPN (docs/plans/vpn-addon.md): a stable release missing any of them is refused. MV_RELEASE_AI=1 requires the Local
 # search pack and its pieces (docs/design/17). Places (docs/design/27) is
 # preferred and not required: a complete pack is published, and a release with
 # none still publishes. Publish uploads only what is listed here: an add-on
@@ -111,7 +117,7 @@ def prepare():
 # NVIDIA acceleration (ai-cuda) is a Windows-only piece: ONNX Runtime's CUDA
 # build (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')
-FIRST_PARTY_ADDONS = ('import', 'driftwire', 'phone-access')
+FIRST_PARTY_ADDONS = ('import', 'driftwire', 'phone-access', 'vpn')
 PREFERRED_ADDONS = ('places', 'enhance')
 AI_ADDONS = ('ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)

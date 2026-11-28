@@ -10,6 +10,7 @@
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -222,10 +223,120 @@ TEST_CASE("driftwire host: sharing and unsharing folders", "[host]") {
   CHECK(c.roots[1].reserve == serve::kDefaultReserve);
   CHECK(c.roots[1].mount);
 
+  // A folder shared already, shared again with --backup (the desktop's setup, the command line):
+  // it becomes a backup folder, nothing else about it changes; asked again, it stays as it is.
+  CHECK(cli::share_folder(c, utf8(s / "Photos"), "Photos 2", true, {}, "4123456789abcdef", host_folder).empty());
+  REQUIRE(c.roots.size() == 2);
+  CHECK(c.roots[0].backup);
+  CHECK(c.roots[0].id == "0123456789abcdef");
+  CHECK(c.roots[0].label == "Photos");
+  CHECK(c.roots[0].reserve == serve::kDefaultReserve);
+  c.roots[0].limit = 200ull << 30;
+  CHECK(cli::share_folder(c, utf8(s / "Photos"), "Photos", true, {}, "4123456789abcdef", host_folder).empty());
+  CHECK(c.roots[0].limit == 200ull << 30);
+  REQUIRE(c.roots.size() == 2);
+  // Without --backup it is still "shared already".
+  CHECK_FALSE(cli::share_folder(c, utf8(s / "Photos"), "Photos", false, {}, "4123456789abcdef", host_folder).empty());
+  c.roots[0].backup = false;
+
+  // Through serve.json, as `host share` runs: a shared folder whose drive is not there now is
+  // still made a backup folder (an unshared one that is not there is "not a folder").
+  {
+    const fs::path data = s / "share-data";
+    fs::create_directories(data);
+    fs::create_directories(s / "Card");
+    const cli::host_layout l = cli::host_layout_of(utf8(data));
+    std::string as;
+    REQUIRE(cli::host_files::share(l, utf8(s / "Card"), "Card", false, 0, true, as).empty());
+    fs::remove_all(s / "Card");  // the drive unplugged
+    CHECK_FALSE(cli::host_files::share(l, utf8(s / "Gone"), "", true, 0, true, as).empty());
+#if defined(_WIN32) || defined(__APPLE__)
+    // Matched in one case, as these file systems do, with the drive away.
+    CHECK(cli::host_files::share(l, utf8(s / "CARD"), "Other name", true, 0, true, as).empty());
+#else
+    CHECK(cli::host_files::share(l, utf8(s / "Card"), "Other name", true, 0, true, as).empty());
+#endif
+    CHECK(as == "Card");  // its label stays
+    const auto back = cli::host_files::config(l, true);
+    REQUIRE(back);
+    REQUIRE(back->roots.size() == 1);
+    CHECK(back->roots[0].backup);
+    CHECK(back->roots[0].label == "Card");
+  }
+
+  // Two folders whose names differ only in case, both there, on a volume that tells them apart
+  // (a case-sensitive one: Linux, or a Mac's case-sensitive APFS): two folders, never one. The
+  // second is shared in its own right, and --backup on it does not turn the first into the
+  // backup folder.
+  {
+    const fs::path data = s / "case-data";
+    fs::create_directories(data);
+    fs::create_directories(s / "Trip");
+    fs::create_directories(s / "trip");
+    std::error_code ec;
+    if (!fs::equivalent(s / "Trip", s / "trip", ec) && !ec) {
+      const cli::host_layout l = cli::host_layout_of(utf8(data));
+      std::string as;
+      REQUIRE(cli::host_files::share(l, utf8(s / "Trip"), "Trip", false, 0, true, as).empty());
+      REQUIRE(cli::host_files::share(l, utf8(s / "trip"), "Trip backup", true, 0, true, as).empty());
+      const auto back = cli::host_files::config(l, true);
+      REQUIRE(back);
+      REQUIRE(back->roots.size() == 2);
+      CHECK_FALSE(back->roots[0].backup);
+      CHECK(back->roots[1].backup);
+    }
+  }
+
   CHECK_FALSE(cli::unshare_folder(c, "Nope").empty());
   CHECK(cli::unshare_folder(c, "photos").empty());
   REQUIRE(c.roots.size() == 1);
   CHECK(c.roots[0].label == "Backup");
+}
+
+TEST_CASE("driftwire host: a backup folder's limit, or none, and changing it", "[host]") {
+  scratch_dir s("host_share_limit");
+  fs::create_directories(s / "data");
+  fs::create_directories(s / "Camera");
+  fs::create_directories(s / "Photos");
+  const cli::host_layout l = cli::host_layout_of(utf8(s / "data"));
+
+  auto p = parse({"host", "share", "/srv/Camera", "--backup", "--limit", "500"});
+  REQUIRE(p.error.empty());
+  CHECK(p.a.limit == "500");
+  CHECK(parse({"host", "share", "/srv/Camera", "--backup", "--limit=none"}).a.limit == "none");
+  CHECK_FALSE(parse({"host", "share", "/srv/Camera", "--limit", "none"}).error.empty());  // a backup folder's only
+  CHECK_FALSE(parse({"host", "share", "/srv/Camera", "--backup", "--limit", "0"}).error.empty());
+  CHECK_FALSE(parse({"host", "share", "/srv/Camera", "--backup", "--limit", "lots"}).error.empty());
+  CHECK_FALSE(parse({"host", "status", "--limit", "none"}).error.empty());
+  CHECK_FALSE(parse({"serve", "--limit", "none"}).error.empty());
+
+  const auto camera = [&] {
+    const auto c = cli::host_files::config(l, true);
+    REQUIRE(c);
+    const auto it = std::find_if(c->roots.begin(), c->roots.end(), [](const auto& r) { return r.label == "Camera"; });
+    REQUIRE(it != c->roots.end());
+    return *it;
+  };
+  std::string label;
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, 500'000'000'000ull, true, label).empty());
+  CHECK(camera().limit == 500'000'000'000ull);
+  // Shared already: --limit none changes it, the reserve kept.
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, serve::kNoLimit, true, label).empty());
+  CHECK(label == "Camera");
+  CHECK(serve::no_limit(camera().limit));
+  CHECK(camera().reserve == serve::kDefaultReserve);
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, 200'000'000'000ull, true, label).empty());
+  CHECK(camera().limit == 200'000'000'000ull);
+  // Without a limit it keeps the one it has; a plain folder given one becomes a backup folder.
+  REQUIRE(cli::host_files::share(l, utf8(s / "Camera"), "", true, 0, true, label).empty());
+  CHECK(camera().limit == 200'000'000'000ull);
+  REQUIRE(cli::host_files::share(l, utf8(s / "Photos"), "", false, 0, true, label).empty());
+  REQUIRE(cli::host_files::share(l, utf8(s / "Photos"), "", true, serve::kNoLimit, true, label).empty());
+  const auto c = cli::host_files::config(l, true);
+  REQUIRE(c);
+  CHECK(c->roots.size() == 2);
+  CHECK(c->roots[1].backup);
+  CHECK(serve::no_limit(c->roots[1].limit));
 }
 
 TEST_CASE("driftwire host: what starts it at login", "[host]") {

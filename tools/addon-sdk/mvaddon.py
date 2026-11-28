@@ -43,9 +43,11 @@ SCHEMA = 2
 # (the Places world map), no new point; 13 a screen in place "edit" (docked in
 # the Edit workspace), no new point; 14 a progress bar's detail and timed (the
 # one progress line, 2026-11-05), no new point; 15 a text field's "secure" (the Phone
-# access add-on's passphrase, 2026-11-14), no new point. A stranger's add-on cannot fill screens or slots yet: they are filled by
+# access add-on's passphrase, 2026-11-14), no new point; 16 a text's "symbol" and the
+# glyphs phone, drive, lock, computer and sync (Phone access's section headings,
+# 2026-11-18), no new point. A stranger's add-on cannot fill screens or slots yet: they are filled by
 # code and scripts have no binding for them, so the app says code_not_allowed.
-API = 15
+API = 16
 THEME_API = 1  # what a theme-only add-on claims, so it installs on every MediaViewer with themes
 SCRIPT_API = 3  # the API that introduced code (PR 57)
 SCREENS_API = 4  # the first point filled by code: screens (PR 58), then the slots (PR 59)

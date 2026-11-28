@@ -129,6 +129,52 @@ TEST_CASE("phone self host: state.json and host.json are read as the host writes
   CHECK(std::string(sh::kTokenSecret) == mv::driftwire::ddns::kTokenSecret);
 }
 
+TEST_CASE("phone self host: the VPN is read as `host vpn` writes it, and its relay line found in what it printed",
+          "[phone-self-host]") {
+  // host.json as the program writes it (host_settings_json): what is asked for.
+  cli::host_settings hs;
+  CHECK_FALSE(sh::parse_vpn(cli::host_settings_json(hs)).on);
+  hs.vpn = true;
+  hs.tls_port = 443;
+  auto v = sh::parse_vpn(cli::host_settings_json(hs));
+  CHECK(v.on);
+  CHECK(v.tls_port == 443);
+  hs.tls_port = 0;
+  CHECK(sh::parse_vpn(cli::host_settings_json(hs)).tls_port == cli::look_port(hs));  // on by default
+  CHECK(cli::look_port(hs) == 47615);
+  hs.look = false;
+  CHECK(sh::parse_vpn(cli::host_settings_json(hs)).tls_port == 0);
+  CHECK_FALSE(sh::parse_vpn("not json").on);
+  // state.json: what the running relay does, and the router's outside port for it.
+  const auto st = sh::parse_state(R"({"relay_port":47614,"vpn":true,"tls_failed":true,"relay_outside_port":47615,"tls_outside_port":443})");
+  REQUIRE(st);
+  CHECK(st->vpn);
+  CHECK(st->tls_failed);
+  CHECK(st->relay_outside_port == 47615);
+  CHECK(st->tls_outside_port == 443);
+
+  // `host vpn on`'s own words (host_setup.cpp host_vpn): the indented line.
+  const std::string printed =
+      "The VPN is on: this computer carries your laptop's web traffic (TCP 80 and 443, and DNS) out to the internet, "
+      "never into your home network.\n"
+      "On the laptop, in Driftwire's Relay (your own server), put this line once. It holds the relay's key: keep it "
+      "to yourself.\n\n  home.duckdns.org:47614#k3yk3yk3yk3yk3yk3y\r\n\n"
+      "Then turn on the Tunnel or All traffic (VPN); sites see this home's address.\n";
+  CHECK(sh::relay_line_in(printed) == "home.duckdns.org:47614#k3yk3yk3yk3yk3yk3y");
+  CHECK(sh::relay_line_in("  [::1]:47614#abc\n") == "[::1]:47614#abc");
+  // Nothing else that has a '#' in it.
+  CHECK(sh::relay_line_in("The VPN is off: the relay forwards nothing.\n").empty());
+  CHECK(sh::relay_line_in("see issue #12 for more\n").empty());
+  CHECK(sh::relay_line_in("  home.duckdns.org#key\n").empty());     // no port
+  CHECK(sh::relay_line_in("  home.duckdns.org:port#key\n").empty());
+  CHECK(sh::relay_line_in("  home:1#\n").empty());                  // no key
+  CHECK(sh::relay_line_in("").empty());
+  // The web-site look's code, as `vpn on` prints it then.
+  CHECK(sh::relay_line_in("Paste it:\n\n  mediaviewer://relay-tls#home.duckdns.org:443#k3yk3yk3yk3yk3yk3y\n\n") ==
+        "mediaviewer://relay-tls#home.duckdns.org:443#k3yk3yk3yk3yk3yk3y");
+  CHECK(sh::relay_line_in("  mediaviewer://relay-tls#home.duckdns.org#k3yk3yk3yk3yk3yk3y\n").empty());
+}
+
 TEST_CASE("phone self host: a name and a token are read by DuckDNS's rules", "[phone-self-host]") {
   namespace ddns = mv::driftwire::ddns;
   const char* names[] = {"home", " home.duckdns.org ", "HOME.DuckDNS.org.", "a.b", "-x", "x-", "", "home.duckdns.org.uk",
@@ -190,6 +236,26 @@ TEST_CASE("phone self host: labels never clash, as the program would refuse them
   const std::vector<std::string> want = {"Photos 2", "Photos 3", "Phone backup", "Phone backup 2"};
   CHECK(l == want);
   CHECK_FALSE(sh::answers(0));
+}
+
+TEST_CASE("phone self host: a folder shared already and ticked as backup is made one", "[phone-self-host]") {
+  using fc = sh::folder_choice;
+  // "/e/Drive backup" is a backup folder already, on a drive not there now: no call for it (the
+  // setup goes on, as it did before), and never "not a folder".
+  const fc chosen[] = {{"/a/Photos", "", false}, {"/b/Phone backup/", "", true}, {"/c/New", "", true}, {"/d/Old", "", false},
+                       {"/e/Drive backup", "", true}};
+  const sh::shared_folder shared[] = {{"/a/Photos", "Photos"}, {"/b/Phone backup", "Backups"}, {"/d/Old", "Old"},
+                                      {"/e/Drive backup", "Drive backup", true}};
+  const auto plan = sh::share_plan(chosen, shared);
+  // The new one under a label of its own; the shared one ticked as backup again, under its label
+  // (`host share --backup` makes it a backup folder); the others left as they are.
+  REQUIRE(plan.size() == 2);
+  CHECK(plan[0].path == "/c/New");
+  CHECK(plan[0].label == "New");
+  CHECK(plan[0].backup);
+  CHECK(plan[1].path == "/b/Phone backup");  // serve.json's spelling, which the program matches with its drive away
+  CHECK(plan[1].label == "Backups");
+  CHECK(plan[1].backup);
 }
 
 TEST_CASE("phone self host: a folder is matched as the OS matches it", "[phone-self-host]") {

@@ -8,7 +8,7 @@
 # cmake/darwin-app.cmake.
 #
 # Off by default: the Network Extension entitlement it needs is Apple's to
-# grant to the signing team (owed; src/addons/driftwire/mac_tunnel/README.md).
+# grant to the signing team (owed; src/addons/vpn/mac_tunnel/README.md).
 # -DMV_DRIFTWIRE_PACKET_TUNNEL=ON builds it and macpack.py embeds it; an ad hoc
 # assemble signs it without the entitlement (macOS will not load that copy),
 # `macpack.py release --team-id` with it.
@@ -20,7 +20,7 @@ if(NOT MV_DRIFTWIRE_PACKET_TUNNEL)
   return()
 endif()
 
-set(_tun "${CMAKE_SOURCE_DIR}/src/addons/driftwire/mac_tunnel")
+set(_tun "${CMAKE_SOURCE_DIR}/src/addons/vpn/mac_tunnel")
 if(NOT DEFINED MV_DRIFTWIRE_VERSION)
   set(MV_DRIFTWIRE_VERSION "1.0.0")
 endif()

@@ -50,6 +50,14 @@ class remote_file {
   [[nodiscard]] virtual expected read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                             std::uint64_t length, const byte_sink& sink,
                                             const cancel_flag* cancel = nullptr, bool bulk = false) = 0;
+  // Another connection to the same service, for a bulk copy to spread over (sync.cpp): over a long
+  // path each TCP connection's loss recovery caps its rate, so several move more than one. A
+  // remote that opens lanes also takes concurrent reads. nullptr: none to be had (the default; a
+  // relayed link, whose relay holds one waiter per phone; a service that said busy).
+  [[nodiscard]] virtual std::unique_ptr<remote_file> open_lane(const cancel_flag* cancel) {
+    (void)cancel;
+    return nullptr;
+  }
 };
 
 // "host:port"; a bracketed IPv6 literal is allowed. False when it is not one.
@@ -142,6 +150,10 @@ class link_session final : public remote_file {
   // The caps' "role" for this device (serve_wire.h kCapsRole): "view", "change" or "admin"; "" from
   // a service older than roles. -1 (as grant) with no live link.
   [[nodiscard]] int role(std::string& word) const;
+  // Where the service is (serve_wire.h kCapsAddresses): the addresses it was set up with, each
+  // replaced by the one the latest connect's caps gave; one the caps left out stays. The next
+  // race uses them, and a host keeps them so the next run does. Never blocks on a connect.
+  void addresses(std::string& local, std::string& public_name, std::string& relay) const;
 
   [[nodiscard]] result<std::vector<driftwire::serve::root_info>> roots() override;
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list(const std::string& root,
@@ -150,6 +162,9 @@ class link_session final : public remote_file {
   [[nodiscard]] expected read_range(const std::string& root, const std::string& rel, std::uint64_t at,
                                     std::uint64_t length, const byte_sink& sink, const cancel_flag* cancel,
                                     bool bulk) override;
+  // A second session on the route this one is on (never through the relay, never upgraded); shut
+  // down with this one.
+  [[nodiscard]] std::unique_ptr<remote_file> open_lane(const cancel_flag* cancel) override;
 
   // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
   // folder's meta folder. status::unsupported_format: the service is from before 1.1.
@@ -166,6 +181,31 @@ class link_session final : public remote_file {
       const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
       std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
       const cancel_flag* cancel, driftwire::serve::client::write_refused* why, bool meta = false);
+  // Changing the shared folders (serve_client.h "changing the shared folders"): plain
+  // pass-throughs to the live client, each blocking (a worker). changes_files(): the
+  // service has mkdir, move and delete; show New folder / Move / Rename / Delete only then,
+  // and on a folder only when its root_info.writable. A dropped link is dropped here, as
+  // write() does; `add` resumes after an offset refusal with `at` = `why->have`.
+  [[nodiscard]] result<bool> changes_files();
+  [[nodiscard]] result<driftwire::serve::client::change_done> add(
+      const std::string& root, const std::string& rel, std::uint64_t size, const std::string& hash_hex,
+      std::uint64_t at, const driftwire::serve::client::read_fn& read, const std::function<void(std::uint64_t)>& progress,
+      const cancel_flag* cancel, driftwire::serve::client::change_refused* why = nullptr);
+  // The phone's Add: the file at `local_path`, hashed here, sent with add() and carried on after an
+  // offset refusal (a cancel or a drop left this device's unfinished copy), once more from the start
+  // after a hash refusal, and once more on a new link after a drop (waiting out "busy" while the
+  // service lets go of the old stream). `progress` gets the bytes the service has, of the size.
+  [[nodiscard]] result<driftwire::serve::client::change_done> add_file(
+      const std::string& root, const std::string& rel, const std::string& local_path,
+      const std::function<void(std::uint64_t done, std::uint64_t total)>& progress, const cancel_flag* cancel,
+      driftwire::serve::client::change_refused* why);
+  [[nodiscard]] result<driftwire::serve::client::change_done> make_folder(
+      const std::string& root, const std::string& rel, driftwire::serve::client::change_refused* why = nullptr);
+  [[nodiscard]] result<driftwire::serve::client::change_done> move(
+      const std::string& root, const std::string& rel, const std::string& to_root, const std::string& to_rel,
+      driftwire::serve::client::change_refused* why = nullptr);
+  [[nodiscard]] result<driftwire::serve::client::change_done> remove(
+      const std::string& root, const std::string& rel, driftwire::serve::client::change_refused* why = nullptr);
   [[nodiscard]] result<std::vector<driftwire::serve::list_entry>> list_meta(const std::string& root, const std::string& rel);
   // The whole listing or an error: status::io when the service cut it short, so a caller that
   // drops what is not listed never drops what was merely past the cut.
@@ -190,13 +230,14 @@ class link_session final : public remote_file {
   [[nodiscard]] std::uint32_t live_caps_ops() const;
   [[nodiscard]] bool upgrade_allowed() const noexcept;
 
-  service_config config_;
+  service_config config_;  // its addresses change under both connect_m_ and m_ (race_locked)
   std::string device_folder_id_;  // serve::device_folder_id of this phone's public key
   mutable std::mutex connect_m_;  // single-flight connect; held across the race, on a worker
   mutable std::mutex m_;          // guards live_
   std::shared_ptr<driftwire::serve::client> live_;
   route_report last_report_;  // under m_
   std::vector<std::weak_ptr<driftwire::serve::client>> retired_;  // under m_: swapped out, maybe still read
+  std::vector<std::weak_ptr<link_session>> lanes_;  // under m_: open_lane's, shut down with this one
 
   // The service ends any stream past kMaxStreams with "too many", and frees a slot a moment after
   // its end reaches us: one below that, and the rest wait here (or until cancelled or shut down).

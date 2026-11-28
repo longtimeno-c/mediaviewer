@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "remote/key.h"
+
 namespace mv::shell {
 namespace {
 
@@ -83,9 +85,14 @@ std::vector<std::string> pinned_then_recent(std::span<const std::string> pinned,
                                             std::span<const std::string> recent, std::size_t max) {
   std::vector<std::string> out;
   out.reserve(std::min(max, pinned.size() + recent.size()));
-  for (const std::string& p : pinned) {
-    if (out.size() >= max) break;
-    if (!p.empty() && !is_pinned_folder(out, p)) out.push_back(p);
+  // Paired servers' pins first, then the folder pins: the card draws the
+  // servers in its lead block, above the folders.
+  for (const bool servers : {true, false}) {
+    for (const std::string& p : pinned) {
+      if (out.size() >= max) break;
+      if (mv::remote::is_key(p) != servers) continue;
+      if (!p.empty() && !is_pinned_folder(out, p)) out.push_back(p);
+    }
   }
   const std::span<const std::string> pins(pinned);
   for (const std::string& r : recent) {
@@ -149,6 +156,7 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
   out.hover = -1;
   out.hover_remove = false;
   out.pinned = 0;
+  out.servers = 0;
   out.icloud = !cloud_label.empty();
   if (out.icloud) {
     const int i = out.count++;
@@ -161,7 +169,12 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
     const std::string_view dir = trim_separator(utf8_dirs[k]);
     if (dir.empty()) continue;
     const int i = out.count++;
-    if (k < pinned) ++out.pinned;  // the pins lead, so theirs are the first folder rows
+    // The pins lead, the servers' first (pinned_then_recent), so theirs are the first rows.
+    if (k < pinned && mv::remote::is_key(dir) && out.pinned == 0) {
+      ++out.servers;
+    } else if (k < pinned) {
+      ++out.pinned;
+    }
     // A root ("/", "D:\") is its own label and lives nowhere.
     const std::size_t sep = dir.find_last_of("/\\");
     if (sep == std::string_view::npos || sep + 1 == dir.size()) {
@@ -179,6 +192,12 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
       copy_utf8(parent, out.where[i], sizeof(out.where[i]));
     }
   }
+}
+
+void set_welcome_row(welcome_recents& out, int row, std::string_view label, std::string_view where) noexcept {
+  if (row < 0 || row >= out.count) return;
+  copy_utf8(label, out.label[row], sizeof(out.label[row]));
+  copy_utf8(where, out.where[row], sizeof(out.where[row]));
 }
 
 std::string paths_as_text(std::span<const std::string> utf8_paths, std::string_view newline) {

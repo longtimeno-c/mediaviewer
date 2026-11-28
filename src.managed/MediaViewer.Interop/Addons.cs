@@ -311,6 +311,10 @@ public static unsafe partial class AddonNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial void mv_ai_hold_models(uint hold);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_addon_load(IntPtr session, byte* id, byte* iface, IntPtr* outIface,
         byte* chrome, uint chromeCap);
 
@@ -658,6 +662,10 @@ public static unsafe partial class AddonNative
         }
         return (used, ceiling);
     }
+
+    /// <summary>Next <see cref="Load"/> of Local search through the host door
+    /// attaches without opening the towers (Settings). Consumed by that load.</summary>
+    public static void HoldAiModels(bool hold) => mv_ai_hold_models(hold ? 1u : 0u);
 
     /// <summary>Loads (or returns the loaded) add-on; the interface table and the chrome path.</summary>
     /// <remarks><paramref name="reader"/>: through the add-on's read-only door, for a window whose

@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mv::remote {
 
@@ -38,8 +39,29 @@ struct key_parts {
 [[nodiscard]] std::optional<key_parts> parse_key(std::string_view text);
 [[nodiscard]] std::string make_key(const key_parts& parts);
 [[nodiscard]] std::string server_key(std::string_view server);
+// A server's top as a pinned folder keeps it ("remote:<id>", the pins trim a
+// trailing separator: shell/os_integration.h): its key again, `remote:<id>/`,
+// or "" when `pin` is not a server's top. Inline: the Windows exe links none
+// of this library (it lives in mediaviewer_core.dll), only its header.
+[[nodiscard]] inline std::string server_key_of_pin(std::string_view pin) {
+  if (!is_key(pin)) return {};
+  std::string_view id = pin.substr(kKeyPrefix.size());
+  if (!id.empty() && id.back() == '/') id.remove_suffix(1);
+  if (id.size() != 16) return {};
+  for (const char c : id) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return {};
+  }
+  std::string out(kKeyPrefix);
+  out += id;
+  out += '/';
+  return out;
+}
 // The folder a key is in ("" for the server's top).
 [[nodiscard]] std::string parent_key(std::string_view key);
+// A folder key's trail for the path bar (docs/design/16 "Folder navigation"): the server's
+// top, the named folder, then each folder below it down to `folder_key` itself. Empty for
+// anything that is not a folder key.
+[[nodiscard]] std::vector<std::string> key_chain(std::string_view folder_key);
 // The last segment of <rel> ("" for a server's top or a named folder).
 [[nodiscard]] std::string leaf_name(std::string_view key);
 [[nodiscard]] bool is_hex16(std::string_view s) noexcept;

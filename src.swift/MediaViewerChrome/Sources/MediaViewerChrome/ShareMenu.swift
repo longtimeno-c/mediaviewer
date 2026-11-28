@@ -301,9 +301,11 @@ struct BarShareButton: View {
   @State private var hover = false
 
   var body: some View {
-    // shell::share_takes_folder's rule (a Photos album is no folder on disk).
+    // shell::share_takes_folder's rule (a Photos album, or another computer's
+    // folder, is no folder on disk).
     let folder = edit.galleryVisible && store.range.isEmpty && store.folders.indices.contains(store.folderCursor)
       && !store.folders[store.folderCursor].hasPrefix("photos:")
+      && !store.folders[store.folderCursor].hasPrefix("remote:")
     let files = !store.names.isEmpty && (store.names.indices.contains(store.currentIndex) || !store.range.isEmpty)
     let enabled = folder || files
     let name = store.range.count > 1 ? "Share \(store.range.count) files"
@@ -332,7 +334,7 @@ struct FolderShareMenu: View {
   let path: String
 
   var body: some View {
-    if !path.hasPrefix("photos:") {
+    if !path.hasPrefix("photos:") && !path.hasPrefix("remote:") {
       Menu {
         Button(ShareMenu.driftwireTitle) { ShareMenu.shared.shareFolder(path) }
       } label: {

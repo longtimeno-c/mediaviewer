@@ -12,8 +12,8 @@
 //   driftwire update
 //   driftwire serve [init | status | devices | add NAME KEY | revoke NAME-OR-KEY | pair-code [SECONDS] | disown
 //                    | passphrase set|reset] [--data DIR] [--passphrase-stdin | --no-passphrase]
-//   driftwire host [setup | share PATH [--label L] [--backup] | unshare LABEL | status | pair
-//                   | name duckdns|none | vpn on [--tls-port N] | vpn off
+//   driftwire host [setup | share PATH [--label L] [--backup [--limit GB|none]] | unshare LABEL | status | pair
+//                   | name duckdns|none | name domain NAME|none | vpn on [--tls-port N|off] | vpn off
 //                   | start-at-login on|off | stay-awake on|off
 //                   | users [add NAME | role NAME ROLE | password NAME | remove NAME | apply]
 //                     [--role R] [--folders L1,L2|all] [--input-stdin]] [--data DIR]
@@ -83,9 +83,14 @@ struct args {
   std::string host_path;  // host share: the folder, as given
   std::string label;      // host share --label; host unshare: the label
   bool backup = false;    // host share --backup
+  // host share --backup --limit: "none", or GB (a decimal number); "" when not given.
+  // On a folder shared already, it changes that folder's limit.
+  std::string limit;
   bool watch = false;     // host status --watch (the tray's numbers, live)
   bool on = false;        // host start-at-login / stay-awake / vpn: on or off; host name: duckdns (true) or none
-  std::uint16_t tls_port = 0;  // host vpn on --tls-port N: the relay's web-site look (0: none)
+  // host vpn on --tls-port N|off: the relay's web-site look on port N (it is on by default), or off.
+  std::uint16_t tls_port = 0;
+  bool tls_off = false;
   // host convert on --helper PATH; serve --convert-helper PATH: the app's clip helper.
   std::string convert_helper;
   // host users / smb-apply (host_users.h checks them): the words after the action,

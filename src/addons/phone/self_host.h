@@ -92,6 +92,7 @@ struct host_status {
   std::size_t folders = 0, offline = 0;
   std::string name;     // the service's name (serve.json)
   std::string duckdns;  // the DuckDNS subdomain (host.json's "ddns"), "" for none
+  std::string domain;   // the VPN's own domain (host.json's "domain"), "" for none
   // The keepers' lines (the router, DuckDNS), as the running host wrote them.
   std::vector<std::string> keepers;
   // "Tray": hosting off (`host pause`), and today's usage and the phones
@@ -102,6 +103,13 @@ struct host_status {
   // helper it was given, and what the running host found ("VideoToolbox"; "" for none).
   bool convert_on = true, convert_available = false, convert_busy = false;
   std::string convert_helper, convert_encoder;
+  // The VPN (`host vpn on|off`, docs/design/28 "Self-hosting"): `vpn` is what
+  // host.json asks for, `vpn_on` what the running host's relay does now (it
+  // takes host.json within 2 s); the web-site look's port (0: none) and whether
+  // it could listen; the relay's port as the router maps it from outside.
+  bool vpn = false, vpn_on = false, tls_failed = false;
+  std::uint16_t tls_port = 0, relay_outside_port = 0, tls_outside_port = 0;
+  std::uint16_t relay_tls_port = 0;  // the running relay's look port (tls_port is what host.json asks)
 };
 [[nodiscard]] host_status read_status(const where& w);
 
@@ -116,6 +124,9 @@ struct running_state {
   // The tray (docs/plans/self-hosted.md "Tray"):
   bool paused = false;             // `host pause`
   bool tls_failed = false;         // the web-site look could not listen
+  std::uint16_t relay_outside_port = 0;  // the router keeper's for the relay, once mapped
+  std::uint16_t tls_outside_port = 0;    // and for the web-site look
+  std::uint16_t relay_tls_port = 0;      // the look's port as the running relay listens (0: none)
   // The phones connected now (state.json "clients"): the paired name, how
   // ("home", "internet", "relay"), since when (unix s), today's bytes, the rate.
   struct client {
@@ -148,6 +159,19 @@ struct running_state {
 [[nodiscard]] std::string tidy_keeper_line(std::string_view line);
 // host.json's DuckDNS subdomain ("ddns"), "" when none or not that shape.
 [[nodiscard]] std::string parse_duckdns(std::string_view host_json);
+// host.json's VPN ("vpn") and the web-site look's port: on with the VPN unless
+// "look" is false, on "tls_port" (0 there: the relay's port + 1), as
+// cli::look_port reads it; 0 here: none.
+struct vpn_wanted {
+  bool on = false;
+  std::uint16_t tls_port = 0;
+};
+[[nodiscard]] vpn_wanted parse_vpn(std::string_view host_json);
+// The relay line `host vpn on` prints for the laptop ("name.duckdns.org:PORT#KEY",
+// indented on a line of its own), or the web-site look's whole code
+// ("mediaviewer://relay-tls#name:443#KEY"), "" when the output has neither. It
+// holds the relay's key: for the person's own screen, never logged.
+[[nodiscard]] std::string relay_line_in(std::string_view output);
 
 // ---- running the program ------------------------------------------------------------------
 
@@ -169,6 +193,7 @@ struct folder_choice {
 // The folders serve.json shares now, for a setup run again.
 struct shared_folder {
   std::string path, label;
+  bool backup = false;  // a backup folder already
 };
 [[nodiscard]] std::vector<shared_folder> shared_folders(const where& w);
 // A path as the OS would match it: canonical where it exists, no trailing
@@ -180,6 +205,12 @@ struct shared_folder {
 // A label for each folder, none the same as another or as one in `taken`
 // (the program refuses a label in use): "Photos", "Photos 2".
 [[nodiscard]] std::vector<std::string> unique_labels(std::span<const folder_choice> f, std::span<const std::string> taken);
+// What the card's setup asks `host share` for: each folder not shared yet, under a label of its
+// own; and each folder shared already that is ticked as a backup folder and is not one yet, under
+// the label it has (`host share --backup` makes it one, changing nothing else). A shared folder left unticked
+// stays as it is: a backup folder stops being one only on the Phone access card.
+[[nodiscard]] std::vector<folder_choice> share_plan(std::span<const folder_choice> chosen,
+                                                    std::span<const shared_folder> shared);
 // Whether something answers on this computer's loopback at `port`.
 [[nodiscard]] bool answers(std::uint16_t port, int timeout_ms = 1000);
 // Names the host on DuckDNS as `host name duckdns` does (that command takes

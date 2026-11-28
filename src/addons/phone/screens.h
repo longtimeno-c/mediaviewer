@@ -34,16 +34,19 @@ namespace mv::phone::card {
 enum class computer : std::uint8_t { mac, pc, other };
 
 // This computer -> Drives (docs/plans/self-host-drives.md §6): what the card
-// holds while the person picks drives and a way to use them.
+// holds while the person picks what the drives are for, then the drives.
 struct drives_state {
   bool open = false;
-  std::vector<std::string> picked;  // drive ids, in the listing's order
+  std::string purpose;              // "" not chosen yet; "copy" (back up), "share", "combine"
+  std::vector<std::string> picked;  // drive ids, in the listing's order (share and combine)
   std::string choice;               // "" none; "separate", "mirror", ...
   std::string label;                // the combined drive's name
   std::vector<std::pair<std::string, std::string>> typed;  // drive id -> the name typed
   std::string replacing;            // a set's id
   std::string replace_with, replace_typed;
-  std::string asked;                // "combine" | "replace" until its outcome shows
+  std::string asked;                // "combine" | "replace" | "copy" until its outcome shows
+  std::string copy_from, copy_to;   // Back up: the drives chosen ("": the tree's default)
+  std::string copy_drawn, copy_to_drawn;  // the pair the tree last showed ("": none to offer)
 };
 
 // This computer -> Users (docs/plans/self-host-users-smb.md §8).
@@ -86,6 +89,16 @@ class screen {
   // Whether the last build had something that changes each second (the code's countdown).
   [[nodiscard]] bool ticking() const noexcept { return !qr_.empty(); }
 
+  // The VPN add-on's Host section (docs/plans/vpn-addon.md), from the link's
+  // `state_json`: {"where":"here"|"server"|"none", and for the first two
+  // "title", "line", "on"; "busy"; "code" while the VPN code shows; "error"}.
+  [[nodiscard]] std::string vpn_state(std::string_view state_json) const;
+  // The link's request for the VPN add-on's `method` ("vpn_set" with `on`,
+  // "vpn_code", "vpn_code_hide", "vpn_domain" with `domain`: the own domain or
+  // "none", this computer only); "" when there is nothing to host on.
+  [[nodiscard]] std::string vpn_request(std::string_view state_json, std::string_view method, bool on,
+                                        std::string_view domain = {}) const;
+
   // A phone's ("ph", its key) or a shared folder's ("fo", its id) row id prefix.
   [[nodiscard]] static std::string row_id(const char* prefix, const std::string& of);
 
@@ -109,9 +122,11 @@ class screen {
   // them); the secure ones never are.
   std::string local_, public_, new_label_, new_path_, new_limit_, new_reserve_ = "1";
   bool new_backup_ = false;
+  bool new_no_limit_ = false;   // the new backup folder has no storage limit, only the free space
   bool adding_folder_ = false;  // the Add a folder form is open (Add folder… / Add backup folder…)
   std::string editing_;  // a backup folder's id whose sizes are being changed
   std::string edit_limit_, edit_reserve_;
+  bool edit_no_limit_ = false;
   bool confirm_restart_ = false, confirm_hand_over_ = false;
   std::string passphrase_, passphrase_again_, unlock_with_;  // secure
   bool changing_ = false, unlock_wanted_ = false;
@@ -144,6 +159,7 @@ class screen {
   std::vector<std::string> queued_;
   // From the last build: the drives listing's ids and names, and the choices offered.
   std::vector<std::string> disk_ids_, disk_names_, set_ids_, set_names_, offered_, user_names_, user_roles_;
+  std::vector<std::string> copy_labels_;
   std::vector<std::vector<std::string>> user_folders_;
   std::vector<std::vector<std::string>> set_members_;
 

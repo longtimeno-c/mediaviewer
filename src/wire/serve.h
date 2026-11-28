@@ -16,8 +16,9 @@
 //      go no further: message 3 needs the device's key);
 //   4. only then does it do any key work or say anything;
 //   5. the device key from the finished handshake must be a paired one:
-//      paired devices hold a read grant on the named folders, and may create
-//      files in the backup folders (serve_backup.h); a device
+//      paired devices hold a read grant on the named folders; a device whose
+//      role is "change" may also add, move and delete files in them
+//      (serve_wire.h "changing", serve_backup.h for backup folders); a device
 //      that is not paired, or was revoked, is told so, sealed, and refused.
 //
 // A running session is cut within kDevicesRecheckMs of its device being
@@ -44,6 +45,7 @@
 #include "wire/secrets.h"
 #include "wire/serve_convert.h"
 #include "wire/serve_wire.h"
+#include "wire/splice.h"
 #include "core/result.h"
 
 namespace mv::driftwire::serve {
@@ -76,8 +78,16 @@ inline constexpr const char* kFeatureRelay = "relay";
 inline constexpr const char* kFeatureBackup = "backup";
 // The self-hosted computer's users (share_users.h): serve_admin users, user_set, user_remove.
 inline constexpr const char* kFeatureUsers = "users";
+// The service keeps where paired devices find it (serve_admin set_addresses) and tells them in
+// their caps (kCapsAddresses).
+inline constexpr const char* kFeatureAddresses = "addresses";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
+// The VPN (docs/design/28 "The NAS as a VPN host"): offered by `driftwire serve`
+// (options::vpn), the key its own relay runs on, kept apart from the person's
+// other relay's.
+inline constexpr const char* kFeatureVpn = "vpn";
+inline constexpr const char* kVpnKeyName = "vpn_relay_key";
 // Waiters at the relay, one per paired device: the relay's own per-source cap.
 inline constexpr int kMaxRelayWaiters = 4;
 
@@ -129,13 +139,19 @@ class server {
     std::function<bool(const config&)> save_config;
     // Taken around every change of the paired list ("": none), against `serve add`.
     std::string devices_lock;
-    // Phone backup (1.1): whether a device may create files in the backup
-    // folders. Empty: its grant decides (docs/plans/mobile.md §10b.1, B2): an
-    // unlimited paired device may, a limited one only with `backup` on and only
-    // in its folders, and the owner's session never. The tests set it.
+    // Whether a device may change files (role "change": phone backup's writes, and
+    // kChangeOps's add, mkdir, move and delete) in the folders it sees. Empty: its grant
+    // decides (docs/plans/mobile.md §10b.1, B2; self-host-users-smb.md §9): an unlimited
+    // paired device may, a limited one only with `backup` on and only in its folders, the
+    // owner's session never, and nobody in the Catalogue. The tests set it.
     std::function<bool(const std::array<std::uint8_t, 32>&)> may_write;
     // Tests: a volume's free bytes, instead of asking the OS.
     std::function<std::uint64_t(const std::string&)> free_bytes;
+    // Tests: a move between two named folders always copies, checks and removes, as one
+    // across volumes does (serve_wire.h "changing"), so that path runs on one disk.
+    bool copy_moves = false;
+    // Tests: called on the worker before each file a move copies (a revoke in the middle).
+    std::function<void()> during_copy;
     // The owner's passphrase (owner_pass.h). Unix seconds now: the tests move
     // it. Empty: the system clock.
     std::function<std::int64_t()> now_unix;
@@ -163,6 +179,12 @@ class server {
     // Clips the phone can't play (docs/plans/phone-clip-convert.md): the host's converter, or
     // none. With one, every session's caps list `convert`. set_converter changes it later.
     std::shared_ptr<convert::service> converter;
+    // The NAS as a VPN host (docs/design/28): the owner may turn on a relay of
+    // this service's own that forwards (the Tunnel/VPN exit, as `driftwire host
+    // vpn on` does). Only `driftwire serve` offers it; a host runs its own relay.
+    bool vpn = false;
+    // The tests: that relay's options before it starts (loopback, a private site).
+    std::function<void(relay::server::options&)> vpn_tweak;
   };
 
   // Listens and returns. status::not_found when the store has no usable

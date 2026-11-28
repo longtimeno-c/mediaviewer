@@ -74,6 +74,11 @@ public static partial class IslandHost
         public const int OpenCrumb = 1008;
         public const int GalleryColumns = 1009;
         public const int FolderUp = 115;  // mirrors command_id::folder_up
+        // docs/design/16 "Folder navigation" / "Drag and drop into folders".
+        public const int FolderBack = 228;     // command_id::folder_back
+        public const int FolderForward = 229;  // command_id::folder_forward
+        public const int NewFolder = 230;      // command_id::new_folder
+        public const int PasteFiles = 231;     // command_id::paste_files
         // Milestone G: arg 1/0 = the Import add-on is loaded / absent (its
         // commands exist only while it is). OpenPath: native pulls the path
         // with TakeTreePath and opens it in the viewer.
@@ -217,9 +222,13 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S8: the Faces panel's controls
         // (IslandHost.Faces.cs), arg = shell::pack_faces_op.
         public const int Faces = 1109;  // after the Video Editor look's 1100-1108
-        // The bar's Home: back to the welcome card, nothing open (owner 2026-11-18).
-        // 1111: 1110 is RemoteChanged's (PR #718).
+        // docs/plans/desktop-client.md: a pairing worked or a server was forgotten
+        // (IslandHost.Remote.cs); native pins or unpins it with the folders.
+        public const int RemoteChanged = 1110;
+        // Open > Home: back to the welcome card, nothing open (owner 2026-11-18).
         public const int GoHome = 1111;
+        // One click on a folder tile selects it (arg: its index); two open it.
+        public const int FolderCursor = 1112;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -338,7 +347,7 @@ public static partial class IslandHost
                 Rename, GalleryRange,
                 EditStripHeight, PaneEdgeState, InspectorMin,
                 CanvasTool, ToolSizeSet, ToolEraseSet,
-                Faces, GoHome,
+                Faces, RemoteChanged, GoHome, FolderCursor,
             };
             unchecked
             {

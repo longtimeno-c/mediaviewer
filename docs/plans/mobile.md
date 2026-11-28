@@ -273,7 +273,11 @@ runs unchanged: `meta`, `roots`, `assets`, `asset_text`, `progress`, `frames`, `
   column. `path_key`, `key_parent` and the `in:` filter keep working untouched.
 - **Places.** Each asset's place label is resolved at publish time and stored, because a phone
   with no Places provider would otherwise match nothing for `place:` (`engine.cpp:6935`).
-- **People.** Names and asset links only (call 7).
+- **People.** Names and asset links only (call 7): no embedding and no face box. Each person's
+  round icon travels as a picture instead (`faces.db` `covers`, 2026-11-27): their cover face in
+  the desktop's cover order, cut by the host's `jpeg_face_crop` from the JPEG-512 the desktop
+  cuts its own cover from, at most 320 px. A catalogue without it (an older desktop) shows the
+  middle of the person's photo, as before.
 - **Labels.** `labels.f32` travels too, and the read-only reader now loads it (2026-11-10). Without the file every row passes, as before.
 - **What the reader needs beyond the tables (audit, 2026-11-10; confirmed in the code):**
   - The file must be named `index.db` in the reader's data folder (`engine.cpp:195`), so the phone copies `catalog.db` to that name.
@@ -342,7 +346,7 @@ else: no search, no models, no decoding.
 | Remember devices | Needs a desktop keyring (`28-driftwire.md:1210-1215`) | Use the file store (`secrets::file_store`, today test-only), owner-only permissions |
 | Serve parts of files | Whole-file push only (`wire.h:103-138`); `file_reader::read_at` exists | Stream multiplexing, per-stream credit, cancel, and `read_range`, in new message ids 25+ behind a capability check (old peers end the link on unknown ones, `wire.h:121-122`) |
 | Responsive seeking | 256 KiB chunks and 16 MiB windows (`wire.h:51,79`) | Chunks of 64 KiB or less for interactive streams |
-| Standing access | Accept on every transfer | A read-only library grant on a paired device; from 1.1, writes only to the backup folder |
+| Standing access | Accept on every transfer | A read-only library grant on a paired device; from 1.1, writes to the backup folder; a device whose role is "change" also adds, moves and deletes in the folders it may change (§11.1 "Changing files") |
 | Ignore strangers | `XXhfs` does the ML-KEM work and reveals the NAS's identity before it knows who is connecting (`noise.h`) | Use the existing `XXhfs+psk0` with a 32-byte library access key from the QR. A stranger fails at the first read, so the NAS does no key work and says nothing. Device keys are still checked after that, and `source_limit` (`admission.h`) caps attempts. |
 | Install | None | A package a person can install on their Synology, chosen by S5 |
 | Stay updated | `driftwire update` only notifies and re-runs the desktop and Linux install channels (`cli/update.h`) | Signed, unattended updates for the NAS package. An internet-facing service cannot wait for someone to notice a notice. |
@@ -682,8 +686,9 @@ point is simply not done, and the next run does it again.
 | Leaving the app | Stops after the current file. Picks up where it left off next time. |
 | Same name, different photo | ` (2)`, never overwrites |
 | Same name and size already there | Hash the NAS file. If identical, record it and skip. This only helps in the same folder: the desktop's Photos backup does not do the same check and uses a different default layout, so running both into one tree can still make duplicates. |
-| Deleting | Never deletes from Photos. Never mirrors a deletion to the NAS. |
+| Deleting | Never deletes from Photos. A photo deleted on the phone (Photos' persistent change history, full access only; never a photo merely missing from the listing, such as a hidden one) has its backed-up files moved into the backup folder's hidden trash on the next run, which only the owner empties (owner's call 2026-11-24; before, the NAS kept every copy). One put back from Recently Deleted is left alone. |
 | Storage limit | The service refuses writes past the limit set for the backup folder, and the screen says so |
+| A folder each | A family sharing one server: in "Back up to", the chevron beside a backup folder opens it, New Folder makes one inside (the service's `mkdir`; an older service's first backup makes it), and the phone backs up into the folder chosen, e.g. `iPhone/Tristan`. The phone's destination is `<backup folder id>/<path>` (`backup::parse_destination`): a safe relative path, never out of the folder. The storage limit and the trash stay the backup folder's, counting every person's folder; the ledger keeps rows per destination, so another folder is backed up afresh. The desktop's Phone access card adds only the backup folder; people's folders are made from the phone (or in Finder/Explorer). |
 | Foreground priority | Viewing and search come first (§8.2): backup uses its own lane and pauses while a photo is loading |
 
 **The screen says one thing:** "1,204 of 18,320 backed up · 17,116 to go", then the one progress
@@ -733,7 +738,7 @@ over: native PhotoKit, and streaming rather than staging originals.
 | Welcome | One action: scan the code from MediaViewer on your Mac or Windows PC | No library yet |
 | Connect | Nothing to type: the scan pairs the phone with the Mac and the Synology, then tests the outside route over mobile data | Code expired; code not readable; Synology not reachable (names which address failed); reachable only at home |
 | First copy | One progress line | "Copying library · 48 of 161 MB · about 25 seconds left" |
-| Library | Date-ordered grid, folder switch | Route chip only when it matters |
+| Library | Date-ordered grid, folders as pages | Route chip only when it matters |
 | Search | Field, recent searches, then results | Typing, results, nothing found |
 | Viewer | One photo, pinch and swipe | Refining; original unreachable |
 | Clip | Player and moment ticks | Too big to stream |
@@ -741,6 +746,26 @@ over: native PhotoKit, and streaming rather than staging originals.
 | People | Named people | Only when the Mac has them |
 | Backup (1.1) | Folder, folder layout, how much is done, what is left | Running; paused off Wi-Fi; folder not allowed by the service; storage limit reached; NAS full |
 | Connection | Synology status, where the catalogue came from and when, cache size, forget | Each failure names its cause |
+
+**Changing files (built 2026-11-22; service: `serve_client.h` "changing the shared folders").** On a
+folder's page, a device whose role lets it change files there gets Add (from Photos or Files), New
+Folder, and Select: a bar of Move, Rename (one item) and Delete under what is chosen. Holding a
+tile starts Select with it chosen, as Photos does (2026-11-27; it replaced a long-press menu of the
+same three). Move picks a destination among only the folders this phone may change.
+Delete asks first and says the items go to the trash on the server, where they can be restored. A
+file being sent shows on its folder's page with its progress and a stop; it keeps going when the
+folder is left, and Try again carries on from where the server's copy ended (a dropped link is
+picked up once by itself). The page updates in place. A refusal (a taken name, full, the drive not
+connected, not allowed) is said on the page and nothing is replaced; in a batch, the rest still go
+and the page says how many did. Files going into a folder being moved or deleted are held first,
+and dropped only if it went. None of it shows for a "view" device, on a folder the device may not
+change, or with a service older than these changes. On a server, only file mode has it: a
+catalogue's folders are what the computer last published, so a change would not show there until
+the next publish. **The sample library** (a static copy on GitHub, no server) has it as a demo, said
+on its pages: the changes are kept on this iPhone in the library's own folder
+(`MobileKit/LocalChanges.swift`, `MobileLink/SampleChanges.swift`), laid over the sample, and go
+when the sample is opened again or forgotten; nothing is sent, and the published sample is
+unchanged. The fixtures' `library.change` runs the same over an in-memory record.
 
 **App Review, and anyone without a NAS (built 2026-11-12, owner):** the code `SAMPLE`, typed on
 the Scan screen ("Enter a code"), or `mediaviewer://sample` as a QR code or link, opens the **sample
@@ -799,6 +824,13 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 - **Dark by default**, as the viewer is. Depth from a lighter surface, not shadow.
 - **Touch feedback starts on the input.** Only marketing motion is slow.
 - **A photo opens as one object:** the thumbnail grows into the viewer and sharpens in place.
+- **A folder opens as a page** of the system's navigation stack: it grows out of its tile (a plain
+  push with Reduce Motion) the moment it is tapped, laid out when its tile was on screen (folders
+  whose tiles show are listed ahead; one opened before is shown from what it held), with its
+  skeleton otherwise, and the edge swipe or the back button's menu goes back to pages that kept
+  their place (2026-11-22, 23). Measured in the Simulator with no test attached
+  (`tools/ios/folder-walk.sh`): about 1.5 late frames per folder change, as for an empty page pushed;
+  the page's own content adds about 5 ms. The hard cut it replaced had none of the transition's.
 
 ### 11.3 Failure copy, written now
 
@@ -834,7 +866,7 @@ shared) are built with Stageshow, and the real screens follow the same **Craft r
 | Cloud backup copies the catalogue | Excluded from backup (§8.3) |
 | The catalogue on the NAS reveals names, places, text | No worse than the share it sits on, which already holds the files. Encrypting it with a key from the QR is a later option. |
 | Biometrics | Never published (call 7) |
-| The phone can write to the NAS (1.1) | Only through the service, only into the backup folder, under a storage limit; it creates files and never replaces or deletes one |
+| The phone can write to the NAS (1.1) | Only through the service. Backup creates files in the backup folder, under a storage limit. A "change" device may add, make folders, move, rename and delete in folders its role allows; nothing is ever replaced (a taken name is refused, or " (2)" for an added file), and delete moves into the folder's hidden trash on the server, which only its owner empties |
 | Telemetry | None. Crash reports follow the existing privacy line: default off, ask first, no paths, names, pixels or EXIF. |
 
 Also required for the store [Apple]: a privacy manifest that declares the required-reason APIs the
@@ -936,6 +968,25 @@ the mobile-data reachability test, Keychain.
 ### M4 — Catalogue sync (iOS)
 
 **Built (2026-11-10):** copy, signature and manifest checks, swap, resume, the never-lower rule, Wi-Fi by default, `BGContinuedProcessingTask` for the first copy. Not proven: leaving the app during a copy (needs a device), and `BGProcessingTask` for automatic sync is not built.
+
+**Copy over lanes (2026-11-27):** over a long path one TCP connection's loss recovery caps the copy
+(CUBIC at 150 ms and 0.1 % loss: well under 1 MB/s, however fast the line), so a copy of 8 MB or more
+opens up to three more sessions to the service on the same direct route (`remote_file::open_lane`;
+none on a relayed or punched link) and fetches each big file as 2 MB segments, two reads per lane.
+Segments are written in order, so the `.part` stays a prefix of the file and a resume is unchanged;
+at most 24 MB waits in memory ahead of it. No protocol change: each lane is an ordinary session, and a
+service that says busy just leaves fewer. Bench: `mv_mobile_link_tests "[.phone-copy-bench]"`
+(`tests/tcp_path.h`, an emulated CUBIC path).
+
+**A newer generation mid-copy (2026-11-27):** a copy cut short used to be thrown away whole as soon
+as a newer generation was published, and nothing was taken from the installed generation, so every
+generation was a full download. On a slow link that took longer than the desktop's republishing
+(at most hourly while the library changes), the phone never installed anything newer and kept
+showing photos deleted on the server. Now `copy_catalogue` (under the library's copy lock; `check_catalogue` only counts it) carries into the new staging folder
+every file the new manifest names with the same name, size and SHA-256: whole files by hard link
+from an older staging folder or the installed generation, and an older `.part` by a move, resumed.
+A staging folder keeps its manifest as `plan.json` for this, removed before the swap. Every file is
+still hashed before it is installed. Test: `"sync: a generation published mid-copy*"`.
 
 Copy, verify, swap, resume, background task, first copy as a continued task on iOS 26, model copy,
 Wi-Fi by default.

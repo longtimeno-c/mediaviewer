@@ -60,8 +60,11 @@ class folder_model {
     std::int64_t mtime_unix = 0;  // virtual only
     std::uint64_t size = 0;       // virtual only
   };
+  // `subfolders` are the list's folder tiles (subfolders()), as given: another
+  // computer's folder lists its folders this way, by key ("remote:..."). A list
+  // of folders alone, with no items, is a list too.
   [[nodiscard]] expected open_list(std::string title_utf8, std::vector<list_entry> entries,
-                                   job_system& jobs) noexcept;
+                                   job_system& jobs, std::vector<io::subdir_entry> subfolders = {}) noexcept;
   // S0 (docs/plans/edit-refresh.md §5): a virtual entry added to the open list
   // right after `after_path`, as a new library photo made from that item is.
   // False when no list is open, `after_path` is not in it, or the entry is not

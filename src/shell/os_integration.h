@@ -50,8 +50,9 @@ inline constexpr std::size_t kMaxPinnedFolders = 5;
 // forgets from the recents (a folder that is gone, the card's x).
 [[nodiscard]] std::vector<std::string> remove_folder(std::vector<std::string> list, std::string_view utf8_dir);
 
-// The list every host shows: the pins in their order, then the recents that
-// are not pinned, most recent first, at most `max` in all.
+// The list every host shows: the pins in their order (a paired server's
+// `remote:` pin before the folder pins), then the recents that are not pinned,
+// most recent first, at most `max` in all.
 [[nodiscard]] std::vector<std::string> pinned_then_recent(std::span<const std::string> pinned,
                                                           std::span<const std::string> recent,
                                                           std::size_t max = kMaxRecentFolders);
@@ -71,10 +72,16 @@ inline constexpr std::size_t kMaxPinnedFolders = 5;
 // Text is cut at a UTF-8 boundary to fit. The hover is cleared. `icloud`
 // (the Mac host, while the Photos library is added: docs/design/26) puts an
 // "iCloud Photos" row first and the folders after it, still kMax rows in all.
-// The first `pinned` of `utf8_dirs` are pins (pinned_then_recent): their rows
-// are counted in out.pinned and drawn with a pin.
+// The first `pinned` of `utf8_dirs` are pins (pinned_then_recent): the leading
+// server pins' rows are counted in out.servers and drawn above the header, the
+// folder pins' in out.pinned and drawn with a pin.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
                           welcome_recents& out, bool icloud = false, std::size_t pinned = 0) noexcept;
+// Row `row`'s text (the cloud row counted), cut to fit as above; a row past
+// out.count is left alone. For a shown entry that is not a disk folder (a
+// paired server's `remote:` pin, docs/plans/desktop-client.md), whose path
+// says nothing to a person.
+void set_welcome_row(welcome_recents& out, int row, std::string_view label, std::string_view where) noexcept;
 // The same with any cloud place leading (Windows: "OneDrive", 2026-10-07);
 // an empty `cloud_label` is none.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,

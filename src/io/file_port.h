@@ -92,6 +92,13 @@ struct file_id {
 // status::permission_denied, a directory status::io. Does not read the file
 // (a cloud placeholder is not downloaded). The id may be unknown (all zero).
 [[nodiscard]] result<file_id> identify(std::string_view utf8_path);
+// The same for a regular file or a directory (`driftwire serve`'s moves: whether two folders
+// are one volume, whether one is inside another whatever the case or normalisation of the
+// names). A link there is status::permission_denied, anything else status::io.
+[[nodiscard]] result<file_id> identify_entry(std::string_view utf8_path);
+// A directory's entries to stable storage (fsync of the directory on POSIX), so the names made
+// in it survive a power cut. Windows: nothing to do (its renames are written through).
+[[nodiscard]] expected sync_directory(std::string_view utf8_dir);
 
 // Creates `utf8_dir` and any missing parents. Succeeds if it already exists.
 [[nodiscard]] expected make_directories(std::string_view utf8_dir);

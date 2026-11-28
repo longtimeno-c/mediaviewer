@@ -77,7 +77,45 @@ class target {
   [[nodiscard]] virtual result<std::string> read_ledger(const std::string& root, const std::string& id) = 0;
   // This phone's folder id (serve::device_folder_id).
   [[nodiscard]] virtual std::string device_id() const = 0;
+  // Whether this phone is limited to some folders (a scoped grant), as of the last folders()
+  // answer: the service names only those, so with none of them a backup folder, folders() is
+  // empty though the server may have one.
+  [[nodiscard]] virtual bool limited_to_some_folders() const { return false; }
+  // A backed-up file into the folder's hidden trash (a photo deleted from Photos): true when
+  // moved, false when it was not there. status::unsupported_format: a service that cannot.
+  [[nodiscard]] virtual result<bool> trash(const std::string& root, const std::string& rel) {
+    (void)root;
+    (void)rel;
+    return err(status::unsupported_format);
+  }
+  // Makes the folder `rel` (and any missing above it); there already is fine.
+  // status::unsupported_format: a service without mkdir; status::invalid_arg: a file has that
+  // name, or the service will not take it; status::permission_denied: not this phone's to change.
+  [[nodiscard]] virtual expected make_folder(const std::string& root, const std::string& rel) {
+    (void)root;
+    (void)rel;
+    return err(status::unsupported_format);
+  }
 };
+
+// ---- where in the folder --------------------------------------------------------------------
+
+// Where a phone backs up: a backup folder's id, or the id and a subfolder inside it,
+// "<id>/Tristan", so the people sharing one backup folder each have their own (a family NAS).
+// The subfolder is a safe relative path (no "..", no hidden or absolute part): a destination
+// never leaves its backup folder. Its storage limit, trash and ledger copies stay the backup
+// folder's; the phone's ledger keeps rows per destination.
+struct destination {
+  std::string root;  // the backup folder's id
+  std::string sub;   // "" for the folder itself
+};
+[[nodiscard]] std::optional<destination> parse_destination(std::string_view dest);
+// The folders directly inside a destination, by name, sorted; hidden ones never.
+[[nodiscard]] result<std::vector<std::string>> subfolders(target& t, std::string_view dest);
+// Makes the folder `name` inside `dest` (there already is fine) and gives its destination. A
+// service without mkdir still gets the destination: the first backup makes the folder.
+// status::invalid_arg: a name that is not one plain folder name.
+[[nodiscard]] result<std::string> make_subfolder(target& t, std::string_view dest, std::string_view name);
 
 [[nodiscard]] std::unique_ptr<target> link_target(link_session& link);
 
@@ -117,6 +155,9 @@ class source {
 };
 
 // ---- the ledger -----------------------------------------------------------------------------
+
+// The most backed-up photos one run moves to the trash for having been deleted from Photos.
+inline constexpr std::size_t kMaxDeletedAtOnce = 100;
 
 struct row {
   std::string key, kind, name;
@@ -192,6 +233,7 @@ struct status_report {
   std::uint64_t files_done = 0;   // files in the ledger and in the folder
   std::uint64_t copied = 0;       // files copied this run
   std::uint64_t bytes = 0;        // sent this run
+  std::uint64_t trashed = 0;      // files moved into the folder's trash this run (photos deleted from Photos)
   std::string current;            // the file being copied (this phone's own screen only)
   double current_fraction = 0;
   std::vector<failure> failures;  // this run's
@@ -199,7 +241,7 @@ struct status_report {
 
 struct options {
   std::string library_id;
-  std::string root;              // the backup folder's id
+  std::string root;              // the destination: a backup folder's id, or "<id>/<subfolder>"
   layout folders = layout::year_month;
   std::string scratch_dir;       // one resource at a time is exported here
   int ledger_copy_every = 50;
@@ -210,6 +252,15 @@ class engine {
   engine(options o, target& t, source& s, ledger& l);
   // Newest first (§10b: recent photos are safe soonest).
   void set_items(std::vector<item> items);
+  // Keys of photos Photos says were deleted (never merely missing from the items: hidden photos
+  // and a burst's other frames are left out of those). A run moves their files in this folder
+  // into its trash, never one whose key is in the items again; deleted_done() then names the keys
+  // handled. One it could not finish (the folder offline, an older service, the link) stays out.
+  // More backed-up photos than kMaxDeletedAtOnce gone at once is taken for a library being
+  // removed from the phone (iCloud Photos turned off, signed out), not for deleting: nothing is
+  // moved and the keys are done with. A file another photo's row still names is never moved.
+  void set_deleted(std::vector<std::string> keys);
+  [[nodiscard]] std::vector<std::string> deleted_done() const;
   // One run, to the end or the first state that stops it. `report` is called
   // from this thread as things change.
   state run(const cancel_flag* cancel, const std::function<void(const status_report&)>& report);
@@ -221,15 +272,22 @@ class engine {
   [[nodiscard]] bool restore_if_empty();
   [[nodiscard]] result<present_set> check_folder();
   [[nodiscard]] bool item_done(const item& it) const;
+  void trash_deleted(const cancel_flag* cancel);
   void copy_ledger();
 
+  // "/"-joined under the destination's subfolder.
+  [[nodiscard]] std::string in_dest(const std::string& rel) const;
+
   options o_;
+  destination d_;  // o_.root parsed; root empty when it is not a destination (run: no_folder)
   target& t_;
   source& s_;
   ledger& l_;
   std::vector<item> items_;
   mutable std::mutex m_;
   std::vector<std::string> remaining_;  // under m_
+  std::vector<std::string> deleted_;
+  std::vector<std::string> deleted_done_;  // under m_
   status_report st_;
   bool restored_ = false;  // rows came from the NAS's copy this run: send ours back
 };

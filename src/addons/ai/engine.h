@@ -332,6 +332,12 @@ struct engine_options {
   // ("dog") that rank correctly, and there "dog" must show the dogs. Filters
   // alone ("is:video in:2024") still list newest first.
   bool rank_when_unanswered = false;
+  // Settings → Local search attaches the pack so folders and settings can
+  // be managed without opening ONNX sessions, downloading weights, or
+  // starting indexing threads. First search or set_setting "start" loads
+  // them (issue #292, amended 2026-11-14). Off (the default) for tests,
+  // install, search, Resume, and Faces: those still full-start.
+  bool defer_models = false;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;
 
@@ -591,6 +597,16 @@ class engine {
 
   // threads
   void control_loop();
+  // Settings attached with defer_models: open the towers and start workers.
+  // Whatever asks for work calls it: a search (and typing one), set_setting
+  // "start" and "resume_root", Rescan, an export or import, the Edit tools'
+  // face reads. Folders and settings do not. Idempotent, never waits.
+  void request_models();
+  // defer_models, not yet requested, towers still closed.
+  [[nodiscard]] bool models_held() const noexcept;
+  // Search thread only, and only when defer_models: request_models then wait
+  // until the towers are in, they failed, or stop. The UI thread never waits.
+  void wait_for_models();
   void reader_loop();  // a reader's control thread: load, then catch up
   // A reader: the answering tower's text half, its vectors, People's names and
   // the audio index, all read-only. False when there is nothing to answer
@@ -868,6 +884,10 @@ class engine {
     refine_params params;
     std::uint32_t dim = 0;
     std::uint64_t serial = 0;
+    // The faces judged, and the person each is in after the moves (0 nobody;
+    // a look first: after the moves it would make): find_duplicates' input.
+    refine_snapshot snap;
+    std::vector<std::int64_t> where;
   };
   // person 0: everyone (no focus).
   [[nodiscard]] result<refine_run> refine_person_run(std::int64_t person, bool dry);
@@ -1060,6 +1080,9 @@ class engine {
   std::atomic<bool> pdf_ready_{false};
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
+  // Settings opened the pack without the towers (defer_models). First search
+  // or set_setting "start" sets this; control_loop then load_models().
+  std::atomic<bool> models_requested_{false};
   std::atomic<bool> reload_models_{false};
   std::atomic<bool> reload_pieces_{false};
   std::atomic<bool> first_compile_{false};  // this load compiles a tower for the first time

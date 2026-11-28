@@ -3,11 +3,31 @@
 Written 2026-11-15 from the code at `49147a79`. It builds on [self-host-drives.md](self-host-drives.md)
 (`driftwire host drives`) and the host's keepers (`cli/host_keepers.h`).
 
-**Status (2026-11-15):** slice 1 is built: the pure planner and the bin's rules, in
-`cli/drive_copy.h` and tested by `mv_tests "[drive-copy]"`. Nothing copies yet. The card row's
-words move to slice 3, where they are drawn. A torn `bin.json` is refused by its parser (the
-caller keeps the bin it had); writing it to a temporary file and renaming it is the copier's job,
-in slice 2.
+**Status (2026-11-23):** slice 1 (the pure planner and the bin's rules, `cli/drive_copy.h`,
+`"[drive-copy]"`) and most of slices 2 and 3 are built:
+
+- The copier, `cli/drive_copier.h` (`"[drive-copier]"`): `.mvpart` then rename, the source's
+  time kept, replaced and deleted files moved to the bin, expiry, trimming for room, the marker.
+  An empty source beside a non-empty copy is treated as a missing drive, and a folder that fails
+  to list moves nothing to the bin as deleted.
+- The copy keeper and `copies.json`, `cli/host_copy.h`: a fourth host keeper that runs a pass on
+  each copy every 15 minutes (every 2 while something is held back or failed), and at once when
+  `copies.json` changes. It writes `copies-state.json`, which `host drives list --json` reads.
+- `host drives copy FROM TO` and `copy-stop FROM` (`"[host-drives]"`). Nothing is erased, so
+  no name is typed. A drive with a marker is refused by `refusal_of()`.
+- The card (`phone/screens.cpp`, `"[phone-addon]"`): Set up drives first asks what the drives
+  are for: **Back up a drive** (this, marked Recommended), Share drives as they are (Separate),
+  or Combine drives (the RAID ways, which erase). Back up a drive picks Back up and Onto (the
+  drive with most on it, onto the one with most room), says whether it fits, and has Start
+  backing up. Each copy kept gets a row, "Family Media → Family Media Copy", that leads with
+  how it stands in plain words ("Paused: the server is off, so nothing is copied", "Up to
+  date", "Copying, …") and has Stop backing up.
+
+Not built yet: changes are found by the 15-minute compare, not `io::tree_watch`; there is no
+background I/O priority; the monthly SHA-256 check; the Recycle Bin list, Restore and Empty;
+the first copy's time estimate; erasing an unformatted or FAT32 copy drive (the copy refuses
+nothing there yet, and a FAT32 drive can't hold a file over 4 GB); `use-copy` (slice 4); and the
+phone's bin (slice 5).
 
 ## The problem
 
@@ -39,15 +59,15 @@ Keep a copy is not RAID. Here's how it compares with a mirror, and it should say
 
 ## 1. What the person sees
 
-On the Drives step, when one picked drive has data and another has room, a new row comes first and
-is marked **Recommended**: **Keep a copy (nothing on "Photos" is erased)**. It shows:
+On the Drives step, **Back up a drive** is the first of the three answers to "What are the drives
+for?" and is marked **Recommended**. It shows:
 
 - what is on the full drive, the new drive's free space, and whether the copy fits;
 - "First copy: about N hours" (the size divided by a speed measured from the first 30 seconds of
   copying, then updated as it runs);
 - the "not the same as a mirror" lines from the table above, and the existing "RAID is not a backup" line.
 
-Then **Start copying**. The new drive is erased only if it can't be used as it is: it isn't formatted,
+Then **Start backing up**. The new drive is erased only if it can't be used as it is: it isn't formatted,
 or it's FAT32 (FAT32 can't hold a file over 4 GB). That erase goes through the existing guards in
 §3 of self-host-drives.md, with the drive's name typed. A drive that is already NTFS or exFAT and
 has room is used as it is, and anything already on it is left alone.

@@ -490,6 +490,144 @@ TEST_CASE("driftwire: pings keep a link alive but never stretch a deadline", "[d
   CHECK(m.type == sp::msg::offer);
 }
 
+namespace {
+
+// One transfer whose receiver's read-backs (the verifier threads' yields) are
+// held for `hold`, from the first, with both sides' session limit without a
+// sign of life cut to `limit_ms`: a big file on a slow disk, made short.
+// `stall_ms` > 0 cuts the sender's socket write limit (kSilenceMs) to it.
+struct held_checks {
+  sp::transfer_result sent, got;
+  bool held = false;
+  std::uint32_t rejoins = 0;     // either side's
+  std::uint64_t send_ns = 0;     // the sender's time in its socket writes
+  std::uint64_t room_ns = 0;     // and waiting for room in its replay
+};
+held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& files, const fs::path& dest,
+                                      int limit_ms, std::chrono::milliseconds hold, int stall_ms = 0) {
+  auto [a, b] = channel_pair(stall_ms);
+  a->set_rejoin_ms_for_tests(limit_ms);
+  b->set_rejoin_ms_for_tests(limit_ms);
+  sp::stage_times tx;
+  held_checks out;
+  std::mutex m;
+  std::optional<std::chrono::steady_clock::time_point> until;
+  std::thread receiver([&, &b = b] {
+    const auto reading = std::this_thread::get_id();
+    auto offer = sp::read_offer(*b, 10000);
+    if (!offer || !sp::send_accept(*b)) return;
+    sp::hooks h;
+    h.yield = [&] {
+      if (std::this_thread::get_id() == reading) return;  // the link reader's own yield
+      std::chrono::steady_clock::time_point end;
+      {
+        std::lock_guard lock(m);
+        if (!until) until = std::chrono::steady_clock::now() + hold;
+        end = *until;
+        out.held = true;
+      }
+      // The slow disk: elapsed time is the point here, so no event stands in
+      // for it. Only a hold past the limit matters; a longer one is the same.
+      std::this_thread::sleep_until(end);
+    };
+    out.got = sp::receive_files(*b, *offer, utf8(dest), h);
+  });
+  sp::hooks sending;
+  sending.stages = &tx;
+  out.sent = sp::send_files(*a, files, sending, {});
+  receiver.join();
+  out.rejoins = a->rejoins() + b->rejoins();
+  out.send_ns = tx.ns[static_cast<int>(sp::stage::send)].load();
+  out.room_ns = tx.ns[static_cast<int>(sp::stage::wait_room)].load();
+  return out;
+}
+
+}  // namespace
+
+// Reading the files back takes as long as the receiver's disk needs (15 GB:
+// minutes on a hard disk), and the receiver reads nothing from the link while
+// it waits for that. The sender's pings wait unread; that is not a dead link,
+// and the receiver keeps the session through it.
+TEST_CASE("driftwire: a receiver waiting on slow read-backs keeps the session", "[driftwire]") {
+  constexpr int kLimitMs = 2000;  // well above kPing2Ms: the sender's pings keep it alive otherwise
+  const auto hold = std::chrono::milliseconds(2 * kLimitMs);
+  scratch_dir s("driftwire_slow_checks");
+  const fs::path src = s / "src", dest = s / "dest";
+  fs::create_directories(dest);
+  std::vector<sp::outgoing_file> files;
+  auto add = [&](const std::string& name, std::size_t size, std::uint32_t seed) {
+    write_bytes(src / name, pattern(size, seed));
+    files.push_back({utf8(src / name), name, size, 0, {}});
+  };
+
+  SECTION("after the last file, waiting for its check") {
+    add("big.mov", 9 * 1024 * 1024, 1);
+  }
+  SECTION("mid-way, waiting for room among the files to check") {
+    for (std::uint32_t i = 0; i < 9; ++i) add("clip" + std::to_string(i) + ".mov", 5 * 1024 * 1024, i + 1);
+  }
+
+  const auto r = transfer_with_held_checks(files, dest, kLimitMs, hold);
+  CHECK(r.held);
+  CHECK(r.got.how == sp::outcome::delivered);
+  CHECK(r.sent.how == sp::outcome::delivered);
+  CHECK(r.got.done == files.size());
+  for (const auto& f : files) CHECK(read_bytes(dest / f.rel) == read_bytes(f.path));
+  CHECK_FALSE(any_temporary(dest));
+}
+
+// A batch of big clips to a hard disk: the receiver's link reader waits for
+// room among the files to check and reads nothing, so the sender's socket
+// fills (well before kReplayBytes) and its write waits past the link's own
+// limit. The receiver's pings still arrive: the link is alive, and stays up.
+TEST_CASE("driftwire: a sender whose socket stays full while the receiver checks keeps the link", "[driftwire]") {
+  constexpr int kStallMs = 2000;  // above kPing2Ms: the receiver's pings are what say it is alive
+  scratch_dir s("driftwire_full_socket");
+  const fs::path src = s / "src", dest = s / "dest";
+  fs::create_directories(dest);
+  std::vector<sp::outgoing_file> files;
+  // The link reader waits from the 7th file (2 checking, 4 queued); the
+  // 20 MB after it is more than the loopback socket's buffers hold.
+  for (std::uint32_t i = 0; i < 12; ++i) {
+    const std::string name = "clip" + std::to_string(i) + ".mov";
+    write_bytes(src / name, pattern(4 * 1024 * 1024, i + 1));
+    files.push_back({utf8(src / name), name, 4u * 1024 * 1024, 0, {}});
+  }
+
+  const auto r = transfer_with_held_checks(files, dest, kStallMs, std::chrono::milliseconds(5 * kStallMs / 2), kStallMs);
+  CHECK(r.held);
+  constexpr std::uint64_t kStallNs = std::uint64_t{kStallMs} * 1000000;
+#if defined(_WIN32)
+  // Windows' loopback buffers can grow past kReplayBytes; the sender then
+  // waits for replay room instead, which must also hold.
+  CHECK(r.send_ns + r.room_ns >= kStallNs);
+#else
+  CHECK(r.send_ns >= kStallNs);  // a write did wait past the limit
+#endif
+  CHECK(r.got.how == sp::outcome::delivered);
+  CHECK(r.sent.how == sp::outcome::delivered);
+  CHECK(r.rejoins == 0);
+  CHECK(r.got.done == files.size());
+  for (const auto& f : files) CHECK(read_bytes(dest / f.rel) == read_bytes(f.path));
+  CHECK_FALSE(any_temporary(dest));
+}
+
+// The other half: a peer that neither reads nor says anything is gone, and a
+// write into its full socket gives up after the stall limit.
+TEST_CASE("driftwire: a write to a silent peer's full socket gives up", "[driftwire]") {
+  constexpr int kStallMs = 300;
+  auto [a, b] = loopback_pair();
+  a->set_stall_ms_for_tests(kStallMs);
+  const std::vector<std::uint8_t> lots(64u * 1024 * 1024, 0x5a);  // more than the socket buffers hold
+  const auto t0 = std::chrono::steady_clock::now();
+  auto r = a->write_all(lots);
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::timeout);
+  CHECK(ms >= kStallMs);
+  CHECK(ms < 10 * kStallMs);
+}
+
 TEST_CASE("driftwire: stage timers count the seal, the send, the receive and the open (#540)", "[driftwire]") {
   auto [a, b] = channel_pair();
   sp::stage_times tx, rx;
@@ -758,35 +896,88 @@ TEST_CASE("driftwire: a set too big for Bluetooth says to use Wi-Fi before Send"
 
 // ---- what is kept across launches (#442) ------------------------------------------------------------
 
-TEST_CASE("driftwire: the menu's Tunnel row is the window's switch, once a relay server is set", "[driftwire]") {
+TEST_CASE("driftwire: the Tunnel moved to the VPN add-on; its settings are kept for it, and a card says so",
+          "[driftwire]") {
+  // Nothing of the Tunnel in the window, the settings page or the menu any more.
   sp::view v;
-  CHECK(sp::build_menu(v).find(R"("id":"tunnel")") == std::string::npos);  // no relay server: no row
   v.relay_server = "relay.example:47614#TEST-RELAY-KEY-0123456789";
-  v.tunnel_relay = "relay.example:47614";
-  auto doc = mv::json::parse(sp::build_menu(v));
-  REQUIRE(doc);
-  const mv::json::value* row = nullptr;
-  for (const auto& r : doc->find("items")->a) {
-    if (const std::string* id = r.str("id"); id && *id == "tunnel") row = &r;
+  v.background = true;
+  CHECK(sp::build_menu(v).find(R"("id":"tunnel")") == std::string::npos);
+  CHECK(sp::build_settings_tree(v).find(R"("id":"tunnel")") == std::string::npos);
+  CHECK(sp::build_settings_tree(v).find("tunnel_moved") == std::string::npos);
+  // It was on here: one card says where it went.
+  v.tunnel_moved = true;
+  CHECK(sp::build_tree(v).find("The Tunnel is now the VPN add-on") != std::string::npos);
+  CHECK(sp::build_settings_tree(v).find("Settings \xE2\x86\x92 Add-ons \xE2\x86\x92 VPN") != std::string::npos);
+
+  // An engine keeps the Tunnel's keys in driftwire.json as they were, for the VPN add-on to take.
+  scratch_dir dir("driftwire_tunnel_moved");
+  const auto path = utf8(dir / sp::kPrefsFile);
+  sp::prefs before;
+  before.tunnel = true;
+  before.tunnel_port = 50123;
+  before.tunnel_all_apps = false;
+  before.tunnel_tls = true;
+  before.tunnel_vpn = true;
+  before.tunnel_block = true;
+  REQUIRE(sp::save_prefs(path, before));
+  fake_host host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = path;
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  {
+    sp::engine eng(host, o);
+    CHECK(eng.snapshot().tunnel_moved);
+    eng.on_event("internet", 2, "true");  // a save
+    eng.on_event("internet", 2, "false");
   }
-  REQUIRE(row);
-  CHECK(*row->str("kind") == "toggle");
-  CHECK(*row->str("label") == "Tunnel through relay.example:47614");
-  CHECK_FALSE(row->find("value")->b);
-  CHECK(sp::build_menu(v).find("TEST-RELAY-KEY") == std::string::npos);  // never the key
-  v.tunnel = true;
-  CHECK(sp::build_menu(v).find(R"("id":"tunnel","label":"Tunnel through relay.example:47614","value":true)") !=
-        std::string::npos);
-  // A long name is cut at a character, within the host's label limit.
-  v.tunnel_relay = std::string(90, 'a') + "\xC3\xA9" + std::string(40, 'b') + ":1";
-  const auto long_doc = mv::json::parse(sp::build_menu(v));
-  REQUIRE(long_doc);
-  for (const auto& r : long_doc->find("items")->a) {
-    if (const std::string* label = r.str("label")) {
-      CHECK(label->size() <= 120);
-      CHECK(label->find("\xC3\xE2") == std::string::npos);  // not cut inside the é
-    }
-  }
+  const auto after = sp::load_prefs(path);
+  REQUIRE(after);
+  CHECK(after->tunnel);
+  CHECK(after->tunnel_port == 50123);
+  CHECK_FALSE(after->tunnel_all_apps);
+  CHECK(after->tunnel_tls);
+  CHECK(after->tunnel_vpn);
+  CHECK(after->tunnel_block);
+}
+
+TEST_CASE("driftwire: a system proxy the Tunnel left set shows the card too", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_moved_record");
+  fs::create_directories(dir / "data");
+  write_text(dir / "data" / "driftwire_proxy.json", R"({"pac_url":"http://127.0.0.1:50123/x.pac","saved":""})");
+  fake_host host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = utf8(dir / "data" / sp::kPrefsFile);
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  sp::engine eng(host, o);
+  CHECK(eng.snapshot().tunnel_moved);
+  CHECK(sp::build_settings_tree(eng.snapshot()).find("puts back this computer's proxy setting") != std::string::npos);
+}
+
+TEST_CASE("driftwire: the Tunnel's card goes once the VPN add-on answers", "[driftwire]") {
+  scratch_dir dir("driftwire_tunnel_moved_present");
+  sp::prefs before;
+  before.tunnel = true;
+  REQUIRE(sp::save_prefs(utf8(dir / sp::kPrefsFile), before));
+  struct vpn_here final : fake_host {
+    using fake_host::fake_host;
+    bool vpn_addon_present() override { return true; }
+  } host(dir / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.prefs_path = utf8(dir / sp::kPrefsFile);
+  o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+  sp::engine eng(host, o);
+  REQUIRE(eventually([&] { return !eng.snapshot().tunnel_moved; }));
+  CHECK(sp::build_tree(eng.snapshot()).find("The Tunnel is now the VPN add-on") == std::string::npos);
 }
 
 TEST_CASE("driftwire: the menu-bar menu's rows are the window's switches, with what is happening now",

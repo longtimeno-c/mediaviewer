@@ -279,11 +279,24 @@ struct desk::state {
       auto opened = serve::client::open(std::shared_ptr<link>(std::move(*l)), c);
       if (opened) {
         admin = std::move(*opened);
+        sync_addresses();
         return admin.get();
       }
       last = opened.error();
     }
     return err(last == status::invalid_arg ? status::io : last);
+  }
+  // The service tells paired devices where it is (serve_caps "addresses"): what this desktop
+  // knows, sent whenever the service says otherwise, so a phone paired before a DuckDNS name or a
+  // new LAN address learns it at its next connect. A service from before it is asked nothing.
+  void sync_addresses() {
+    const auto& caps = admin->caps();
+    if (std::find(caps.features.begin(), caps.features.end(), serve::kFeatureAddresses) == caps.features.end()) return;
+    if (caps.local == info->local && caps.public_name == info->public_name) return;
+    json::writer w;
+    w.begin_object().key("do").string("set_addresses");
+    w.key("local").string(info->local).key("public").string(info->public_name).end_object();
+    (void)admin->admin(w.str());  // best effort: the next session tries again
   }
   // One request; a held session that died is replaced once. Refused for want
   // of an unlock, with the key still kept here: unlocked with it and asked again.
@@ -546,6 +559,8 @@ expected desk::set_public_name(const std::string& public_name) {
   if (!public_name.empty() && !split_host_port(public_name)) return err(status::invalid_arg);
   st_->info->public_name = public_name;
   if (!st_->save()) return err(status::io);
+  st_->admin.reset();
+  (void)st_->session();  // tells the service, for the phones already paired (sync_addresses)
   return {};
 }
 
@@ -557,6 +572,7 @@ expected desk::set_local(const std::string& local) {
   st_->info->local = local;
   st_->admin.reset();
   if (!st_->save()) return err(status::io);
+  (void)st_->session();  // tells the service, for the phones already paired (sync_addresses)
   return {};
 }
 
@@ -844,6 +860,8 @@ result<owner_state> desk::owner_status() {
   out.unlocked_s = doc->integer("unlocked_s").value_or(0);
   out.locked_until = doc->integer("locked_until").value_or(0);
   if (const std::string* r = doc->str("relay")) out.relay = *r;
+  out.vpn_port = doc->integer("vpn_port").value_or(0);
+  out.vpn_running = doc->boolean("vpn_running").value_or(false);
   // This desktop's own kept key decides whether it can act without asking.
   if (!st_->signer || std::chrono::steady_clock::now() >= st_->signer_until) {
     out.unlocked_s = 0;
@@ -861,6 +879,23 @@ expected desk::set_relay(const std::string& address, const std::string& key) {
   MV_TRY(const std::string text, st_->ask(w.str()));
   (void)text;
   return {};
+}
+
+result<vpn_answer> desk::set_vpn(bool on) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("set_vpn").key("on").boolean(on).end_object();
+  MV_TRY(std::string text, st_->ask(w.str()));
+  const auto doc = json::parse(text, 2);
+  std::fill(text.begin(), text.end(), '\0');
+  if (!doc) return err(status::corrupt);
+  vpn_answer a;
+  a.port = doc->integer("vpn_listening").value_or(doc->integer("vpn_port").value_or(0));
+  a.running = doc->boolean("vpn_running").value_or(false);
+  a.tls_port = doc->integer("tls_port").value_or(0);
+  if (const std::string* k = doc->str("key")) a.key = *k;
+  return a;
 }
 
 result<std::string> desk::users(std::string_view verb, const std::string& name, const std::string& role,
@@ -1174,7 +1209,20 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     w.begin_object().key("passphrase").string(s.passphrase).key("features").begin_array();
     for (const auto& f : s.features) w.string(f);
     w.end_array().key("unlocked_s").integer(s.unlocked_s).key("locked_until").integer(s.locked_until);
-    w.key("relay").string(s.relay).end_object();
+    w.key("relay").string(s.relay).key("vpn_port").integer(s.vpn_port).key("vpn_running").boolean(s.vpn_running);
+    w.end_object();
+    return w.take();
+  }
+  if (method == "set_vpn") {
+    const auto on = doc->boolean("on");
+    if (!on) return err(status::invalid_arg);
+    MV_TRY(vpn_answer a, d.set_vpn(*on));
+    json::writer w;
+    w.begin_object().key("port").integer(a.port).key("running").boolean(a.running);
+    if (a.tls_port != 0) w.key("tls_port").integer(a.tls_port);
+    if (!a.key.empty()) w.key("key").string(a.key);
+    w.end_object();
+    std::fill(a.key.begin(), a.key.end(), '\0');
     return w.take();
   }
   if (method == "set_relay") {

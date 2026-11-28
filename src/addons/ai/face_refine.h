@@ -74,6 +74,18 @@ struct refine_params {
   std::uint32_t top_k = 3;
   std::uint32_t max_exemplars = 12;
   std::uint32_t max_refs = 256;     // caps the medoid's O(n^2) on a huge person
+  // A person the user confirmed (a name or a pinned face) is known by more of
+  // their faces: refs drawn one per photo or clip first, and exemplars beyond
+  // the first max_exemplars that cover their looks (each a face that at least
+  // one other photo or clip of theirs resembles at join + 2 margins).
+  std::uint32_t max_exemplars_confirmed = 48;
+  std::uint32_t max_refs_confirmed = 1024;
+  // Merge duplicates: an unconfirmed person is a confirmed one's fragment
+  // when this share of its exemplars is each vouched for at `join`.
+  float fragment_share = 0.75f;
+  // ...and it is no more than this part of the confirmed person's photos and
+  // clips; a larger one must vouch back like anyone.
+  float fragment_part = 0.125f;
   std::uint32_t shortlist = 3;      // alternatives scored by exemplars after the mean prefilter
   std::uint32_t passes = 4;
   std::uint32_t min_group = 2;      // a regrouped person needs this many faces
@@ -186,16 +198,29 @@ struct dedupe_input {
   // (min, max) pairs never merged: a split kept them apart, or a face of one
   // was rejected from the other. Sorted.
   std::span<const std::pair<std::int64_t, std::int64_t>> apart;
+  // Optional: the faces the protos were built from (refine_input's emb and
+  // faces) and the person each is in now (`where`, parallel to `faces`; 0
+  // nobody). With them an unconfirmed person is judged as a confirmed one's
+  // fragment by all of its faces, not by its exemplars alone, which are the
+  // dozen nearest its middle and say nothing of a person made of several.
+  std::span<const float> emb;
+  std::span<const refine_face> faces;
+  std::span<const std::int64_t> where;
   const std::atomic<bool>* cancel = nullptr;  // set: stop early, return nothing
 };
 
 // People who are the same person. Two people link when each one's exemplars
 // vouch for the other's, both ways, at `join` (support, the refinement's own
 // measure: each exemplar's top-k mean cosine to the other's exemplars,
-// averaged), unless they are apart or both named and named differently. Links
+// averaged), unless they are apart or both named and named differently. A
+// person the user confirmed (a name, a pinned face) and one they did not link
+// one way instead: the unconfirmed one is a fragment when the confirmed
+// person's exemplars vouch for `fragment_share` of its faces each at `join`,
+// and for all of them on average, and no other confirmed person does as well
+// within `margin`, and it is at most `fragment_part` of that person's size. Links
 // are taken strongest first into groups by complete linkage: a group takes a
 // person only when every member links to it, so a chain of lookalikes cannot
-// walk. Each group lists its survivor first: named over unnamed, then the
+// walk; fragments of one confirmed person need only that person's link. Each group lists its survivor first: named over unnamed, then the
 // most faces, then the oldest id. Pairs whose cores are far apart (mean
 // pairwise below join - 2 margins) are not scored.
 [[nodiscard]] std::vector<std::vector<std::int64_t>> find_duplicates(const dedupe_input& in,

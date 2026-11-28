@@ -98,6 +98,24 @@ struct SettingsScreen: View {
             .accessibilityAction { directOnMobileData.toggle() }
             .accessibilityIdentifier("directOnMobileData")
           }
+          section(VPNCopy.section) {
+            NavigationLink {
+              VPNScreen()
+            } label: {
+              HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(VPNCopy.toggle).font(.subheadline).foregroundStyle(Theme.title)
+                  Text(VPNCopy.summary(model.vpn)).font(.footnote).foregroundStyle(Theme.body).lineLimit(2)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Theme.body)
+              }
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(TileButtonStyle())
+            .accessibilityIdentifier(VPNIDs.settingsRow)
+          }
           section("Backup") {
             NavigationLink {
               BackupScreen()
@@ -167,6 +185,9 @@ struct SettingsScreen: View {
       .navigationBarTitleDisplayMode(.inline)
       .navigationDestination(isPresented: Binding(get: { model.showsBackup }, set: { model.showsBackup = $0 })) {
         BackupScreen()
+      }
+      .navigationDestination(isPresented: Binding(get: { model.showsVPN }, set: { model.showsVPN = $0 })) {
+        VPNScreen()
       }
     }
   }

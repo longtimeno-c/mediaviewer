@@ -538,7 +538,16 @@ const person_proto* faces_db::exemplars_locked(std::int64_t person) {
                               [&](const ref& r) { return !r.pinned && r.quality < rules_.weak_quality; }),
                refs.end());
   }
-  if (refs.size() > rules_.max_refs) refs.resize(rules_.max_refs);
+  // Confirmed (it has a pin, or this would have returned above): one face of
+  // every photo and clip before a second of any, as build_proto draws them.
+  {
+    std::set<std::int64_t> seen_asset;
+    std::stable_partition(refs.begin(), refs.end(),
+                          [&](const ref& r) { return r.pinned || seen_asset.insert(r.asset).second; });
+    std::stable_partition(refs.begin(), refs.end(), [](const ref& r) { return r.pinned; });
+  }
+  const std::size_t cap = std::max(rules_.max_refs, rules_.max_refs_confirmed);
+  if (refs.size() > cap) refs.resize(cap);
   std::vector<float> emb;
   std::vector<refine_face> faces;
   emb.reserve(refs.size() * dim_);
@@ -1574,11 +1583,17 @@ review_snapshot faces_db::review_begin(std::int64_t person) {
     stmt n(db_, "SELECT id, name FROM people WHERE name != ''");
     while (n.step_row()) names[n.i64(0)] = n.text(1);
   }
+  std::set<std::int64_t> pinned_people;
+  {
+    stmt n(db_, "SELECT DISTINCT person_id FROM faces WHERE pinned = 1 AND person_id IS NOT NULL");
+    while (n.step_row()) pinned_people.insert(n.i64(0));
+  }
   for (const auto& [id, c] : clusters_) {
     if (id == person || c.n == 0) continue;
     review_snapshot::other o;
     o.id = id;
     if (auto it = names.find(id); it != names.end()) o.name = it->second;
+    o.confirmed = !o.name.empty() || pinned_people.count(id) != 0;
     o.sum = c.sum;
     o.n = c.n;
     if (auto it = exemplars_.find(id); it != exemplars_.end() && it->second.proto.pinned) o.proto = it->second.proto;
@@ -1601,11 +1616,23 @@ std::vector<face_review> faces_db::review_finish(const review_snapshot& snap) {
   // frame with this one. Their averages as rows (sum / n), dotted in float.
   std::vector<std::size_t> rivals;
   std::vector<float> means;
+  // Nor an unconfirmed, smaller person whose faces are no strangers to this
+  // one's core (mean pairwise cosine across >= join - margin / 2): that is a
+  // fragment of this person the merge joins, as refine_people has it, not
+  // someone else the face might be (2026-11-23: two thirds of a child's
+  // "check these" were contested by his own fragments).
+  const bool own_confirmed = own.named || own.pinned;
   for (std::size_t o = 0; o < snap.others.size(); ++o) {
     const review_snapshot::other& x = snap.others[o];
     if (x.n < 2 || x.sum.size() != snap.dim || snap.frame_people.count(x.id)) continue;
-    rivals.push_back(o);
+    const std::size_t at = means.size();
     for (float v : x.sum) means.push_back(v / static_cast<float>(x.n));
+    if (!x.confirmed && own.core_mean.size() == snap.dim && (own_confirmed || x.n <= own.members) &&
+        dot8(means.data() + at, own.core_mean.data(), snap.dim) >= p.join - p.margin / 2) {
+      means.resize(at);
+      continue;
+    }
+    rivals.push_back(o);
   }
   std::vector<std::pair<float, std::size_t>> best;
   for (std::size_t k = 0; k < snap.faces.size(); ++k) {
@@ -1642,7 +1669,12 @@ std::vector<face_review> faces_db::review_finish(const review_snapshot& snap) {
       r.rival_name.clear();
     }
     const bool low = r.support != -1 && r.support < snap.same_person;
-    const bool contested = r.rival != -1 && r.rival >= r.support - p.margin;
+    // A face the person vouches for as for an unmistakable one of theirs (join
+    // + 2 margins, from other photos and clips) is asked about only when
+    // someone else explains it at least as well: the refinement would not
+    // move it either.
+    const bool vouched = r.support >= p.join + 2 * p.margin && r.rival < r.support;
+    const bool contested = r.rival != -1 && r.rival >= r.support - p.margin && !vouched;
     r.check = (!f.pinned && (low || contested || f.quality < p.unusable_quality)) || r.doubtful_pin;
   }
   // Doubtful first: the checks, by how far the person's support is above the
@@ -1743,6 +1775,9 @@ loose_snapshot faces_db::loose_begin() {
 }
 
 std::vector<loose_face> faces_db::loose_finish(const loose_snapshot& snap) {
+  if (snap.dim == 0 || snap.emb.size() != snap.rows.size() * snap.dim || snap.no.size() != snap.rows.size()) {
+    return snap.rows;
+  }
   const refine_params& p = snap.rules;
   std::vector<loose_face> out = snap.rows;
   std::vector<std::pair<float, std::size_t>> best;

@@ -49,6 +49,41 @@ public class InstallWordsTests
     }
 
     [Fact]
+    public void ADamagedCopyIsInstalledAgainOncePerProcess()
+    {
+        Assert.True(AddonRepair.ShouldStart(damaged: true, RepairState.None, autoCheck: true, ownsStore: true, busy: false));
+        // Never a loop: whatever the first repair came to, there is no second.
+        foreach (RepairState was in new[] { RepairState.Tried, RepairState.Repaired, RepairState.Blocked })
+            Assert.False(AddonRepair.ShouldStart(true, was, autoCheck: true, ownsStore: true, busy: false));
+        Assert.False(AddonRepair.ShouldStart(damaged: false, RepairState.None, true, true, false));
+        // Nothing is downloaded behind "Check for updates automatically" off,
+        // from a later window, or under an install already running.
+        Assert.False(AddonRepair.ShouldStart(true, RepairState.None, autoCheck: false, ownsStore: true, busy: false));
+        Assert.False(AddonRepair.ShouldStart(true, RepairState.None, autoCheck: true, ownsStore: false, busy: false));
+        Assert.False(AddonRepair.ShouldStart(true, RepairState.None, autoCheck: true, ownsStore: true, busy: true));
+    }
+
+    [Fact]
+    public void ACopyThatBreaksAgainSaysWhatTakesItsFiles()
+    {
+        Assert.Equal(RepairState.Repaired, AddonRepair.After(null));
+        Assert.Equal(RepairState.Blocked, AddonRepair.After(InstallFailure.NotVerified));
+        Assert.Equal(RepairState.Tried, AddonRepair.After(InstallFailure.Offline));
+
+        // No repair ran: the usual line.
+        Assert.Null(AddonRepair.StateText(RepairState.None, busy: false));
+        Assert.Null(AddonRepair.StateText(RepairState.None, busy: true));
+        Assert.Equal(InstallWords.Repairing, AddonRepair.StateText(RepairState.Tried, busy: true));
+        // Offline is the failure row's to say, with Retry.
+        Assert.Null(AddonRepair.StateText(RepairState.Tried, busy: false));
+        // Installed and verified, and not usable again; or the fresh files did not verify.
+        Assert.Equal(InstallWords.KeepsBreaking, AddonRepair.StateText(RepairState.Repaired, busy: false));
+        Assert.Equal(InstallWords.KeepsBreaking, AddonRepair.StateText(RepairState.Blocked, busy: false));
+        Assert.Contains("Security software", InstallWords.KeepsBreaking);
+        Assert.Equal("Phone access was damaged and has been installed again.", InstallWords.Repaired("Phone access"));
+    }
+
+    [Fact]
     public void TheStepsAndButtons()
     {
         Assert.Equal("412 MB of 1.08 GB", InstallWords.Downloaded("412 MB", "1.08 GB"));

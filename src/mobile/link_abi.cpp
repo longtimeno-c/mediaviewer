@@ -449,6 +449,24 @@ const char* mv_link_storage_words(int32_t code) {
   return mv::driftwire::serve::storage_words(kStorageWords[code]);
 }
 
+int32_t mv_link_addresses_now(mv_mobile_link* l, mv_link_addresses* out) {
+  return catch_all([&]() -> int32_t {
+    if (!out) return -1;
+    *out = {};
+    if (!l || l->fixed || !l->session) return -1;  // the sample library: no service
+    std::string local, public_name, relay;
+    l->session->addresses(local, public_name, relay);
+    // Each fits (the caps and the code carry at most 255 bytes); one that would not is left empty.
+    const auto put = [](const std::string& from, char (&into)[256]) {
+      if (from.size() < sizeof into) std::memcpy(into, from.c_str(), from.size() + 1);
+    };
+    put(local, out->local);
+    put(public_name, out->public_name);
+    put(relay, out->relay);
+    return 0;
+  });
+}
+
 int32_t mv_link_grant(mv_mobile_link* l, int64_t* expires_unix, int32_t* scoped) {
   return catch_all([&]() -> int32_t {
     if (expires_unix) *expires_unix = 0;
@@ -860,6 +878,140 @@ int32_t mv_files_read(mv_mobile_link* l, const char* root, const char* rel, uint
   });
 }
 
+// ---- changing the shared folders ---------------------------------------------------------------
+
+namespace {
+
+using change_why = driftwire::serve::client::change_why;
+
+int32_t why_code(change_why w) {
+  switch (w) {
+    case change_why::none: return MV_CHANGE_NONE;
+    case change_why::unsupported: return MV_CHANGE_UNSUPPORTED;
+    case change_why::not_allowed: return MV_CHANGE_NOT_ALLOWED;
+    case change_why::path: return MV_CHANGE_PATH;
+    case change_why::exists: return MV_CHANGE_EXISTS;
+    case change_why::busy: return MV_CHANGE_BUSY;
+    case change_why::name: return MV_CHANGE_NAME;
+    case change_why::limit: return MV_CHANGE_LIMIT;
+    case change_why::full: return MV_CHANGE_FULL;
+    case change_why::offline: return MV_CHANGE_OFFLINE;
+    case change_why::not_found: return MV_CHANGE_NOT_FOUND;
+    case change_why::hash: return MV_CHANGE_HASH;
+    case change_why::offset: return MV_CHANGE_OFFSET;
+    case change_why::failed: return MV_CHANGE_FAILED;
+  }
+  return MV_CHANGE_FAILED;
+}
+
+bool rel_ok(const char* rel) {
+  if (!rel || !*rel) return false;
+  return driftwire::safe_relative(rel);
+}
+
+// The answer in `out`, and the status: a refusal is MV_LINK_DENIED (not_found and offline
+// MV_LINK_NOT_FOUND), an older service MV_LINK_UNSUPPORTED.
+int32_t change_answer(const result<driftwire::serve::client::change_done>& done,
+                      const driftwire::serve::client::change_refused& why, mv_change_result* out) {
+  *out = mv_change_result{};
+  out->why = why_code(why.why);
+  if (done) {
+    // A place too long to hand back is still a change that worked: rel stays "" and the host
+    // keeps the name it asked for.
+    if (done->rel.size() < sizeof(out->rel)) std::memcpy(out->rel, done->rel.c_str(), done->rel.size() + 1);
+    out->existing = done->existing ? 1 : 0;
+    return MV_LINK_OK;
+  }
+  switch (why.why) {
+    case change_why::unsupported: return MV_LINK_UNSUPPORTED;
+    case change_why::not_found:
+    case change_why::offline: return MV_LINK_NOT_FOUND;
+    case change_why::none:
+      // The phone's own file could not be read: not the server's doing.
+      if (done.error() == status::invalid_arg) {
+        out->why = MV_CHANGE_LOCAL;
+        return MV_LINK_INVALID;
+      }
+      return status_of_read(done.error());
+    case change_why::failed: return status_of_read(done.error());
+    default: return MV_LINK_DENIED;
+  }
+}
+
+}  // namespace
+
+int32_t mv_files_can_change(mv_mobile_link* l, int32_t* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !out) return MV_LINK_INVALID;
+    *out = 0;
+    if (!l->session) return MV_LINK_OK;  // the sample library changes nothing on a server
+    auto can = l->session->changes_files();
+    if (!can) return status_of_read(can.error());
+    *out = *can ? 1 : 0;
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_writable_roots(mv_mobile_link* l, mv_writable_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !fn) return MV_LINK_INVALID;
+    auto listed = l->remote->roots();
+    if (!listed) return status_of_read(listed.error());
+    for (const auto& r : *listed) fn(ctx, r.id.c_str(), l->session && r.writable && !r.offline ? 1 : 0);
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_files_add(mv_mobile_link* l, const char* root, const char* rel, const char* local_path, mv_cancel* cancel,
+                     mv_change_progress_fn progress, void* ctx, mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !local_path || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->add_file(root, rel, local_path,
+                                     [&](std::uint64_t d, std::uint64_t t) {
+                                       if (progress) progress(ctx, d, t);
+                                     },
+                                     cancel ? cancel->flag.get() : nullptr, &why);
+    return change_answer(done, why, out);
+  });
+}
+
+int32_t mv_files_mkdir(mv_mobile_link* l, const char* root, const char* rel, mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->make_folder(root, rel, &why);
+    return change_answer(done, why, out);
+  });
+}
+
+int32_t mv_files_move(mv_mobile_link* l, const char* root, const char* rel, const char* to_root, const char* to_rel,
+                      mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !to_root || !rel_ok(to_rel) || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->move(root, rel, to_root, to_rel, &why);
+    return change_answer(done, why, out);
+  });
+}
+
+int32_t mv_files_delete(mv_mobile_link* l, const char* root, const char* rel, mv_change_result* out) {
+  return catch_all([&]() -> int32_t {
+    if (!l || !root || !rel_ok(rel) || !out) return MV_LINK_INVALID;
+    *out = mv_change_result{};
+    if (!l->session) return MV_LINK_UNSUPPORTED;
+    driftwire::serve::client::change_refused why;
+    auto done = l->session->remove(root, rel, &why);
+    return change_answer(done, why, out);
+  });
+}
+
 // ---- convert (docs/plans/phone-clip-convert.md) ---------------------------------------------------
 
 namespace {
@@ -1043,6 +1195,8 @@ struct mv_backup {
   std::vector<backup::item> items;          // under m
   std::vector<backup::failure> failures;    // under m
   std::vector<std::string> remaining;       // under m
+  std::vector<std::string> deleted;         // under m: keys Photos says were deleted
+  std::vector<std::string> deleted_done;    // under m: of those, the last run's finished ones
 };
 
 mv_backup* mv_backup_open(mv_mobile_link* l, const mv_backup_config* c) {
@@ -1094,6 +1248,8 @@ int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx) {
     if (!b || !fn) return MV_LINK_INVALID;
     auto folders = b->target->folders();
     if (!folders) return backup_status_of(folders.error());
+    // None, because this phone is limited to other folders: not "the server has none".
+    if (folders->empty() && b->target->limited_to_some_folders()) return MV_LINK_NO_FOLDER;
     for (const auto& f : *folders) fn(ctx, f.id.c_str(), f.label.c_str(), f.writable ? 1 : 0);
     return MV_LINK_OK;
   });
@@ -1102,7 +1258,9 @@ int32_t mv_backup_folders(mv_backup* b, mv_backup_folder_fn fn, void* ctx) {
 int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space* out) {
   return catch_all([&]() -> int32_t {
     if (!b || !folder_id || !out) return MV_LINK_INVALID;
-    auto s = b->target->space(folder_id);
+    const auto dest = backup::parse_destination(folder_id);
+    if (!dest) return MV_LINK_INVALID;
+    auto s = b->target->space(dest->root);
     if (!s) return backup_status_of(s.error());
     out->limit = s->limit;
     out->used = s->used;
@@ -1111,10 +1269,38 @@ int32_t mv_backup_space_of(mv_backup* b, const char* folder_id, mv_backup_space*
   });
 }
 
+int32_t mv_backup_subfolders(mv_backup* b, const char* folder_id, mv_backup_name_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !fn) return MV_LINK_INVALID;
+    auto names = backup::subfolders(*b->target, folder_id);
+    if (!names) return names.error() == status::invalid_arg ? MV_LINK_INVALID : backup_status_of(names.error());
+    for (const auto& n : *names) fn(ctx, n.c_str());
+    return MV_LINK_OK;
+  });
+}
+
+int32_t mv_backup_make_folder(mv_backup* b, const char* folder_id, const char* name, mv_backup_name_fn fn, void* ctx) {
+  return catch_all([&]() -> int32_t {
+    if (!b || !folder_id || !name || !fn) return MV_LINK_INVALID;
+    auto made = backup::make_subfolder(*b->target, folder_id, name);
+    if (!made) return made.error() == status::invalid_arg ? MV_LINK_INVALID : backup_status_of(made.error());
+    fn(ctx, made->c_str());
+    return MV_LINK_OK;
+  });
+}
+
 int32_t mv_backup_clear_items(mv_backup* b) {
   if (!b) return MV_LINK_INVALID;
   std::lock_guard lock(b->m);
   b->items.clear();
+  b->deleted.clear();
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_add_deleted(mv_backup* b, const char* key) {
+  if (!b || !key || !*key) return MV_LINK_INVALID;
+  std::lock_guard lock(b->m);
+  b->deleted.emplace_back(key);
   return MV_LINK_OK;
 }
 
@@ -1151,6 +1337,7 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
                       mv_backup_export_fn export_fn, mv_backup_status_fn status_fn, void* ctx, int32_t* state_out) {
   return catch_all([&]() -> int32_t {
     if (!b || !folder_id || !export_fn || !state_out || !backup::valid_layout(layout)) return MV_LINK_INVALID;
+    if (!backup::parse_destination(folder_id)) return MV_LINK_INVALID;
     std::lock_guard run(b->run_m);
     backup::options o;
     o.library_id = b->library_id;
@@ -1165,6 +1352,7 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
     {
       std::lock_guard lock(b->m);
       e.set_items(b->items);
+      e.set_deleted(b->deleted);
     }
     backup::status_report last;
     const auto st = e.run(src.flag.get(), [&](const backup::status_report& r) {
@@ -1179,12 +1367,14 @@ int32_t mv_backup_run(mv_backup* b, const char* folder_id, int32_t layout, mv_ca
       out.bytes = r.bytes;
       out.current_fraction = r.current_fraction;
       out.failed = r.failures.size();
+      out.trashed = r.trashed;
       put(out.current, r.current);
       status_fn(ctx, &out);
     });
     std::lock_guard lock(b->m);
     b->failures = last.failures;
     b->remaining = e.remaining();
+    b->deleted_done = e.deleted_done();
     *state_out = static_cast<int32_t>(st);
     return MV_LINK_OK;
   });
@@ -1207,6 +1397,17 @@ int32_t mv_backup_remaining(mv_backup* b, mv_backup_key_fn fn, void* ctx) {
   {
     std::lock_guard lock(b->m);
     keys = b->remaining;
+  }
+  for (const auto& k : keys) fn(ctx, k.c_str());
+  return MV_LINK_OK;
+}
+
+int32_t mv_backup_deleted_done(mv_backup* b, mv_backup_key_fn fn, void* ctx) {
+  if (!b || !fn) return MV_LINK_INVALID;
+  std::vector<std::string> keys;
+  {
+    std::lock_guard lock(b->m);
+    keys = b->deleted_done;
   }
   for (const auto& k : keys) fn(ctx, k.c_str());
   return MV_LINK_OK;

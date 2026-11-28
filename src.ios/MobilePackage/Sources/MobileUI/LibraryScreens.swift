@@ -1,20 +1,77 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// §11.1 Library (date-ordered grid, folder switch, the route chip only when it matters), People.
+// §11.1 Library (date-ordered grid, folders as pages, the route chip only when it matters), People.
 import MobileKit
 import QuickLook
 import SwiftUI
 
+/// The library as a navigation stack: All media at the bottom, a page per folder above it. The
+/// system's push and pop, so the edge swipe follows the finger and can be let go of, and the back
+/// button's menu goes back several folders at once. A folder's page grows out of its tile.
 struct LibraryScreen: View {
+  @Environment(AppModel.self) private var model
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Namespace private var tiles
+
+  var body: some View {
+    @Bindable var library = model.library
+    NavigationStack(path: $library.stack) {
+      FolderScreen(page: library.root)
+        .navigationDestination(for: FolderPage.self) { page in
+          FolderScreen(page: page).modifier(GrowsFromTile(id: page.folder?.id, namespace: reduceMotion ? nil : tiles))
+        }
+    }
+    .environment(\.folderNamespace, reduceMotion ? nil : tiles)
+    .quickLookPreview($library.previewing)
+  }
+}
+
+/// With Reduce Motion, the system's plain push instead.
+private struct GrowsFromTile: ViewModifier {
+  let id: String?
+  let namespace: Namespace.ID?
+
+  func body(content: Content) -> some View {
+    if let id, let namespace {
+      content.navigationTransition(.zoom(sourceID: id, in: namespace))
+    } else {
+      content
+    }
+  }
+}
+
+/// One folder's page (or All media's): its folders, its files and its photos.
+struct FolderScreen: View {
+  let page: FolderPage
   @Environment(AppModel.self) private var model
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    @Bindable var library = model.library
     content
-      .safeAreaInset(edge: .top, spacing: 0) { PlaceBar() }
       .background(Theme.ground)
-      .quickLookPreview($library.previewing)
+      .navigationBarTitleDisplayMode(.inline)
+      // Its title, and Add, Select and the bar under what is chosen where this phone may change files.
+      .modifier(FolderEditing(page: page))
+      .environment(\.shownPage, page)
+      .toolbar {
+        if let chip = model.routeChip, !page.selecting {
+          // Under the folder's name, in the bar's middle: beside Add and Select on the trailing
+          // side it took the room the name needs, which then read "…". The same on a page that
+          // has no Add or Select, so the name does not move when a page learns it may be changed.
+          ToolbarItem(placement: .principal) {
+            VStack(spacing: 0) {
+              Text(page.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("folder-title")
+              RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
+            }
+            // Two lines in a 44 pt bar: larger type than this would be clipped.
+            .dynamicTypeSize(...DynamicTypeSize.xLarge)
+          }
+        }
+      }
+      // A listing that comes after the page has slid in fades in over its skeleton.
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: page.isLoading)
   }
 
   /// Above photos, a few rows of files; with no photos, every file.
@@ -22,22 +79,25 @@ struct LibraryScreen: View {
 
   @ViewBuilder
   private var content: some View {
-    if model.library.isLoading {
+    if page.isLoading {
+      // All media at launch shows its skeleton at once; a folder's page, only if its listing is slow.
       GridSkeleton().background(Theme.ground)
-    } else if model.library.sections.isEmpty, !model.library.subfolders.isEmpty || !model.library.others.isEmpty {
+        .transition(.opacity)
+    } else if page.sections.isEmpty, !page.subfolders.isEmpty || !page.others.isEmpty {
       // A folder of folders (a year, an archive, the top of a server) or of documents: its folders
       // and its files are the page.
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           noticeSlot
-          if !model.library.subfolders.isEmpty { FolderGrid(folders: model.library.subfolders) }
-          if !model.library.others.isEmpty { FileList(files: model.library.others) }
+          if !page.subfolders.isEmpty { FolderGrid(folders: page.subfolders) }
+          if !page.others.isEmpty { FileList(files: page.others) }
         }
         .padding(.bottom, 16)
       }
+      .dropsHold()
       .background(Theme.ground)
-      .id(model.library.scope)
-    } else if model.library.sections.isEmpty {
+      .transition(.opacity)
+    } else if page.sections.isEmpty {
       // Centred while it fits; scrolls at the largest text sizes rather than cut its words short.
       GeometryReader { space in
         ScrollView {
@@ -50,21 +110,21 @@ struct LibraryScreen: View {
         .scrollBounceBehavior(.basedOnSize)
       }
       .background(Theme.ground)
+      .transition(.opacity)
     } else {
-      MediaGrid(sections: model.library.sections, entries: model.library.entries, context: "library") {
+      MediaGrid(sections: page.sections, entries: page.entries, context: page.context) {
         noticeSlot
-        if !model.library.subfolders.isEmpty { FolderShelf(folders: model.library.subfolders) }
-        if !model.library.others.isEmpty {
-          FileList(files: model.library.others, collapsedTo: Self.filesAbovePhotos)
+        if !page.subfolders.isEmpty { FolderShelf(folders: page.subfolders) }
+        if !page.others.isEmpty {
+          FileList(files: page.others, collapsedTo: Self.filesAbovePhotos)
         }
       }
-        // A new folder starts at its top, not at the last folder's scroll position.
-        .id(model.library.scope)
+      .transition(.opacity)
     }
   }
 
   private var emptyWords: some View {
-    Text(model.library.failure != nil ? "" : model.library.scope == .everything
+    Text(page.failure != nil ? "" : page.path.isEmpty
          ? (model.connection.fileMode ? FailureCopy.fileModeTop
             : "Nothing here yet. Photos appear once MediaViewer on your computer publishes them.")
          : "This folder has no photos or clips.")
@@ -77,8 +137,24 @@ struct LibraryScreen: View {
 
   @ViewBuilder
   private var noticeSlot: some View {
-    if let failure = model.library.failure {
-      NoticeCard(message: failure, actionTitle: "Try again") { Task { await model.library.load() } }
+    if let refused = page.changeFailure {
+      NoticeCard(message: refused, onDismiss: {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { model.library.dismissChangeFailure(on: page) }
+      })
+      .padding(.horizontal, Theme.inset)
+      .padding(.vertical, 8)
+      .arrives(reduceMotion: reduceMotion)
+    }
+    // The sample's changes are kept on this phone: said wherever they can be made.
+    if model.connection.isSample, page.changeable {
+      NoticeCard(message: FailureCopy.sampleChangesDemo)
+        .padding(.horizontal, Theme.inset)
+        .padding(.vertical, 8)
+        .accessibilityIdentifier("sample-changes-demo")
+    }
+    UploadRows(page: page)
+    if let failure = page.failure {
+      NoticeCard(message: failure, actionTitle: "Try again") { model.library.load(page) }
         .padding(.horizontal, Theme.inset)
         .padding(.vertical, 8)
         .arrives(reduceMotion: reduceMotion)
@@ -97,74 +173,11 @@ struct LibraryScreen: View {
   }
 }
 
-/// Fixed at the top while the photos scroll under it: where you are, each step of it a way back.
-/// The folders you can go into are tiles in the page (FolderTiles.swift).
-private struct PlaceBar: View {
-  private static let pathEnd = "path-end"
-
-  @Environment(AppModel.self) private var model
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  var body: some View {
-    let library = model.library
-    VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 8) {
-        path(library)
-        if let chip = model.routeChip {
-          RouteChip(text: chip, tone: model.connection.isSample ? Theme.accent : Theme.warm) { model.tab = .connection }
-            .arrives(reduceMotion: reduceMotion)
-        }
-      }
-      .padding(.trailing, Theme.inset)
-    }
-    .padding(.bottom, 4)
-    .background(Theme.ground.ignoresSafeArea(edges: .top))
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: library.trail)
-  }
-
-  private func path(_ library: LibraryModel) -> some View {
-    ScrollViewReader { proxy in
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 0) {
-        HStack(spacing: 6) {
-          step("All media", isCurrent: library.trail.isEmpty) { library.goToAllMedia() }
-          ForEach(Array(library.trail.enumerated()), id: \.element.id) { index, folder in
-            Image(systemName: "chevron.right")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(Theme.body.opacity(0.7))
-              .accessibilityHidden(true)
-            step(folder.name, isCurrent: index == library.trail.count - 1) { library.goBack(to: index) }
-          }
-        }
-        .padding(.horizontal, Theme.inset)
-        Color.clear.frame(width: 1, height: 1).id(Self.pathEnd)
-        }
-      }
-      .accessibilityIdentifier("scrolls-sideways")  // a test may let its last item sit past the edge
-      // A long path keeps its end, the folder you are in, on screen.
-      .onAppear { proxy.scrollTo(Self.pathEnd, anchor: .trailing) }
-      .onChange(of: library.trail) {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-          proxy.scrollTo(Self.pathEnd, anchor: .trailing)
-        }
-      }
-    }
-  }
-
-  private func step(_ name: String, isCurrent: Bool, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      Text(name)
-        .font(isCurrent ? .headline : .subheadline)
-        .foregroundStyle(isCurrent ? Theme.title : Theme.body)
-        .fixedSize()
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(TileButtonStyle())
-    .allowsHitTesting(!isCurrent)
-    .accessibilityAddTraits(isCurrent ? .isHeader : [])
-    .accessibilityHint(isCurrent ? "" : "Goes back to this folder")
-  }
+extension EnvironmentValues {
+  /// The library's folder tiles, which each folder's page grows out of; nil with Reduce Motion.
+  @Entry var folderNamespace: Namespace.ID? = nil
+  /// The page a view is on.
+  @Entry var shownPage: FolderPage? = nil
 }
 
 /// The app's one chip: a fill and its words, in a 44 pt touch area. Chosen, it lifts.
@@ -182,7 +195,7 @@ struct ChipLabel<Content: View>: View {
   }
 }
 
-extension LibraryScreen {
+extension FolderScreen {
   /// What a notice's button does: scan a new code, or try the connection again.
   fileprivate func noticeAction(_ notice: LibraryNotice) -> (() -> Void)? {
     switch notice.action {
@@ -250,7 +263,7 @@ private struct PersonCell: View {
       Theme.surface
         .aspectRatio(1, contentMode: .fit)
         .overlay {
-          if let face = face ?? model.services.images.cachedImage(for: person.face.id) {
+          if let face = face ?? PersonIcon.cached(for: person, in: model.services.images) {
             Image(uiImage: face).resizable().scaledToFill()
           }
         }
@@ -264,7 +277,23 @@ private struct PersonCell: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(person.name), \(person.itemCount) photos and clips")
     .accessibilityAddTraits(.isButton)
-    .task { face = await model.services.images.thumbnail(for: person.face) }
+    .task { face = await PersonIcon.image(for: person, in: model.services.images) }
+  }
+}
+
+/// A person's round icon: their own face where the desktop sent one, as its People covers are;
+/// the middle of their photo from an older desktop, or when the face cannot be read.
+enum PersonIcon {
+  /// For first paint. Never their whole photo while their face may still come: the middle of it
+  /// can be someone else.
+  @MainActor
+  static func cached(for person: Person, in images: ImageLadder) -> UIImage? {
+    person.hasFace ? images.cachedFace(for: person) : images.cachedImage(for: person.face.id)
+  }
+
+  static func image(for person: Person, in images: ImageLadder) async -> UIImage? {
+    if person.hasFace, let face = await images.face(for: person) { return face }
+    return await images.thumbnail(for: person.face)
   }
 }
 
@@ -298,7 +327,8 @@ private struct PersonScreen: View {
     .task(id: attempt) {
       do {
         let list = try await model.services.library.list(in: .person(person))
-        grid = await Task.detached(priority: .userInitiated) { LibraryModel.grid(of: list) }.value
+        let built = await Task.detached(priority: .userInitiated) { LibraryModel.grid(of: list) }.value
+        grid = (built.sections, built.entries)
       } catch {
         guard !Task.isCancelled, !(error is CancellationError) else { return }
         failed = true

@@ -1,0 +1,4 @@
+module CMobileVPN {
+  header "mv_mobile_vpn.h"
+  export *
+}

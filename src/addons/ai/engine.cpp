@@ -308,7 +308,9 @@ expected engine::start() {
     }
     // Nothing downloads until a tier is chosen (the picker); with one, what
     // is missing of it (a cut download, a piece installed) comes now.
-    if (chosen) kick_download();
+    // Settings without the towers (defer_models): the download waits until
+    // request_models, so opening Settings does not fetch weights.
+    if (chosen && !options_.defer_models) kick_download();
   }
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
@@ -497,6 +499,15 @@ bool engine::backfill_tags() {
               if (auto r = host_.route_of(a.path, static_cast<std::uint32_t>(kTrackPoints))) {
                 for (const mv_addon_route_point& p : *r) t.track.push_back({p.lat, p.lon});
               }
+            }
+            // Level 4: the clip's length from the same header read, so the
+            // phone's catalogue has it before the content pass opens the clip.
+            if (f->struct_size >= MV_ADDON_TAG_FACTS_V3_SIZE) {
+              t.duration_ms = f->duration_ms;
+            } else if (level > 3) {
+              // A host from before it: level 3, and no more asked of it this run.
+              t.level = 3;
+              tags_level_ = 3;
             }
           } else {
             // A host from before #405: read to level 1 and ask nothing more
@@ -775,6 +786,7 @@ std::string engine::settings_json() const {
     std::lock_guard lock(machine_m_);
     w.key("machine").raw(machine_json_.empty() ? std::string("{}") : machine_json_);
   }
+  w.key("models_held").boolean(models_held());
   w.end_object();
   return w.take();
 }
@@ -788,7 +800,14 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     return {};
   }
   if (key == "fetch_retry") {
-    kick_download();
+    if (!models_held()) kick_download();
+    return {};
+  }
+  if (key == "start") {
+    // Settings' Start indexing: open the towers. Before the number parse:
+    // the value is unused.
+    request_models();
+    post(MV_ADDON_EVENT_AI_STATUS);
     return {};
   }
   const auto v = json::parse(value_json, 2);
@@ -799,8 +818,10 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     // failed it here; Auto opens it again (and re-indexes once it passes).
     if (deps_.forget_accelerated_failure) deps_.forget_accelerated_failure(MV_AI_QUALITY_HIGH);
     fallback_asked_ = false;
-    reload_models_ = true;
-    control_cv_.notify_all();
+    if (!models_held()) {
+      reload_models_ = true;
+      control_cv_.notify_all();
+    }
     post(MV_ADDON_EVENT_AI_STATUS);
     return {};
   }
@@ -808,6 +829,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     // Issue #299: Resume on the launch notice or a root's row (0: all).
     if (x < 0) return err(status::invalid_arg);
     (void)unhold(static_cast<std::int64_t>(x));
+    request_models();  // Resume asks for the work, held towers or not
     return {};
   }
   if (key == "battery_override") {
@@ -887,8 +909,9 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     }
   }
   if (!pieces) save_settings();
-  if (kick_.exchange(false)) kick_download();
-  if (reload || pieces) {
+  const bool held = models_held();
+  if (kick_.exchange(false) && !held) kick_download();
+  if ((reload || pieces) && !held) {
     (reload ? reload_models_ : reload_pieces_) = true;
     control_cv_.notify_all();
   }
@@ -1288,6 +1311,7 @@ void engine::refresh_counts() {
     status_.fetch_total_bytes = dl_progress_.total_bytes;
     if (dl_running_ || dl_progress_.state == fetch_state::waiting) flags |= MV_AI_STATUS_FETCHING;
   }
+  if (models_held()) flags |= MV_AI_STATUS_MODELS_HELD;
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -1328,7 +1352,9 @@ void engine::refresh_counts() {
                        cn.assets > cn.done + cn.failed + cn.unavailable + cn.locked + cn.cloud_only ||
                        co.assets > co.done + co.failed + co.unavailable + co.locked + co.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
-  if (models_failed_) {
+  if (models_held()) {
+    state = MV_AI_STATE_IDLE;
+  } else if (models_failed_) {
     state = MV_AI_STATE_ERROR;
   } else if (!models_ready_ || loading_ || upgrading_now) {
     state = MV_AI_STATE_LOADING;
@@ -1432,11 +1458,45 @@ bool engine::wait_viewer_quiet() {
   return !stopping_;
 }
 
+void engine::request_models() {
+  if (!options_.defer_models || models_requested_.load()) return;
+  {
+    // Under the lock: control_loop tests the flag under it before it sleeps,
+    // so a request between that test and the sleep is not lost.
+    std::lock_guard lock(control_m_);
+    if (models_requested_.exchange(true)) return;
+  }
+  control_cv_.notify_all();
+}
+
+bool engine::models_held() const noexcept {
+  return options_.defer_models && !models_requested_.load() && !models_ready_.load();
+}
+
+void engine::wait_for_models() {
+  if (!options_.defer_models) return;
+  request_models();
+  std::unique_lock lock(control_m_);
+  // Timed: stop() sets stopping_ without this lock, and it joins this thread.
+  while (!stopping_ && !models_ready_ && !models_failed_ && !catalogue_ready_) {
+    control_cv_.wait_for(lock, std::chrono::milliseconds(200));
+  }
+}
+
 void engine::load_models() {
   // A reload keeps the towers in answering searches until the new ones are
   // open (the swap below); only a first load (or one after a failure) has
   // nothing to answer with. The indexer waits either way (loading_).
   loading_ = true;
+  // A search that asked for the towers waits on this (wait_for_models). Under
+  // the lock, or the wake can land between its test and its sleep.
+  struct wake_search {
+    engine* e;
+    ~wake_search() {
+      { std::lock_guard lock(e->control_m_); }
+      e->control_cv_.notify_all();
+    }
+  } wake{this};
   struct done_loading {
     std::atomic<bool>* flag;
     ~done_loading() { *flag = false; }
@@ -1754,7 +1814,21 @@ result<engine::refine_run> engine::refine_person_run(std::int64_t person, bool d
   r.dim = dim;
   r.serial = snap.serial;
   if (stopping_) return err(status::cancelled);
-  if (dry) return r;
+  const auto place = [&r](const std::vector<refine_move>& moves) {
+    std::map<std::int64_t, std::int64_t> to;
+    for (const refine_move& m : moves) to[m.face] = m.to > 0 ? m.to : 0;
+    r.where.clear();
+    r.where.reserve(r.snap.faces.size());
+    for (const refine_face& f : r.snap.faces) {
+      const auto it = to.find(f.id);
+      r.where.push_back(it == to.end() ? f.person : it->second);
+    }
+  };
+  if (dry) {
+    r.snap = std::move(snap);
+    place(r.out.moves);
+    return r;
+  }
   std::size_t rescanned = 0;
   {
     std::lock_guard lock(models_m_);
@@ -1775,6 +1849,8 @@ result<engine::refine_run> engine::refine_person_run(std::int64_t person, bool d
     work_cv_.notify_all();
   }
   if (r.stats.changed()) post(MV_ADDON_EVENT_AI_PEOPLE);
+  r.snap = std::move(snap);
+  place(r.stats.applied);
   return r;
 }
 
@@ -1880,6 +1956,9 @@ result<engine::dedupe_run> engine::people_dedupe_run(bool dry) {
   din.protos = rr.out.protos;
   din.people = people;
   din.apart = apart;
+  din.emb = rr.snap.emb;
+  din.faces = rr.snap.faces;
+  din.where = rr.where;
   din.cancel = &stopping_;
   r.groups = find_duplicates(din, rr.params);
   if (stopping_) return err(status::cancelled);
@@ -2347,11 +2426,16 @@ expected engine::set_tier(const std::string& value_json) {
     }
   }
   save_settings();
+  if (deps_.set_tier) deps_.set_tier(v->s);
+  if (models_held()) {
+    // The choice is saved; the download and the towers wait for Start indexing.
+    post(MV_ADDON_EVENT_AI_STATUS);
+    return {};
+  }
   // A download for the old tier stops (its part files stay until pruned);
   // the pack switches; the new tier's files come, then its towers open and
   // re-index while the old index answers (load_models, open_clip_spec).
   dl_stop_ = true;
-  if (deps_.set_tier) deps_.set_tier(v->s);
   kick_.store(false);
   kick_download();
   reload_models_ = true;
@@ -2461,6 +2545,24 @@ void engine::control_loop() {
       pdf_ = std::move(pdf);
     }
     if (any) (void)db_->reset_state(kDocTextSpec, work_state::unavailable);
+  }
+  if (options_.defer_models && !models_requested_.load()) {
+    loading_ = false;
+    refresh_counts();
+    post(MV_ADDON_EVENT_AI_STATUS);
+    {
+      std::unique_lock lock(control_m_);
+      // Timed: stop() sets stopping_ without this lock, and it joins this thread.
+      while (!stopping_ && !models_requested_) control_cv_.wait_for(lock, std::chrono::milliseconds(200));
+    }
+    if (stopping_) return;
+    bool chosen = false;
+    {
+      std::lock_guard lock(settings_m_);
+      chosen = !settings_.tier.empty();
+    }
+    if (chosen) kick_download();
+    loading_ = true;
   }
   load_models();
   const unsigned cores = std::max(1u, platform::hardware_threads());
@@ -3991,10 +4093,32 @@ platform::power engine::power_state() const {
   return deps_.power ? deps_.power() : platform::power_state();
 }
 
+namespace {
+thread_local int g_busy_depth = 0;
+}
+
 bool engine::wait_turn(bool needs_models) {
   while (!stopping_) {
+    if (clearing_ || transferring_) {
+      // A worker inside a job parks here and stops counting as busy, so Clear
+      // need not wait for a job that is itself waiting for Clear. It stays
+      // parked until the wipe is over (the rows it would write to are going),
+      // then gives the job up: its assets may be gone.
+      std::unique_lock lock(work_m_);
+      const bool abandon = g_busy_depth > 0;
+      if (abandon) {
+        if (busy_workers_ > 0) --busy_workers_;
+        g_busy_depth = 0;
+        work_cv_.notify_all();
+      }
+      while (!stopping_ && (clearing_ || transferring_)) {
+        work_cv_.wait_for(lock, std::chrono::milliseconds(200));
+      }
+      if (stopping_ || abandon) return false;  // the worker thread stays
+      continue;
+    }
     const bool models_wait = needs_models && (!models_ready_ || loading_ || upgrading());
-    if (clearing_ || transferring_ || models_wait || paused_ || index_full_) {
+    if (models_wait || paused_ || index_full_) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(200));
       continue;
@@ -4242,6 +4366,7 @@ void engine::worker_loop(unsigned) {
       work_cv_.wait_for(lock, std::chrono::milliseconds(500));
       continue;
     }
+    ++g_busy_depth;
     loaded_clip clip;
     loaded_sound sound;
     loaded_speech speech;
@@ -4286,7 +4411,10 @@ void engine::worker_loop(unsigned) {
     {
       std::lock_guard lock(work_m_);
       for (const work_item& w : items) in_flight_.erase(w.asset.id);
-      if (busy_workers_ > 0) --busy_workers_;
+      if (g_busy_depth > 0) {
+        if (busy_workers_ > 0) --busy_workers_;
+        g_busy_depth = 0;
+      }
       // Another track of this asset (its speech after its sound) was passed
       // over while this ran: look again.
       queue_exhausted_ = false;
@@ -5314,6 +5442,7 @@ expected engine::root_set_documents(std::int64_t id, std::uint32_t docs) {
 expected engine::root_rescan(std::int64_t id) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   (void)unhold(id);  // asking for a walk is asking for the work (issue #299)
+  request_models();  // ... and for the towers Settings left closed
   {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(id);
@@ -5373,6 +5502,11 @@ expected engine::root_remove(std::int64_t id) {
   }
   {
     std::lock_guard lock(models_m_);
+    {
+      std::lock_guard q(unknown_m_);
+      unknown_.reset();
+      unknown_gen_ = 0;
+    }
     if (faces_) {
       for (std::int64_t a : gone) {
         (void)faces_->forget_asset(a);
@@ -5431,14 +5565,24 @@ void engine::note_folder_opened(const std::string& dir) {
 expected engine::clear_index() {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
-  clearing_ = true;
-  // Let in-flight work land (or fail) before the rows go.
-  for (int i = 0; i < 300; ++i) {
+  // Off the UI thread now, so a second Clear can arrive while one runs.
+  if (clearing_.exchange(true)) return err(status::busy);
+  work_cv_.notify_all();
+  bool idle = false;
+  for (int i = 0; i < 1500; ++i) {  // ~30 s: workers abandon in-job waits
     {
       std::lock_guard lock(work_m_);
-      if (busy_workers_ == 0) break;
+      if (busy_workers_ == 0) {
+        idle = true;
+        break;
+      }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (!idle) {
+    clearing_ = false;
+    work_cv_.notify_all();
+    return err(status::busy);
   }
   expected r = db_->clear();
   photos_root_ = 0;  // the roots went too
@@ -5467,6 +5611,11 @@ expected engine::clear_index() {
   {
     // The people index hangs off the assets that just went.
     std::lock_guard lock(models_m_);
+    {
+      std::lock_guard q(unknown_m_);
+      unknown_.reset();
+      unknown_gen_ = 0;
+    }
     if (faces_) {
       faces_.reset();
       faces_db::destroy(join(data_dir_, "faces.db"));
@@ -5481,6 +5630,8 @@ expected engine::clear_index() {
   }
   index_full_ = false;
   clearing_ = false;
+  work_cv_.notify_all();
+  control_cv_.notify_all();
   refresh_counts();
   post(MV_ADDON_EVENT_AI_ROOTS);
   post(MV_ADDON_EVENT_AI_PEOPLE);
@@ -5514,6 +5665,9 @@ result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<
                                            std::uint32_t flags) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader runs no jobs
   if (dest.empty()) return err(status::invalid_arg);
+  // The control loop runs the job, and it sleeps while the towers are held.
+  // Before transfer_m_: the order is control_m_ -> transfer_m_.
+  request_models();
   std::lock_guard lock(transfer_m_);
   if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
   transfer_job job;
@@ -5543,6 +5697,7 @@ result<std::uint64_t> engine::import_index(const std::string& file, const std::s
     job.map.emplace_back(*id, *path);
   }
   if (job.map.empty()) return err(status::invalid_arg);
+  request_models();  // as export_index
   std::lock_guard lock(transfer_m_);
   if (!transfer_queue_.empty() || (transfer_.running && !transfer_.done)) return err(status::busy);
   job.id = next_transfer_++;
@@ -6293,6 +6448,21 @@ void engine::run_phone_publish(const std::string& destination, bool automatic) {
   b.roots = roots;
   b.thumbs = thumbs.get();
   if (people) b.faces_db = join(data_dir_, "faces.db");
+  if (people && host_.has_jpeg_face_crop()) {
+    // From the JPEG-512 the desktop cuts its own cover from (face_thumb): the
+    // viewer's, else one made now and stored nowhere. At most 320 px (a 104 pt
+    // People circle at 3x), never more than the tile holds.
+    b.face_cover = [this](const std::string& path, std::int64_t ms,
+                          const std::array<float, 4>& box) -> result<std::vector<std::uint8_t>> {
+      auto tile = host_.thumbnail_jpeg(path, ms);
+      if (!tile) {
+        if (stopping_ || phone_cancel_) return err(status::cancelled);
+        tile = host_.thumbnail_make(path, ms);
+      }
+      if (!tile) return err(tile.error());
+      return host_.jpeg_face_crop(*tile, box, 320, 85);
+    };
+  }
   b.place_labels = [this](std::span<const std::pair<double, double>> points) -> result<std::vector<std::string>> {
     std::vector<mv_addon_route_point> at;
     at.reserve(points.size());
@@ -7303,12 +7473,34 @@ void engine::process_text(std::vector<work_item>& items) {
   }
   if (!reader) return;
   const std::string spec = reader->spec_key();
+  // A photo whose picture is still owed is left to the picture pass, which
+  // reads its text from the same decode (process_photos). claim queues text
+  // only once no picture is pending, but a walk can add photos between those
+  // two looks, and reading them here would read each photo twice.
+  std::unordered_set<std::int64_t> picture_owed;
+  {
+    std::string picture_spec;
+    {
+      std::lock_guard lock(models_m_);
+      picture_spec = build_.meta.spec_key;
+    }
+    std::vector<std::int64_t> ids;
+    for (const work_item& w : items) {
+      if (w.asset.kind == asset_kind::photo) ids.push_back(w.asset.id);
+    }
+    if (!picture_spec.empty() && !ids.empty()) {
+      // claim's picture filter, so this skips only what the picture pass will take.
+      const track_filter f{true, MV_AI_MEDIA_PICTURES, default_media(), skip_root(), held_list()};
+      for (const work_item& w : db_->pending_among(picture_spec, ids, kMaxTries, f)) picture_owed.insert(w.asset.id);
+    }
+  }
   for (const work_item& w : items) {
     if (!wait_turn()) return;  // stopping: the rest stay pending
     if (w.asset.kind == asset_kind::video) {
       process_text_moments(w, *reader, spec + kMomentsSuffix);
       continue;
     }
+    if (picture_owed.count(w.asset.id)) continue;  // still pending: the picture pass reads it
     auto img = still_of(w.asset.path, kTextEdge);
     if (!img) {
       if (img.error() == status::permission_denied) {
@@ -8271,6 +8463,7 @@ bool engine::answerable_now(const std::string& query_text) {
 std::uint64_t engine::search_text(const std::string& query_text, const std::string& scope_dir,
                                   std::uint32_t scope, std::uint32_t kinds) {
   return submit([this, query_text, scope_dir, scope, kinds](search_state& st) {
+    if (options_.defer_models) wait_for_models();
     if (!models_ready_ && !catalogue_ready_) return;
     std::uint32_t precision;
     {
@@ -8617,6 +8810,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
 }
 
 std::string engine::suggest_json(const std::string& text) {
+  request_models();  // typing in the search field: the towers open before Enter
   std::vector<query::person_name> names;
   {
     std::lock_guard lock(models_m_);
@@ -8640,6 +8834,7 @@ std::string engine::suggest_json(const std::string& text) {
 std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_ms, const std::string& scope_dir,
                                      std::uint32_t scope, std::uint32_t kinds) {
   return submit([this, path, pts_ms, scope_dir, scope, kinds](search_state& st) {
+    if (options_.defer_models) wait_for_models();
     if (!models_ready_) return;
     std::vector<float> q;
     std::int64_t self = 0;
@@ -8697,6 +8892,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
 
 std::uint64_t engine::search_person(std::int64_t person, const std::string& scope_dir, std::uint32_t scope) {
   return submit([this, person, scope_dir, scope](search_state& st) {
+    if (options_.defer_models) wait_for_models();
     std::vector<face_row> faces;
     {
       std::lock_guard lock(models_m_);
@@ -8716,6 +8912,7 @@ std::uint64_t engine::search_person(std::int64_t person, const std::string& scop
 
 std::uint64_t engine::search_this_person(const std::string& path, std::int64_t pts_ms) {
   return submit([this, path, pts_ms](search_state& st) {
+    if (options_.defer_models) wait_for_models();
     std::shared_ptr<face_analyzer> model;
     {
       std::lock_guard lock(models_m_);
@@ -8780,6 +8977,7 @@ constexpr float kPoseMatch = 0.22f;
 }  // namespace
 
 result<std::string> engine::eyes_json(const std::string& path, const std::vector<std::string>& candidates) {
+  request_models();  // an Edit tool needs People: the host reads again while it loads
   std::shared_ptr<face_analyzer> model;
   {
     std::lock_guard lock(models_m_);
@@ -8951,6 +9149,7 @@ result<std::string> engine::eyes_json(const std::string& path, const std::vector
 }
 
 result<std::string> engine::faces_json(const rgb_frame& img, const rgb_frame* other) {
+  request_models();  // an Edit tool needs People: the host reads again while it loads
   std::shared_ptr<face_analyzer> model;
   {
     std::lock_guard lock(models_m_);
@@ -9130,7 +9329,7 @@ expected engine::faces_enable(bool enable) {
     faces_scanned_.clear();
     publish_pieces_locked();
     faces_db::destroy(join(data_dir_, "faces.db"));
-  } else {
+  } else if (!models_held()) {
     reload_pieces_ = true;  // opens People; the picture towers stay
     control_cv_.notify_all();
   }

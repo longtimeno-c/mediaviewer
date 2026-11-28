@@ -14,7 +14,7 @@ namespace MediaViewer.Chrome;
 /// Update available · 1.3.0, Restart to finish updating, Not installed), and
 /// each row opens that add-on's own page: its line, Install / Update / Open /
 /// Remove, its progress and messages, and its settings. The order is Import,
-/// Local search, Places, Driftwire, Enhance, Phone access, any other installed add-on of
+/// Local search, Places, Driftwire, Enhance, Phone access, VPN, any other installed add-on of
 /// MediaViewer's, then From other makers. The Mac's twin is AddonListView.swift;
 /// the words are Shared/AddonListWords.cs.
 /// </summary>
@@ -150,8 +150,11 @@ public static partial class IslandHost
         list.Add(new(EnhanceId, "Enhance", Slot(enhance, EnhanceSlot, "Enhance")));
         SlotAddonRow? phone = SlotAddonRows.FirstOrDefault(r => r.Id == PhoneAccessId);
         list.Add(new(PhoneAccessId, "Phone access", Slot(phone, PhoneAccessSlot, "Phone access")));
+        SlotAddonRow? vpn = SlotAddonRows.FirstOrDefault(r => r.Id == VpnId);
+        list.Add(new(VpnId, "VPN", Slot(vpn, VpnSlot, "VPN")));
         foreach (SlotAddonRow row in SlotAddonRows.Where(r => r.Id != PlacesChannel.Id && r.Id != DriftwireId &&
-                                                              r.Id != EnhanceId && r.Id != PhoneAccessId)
+                                                              r.Id != EnhanceId && r.Id != PhoneAccessId &&
+                                                              r.Id != VpnId)
                                                   .OrderBy(r => r.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             list.Add(new(row.Id, row.Name, Slot(row, SlotChannelFor(row), row.Name)));
@@ -308,6 +311,8 @@ public static partial class IslandHost
         FillAddonPageStorage(id);
         _settingsScroll.Content = _addonPageView;
         RefreshAddonList();  // the title
+        // Local search's page attaches its pack, models held, now that it shows.
+        if (id == LocalSearchPageId && AiOnDemand()) RefreshLocalSearch();
         _settingsScroll.ChangeView(null, 0, null, disableAnimation: true);
         SyncAddonSettingsScreen();
         _dispatcher?.DispatcherQueue.TryEnqueue(() => _addonPageBack?.Focus(FocusState.Programmatic));
