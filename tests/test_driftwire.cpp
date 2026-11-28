@@ -493,7 +493,7 @@ TEST_CASE("driftwire: pings keep a link alive but never stretch a deadline", "[d
 namespace {
 
 // One transfer whose receiver's read-backs (the verifier threads' yields) are
-// held for `hold`, from the first, with both sides' session limit without a
+// held until the sender has moved nothing for `hold`, with both sides' session limit without a
 // sign of life cut to `limit_ms`: a big file on a slow disk, made short.
 // `stall_ms` > 0 cuts the sender's socket write limit (kSilenceMs) to it.
 struct held_checks {
@@ -511,7 +511,12 @@ held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& file
   sp::stage_times tx;
   held_checks out;
   std::mutex m;
-  std::optional<std::chrono::steady_clock::time_point> until;
+  bool released = false;
+  // When the sender last moved bytes. The hold runs from there, not from the
+  // first check: a slow machine (ASan in CI) can take most of a fixed hold
+  // just to fill the socket, and the stall under test is then too short.
+  using clock = std::chrono::steady_clock;
+  std::atomic<clock::rep> last_sent{clock::now().time_since_epoch().count()};
   std::thread receiver([&, &b = b] {
     const auto reading = std::this_thread::get_id();
     auto offer = sp::read_offer(*b, 10000);
@@ -519,21 +524,27 @@ held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& file
     sp::hooks h;
     h.yield = [&] {
       if (std::this_thread::get_id() == reading) return;  // the link reader's own yield
-      std::chrono::steady_clock::time_point end;
       {
         std::lock_guard lock(m);
-        if (!until) until = std::chrono::steady_clock::now() + hold;
-        end = *until;
         out.held = true;
+        if (released) return;
       }
       // The slow disk: elapsed time is the point here, so no event stands in
       // for it. Only a hold past the limit matters; a longer one is the same.
-      std::this_thread::sleep_until(end);
+      // It ends once the sender has moved nothing for `hold`.
+      for (;;) {
+        const auto end = clock::time_point(clock::duration(last_sent.load())) + hold;
+        if (clock::now() >= end) break;
+        std::this_thread::sleep_until(end);
+      }
+      std::lock_guard lock(m);
+      released = true;
     };
     out.got = sp::receive_files(*b, *offer, utf8(dest), h);
   });
   sp::hooks sending;
   sending.stages = &tx;
+  sending.progress = [&](std::uint64_t, std::uint32_t) { last_sent.store(clock::now().time_since_epoch().count()); };
   out.sent = sp::send_files(*a, files, sending, {});
   receiver.join();
   out.rejoins = a->rejoins() + b->rejoins();
