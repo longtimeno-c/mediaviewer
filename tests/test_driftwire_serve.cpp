@@ -12,6 +12,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include <cstdlib>
 #include <fstream>
 
 #include "driftwire_fixture.h"
@@ -1472,6 +1473,73 @@ TEST_CASE("serve backup: a file is written whole, checked, and never replaces an
   REQUIRE(done);
   CHECK(fs::is_regular_file(s.backup / "empty.txt"));
   CHECK(parts_under(s.backup) == 0);
+}
+
+namespace {
+// A file's modified time as a directory listing gives it (seconds since 1970).
+std::optional<std::int64_t> modified_of(const fs::path& file) {
+  auto children = mv::io::list_children(file.parent_path().string());
+  if (!children) return std::nullopt;
+  for (const auto& c : *children) {
+    if (c.name == file.filename().string()) return c.mtime_unix;
+  }
+  return std::nullopt;
+}
+}  // namespace
+
+TEST_CASE("serve backup: a photo's file carries the time it was taken, not the day of the backup", "[driftwire-serve]") {
+  // Every backed-up photo was dated the day it was copied, so a folder of years of photos
+  // showed one day in a file manager.
+  service_fixture s;
+  auto c = s.open_client();
+  serve::client::write_refused why;
+  const std::int64_t taken = 1600000000;  // 13 September 2020
+  const std::string photo = marker(11, 200000);
+  auto done = c->write(kRootC, "2020/09/IMG_1.HEIC", photo.size(), hash_of(photo), 0, reader_of(photo), {}, nullptr, &why, false, taken);
+  REQUIRE(done);
+  CHECK(slurp(s.backup / "2020" / "09" / "IMG_1.HEIC") == photo);
+  CHECK(modified_of(s.backup / "2020" / "09" / "IMG_1.HEIC") == taken);
+
+  // One with no time said (an older phone) is dated as before: now.
+  const std::string plain = marker(12, 1000);
+  REQUIRE(c->write(kRootC, "2020/09/IMG_2.HEIC", plain.size(), hash_of(plain), 0, reader_of(plain), {}, nullptr, &why));
+  const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  const auto dated = modified_of(s.backup / "2020" / "09" / "IMG_2.HEIC");
+  REQUIRE(dated);
+  CHECK(std::llabs(*dated - now) < 600);
+
+  // A copy already there from before (the same bytes) gets its time when the phone next asks.
+  done = c->write(kRootC, "2020/09/IMG_2.HEIC", plain.size(), hash_of(plain), 0, reader_of(plain), {}, nullptr, &why, false, taken + 60);
+  REQUIRE(done);
+  CHECK(done->existing);
+  CHECK(modified_of(s.backup / "2020" / "09" / "IMG_2.HEIC") == taken + 60);
+
+  // An empty file goes straight to the commit, and is stamped there too; so is a scan dated
+  // before 1970.
+  const std::int64_t long_ago = -157766400;  // 1 January 1965
+  REQUIRE(c->write(kRootC, "1965/01/scan.jpg", 0, hash_of(""), 0, reader_of(std::string()), {}, nullptr, &why, false, long_ago));
+  CHECK(modified_of(s.backup / "1965" / "01" / "scan.jpg") == long_ago);
+
+  // The request: the time rides along, one no file can carry is left out, and the photo still goes.
+  serve::open_request r;
+  r.id = 9;
+  r.kind = serve::op::write;
+  r.root = kRootC;
+  r.rel = "a.jpg";
+  r.size = 1;
+  r.hash = hash_of("a");
+  bool unknown = false;
+  auto back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK(back->taken == serve::kNoTime);
+  r.taken = taken;
+  back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK(back->taken == taken);
+  r.taken = serve::kMaxTaken + 1;
+  back = serve::parse_open(serve::encode_open(r), unknown);
+  REQUIRE(back);
+  CHECK(back->taken == serve::kNoTime);
 }
 
 TEST_CASE("serve backup: bytes that are not what was promised never become the file", "[driftwire-serve]") {

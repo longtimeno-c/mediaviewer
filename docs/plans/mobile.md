@@ -669,6 +669,13 @@ The date is the photo's own capture date in local time. These are the desktop Ph
 layouts (`shell/photos_backup.h`, `backup::layout`), including year-and-month, added for this. Changing the layout moves nothing that is already backed up.
 Which zone counts is the capture offset stored with the photo, so a photo does not change folders because the phone travelled. The desktop backup's default is Year and day and has no shared default with the phone.
 
+**The file's own date.** The bytes are the original as shot, so the EXIF inside (date, place, camera)
+is untouched. The file's modified time on the NAS (and, on Windows, its created time) is the moment
+Photos says it was taken: the phone sends it with the write (`taken`, seconds since 1970) and the
+service stamps the file once it is whole. Before this (2026-11-28) every file was dated the day of
+the backup, so Explorer and Finder showed years of photos as one day. A service from before reads
+past `taken`; a copy already on the NAS gets its time when a phone next offers the same bytes.
+
 **Knowing what is done.** A ledger on the phone holds one row per file: PhotoKit's asset id, which
 resource (photo, Live Photo's video, RAW), size, BLAKE3 hash, where it went, when. A photo counts as
 backed up only when it has a row **and** the file is still on the NAS, checked with one folder

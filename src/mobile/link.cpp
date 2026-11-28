@@ -1078,13 +1078,13 @@ result<serve::client::write_done> link_session::write(const std::string& root, c
                                                       const serve::client::read_fn& read,
                                                       const std::function<void(std::uint64_t)>& progress,
                                                       const cancel_flag* cancel, serve::client::write_refused* why,
-                                                      bool meta) {
+                                                      bool meta, std::int64_t taken) {
   stream_slot slot(*this, cancel);
   if (!slot.held()) return err(status::cancelled);
   auto c = client(cancel);
   if (!c) return err(c.error());
   const std::atomic<bool>* stop = cancel ? &cancel->stop : nullptr;
-  auto r = (*c)->write(root, rel, size, hash_hex, at, read, progress, stop, why, meta);
+  auto r = (*c)->write(root, rel, size, hash_hex, at, read, progress, stop, why, meta, taken);
   if (!r && (r.error() == status::io || r.error() == status::timeout)) dropped(*c);
   return r;
 }

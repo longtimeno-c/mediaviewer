@@ -29,6 +29,7 @@
 #include "wire/net.h"
 #include "mobile/backup.h"
 #include "mobile/link.h"
+#include "io/file_port.h"
 #include "emulated_path.h"
 
 namespace fs = std::filesystem;
@@ -93,6 +94,7 @@ struct camera_roll final : bk::source {
       it.year = 2020 + i % 7;
       it.month = 1 + i % 12;
       it.day = 1 + i % 28;
+      it.taken = 1500000000 + i * 86400LL;  // each its own moment
       const int kind = i % 4;  // photo, Live Photo, RAW + JPEG, video
       const std::string base = "IMG_" + std::to_string(1000 + i);
       it.resources.push_back({kind == 3 ? "video" : "photo", base + (kind == 3 ? ".MOV" : ".HEIC")});
@@ -241,6 +243,28 @@ bk::status_report run_once(bk::target& t, camera_roll& roll, bk::ledger& l, cons
     if (stop_after > 0 && s.copied >= static_cast<std::uint64_t>(stop_after) && stop_fraction > 1.0) cancel.stop = true;
   });
   return last;
+}
+
+// The modified times (seconds since 1970) of every backed-up file, and what the roll says
+// they should be: one per resource, its photo's moment.
+std::multiset<std::int64_t> taken_times_under(const fs::path& root) {
+  std::multiset<std::int64_t> out;
+  for (const auto& [rel, bytes] : files_under(root)) {
+    const fs::path file = root / fs::path(rel);
+    auto children = mv::io::list_children(file.parent_path().string());
+    if (!children) continue;
+    for (const auto& c : *children) {
+      if (c.name == file.filename().string()) out.insert(c.mtime_unix);
+    }
+  }
+  return out;
+}
+std::multiset<std::int64_t> taken_times_of(const camera_roll& roll) {
+  std::multiset<std::int64_t> out;
+  for (const auto& it : roll.items) {
+    for (std::size_t i = 0; i < it.resources.size(); ++i) out.insert(it.taken);
+  }
+  return out;
 }
 
 }  // namespace
@@ -540,8 +564,8 @@ struct no_trash final : bk::target {
   mv::result<serve::client::write_done> write(const std::string& r, const std::string& rel, std::uint64_t size,
                                               const std::string& hash, std::uint64_t at, const serve::client::read_fn& read,
                                               const std::function<void(std::uint64_t)>& progress, const mob::cancel_flag* cancel,
-                                              serve::client::write_refused* why, bool meta) override {
-    return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta);
+                                              serve::client::write_refused* why, bool meta, std::int64_t taken) override {
+    return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta, taken);
   }
   mv::result<std::vector<std::string>> ledger_ids(const std::string& r) override { return t.ledger_ids(r); }
   mv::result<std::string> read_ledger(const std::string& r, const std::string& id) override { return t.read_ledger(r, id); }
@@ -801,8 +825,8 @@ TEST_CASE("backup: a file another photo relies on stays, a refused one does not 
       mv::result<serve::client::write_done> write(const std::string& r, const std::string& rel, std::uint64_t size,
                                                   const std::string& hash, std::uint64_t at, const serve::client::read_fn& read,
                                                   const std::function<void(std::uint64_t)>& progress, const mob::cancel_flag* cancel,
-                                                  serve::client::write_refused* why, bool meta) override {
-        return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta);
+                                                  serve::client::write_refused* why, bool meta, std::int64_t taken) override {
+        return t.write(r, rel, size, hash, at, read, progress, cancel, why, meta, taken);
       }
       mv::result<std::vector<std::string>> ledger_ids(const std::string& r) override { return t.ledger_ids(r); }
       mv::result<std::string> read_ledger(const std::string& r, const std::string& id) override { return t.read_ledger(r, id); }
@@ -973,10 +997,10 @@ TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]
       json += "{\"kind\":\"" + it.resources[i].kind + "\",\"name\":\"" + it.resources[i].name + "\"}";
     }
     json += "]";
-    REQUIRE(mv_backup_add_item(b, it.key.c_str(), it.local_id.c_str(), it.year, it.month, it.day, json.c_str()) == MV_LINK_OK);
+    REQUIRE(mv_backup_add_item(b, it.key.c_str(), it.local_id.c_str(), it.year, it.month, it.day, it.taken, json.c_str()) == MV_LINK_OK);
   }
   // A name that is a path is never taken from the host.
-  CHECK(mv_backup_add_item(b, "k", "1", 2026, 1, 1, R"([{"kind":"photo","name":"../x.jpg"}])") == MV_LINK_INVALID);
+  CHECK(mv_backup_add_item(b, "k", "1", 2026, 1, 1, MV_BACKUP_NO_TIME, R"([{"kind":"photo","name":"../x.jpg"}])") == MV_LINK_INVALID);
 
   struct ctx_t {
     camera_roll* roll;
@@ -1000,9 +1024,11 @@ TEST_CASE("backup: the C ABI runs a backup the way the app does", "[mobile-link]
   REQUIRE_FALSE(ctx.seen.empty());
   CHECK(ctx.seen.back().backed_up == roll.items.size());
   CHECK(files_under(n.backup).size() == roll.resource_count());
+  // Each file carries the moment its photo was taken, as the app gave it, not today.
+  CHECK(taken_times_under(n.backup) == taken_times_of(roll));
   // A bad layout is refused before anything runs.
   CHECK(mv_backup_run(b, kBackupRoot.c_str(), 0, nullptr, exporter, status, &ctx, &final_state) == MV_LINK_INVALID);
-  CHECK(mv_backup_add_item(b, "k", "1", 2026, 1, 1, "[]") == MV_LINK_INVALID);
+  CHECK(mv_backup_add_item(b, "k", "1", 2026, 1, 1, MV_BACKUP_NO_TIME, "[]") == MV_LINK_INVALID);
 
   mv_backup_space space{};
   CHECK(mv_backup_space_of(b, kBackupRoot.c_str(), &space) == MV_LINK_OK);
@@ -1043,6 +1069,8 @@ TEST_CASE("backup: the date read from the file files the whole photo", "[mobile-
                                  [](const std::string&) { return std::uint64_t{1} << 40; });
   REQUIRE(run_once(*target, roll, **ledger, scratch, 0, 2.0, bk::kSampleFolderId).now == bk::state::done);
   for (const auto& [rel, bytes] : files_under(phone.root / "nas")) CHECK(rel.starts_with("2019/12/"));
+  // The folder is the day the file says; the file's own time is still the moment Photos gives.
+  CHECK(taken_times_under(phone.root / "nas") == taken_times_of(roll));
 }
 
 TEST_CASE("backup: a hostile or garbled ledger copy on the NAS never blocks or skips a photo", "[mobile-link]") {
@@ -1419,7 +1447,7 @@ struct counting_target final : bk::target {
                                               const serve::client::read_fn& read,
                                               const std::function<void(std::uint64_t)>& progress,
                                               const mob::cancel_flag* cancel, serve::client::write_refused* why,
-                                              bool meta) override {
+                                              bool meta, std::int64_t taken) override {
     {
       std::unique_lock lock(m);
       most = std::max(most, ++now);
@@ -1430,7 +1458,7 @@ struct counting_target final : bk::target {
       cv.notify_all();
       if (hold_first && first) cv.wait_for(lock, std::chrono::seconds(10), [&] { return now >= 2; });
     }
-    auto r = t.write(root, rel, size, hash, at, read, progress, cancel, why, meta);
+    auto r = t.write(root, rel, size, hash, at, read, progress, cancel, why, meta, taken);
     std::lock_guard lock(m);
     --now;
     --at_once_by_rel[rel + "#" + std::to_string(meta)];

@@ -214,6 +214,7 @@ std::vector<std::uint8_t> encode_open(const open_request& r) {
     w.key("at").integer(static_cast<std::int64_t>(r.at));
     w.key("size").integer(static_cast<std::int64_t>(r.size));
     w.key("hash").string(r.hash);
+    if (r.taken != kNoTime) w.key("taken").integer(r.taken);
   }
   if (r.kind == op::convert) w.key("seg").integer(r.segment);
   if (r.kind == op::move) w.key("to_root").string(r.to_root).key("to_rel").string(r.to_rel);
@@ -274,6 +275,8 @@ std::optional<open_request> parse_open(std::span<const std::uint8_t> body, bool&
     r.at = static_cast<std::uint64_t>(*at);
     r.size = static_cast<std::uint64_t>(*size);
     r.hash = *hash;
+    // A time no file can carry is left out, not a reason to refuse the photo.
+    if (const auto taken = doc->integer("taken"); in_range(taken, kMinTaken, kMaxTaken)) r.taken = *taken;
   }
   if (r.kind == op::convert) {
     const auto seg = doc->integer("seg");
