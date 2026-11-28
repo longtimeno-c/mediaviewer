@@ -788,7 +788,7 @@ void server::accept_loop(net::listener& from_listener, bool tls) {
     std::lock_guard lock(m_);
     reap_locked();
     const bool full = static_cast<int>(workers_.size()) >= opts_.max_waiting + 2 * opts_.max_pairs + kMaxHandshakes + opts_.max_forwards + opts_.max_udp_flows;
-    if (full || handshaking_ >= kMaxHandshakes || handshaking_from_[from] >= kPerSource) {
+    if (full || handshaking_ >= kMaxHandshakes || handshaking_from_[from] >= opts_.handshakes_per_source) {
       ++counts_.refused;
       if (handshaking_from_[from] == 0) handshaking_from_.erase(from);
       l->shutdown();

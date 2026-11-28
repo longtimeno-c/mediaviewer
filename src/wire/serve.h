@@ -132,8 +132,10 @@ class server {
     int max_per_device = 8;
     int max_pending = 16;            // handshakes in progress; when full, the oldest hello still waiting goes
     int per_minute = 30;              // connections per address (a /64 for IPv6); a /48 gets four times this
-    int per_source_pending = 2;       // handshakes in progress per address (a /64 for IPv6)
-    int per_block_pending = 4;        // and per IPv6 /48
+    // Handshakes in progress per address (a /64 for IPv6), and per IPv6 /48: a phone's copy
+    // opens its lanes together (src/mobile/sync.h lanes, 3 beside its link; 2 and 4 before).
+    int per_source_pending = 4;
+    int per_block_pending = 8;
     // Sessions over UDP as well (udp_hub's stream, on the TCP port's number; caps say so): on a
     // long path with some loss one stream keeps the line's speed, where TCP halves on each loss.
     // Same admission and handshake as TCP. Never for the LAN-only service. A port taken: TCP only.

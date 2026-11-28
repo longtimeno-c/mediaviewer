@@ -557,7 +557,10 @@ std::string host_relay_line(const host_layout& l, const setup_world& w, std::str
   std::int64_t inside = state_number(st, look ? "relay_tls_port" : "relay_port");
   if (!inside) inside = look ? look_port(s) : s.relay_port;
   std::int64_t outside = state_number(st, look ? "tls_outside_port" : "relay_outside_port");
-  if (!outside) outside = inside;
+  // Not mapped yet (`vpn on` prints its code before the router keeper has asked): the port it asks
+  // the router for, never the look's inside one, which nothing outside reaches. The plain relay's
+  // is asked at the same number.
+  if (!outside) outside = look ? tls::kDefaultPort : inside;
   std::string where;
   if (const std::string name = vpn_name(s); !name.empty() && !w.loopback) {
     where = name + ":" + std::to_string(outside);

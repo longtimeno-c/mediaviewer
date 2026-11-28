@@ -5,9 +5,12 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <thread>
 
 #include "addons/driftwire/sha1.h"
@@ -21,6 +24,10 @@ using clock = std::chrono::steady_clock;
 constexpr std::size_t kTable = 512;
 constexpr std::size_t kK = 8;     // the closest nodes a lookup settles on
 constexpr int kAlpha = 3;         // queries in flight
+constexpr int kSlowMs = 500;       // a query unanswered this long stops holding a place among them
+// Seeds answered before start() returns (the rest are let go): enough nodes, and enough address
+// votes (BEP 42) to go by.
+constexpr int kStartAnswers = 8;
 constexpr std::size_t kMaxV = 1000;  // BEP 44
 constexpr std::size_t kSavedNodes = 200;  // the table kept between runs, at most
 constexpr std::size_t kMinSecureVoters = 4;  // enough BEP 42-secure voters to go by them alone
@@ -239,19 +246,20 @@ bool client::start(const std::function<bool()>& stop) {
       seeds.push_back(n.at);
     }
   }
-  if (opts_.use_routers) {
-    for (const auto& [name, port] : bootstrap_routers()) {
-      for (const auto& ip : net::resolve(name)) seeds.push_back({net::address_text(ip), port});
-    }
-  }
-  // find_node for ourselves, a few at once, from every seed.
+  // find_node for ourselves from every seed at once, the routers resolved meanwhile, each on its
+  // own; done once kStartAnswers have answered (lookups learn the rest as they go), or every
+  // seed has answered or not. Asked in batches that waited for each, one dead seed (a saved
+  // node gone since) held a batch for query_ms, and the routers' names were resolved in turn
+  // before any of it.
+  std::mutex sm;
+  std::condition_variable scv;
+  int answered = 0, out = 0;  // under sm
+  std::atomic<bool> enough{false};
+  const auto ended = [&] { return (stop && stop()) || enough.load(); };
   std::vector<std::thread> asks;
-  std::atomic<int> answered{0};
-  for (const auto& s : seeds) {
-    asks.emplace_back([&, s] {
-      auto r = query(s, "find_node", bencode::value::dict({{"target", bencode::value::bytes(as_string(self_))}}), stop);
-      if (!r) return;
-      ++answered;
+  const auto ask = [&](net::endpoint s) {
+    auto r = query(s, "find_node", bencode::value::dict({{"target", bencode::value::bytes(as_string(self_))}}), ended);
+    if (r) {
       if (const std::string* id = r->str("id"); id && id->size() == 20) {
         node n;
         std::memcpy(n.id.data(), id->data(), 20);
@@ -261,14 +269,44 @@ bool client::start(const std::function<bool()>& stop) {
       }
       if (const std::string* c = r->str("nodes")) learn(parse_nodes(*c, false));
       if (const std::string* c = r->str("nodes6")) learn(parse_nodes(*c, true));
-    });
-    if (asks.size() >= 16) {
-      for (auto& t : asks) t.join();
-      asks.clear();
+    }
+    std::lock_guard lock(sm);
+    if (r) ++answered;
+    --out;
+    scv.notify_all();
+  };
+  {
+    std::lock_guard lock(sm);
+    out = static_cast<int>(seeds.size()) + (opts_.use_routers ? static_cast<int>(bootstrap_routers().size()) : 0);
+  }
+  for (const auto& s : seeds) asks.emplace_back(ask, s);
+  if (opts_.use_routers) {
+    for (const auto& [name, port] : bootstrap_routers()) {
+      asks.emplace_back([&, name = std::string(name), port = port] {
+        const auto ips = ended() ? std::vector<net::address>{} : net::resolve(name);
+        {
+          std::lock_guard lock(sm);
+          out += static_cast<int>(ips.size());
+        }
+        std::vector<std::thread> each;
+        for (const auto& ip : ips) each.emplace_back(ask, net::endpoint{net::address_text(ip), port});
+        for (auto& t : each) t.join();
+        std::lock_guard lock(sm);
+        --out;  // this router's name
+        scv.notify_all();
+      });
     }
   }
+  {
+    std::unique_lock lock(sm);
+    while (out > 0 && answered < kStartAnswers && !(stop && stop())) {
+      scv.wait_for(lock, std::chrono::milliseconds(50));
+    }
+  }
+  enough.store(true);
   for (auto& t : asks) t.join();
-  return answered.load() > 0;
+  std::lock_guard lock(sm);
+  return answered > 0;
 }
 
 bool client::refresh(const std::function<bool()>& stop) {
@@ -318,48 +356,40 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
     return da < db;
   };
   const auto until = clock::now() + std::chrono::milliseconds(opts_.lookup_ms);
-  for (;;) {
-    if ((stop && stop()) || clock::now() >= until) break;
-    std::vector<std::size_t> batch;
-    {
-      std::lock_guard lock(cm);
-      std::sort(c.begin(), c.end(), closer);
-      if (c.size() > 256) c.resize(256);
-      // Done when the k closest that answered have all been asked.
-      std::size_t answered = 0;
-      bool pending_near = false;
-      for (std::size_t i = 0; i < c.size() && answered < kK; ++i) {
-        if (c[i].answered) {
-          ++answered;
-        } else if (!c[i].asked) {
-          pending_near = true;
-          if (static_cast<int>(batch.size()) < kAlpha) batch.push_back(i);
-        }
-      }
-      if (!pending_near || batch.empty()) break;
-      for (std::size_t i : batch) c[i].asked = true;
-    }
-    std::vector<std::thread> flight;
-    for (std::size_t i : batch) {
-      flight.emplace_back([&, i] {
-        node n;
-        {
-          std::lock_guard lock(cm);
-          n = c[i].n;
-        }
-        auto r = query(n.at, ask, bencode::value::dict({{"target", bencode::value::bytes(as_string(target))}}), stop);
-        if (!r) return;
-        std::vector<node> more;
+  // kAlpha queries in flight all along: the next goes as soon as one answers (asked in rounds,
+  // one dead node held the whole round for query_ms). A query unanswered for kSlowMs no longer
+  // counts against kAlpha, so a gone node holds nothing up on the way. At the end, a query still
+  // out to a node nearer than the kK-th that answered is waited for (query_ms at most): those
+  // hold the item, and a slow one's answer is not cut off; one farther out is not waited for.
+  std::condition_variable ccv;
+  std::atomic<bool> finished{false};
+  const auto ended = [&] { return (stop && stop()) || finished.load(); };
+  // Under cm: each query still out, by its node, and when it went.
+  std::vector<std::pair<node, clock::time_point>> pending;
+  std::vector<std::thread> flight;
+  const auto same_node = [](const node& a, const node& b) { return a.id == b.id && a.at.address == b.at.address; };
+  const auto ask_one = [&](std::size_t i) {
+    // Under cm.
+    c[i].asked = true;
+    const node n = c[i].n;
+    pending.emplace_back(n, clock::now());
+    flight.emplace_back([&, n] {
+      auto r = query(n.at, ask, bencode::value::dict({{"target", bencode::value::bytes(as_string(target))}}), ended);
+      std::vector<node> more;
+      if (r) {
         if (const std::string* x = r->str("nodes")) more = parse_nodes(*x, false);
         if (const std::string* x = r->str("nodes6")) {
           auto m6 = parse_nodes(*x, true);
           more.insert(more.end(), m6.begin(), m6.end());
         }
         learn(more);
-        std::lock_guard lock(cm);
-        // Find i again by id: the vector may have been sorted meanwhile.
+      }
+      std::lock_guard lock(cm);
+      std::erase_if(pending, [&](const auto& p) { return same_node(p.first, n); });
+      if (r) {
+        // Found again by id: the vector may have been sorted meanwhile.
         for (auto& x : c) {
-          if (x.n.id == n.id && x.n.at.address == n.at.address) {
+          if (same_node(x.n, n)) {
             x.answered = true;
             if (const std::string* tok = r->str("token"); tok && tok->size() <= 64) x.token = *tok;
             if (on_reply) on_reply(x, *r);
@@ -369,10 +399,50 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
         for (const auto& m : more) {
           if (std::none_of(c.begin(), c.end(), [&](const contact& x) { return x.n.id == m.id; })) c.push_back(contact{m, false, false, {}});
         }
-      });
+      }
+      ccv.notify_all();
+    });
+  };
+  {
+    std::unique_lock lock(cm);
+    const auto slow = std::chrono::milliseconds(kSlowMs);
+    const auto query_time = std::chrono::milliseconds(opts_.query_ms);
+    for (;;) {
+      if ((stop && stop()) || clock::now() >= until) break;
+      const auto now = clock::now();
+      const int counted = static_cast<int>(
+          std::count_if(pending.begin(), pending.end(), [&](const auto& p) { return now - p.second < slow; }));
+      std::sort(c.begin(), c.end(), closer);
+      if (c.size() > 256) c.resize(256);
+      // The window: up to the kK-th that answered. Done when every one in it was asked, and no
+      // query in it is still out (younger than query_ms).
+      std::size_t answered = 0;
+      std::vector<std::size_t> next;
+      bool near_out = false;
+      for (std::size_t i = 0; i < c.size() && answered < kK; ++i) {
+        if (c[i].answered) {
+          ++answered;
+        } else if (!c[i].asked) {
+          next.push_back(i);
+        } else if (std::any_of(pending.begin(), pending.end(),
+                               [&](const auto& p) { return same_node(p.first, c[i].n) && now - p.second < query_time; })) {
+          near_out = true;
+        }
+      }
+      if (next.empty() && !near_out) break;
+      std::size_t launched = 0;
+      for (int room = kAlpha - counted; launched < next.size() && room > 0; --room) ask_one(next[launched++]);
+      // Until one answers or fails, one out turns slow or old, or the end.
+      auto wake = until;
+      for (const auto& p : pending) {
+        if (now - p.second < slow) wake = std::min(wake, p.second + std::chrono::duration_cast<clock::duration>(slow));
+        if (now - p.second < query_time) wake = std::min(wake, p.second + std::chrono::duration_cast<clock::duration>(query_time));
+      }
+      ccv.wait_until(lock, std::min(wake, clock::now() + std::chrono::milliseconds(50)));
     }
-    for (auto& t : flight) t.join();
+    finished.store(true);
   }
+  for (auto& t : flight) t.join();
   std::vector<contact> out;
   std::lock_guard lock(cm);
   std::sort(c.begin(), c.end(), closer);

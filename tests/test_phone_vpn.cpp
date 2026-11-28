@@ -126,7 +126,8 @@ struct tcp_echo {
   std::uint16_t port() const { return l->port(); }
 };
 
-// A UDP server on loopback that answers each datagram upper-cased: the relay's "resolver".
+// A UDP server on loopback that answers each datagram upper-cased past its first two bytes (kept,
+// as a resolver keeps a query's ID): the relay's "resolver".
 struct udp_echo {
   std::unique_ptr<sp::net::udp_socket> s;
   std::thread t;
@@ -141,7 +142,7 @@ struct udp_echo {
         sp::net::endpoint from;
         auto n = s->receive_from(b, 200, from);
         if (!n) continue;
-        for (std::size_t i = 0; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
+        for (std::size_t i = 2; i < *n; ++i) b[i] = static_cast<std::uint8_t>(std::toupper(b[i]));
         (void)s->send_to(std::span<const std::uint8_t>(b.data(), *n), from);
       }
     });
@@ -327,7 +328,7 @@ TEST_CASE("phone vpn: an app's TCP and DNS go through the extension's VPN and th
   auto answer = flow.next(vpn::kUdp, keep);
   REQUIRE(answer);
   CHECK(answer->f == reversed(q));
-  CHECK(std::string(answer->payload.begin(), answer->payload.end()) == "WHO IS EXAMPLE.COM");
+  CHECK(std::string(answer->payload.begin(), answer->payload.end()) == "whO IS EXAMPLE.COM");
   // An app's TCP connection, through the relay to the echo server.
   const auto f = v4_flow("198.18.0.1", 40100, "127.0.0.1", te.port(), vpn::kTcp);
   std::uint32_t seq = 1000;

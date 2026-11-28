@@ -20,7 +20,7 @@ namespace mv::driftwire::serve {
 
 namespace {
 
-constexpr std::array<std::pair<op, const char*>, 11> kOps = {{{op::roots, "roots"},
+constexpr std::array<std::pair<op, const char*>, 12> kOps = {{{op::roots, "roots"},
                                                              {op::list, "list"},
                                                              {op::stat, "stat"},
                                                              {op::read_range, "read_range"},
@@ -30,7 +30,8 @@ constexpr std::array<std::pair<op, const char*>, 11> kOps = {{{op::roots, "roots
                                                              {op::convert, "convert"},
                                                              {op::mkdir, "mkdir"},
                                                              {op::move, "move"},
-                                                             {op::remove, "delete"}}};
+                                                             {op::remove, "delete"},
+                                                             {op::writes_at_once, "writes_at_once"}}};
 
 bool lower_hex64(std::string_view s) noexcept {
   return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });

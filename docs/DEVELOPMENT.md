@@ -1585,6 +1585,8 @@ build/bin/mv-driftwire-bench send <receiver IP> 54540 <secret> --set big --iperf
 #   --set big (1 x --big-mb, default 8192) | small (500 x 2 MiB) | tiny (5,000 x 200 KiB) | <a folder>; --fixture D keeps the set
 #   --iperf3-streams N (default 4), or --line-mb-s X for a reference measured some other way
 build/bin/mv_import_tests "[.driftwire-stream-bench]"   # #529: the DHT stream over emulated internet paths, a JSON line per profile (MV_STREAM_BENCH_S, _PROFILES, _SEED, _TRACE=1 for the sender's state every 100 ms)
+sudo build/bin/mv_import_tests "[.driftwire-vpn-bench]"   # Linux, root: a speed test through the VPN (a real TUN, the relay over an emulated phone path), a JSON line (MV_VPN_BENCH_RTT_MS 40, _MBPS 100, _STREAMS 16, _MB 4, _LOOKUPS 32)
+build/bin/mv_mobile_link_tests "[.backup-bench]"   # Mac: phone backup of many small photos over an emulated path (tests/emulated_path.h), a JSON line (MV_BACKUP_BENCH_RTT_MS 40, _MBPS 50, _ITEMS 80)
 build/bin/mv_import_tests "[.driftwire-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # DriftwirePackTest among them
 build/bin/mv_import_tests "[.driftwire-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)

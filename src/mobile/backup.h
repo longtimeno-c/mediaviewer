@@ -81,6 +81,9 @@ class target {
   // answer: the service names only those, so with none of them a backup folder, folders() is
   // empty though the server may have one.
   [[nodiscard]] virtual bool limited_to_some_folders() const { return false; }
+  // Whether several writes may be on their way at once (options::uploads_at_once); one at a
+  // time when not (a service from before serve::kWritesAtOnceOp).
+  [[nodiscard]] virtual bool writes_at_once() { return false; }
   // A backed-up file into the folder's hidden trash (a photo deleted from Photos): true when
   // moved, false when it was not there. status::unsupported_format: a service that cannot.
   [[nodiscard]] virtual result<bool> trash(const std::string& root, const std::string& rel) {
@@ -243,8 +246,12 @@ struct options {
   std::string library_id;
   std::string root;              // the destination: a backup folder's id, or "<id>/<subfolder>"
   layout folders = layout::year_month;
-  std::string scratch_dir;       // one resource at a time is exported here
+  std::string scratch_dir;       // each file on its way is exported here
   int ledger_copy_every = 50;
+  // Files sent at once, and the scratch bytes of those still sending past which the next waits
+  // (a phone's free space goes on one file and this much more, at most).
+  int uploads_at_once = 4;
+  std::int64_t parallel_bytes = 32 << 20;
 };
 
 class engine {

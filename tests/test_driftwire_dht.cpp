@@ -8,6 +8,7 @@
 #include <sodium.h>
 
 #include <condition_variable>
+#include <random>
 
 #include "addons/driftwire/bencode.h"
 #include "addons/driftwire/dht_item.h"
@@ -626,6 +627,165 @@ TEST_CASE("driftwire dht: an item put by one client is found by another, and a f
   CHECK(dht::open(*k, salt, got->v, c.written_ms)->gone);
   // Nothing under a salt nobody used.
   CHECK_FALSE(b.get(k->public_key, dht::salt_of(*k, dht::role::sender, 3), {}));
+}
+
+namespace {
+// The swarm's nodes, nearest an item's target first.
+std::vector<swarm_node*> nearest(swarm& s, const dht::keys& k, const std::string& salt) {
+  std::string kt(reinterpret_cast<const char*>(k.public_key.data()), k.public_key.size());
+  kt += salt;
+  const auto target = mv::driftwire::sha1({reinterpret_cast<const std::uint8_t*>(kt.data()), kt.size()});
+  std::vector<swarm_node*> out;
+  for (auto& n : s.nodes) out.push_back(n.get());
+  const auto far = [&](const swarm_node* n) {
+    dht::node_id d;
+    for (int i = 0; i < 20; ++i) d[i] = n->self.id[i] ^ target[i];
+    return d;
+  };
+  std::sort(out.begin(), out.end(), [&](auto* x, auto* y) { return far(x) < far(y); });
+  return out;
+}
+}  // namespace
+
+TEST_CASE("driftwire dht: a lookup goes past nodes that have gone on its way", "[driftwire]") {
+  // The public DHT is full of nodes that left. A lookup asked in rounds of three and waited for
+  // all three, so a round of gone ones held the lookup a whole query time each.
+  swarm s(32);
+  swarm_node* seed = s.nodes.front().get();
+  // An item whose 14 nearest leave the seed out (the seed is where the way on is).
+  std::unique_ptr<dht::keys> k;
+  std::string salt;
+  std::vector<swarm_node*> near;
+  for (std::uint16_t i = 0; i < 200; ++i) {
+    auto kk = dht::derive({i, 4, 3, 2}, true);
+    REQUIRE(kk);
+    const std::string sl = dht::salt_of(*kk, dht::role::receiver, 0);
+    auto n = nearest(s, *kk, sl);
+    if (std::find(n.begin(), n.begin() + 14, seed) == n.begin() + 14) {
+      k = std::make_unique<dht::keys>(std::move(*kk));
+      salt = sl;
+      near = std::move(n);
+      break;
+    }
+  }
+  REQUIRE(k);
+  auto ha = sp::udp_hub::open(0, true);
+  auto hb = sp::udp_hub::open(0, true);
+  REQUIRE(ha);
+  REQUIRE(hb);
+  auto o = test_options(s);
+  o.query_ms = 10000;  // far above the bound below: a loaded machine cannot blur the two
+  o.lookup_ms = 60000;
+  dht::client a(*ha, o);
+  REQUIRE(a.start({}));
+  dht::contents c;
+  c.candidates = {{"81.2.69.160", 41000}};
+  c.written_ms = 1'760'000'000'000;
+  REQUIRE(a.put(*k, salt, 1, dht::seal(*k, salt, c), {}) >= 4);  // on the 8 nearest
+  // b starts knowing the seed and the next six out from the item; then those six go.
+  for (std::size_t i = 8; i < 14; ++i) seed->find_node_reply.push_back(near[i]->self);
+  dht::client b(*hb, o);
+  REQUIRE(b.start({}));
+  seed->find_node_reply.clear();
+  for (std::size_t i = 8; i < 14; ++i) near[i]->silent = true;
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto got = b.get(k->public_key, salt, {});
+  const auto took = std::chrono::steady_clock::now() - t0;
+  REQUIRE(got);
+  CHECK(got->seq == 1);
+  CHECK(took < std::chrono::milliseconds(5000));  // in rounds: two of 10 s each before the seed
+}
+
+TEST_CASE("driftwire dht: the nearest nodes answering slowly are still heard", "[driftwire]") {
+  // A query unanswered for 500 ms steps aside, so a gone node does not hold the lookup up; but
+  // the nodes nearest the item, which hold it, are waited for even when slow (farther ones fast).
+  swarm s(32);
+  auto ha = sp::udp_hub::open(0, true);
+  auto hb = sp::udp_hub::open(0, true);
+  REQUIRE(ha);
+  REQUIRE(hb);
+  auto o = test_options(s);
+  o.query_ms = 6000;
+  o.lookup_ms = 30000;
+  dht::client a(*ha, o), b(*hb, o);
+  REQUIRE(a.start({}));
+  REQUIRE(b.start({}));
+  auto k = dht::derive({9, 9, 9, 1}, true);
+  REQUIRE(k);
+  const std::string salt = dht::salt_of(*k, dht::role::receiver, 0);
+  dht::contents c;
+  c.written_ms = 1'760'000'000'000;
+  REQUIRE(a.put(*k, salt, 3, dht::seal(*k, salt, c), {}) >= 4);  // on the 8 nearest
+  const auto near = nearest(s, *k, salt);
+  for (std::size_t i = 0; i < 8; ++i) near[i]->delay_ms = 2500;  // they, and only they, answer late
+  const auto got = b.get(k->public_key, salt, {});
+  REQUIRE(got);
+  CHECK(got->seq == 3);
+}
+
+TEST_CASE("driftwire dht: start is not held up by saved nodes that have gone", "[driftwire]") {
+  // A saved table is full of nodes that left since. Start asked its seeds in batches and waited
+  // for each, so a batch with one gone took a whole query time.
+  swarm s(24);
+  for (std::size_t i = 0; i < s.nodes.size(); i += 2) s.nodes[i]->silent = true;
+  auto h = sp::udp_hub::open(0, true);
+  REQUIRE(h);
+  auto o = test_options(s);
+  o.query_ms = 10000;  // far above the bound below
+  o.extra.clear();
+  for (const auto& n : s.list) o.extra.push_back(n.at);
+  dht::client c(*h, o);
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(c.start({}));
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(5000));  // under half a query time
+  CHECK(c.known() >= 8);
+}
+
+// Lookups among nodes many of which have gone, as on the public DHT: start, and gets of items
+// put, timed. One JSON line. MV_DHT_BENCH_SILENT: the share gone (default 0.3).
+TEST_CASE("driftwire dht: lookups when many nodes have gone (bench)", "[.driftwire-dht-bench]") {
+  const char* env = std::getenv("MV_DHT_BENCH_SILENT");
+  const double gone = env && *env ? std::atof(env) : 0.3;
+  swarm s(64);
+  auto hp = sp::udp_hub::open(0, true);
+  auto hg = sp::udp_hub::open(0, true);
+  REQUIRE(hp);
+  REQUIRE(hg);
+  auto o = test_options(s);
+  o.query_ms = 1500;  // the product's
+  o.lookup_ms = 15000;
+  o.extra.clear();
+  for (const auto& n : s.list) o.extra.push_back(n.at);
+  dht::client putter(*hp, o);
+  REQUIRE(putter.start({}));
+  std::vector<std::pair<std::unique_ptr<dht::keys>, std::string>> items;
+  for (int i = 0; i < 20; ++i) {
+    auto k = dht::derive({static_cast<std::uint16_t>(i), 7, 7, 7}, true);
+    REQUIRE(k);
+    const std::string salt = dht::salt_of(*k, dht::role::receiver, 0);
+    dht::contents c;
+    c.written_ms = 1'760'000'000'000;
+    REQUIRE(putter.put(*k, salt, 1, dht::seal(*k, salt, c), {}) >= 4);
+    items.emplace_back(std::make_unique<dht::keys>(std::move(*k)), salt);
+  }
+  std::mt19937 rng(5);
+  for (auto& n : s.nodes) n->silent = std::uniform_real_distribution<double>(0, 1)(rng) < gone;
+  dht::client getter(*hg, o);
+  auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(getter.start({}));
+  const double start_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  std::vector<double> ms;
+  int found = 0;
+  for (auto& [k, salt] : items) {
+    t0 = std::chrono::steady_clock::now();
+    found += getter.get(k->public_key, salt, {}) ? 1 : 0;
+    ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  std::sort(ms.begin(), ms.end());
+  std::printf("{\"case\":\"dht_gone\",\"gone\":%.2f,\"start_ms\":%.0f,\"get_p50_ms\":%.0f,\"get_max_ms\":%.0f,"
+              "\"found\":%d,\"of\":%zu}\n",
+              gone, start_ms, ms[ms.size() / 2], ms.back(), found, items.size());
+  std::fflush(stdout);
 }
 
 TEST_CASE("driftwire dht: the routing table is kept between runs", "[driftwire]") {

@@ -61,6 +61,7 @@ inline constexpr std::size_t kMaxListBytes = 16u * 1024 * 1024;
 enum class op : std::uint8_t {
   roots = 0, list = 1, stat = 2, read_range = 3, admin = 4, upgrade = 5, write = 6, convert = 7,
   mkdir = 8, move = 9, remove = 10,  // remove's wire name is "delete"
+  writes_at_once = 11,
 };
 // What a phone can use to read. `admin` is apart: granted only to the owner's session.
 inline constexpr std::uint32_t kAllOps = (1u << 4) - 1;
@@ -91,6 +92,11 @@ inline constexpr std::uint32_t kMkdirOp = 1u << 8;
 inline constexpr std::uint32_t kMoveOp = 1u << 9;
 inline constexpr std::uint32_t kDeleteOp = 1u << 10;
 inline constexpr std::uint32_t kChangeOps = kMkdirOp | kMoveOp | kDeleteOp;
+// `writes_at_once`: not an operation but a promise, listed with `write`: this service takes
+// several writes from one device at once, an unfinished copy left empty by one cancelled as it
+// opened included. One from before (2026-11-28) refused such a copy's file on every later run,
+// so a phone sends one file at a time unless the service lists it.
+inline constexpr std::uint32_t kWritesAtOnceOp = 1u << 11;
 inline constexpr std::size_t kMaxCandidates = 8;
 inline constexpr int kPunchMs = 10000;
 struct candidate {

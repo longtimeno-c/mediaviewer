@@ -1055,6 +1055,13 @@ struct lane_record {
   std::uint64_t drop_after = 0;
   bool dropped = false;
   bool drop_all = false;           // every read of `gate_rel` ends so
+  // Reads of `gate_rel` from this offset on wait (10 s at most) until `released`.
+  std::uint64_t hold_from = UINT64_MAX;
+  bool released = false;
+  // A service from before: the first `wave` lane opens arrive together, and past
+  // `host_pending` of them the rest are closed unanswered (0: no such limit).
+  int wave = 0, host_pending = 0, arrived = 0, left_wave = 0, refused = 0;
+  bool wave_over = false;
   std::map<std::string, std::vector<std::pair<std::uint64_t, std::uint64_t>>> handed;  // rel: [from, to)
   std::uint64_t handed_bytes(const std::string& rel) {
     std::uint64_t n = 0;
@@ -1093,6 +1100,7 @@ class disk_remote final : public mob::remote_file {
       if (!rec_->overlapped) rec_->cv.wait_for(l, std::chrono::seconds(10), [&] { return rec_->active >= 2; });
       if (rec_->active >= 2) rec_->overlapped = true;
       drop = rec_->drop_all || (id_ == rec_->drop_lane && !rec_->dropped);
+      if (at >= rec_->hold_from) rec_->cv.wait_for(l, std::chrono::seconds(10), [&] { return rec_->released; });
     }
     const auto leave = [&] {
       if (!gated) return;
@@ -1130,7 +1138,17 @@ class disk_remote final : public mob::remote_file {
     return {};
   }
   std::unique_ptr<mob::remote_file> open_lane(const mob::cancel_flag*) override {
-    std::lock_guard l(rec_->m);
+    std::unique_lock l(rec_->m);
+    if (rec_->wave > 0 && !rec_->wave_over) {
+      const int me = ++rec_->arrived;
+      rec_->cv.notify_all();
+      rec_->cv.wait_for(l, std::chrono::seconds(5), [&] { return rec_->arrived >= rec_->wave; });
+      if (++rec_->left_wave == rec_->wave) rec_->wave_over = true;
+      if (me > rec_->host_pending) {
+        ++rec_->refused;
+        return nullptr;
+      }
+    }
     if (rec_->lanes <= 0) return nullptr;
     --rec_->lanes;
     return std::make_unique<disk_remote>(root_, rec_, ++rec_->opened);
@@ -1183,6 +1201,24 @@ TEST_CASE("sync: a big file comes over several lanes at once, and arrives whole"
     CHECK(one->handed[kExtraRel].front().first == 0);
     CHECK(one->handed_bytes(kExtraRel) == size);
   }
+}
+
+TEST_CASE("sync: a lane a service from before turns away is tried again, so the copy has them all", "[mobile-link]") {
+  // A service before 2026-11-28 takes 2 handshakes at once from one address; the copy opens 3
+  // lanes together, and the third was lost for the whole copy.
+  rig r(20 * 1024 * 1024);
+  auto rec = std::make_shared<lane_record>();
+  rec->lanes = 8;
+  auto cfg = r.sync_config();
+  cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
+  REQUIRE(cfg.lanes - 1 == 3);
+  rec->wave = cfg.lanes - 1;
+  rec->host_pending = 2;
+  disk_remote remote(r.catalogue_home / ".mediaviewer", rec);
+  auto plan = mob::check_catalogue(remote, cfg);
+  REQUIRE(mob::copy_catalogue(remote, cfg, plan, nullptr, nullptr) == mob::sync_outcome::installed);
+  CHECK(rec->refused == 1);
+  CHECK(rec->opened == cfg.lanes - 1);
 }
 
 TEST_CASE("sync: a lane that drops mid-segment hands the rest of it to another", "[mobile-link]") {
@@ -1240,12 +1276,22 @@ TEST_CASE("sync: a copy over lanes stopped part-way leaves a prefix, and resumes
   cfg.catalogue_root = "c2c2c2c2c2c2c2c2";
   auto plan = mob::check_catalogue(remote, cfg);
   mob::cancel_flag stop;
-  CHECK(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t done, std::uint64_t) {
-    if (done > 6 * 1024 * 1024) stop.stop.store(true);
-  }, &stop) == mob::sync_outcome::cancelled);
-  CHECK(rec->overlapped);
   const fs::path source = r.catalogue_home / ".mediaviewer" / kExtraRel;
   const fs::path part = fs::path(cfg.library_dir) / "staging" / "1-1" / "extra.bin.part";
+  // The file's first segment comes; every later one waits until the stop. Stopped by bytes
+  // arrived instead, lanes bringing segments out of order and far ahead left a prefix of
+  // nothing, or the whole file, now and then.
+  rec->hold_from = 2 * 1024 * 1024;  // sync.cpp kSegmentBytes
+  CHECK(mob::copy_catalogue(remote, cfg, plan, [&](std::uint64_t, std::uint64_t) {
+    std::error_code ec;
+    if (fs::file_size(part, ec) > 0 && !ec && !stop.stopped()) {
+      stop.stop.store(true);
+      std::lock_guard l(rec->m);
+      rec->released = true;
+      rec->cv.notify_all();
+    }
+  }, &stop) == mob::sync_outcome::cancelled);
+  CHECK(rec->overlapped);
   REQUIRE(fs::exists(part));
   const std::string held = read_all(part);
   const std::string whole = read_all(source);
@@ -1258,6 +1304,7 @@ TEST_CASE("sync: a copy over lanes stopped part-way leaves a prefix, and resumes
   CHECK(again.done_bytes >= held.size());
   rec->handed.clear();
   rec->lanes = 3;
+  rec->hold_from = UINT64_MAX;
   REQUIRE(mob::copy_catalogue(remote, cfg, again, nullptr, nullptr) == mob::sync_outcome::installed);
   CHECK(rec->first_offset(kExtraRel) == held.size());  // nothing on the phone asked for again
   CHECK(rec->handed_bytes(kExtraRel) == whole.size() - held.size());
@@ -1353,6 +1400,7 @@ TEST_CASE("sync: a generation published mid-copy keeps what is the same, fetches
 namespace {
 struct fake_packs final : mob::remote_file {
   std::atomic<int> reads{0};
+  int at_gate = 0, most_at_gate = 0;  // under m
   std::string pack = std::string(1 << 20, 'a');
   std::mutex m;
   std::condition_variable cv;
@@ -1364,7 +1412,10 @@ struct fake_packs final : mob::remote_file {
                           const mob::byte_sink& sink, const mob::cancel_flag*, bool) override {
     {
       std::unique_lock lock(m);
+      most_at_gate = std::max(most_at_gate, ++at_gate);
+      cv.notify_all();
       cv.wait(lock, [this] { return gate_open; });
+      --at_gate;
     }
     reads.fetch_add(1);
     (void)sink(at, std::span(reinterpret_cast<const std::uint8_t*>(pack.data()) + at, length));
@@ -1423,10 +1474,17 @@ TEST_CASE("thumb cache: neighbours merge into one read; a disk hit needs no netw
   }
   std::atomic<int> told{0};
   std::atomic<bool> cancelled{false};
-  // Two in flight hold the workers at the gate; the third waits in the queue and is cancelled.
-  (void)cache.request(want(900000, 1000), 0, [](auto) {});
-  (void)cache.request(want(950000, 1000), 0, [](auto) {});
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // kWorkers in flight (far apart: none merge) hold every worker at the gate; one more waits in
+  // the queue and is cancelled. Tiles apart are read at once, not two at a time as before.
+  for (int i = 0; i < mob::thumb_cache::kWorkers; ++i) {
+    (void)cache.request(want(800000 + static_cast<std::uint64_t>(i) * 40000, 1000), 0, [](auto) {});
+  }
+  {
+    std::unique_lock lock(remote.m);
+    REQUIRE(remote.cv.wait_for(lock, std::chrono::seconds(5),
+                               [&] { return remote.at_gate == mob::thumb_cache::kWorkers; }));
+  }
+  CHECK(mob::thumb_cache::kWorkers > 2);
   auto waiting = cache.request(want(700000, 1000), 1, [&](mv::result<std::vector<std::uint8_t>> r) {
     ++told;
     cancelled = !r && r.error() == mv::status::cancelled;
@@ -2536,6 +2594,47 @@ TEST_CASE("link race: with no direct route, the phone gets in through its own re
   mob::link_session st(stranger);
   mob::route_report none;
   CHECK_FALSE(st.connect(none, nullptr, 4000));
+}
+
+TEST_CASE("link race: once in through the relay, a reconnect does not wait out the relay's delay again",
+          "[mobile-link]") {
+  // Where the phone is, direct SYNs vanish (no refusal): each connect waited the relay's whole
+  // 1.5 s before trying it. Before this, every reconnect did again.
+  rig r;
+  r.pair_now();
+  auto rendezvous = relay_for(r);
+  const std::string relay = "127.0.0.1:" + std::to_string(rendezvous->port());
+  auto silent = dw::net::listen(true);  // takes the connection and never says a word
+  REQUIRE(silent);
+  mob::service_config c = r.config();
+  c.local = "127.0.0.1:" + std::to_string((*silent)->port());
+  c.public_name = c.local;
+  c.relay = relay;
+  // Far apart, so a loaded machine cannot blur them: the relay's usual turn, and once relayed.
+  c.relay_delay_ms = 4000;
+  c.relay_again_ms = 0;
+  // The service's waiter at the relay (registered a moment after it starts, again after each use).
+  const auto waiter_there = [&] {
+    for (int i = 0; i < 500; ++i) {
+      if (rendezvous->snapshot().waiting >= 1) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  };
+  REQUIRE(waiter_there());
+  mob::link_session s(c);
+  mob::route_report report;
+  auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(s.connect(report, nullptr, 6000));
+  CHECK(report.relayed);
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(4000));  // the relay waited its turn
+  // The service registers its waiter again; the link is lost and made again.
+  REQUIRE(waiter_there());
+  t0 = std::chrono::steady_clock::now();
+  REQUIRE(s.reconnect(report, nullptr, 6000));
+  CHECK(report.relayed);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(2000));  // not its 4 s again
+  REQUIRE(s.roots());
 }
 
 TEST_CASE("pairing: a new code is never redeemed through the relay", "[mobile-link]") {

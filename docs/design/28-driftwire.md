@@ -43,7 +43,7 @@ script add-ons still have no network. The same engine runs in a terminal as `dri
 
 A terminal host of the same engine ([12](12-decision-log.md#driftwire)) on Linux, Windows and
 macOS, wire-compatible with the add-on, installed without MediaViewer ([Installing](#installing)),
-never in the app's payload. Manual page `packaging/linux/driftwire.1`.
+never in the app's payload (the Phone access add-on carries its own copy for [This computer](#on-your-own-computer-driftwire-host)). Manual page `packaging/linux/driftwire.1`.
 
 ```
 driftwire                        the session: visible nearby while it runs; send and receive
@@ -390,7 +390,11 @@ meet on the BitTorrent DHT, only while a code waits or a send looks. (`dht_item.
   seal and < 10 min age check. Overwritten with "gone" afterwards.
 - **DHT client** (`dht.h`): read-only (BEP 43), 3 in flight / 8 closest, BEP 42 public-address votes
   (one per IPv4 /24 or IPv6 /48; secure voters only once ≥ 4), table in `driftwire_dht.dat` (≤ 200
-  nodes), four bootstrap routers. Public nodes only.
+  nodes), four bootstrap routers. Public nodes only. A lookup keeps 3 queries out all along (the
+  next as one answers); one silent for 500 ms steps aside, and at the end only those nearer than
+  the 8th answer are waited for (query time at most). Start
+  asks every seed at once, the routers resolved meanwhile, and returns at 8 answers. A meeting looks
+  for the other side's item while its own is being published, and punches once that is done.
 - **One UDP socket** (`udp_hub.h`) for DHT, punching and stream. Probe every given address plus 16
   ports above the public one, every 100 ms for ≤ 10 s; RFC 1918 only when `one_site` (same public
   address or one /16). The sender offers the first replying path (*choose*) until *chosen*.
@@ -461,7 +465,7 @@ still applies. (`secrets.*`, `known.*`.) The question stays until the next send 
 - **Mutual**: the meeting is keyed by the pairing secret; one-sided, "Waiting for Bea to come
   online… Bea must remember this computer too".
 - **Meeting**: each UTC hour the secret yields a four-word key set per direction. While the window is
-  open or Keep receiving is on (internet + DHT on), the receiver looks for a knock every 15 s,
+  open or Keep receiving is on (internet + DHT on), the receiver looks for a knock every 5 s (15 s before 2026-11-28),
   publishing nothing; on a knock both publish and punch (UDP + TCP, 15 s each); items "gone" after.
 - **Trust on first use**: CPace on the meeting hour's password, `Noise_XXhfs+psk0`, then the static
   must match: "This is not the Bea you remembered: its security key has changed…".
@@ -488,7 +492,7 @@ session run end to end; the relay sees ciphertext only.
   **The hop to the server is sealed** (protocol 3): `MVRL`, 3, role, session id, CPace on the server
   key; a sender sends its token's keyed-BLAKE2b id (no waiter → closed); then Noise NNpsk0, server
   first. Sealed server words **registered** and **paired**; then raw splice. Waiters re-register
-  every 60 s. Caps: 16 handshakes (4 per source), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
+  every 60 s. Caps: 64 handshakes (16 per source; 16 and 4 before 2026-11-28), 64 waiters (4 per IPv6 /64 or IPv4 /24), 8
   splices, 64 GiB each way, optional rate, 120 s idle. Not post-quantum; no state on disk.
 - TURN and Tor are not used ([plan](../plans/driftwire-tor-spike.md)).
 
@@ -566,8 +570,9 @@ driftwire serve disown
 
 **Who gets in**, in order:
 
-1. Silent limits, coarsest first: per IPv6 /48 120/min, 4 in progress; per address (/64) 30/min, 2
-   in progress; 4096 sources per table; 200 admitted/s overall; ≤ 16 handshakes (evict an incomplete
+1. Silent limits, coarsest first: per IPv6 /48 120/min, 8 in progress; per address (/64) 30/min, 4
+   in progress (4 and 2 before 2026-11-28: a phone's copy opens its 3 lanes together, and sync
+   tries a lane turned away once more); 4096 sources per table; 200 admitted/s overall; ≤ 16 handshakes (evict an incomplete
    hello after 500 ms, else a handshake stalled > 1 s after reply; full hello gets 2 s).
 2. `read_library_hello`: `MVSP`, 2, `L`, a two-byte length equal to Noise message 1; all 1256 bytes
    read before judging.
@@ -651,7 +656,9 @@ over SMB with owner operations over the channel; library rejoin; the phone's `re
 server reads as "nothing may be written"; a server from before reads INT64_MAX as a limit no folder
 reaches. The card's No storage limit toggle sends `"limit":"none"` to the link, which sends kNoLimit
 on. A client listing `write` gets the op (bit `1u << 6`); `mkdir`, `move`, `delete` are ops 8–10
-(`kChangeOps`).
+(`kChangeOps`); `writes_at_once` (11, `kWritesAtOnceOp`, granted with `write`) says the service
+takes several writes from a device at once, an empty `.mvpart` left by a write cancelled as it
+opened included (one from before refused that file on every later run).
 
 **Who may write is the device's role** (`caps.role`): "change" is an unlimited paired device or a
 grant with `backup` on (`library_grants`), "view" a grant with it off (guest codes, a desktop until
@@ -666,7 +673,10 @@ beneath the root, never through a link; an identical file (name, size, BLAKE3) a
 writes hidden `.<name>.<device id>.mvpart`, then flushes, hashes and renames without replacing
 (`" (2)"`), one commit per folder at a time. Only the device's own `.mvpart` and
 `.mediaviewer-phone-backup/<device id>/ledger.json` (`"meta":true`) are ever replaced. Phone side
-`src/mobile/backup.*`.
+`src/mobile/backup.*`: up to `uploads_at_once` (4) files sending at once to a service listing
+`writes_at_once`, each from its own scratch file, the next exported and hashed meanwhile; another
+starts only while those sending hold under `parallel_bytes` (32 MiB) of scratch, so the phone's
+free space goes on one file and that much more. The ledger and the report stay on the run's thread.
 
 A write is taken in any writable folder. A backup folder keeps its limit and reserve; any other is
 never walked and only keeps `kDefaultReserve` (1 GiB) free on its volume (`book::reserve`). The
@@ -833,7 +843,8 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
   run. The entry runs the program's stable path (a Homebrew Cellar path becomes its `opt` link).
   A host started while one runs says so and exits 0.
 - **Updates.** The supervisor looks at its program every minute; replaced (an install channel's
-  update, `driftwire update`), it stops the child and ends 75, and the entry starts the new one.
+  update, `driftwire update`, or a new Phone access add-on installing its copy), it stops the child
+  and ends 75, and the entry starts the new one: the phones see one reconnect, `serve/` is untouched.
 - **Sleep.** While hosting it holds the OS's "system required" request through `power::hold_for`
   ("Driftwire is hosting your server"): the display may still sleep. `host stay-awake off` drops it.
 - **Elevation.** Refused as root or elevated, as `serve`.
@@ -869,7 +880,15 @@ leaves it (`terminal::run_cooked`: raw mode off, the live region erased) and the
   Set up the service… → **This computer** runs the installed program's `host share` and
   `host start-at-login on` on the phone link's thread, writes the DuckDNS name where slice 5's
   `host name duckdns` does, claims the host over loopback and shows a code; its status row reads `state.json` and
-  `host.lock`. The app does not carry the program ([12](12-decision-log.md#driftwire), 2026-11-14).
+  `host.lock`. **The Phone access add-on carries its own `driftwire`** (`phone/bundled.h`, owner
+  2026-11-14, [plan](../plans/phone-access-addon.md) §8; the app itself still does not). At each
+  load it installs that copy into `<feature dir>/bin`, which survives add-on updates and is what the
+  login entry runs, recorded in `bin/installed.json` (nothing copied when that version is there).
+  Never written in place: copied beside as `driftwire.new` and renamed in; on Windows the running
+  `.exe` is renamed aside first (`driftwire.old-N.exe`, removed at a later install). The card
+  prefers this copy over an installed one; a host whose login entry runs a separately installed
+  `driftwire` is not moved (setting up This computer again does it) and is left alone when the
+  add-on is removed, which otherwise turns its own host's start-at-login off and removes `bin/`.
 - **Not yet:** watching for a volume arriving (the minute's recheck only).
 - **Tested** (`"[host]"`, loopback only): the arguments, `host.json`, sharing rules, the three entries'
   texts and the files written into a home of the test's own (the OS's tools never run in a test), the
@@ -1082,7 +1101,7 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   every port but `never_forward`'s, as the VPN hosts set it; `none` off), `--max-forwards` 64, public destinations only, 10 min idle; the server resolves names and
   logs only counts. Models: `tools/formal/relay.pv`, `relay_leaked_key.pv`.
 - **Local proxy** (`tunnel.*`): SOCKS5 CONNECT (names sent as names) and HTTP CONNECT / absolute-form
-  on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 3 opening at once. No UDP.
+  on **127.0.0.1**, port kept as `tunnel_port`. ≤ 128 streams, 12 opening at once (3 once an older relay closes the extras). No UDP.
 - **System proxy** (`sysproxy.*`): **Use for all apps** (`all_apps`, on by default) sets the
   OS auto-proxy to `http://127.0.0.1:<port>/driftwire-tunnel.pac` (local DIRECT, else `SOCKS5
   127.0.0.1:<port>; DIRECT`; no `dnsResolve`). `sysproxy_mac.cpp` (SystemConfiguration, admin once
@@ -1093,8 +1112,13 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
   <server>**), its menu row, `/vpn`. `sync_tunnel` on the service's control thread; `link` node
   bearer `via: "tunnel"`; `mode` "proxy" or "vpn". Site refusals map to SOCKS5 reply 2/4 or
   HTTP 403/502.
-- **Looking like HTTPS** (`tls.*`; [spike](../plans/driftwire-tls-spike.md)): **Look like a web site
-  (port 443)** (`tls`) uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
+- **Looking like HTTPS** (`tls.*`; [spike](../plans/driftwire-tls-spike.md)): the web-site look
+  (`tls`) is the server's choice and its VPN code carries it (`relay-tls#`): the VPN page states it
+  rather than offering a switch, which could only disagree; a server typed by hand sets it beside its
+  field. A host's code for its public name carries the router's outside port, 443 until the router
+  keeper has said otherwise (never the look's inside port), and the dialer tries the code's port, then
+  443, then 8443 (`tunnel::tls_ports_to_try`; the key still has to match), keeping the one that
+  answered. It uses BoringSSL with Chrome's ClientHello to `mv-driftwire-relay
   --tls-port 443` (JA4 in tests `t13d1516h2_8daaf6152771_d8a2da3f94cd`). Certificate unchecked (the
   inner hop proves the key). First 32 bytes inside TLS are the **knock** (keyed BLAKE2b of exporter
   `EXPORTER-driftwire-knock`, key = Argon2id of the server key); without it the relay acts as a web
@@ -1109,7 +1133,7 @@ page with a **Connect** card (Your VPN server, Connect to a VPN host…, the swi
 - **All traffic** (`netstack.*`, `vpn.*`): **All traffic (VPN)** (`all_traffic`,
   `/vpn all`). `netstack.cpp`: own IPv4/IPv6 stack (TCP server side, in-order, go-back-N 400 ms,
   no window scaling; UDP; no ICMP or fragments). TCP → `tunnel::dialer` forwards; UDP → datagram
-  flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay
+  flows (`kForwardUdp`, `--forward-udp-ports` default 53, `all` on the VPN hosts). DNS `198.18.0.2` answered by the relay over one datagram flow for every lookup (IDs swapped for random ones of the runner's, kept open while used)
   (`dns.driftwire`, `--dns`). Addresses `198.18.0.1/30`, `fd5d:7269:6674::1/64`; everything routed
   except the relay's addresses and local networks (`vpn::plan_routes`). **Block when the tunnel is
   down** (`block`). `vpn::os_port`: Mac Network Extension packet tunnel (`vpn_mac.mm`,

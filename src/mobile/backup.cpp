@@ -6,11 +6,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <thread>
 
 #include "wire/serve_backup.h"
 #include "wire/serve_wire.h"
@@ -113,6 +117,10 @@ class over_link final : public target {
     return out;
   }
   bool limited_to_some_folders() const override { return limited_.load(std::memory_order_acquire); }
+  bool writes_at_once() override {
+    auto yes = l_.writes_at_once();
+    return yes && *yes;
+  }
   result<bool> trash(const std::string& root, const std::string& rel) override {
     serve::client::change_refused why;
     auto r = l_.remove(root, rel, &why);
@@ -855,27 +863,168 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
 
   std::error_code ec;
   std::filesystem::create_directories(fs_path(o_.scratch_dir), ec);
-  const std::string scratch = io::join_path(o_.scratch_dir, "backup-current");
-  struct scrub {
-    const std::string& p;
-    ~scrub() {
-      std::error_code e;
-      std::filesystem::remove(fs_path(p), e);
-    }
-  } scrubbed{scratch};
+  // Up to uploads_at_once files on their way at once, each from its own scratch file: a file
+  // waits a round trip for the service's first credit and another for its confirmation, so one
+  // at a time left the link idle between small photos. The next file is exported and hashed
+  // while the others send. Everything but the sending (the ledger, the report, the state) stays
+  // on this thread.
+  const std::size_t lanes = t_.writes_at_once() ? static_cast<std::size_t>(std::max(1, o_.uploads_at_once)) : 1;
+  struct upload {
+    std::size_t item = 0;
+    std::string key, kind, name, rel, hash, scratch;
+    std::uint64_t size = 0, at = 0;
+    std::size_t lane = 0;
+    io::file_reader in;
+    std::atomic<std::uint64_t> sent{0};
+    std::atomic<bool> finished{false};
+    result<serve::client::write_done> written = err(status::io);
+    serve::client::write_refused why;
+    std::thread t;
+  };
+  std::vector<std::string> scratch_of(lanes);
+  for (std::size_t i = 0; i < lanes; ++i) {
+    scratch_of[i] = io::join_path(o_.scratch_dir, i == 0 ? std::string("backup-current") : "backup-current-" + std::to_string(i));
+  }
+  std::vector<bool> lane_busy(lanes, false);
+  std::vector<std::unique_ptr<upload>> sending;
+  std::mutex um;
+  std::condition_variable ucv;
+  std::uint64_t events = 0;  // under um: a file finished, or sent more
+  struct item_track {
+    int pending = 0;
+    bool whole = true;
+    bool queued_all = false;
+  };
+  std::map<std::size_t, item_track> tracks;
   int since_copy = 0;
   bool dirty = false;
+  std::optional<state> halt;  // the first state that stops the run
+  bool halt_copies_ledger = false;
+  upload* shown = nullptr;    // the file st_.current names
 
-  for (const auto& it : items_) {
+  struct scrub {
+    const std::vector<std::string>& p;
+    ~scrub() {
+      std::error_code e;
+      for (const auto& x : p) std::filesystem::remove(fs_path(x), e);
+    }
+  } scrubbed{scratch_of};
+
+  const auto item_finished = [&](std::size_t idx) {
+    const auto t = tracks.find(idx);
+    if (t == tracks.end() || !t->second.queued_all || t->second.pending > 0) return;
+    if (t->second.whole && item_done(items_[idx])) {
+      ++st_.backed_up;
+      std::lock_guard lock(m_);
+      std::erase(remaining_, items_[idx].key);
+    }
+    tracks.erase(t);
+    say();
+  };
+  // A sent file's answer, on this thread.
+  const auto settle = [&](upload& u) {
+    auto& track = tracks[u.item];
+    --track.pending;
+    const auto& written = u.written;
+    const auto& why = u.why;
+    if (!written) {
+      track.whole = false;
+      std::optional<state> stop;
+      // After a cancel, whatever the others ended with is the cancel's doing (one stream
+      // stopped can end another's read): stopped, not unreachable.
+      if (written.error() == status::cancelled || (cancel && cancel->stopped())) {
+        stop = state::idle;
+      } else if (why.why == serve::kWhyLimit || why.why == serve::kWhyFull || why.why == serve::kWhyNotAllowed) {
+        stop = why.why == serve::kWhyLimit ? state::limit : why.why == serve::kWhyFull ? state::full : state::not_allowed;
+        halt_copies_ledger = halt_copies_ledger || !halt;
+      } else if (written.error() == status::io || written.error() == status::timeout) {
+        stop = state::unreachable;
+      } else if (written.error() == status::unsupported_format) {
+        stop = state::too_old;
+      } else {
+        st_.failures.push_back({u.key, u.name, why.why == serve::kWhyHash ? "hash" : "error"});
+      }
+      if (stop && !halt) halt = stop;
+    } else if (auto added = l_.add({u.key, u.kind, u.name, u.size, u.hash, o_.root, written->name, now_unix()}); !added) {
+      // Only the service's confirmation makes a row (it hashed what reached its disk).
+      st_.failures.push_back({u.key, u.name, "error"});
+      track.whole = false;
+    } else {
+      dirty = true;
+      ++st_.copied;
+      ++st_.files_done;
+      st_.bytes += written->existing ? 0 : u.size - u.at;
+      if (++since_copy >= o_.ledger_copy_every) {
+        since_copy = 0;
+        copy_ledger();
+      }
+    }
+    item_finished(u.item);
+  };
+  const auto scratch_in_use = [&] {
+    std::uint64_t n = 0;
+    for (const auto& u : sending) n += u->size;
+    return n;
+  };
+  // Settles what has finished; then, while `full()` holds, waits for more to (showing progress).
+  const auto reap_while = [&](const std::function<bool()>& full) {
+    for (;;) {
+      std::uint64_t seen = 0;
+      {
+        std::lock_guard lock(um);
+        seen = events;  // before looking: what happens after wakes the wait below
+      }
+      for (auto it = sending.begin(); it != sending.end();) {
+        if (!(*it)->finished.load()) {
+          ++it;
+          continue;
+        }
+        auto u = std::move(*it);
+        it = sending.erase(it);
+        u->t.join();
+        lane_busy[u->lane] = false;
+        std::filesystem::remove(fs_path(u->scratch), ec);
+        if (shown == u.get()) shown = nullptr;
+        settle(*u);
+      }
+      if (sending.empty() || !full()) return;
+      std::unique_lock lock(um);
+      ucv.wait(lock, [&] { return events != seen; });
+      lock.unlock();
+      if (shown && shown->size) {
+        st_.current_fraction = static_cast<double>(shown->sent.load()) / static_cast<double>(shown->size);
+        say();
+      }
+    }
+  };
+  const auto notify = [&] {
+    {
+      std::lock_guard lock(um);
+      ++events;
+    }
+    ucv.notify_all();
+  };
+
+  for (std::size_t idx = 0; idx < items_.size() && !halt; ++idx) {
+    const auto& it = items_[idx];
     if (cancel && cancel->stopped()) {
-      return stop_with(state::idle);  // leaving the app: no ledger upload now; the next run sends it
+      halt = state::idle;  // leaving the app: no ledger upload now; the next run sends it
+      break;
     }
     if (item_done(it)) continue;
-    bool whole = true;
+    tracks[idx];
     int ymd[3] = {it.year, it.month, it.day};
-    for (std::size_t i = 0; i < it.resources.size(); ++i) {
+    for (std::size_t i = 0; i < it.resources.size() && !halt; ++i) {
       const auto& res = it.resources[i];
       if (l_.find(o_.root, it.key, res.kind, res.name)) continue;
+      // A lane free, and (past the first) the scratch files of those still sending under the
+      // budget: a phone's free space is spent on one file and parallel_bytes more at most.
+      reap_while([&] {
+        return sending.size() >= lanes || scratch_in_use() >= static_cast<std::uint64_t>(o_.parallel_bytes);
+      });
+      if (halt || !tracks[idx].whole) break;
+      const std::size_t lane = static_cast<std::size_t>(std::find(lane_busy.begin(), lane_busy.end(), false) - lane_busy.begin());
+      const std::string& scratch = scratch_of[lane];
       std::filesystem::remove(fs_path(scratch), ec);
       st_.current = res.name;
       st_.current_fraction = 0;
@@ -888,97 +1037,98 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
       }
       if (!exported) {
         if (exported.error() == status::cancelled) {
-          return stop_with(state::idle);
+          halt = state::idle;
+          break;
         }
         st_.failures.push_back({it.key, res.name, exported.error() == status::not_found ? "gone" : "export"});
-        whole = false;
+        tracks[idx].whole = false;
         break;
       }
-      io::file_reader in;
-      if (auto o = in.open(scratch, io::read_mode::sequential); !o) {
+      auto u = std::make_unique<upload>();
+      if (auto o = u->in.open(scratch, io::read_mode::sequential); !o) {
         st_.failures.push_back({it.key, res.name, "export"});
-        whole = false;
+        tracks[idx].whole = false;
         break;
       }
-      const std::uint64_t size = in.size();
+      u->size = u->in.size();
       auto hashed = serve::backup::hash_file(scratch);
       if (!hashed) {
         st_.failures.push_back({it.key, res.name, "export"});
-        whole = false;
+        tracks[idx].whole = false;
         break;
       }
-      const std::string hash = hashed.value();
+      u->hash = hashed.value();
       // The same file under another key (a local id that changed): already there.
-      if (const auto same = l_.find_same(o_.root, res.name, size, hash)) {
-        if (l_.add({it.key, res.kind, res.name, size, hash, o_.root, same->rel, now_unix()})) {
+      if (const auto same = l_.find_same(o_.root, res.name, u->size, u->hash)) {
+        if (l_.add({it.key, res.kind, res.name, u->size, u->hash, o_.root, same->rel, now_unix()})) {
           ++st_.files_done;
           dirty = true;
         }
         continue;
       }
       const std::string dir = subdir(ymd[0], ymd[1], ymd[2], o_.folders);
-      const std::string rel = in_dest(dir.empty() ? res.name : dir + "/" + res.name);
-      const auto read = file_read_fn(in);
-      std::uint64_t at = 0;
-      result<serve::client::write_done> written = err(status::io);
-      serve::client::write_refused why;
-      for (int attempt = 0; attempt < 4; ++attempt) {
-        written = t_.write(d_.root, rel, size, hash, at, read,
-                           [&](std::uint64_t sent) {
-                             st_.current_fraction = size ? static_cast<double>(sent) / static_cast<double>(size) : 1.0;
-                             say();
-                           },
-                           cancel, &why, false);
-        if (written) break;
-        if (why.why == serve::kWhyOffset) {
-          at = why.have;  // this phone's unfinished copy from an earlier run
+      u->rel = in_dest(dir.empty() ? res.name : dir + "/" + res.name);
+      // One of this name in this folder already on its way (a duplicated photo, two IMG_0001.JPG
+      // in a month): the service holds that name until it is done, so this one waits for it,
+      // then is either the same file (in the ledger now) or the service's " (2)", as one at a
+      // time.
+      const auto same_place = [&] {
+        return std::any_of(sending.begin(), sending.end(), [&](const auto& x) { return x->rel == u->rel; });
+      };
+      if (same_place()) {
+        reap_while(same_place);
+        if (halt) break;
+        if (const auto same = l_.find_same(o_.root, res.name, u->size, u->hash)) {
+          if (l_.add({it.key, res.kind, res.name, u->size, u->hash, o_.root, same->rel, now_unix()})) {
+            ++st_.files_done;
+            dirty = true;
+          }
           continue;
         }
-        if (why.why == serve::kWhyHash) {
-          at = 0;  // the service removed its copy: once more from the start
-          continue;
-        }
-        break;
       }
-      if (!written) {
-        if (written.error() == status::cancelled) {
-          return stop_with(state::idle);
+      u->item = idx;
+      u->key = it.key;
+      u->kind = res.kind;
+      u->name = res.name;
+      u->scratch = scratch;
+      u->lane = lane;
+      lane_busy[lane] = true;
+      ++tracks[idx].pending;
+      upload* raw = u.get();
+      shown = raw;
+      u->t = std::thread([this, raw, cancel, &notify] {
+        const auto read = file_read_fn(raw->in);
+        for (int attempt = 0; attempt < 4; ++attempt) {
+          raw->written = t_.write(d_.root, raw->rel, raw->size, raw->hash, raw->at, read,
+                                  [&](std::uint64_t sent) {
+                                    raw->sent.store(sent);
+                                    notify();
+                                  },
+                                  cancel, &raw->why, false);
+          if (raw->written) break;
+          if (raw->why.why == serve::kWhyOffset) {
+            raw->at = raw->why.have;  // this phone's unfinished copy from an earlier run
+            continue;
+          }
+          if (raw->why.why == serve::kWhyHash) {
+            raw->at = 0;  // the service removed its copy: once more from the start
+            continue;
+          }
+          break;
         }
-        if (why.why == serve::kWhyLimit || why.why == serve::kWhyFull || why.why == serve::kWhyNotAllowed) {
-          if (dirty) copy_ledger();
-          return stop_with(why.why == serve::kWhyLimit ? state::limit
-                           : why.why == serve::kWhyFull ? state::full
-                                                        : state::not_allowed);
-        }
-        if (written.error() == status::io || written.error() == status::timeout) {
-          return stop_with(state::unreachable);
-        }
-        if (written.error() == status::unsupported_format) return stop_with(state::too_old);
-        st_.failures.push_back({it.key, res.name, why.why == serve::kWhyHash ? "hash" : "error"});
-        whole = false;
-        break;
-      }
-      // Only the service's confirmation makes a row (it hashed what reached its disk).
-      if (auto added = l_.add({it.key, res.kind, res.name, size, hash, o_.root, written->name, now_unix()}); !added) {
-        st_.failures.push_back({it.key, res.name, "error"});
-        whole = false;
-        break;
-      }
-      dirty = true;
-      ++st_.copied;
-      ++st_.files_done;
-      st_.bytes += written->existing ? 0 : size - at;
-      if (++since_copy >= o_.ledger_copy_every) {
-        since_copy = 0;
-        copy_ledger();
-      }
+        raw->finished.store(true);
+        notify();
+      });
+      sending.push_back(std::move(u));
     }
-    if (whole && item_done(it)) {
-      ++st_.backed_up;
-      std::lock_guard lock(m_);
-      std::erase(remaining_, it.key);
-    }
-    say();
+    tracks[idx].queued_all = true;
+    item_finished(idx);
+  }
+  // What is on its way finishes (or fails with the link) before the run says how it ended.
+  reap_while([] { return true; });
+  if (halt) {
+    if (*halt != state::idle && halt_copies_ledger && dirty) copy_ledger();
+    return stop_with(*halt);
   }
   if (dirty || restored_) copy_ledger();
   return stop_with(st_.failures.empty() ? state::done : state::done_failures);

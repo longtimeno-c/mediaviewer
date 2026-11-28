@@ -84,6 +84,10 @@ struct service_config {
   // keeps its speed through loss on a long path. A try that fails leaves TCP as it was.
   bool udp = true;
   bool loopback_only = false;  // the tests: punch on 127.0.0.1 only
+  // When the relay starts after the direct routes, and after them again once this session's link
+  // was relayed (link.cpp kRelayDelayMs, kRelayAgainMs; the tests set their own).
+  int relay_delay_ms = 1500;
+  int relay_again_ms = 300;
 };
 
 enum class route_problem : std::uint8_t {
@@ -192,6 +196,8 @@ class link_session final : public remote_file {
   // Phone backup (1.1, src/mobile/backup.h): the service's write op and a backup
   // folder's meta folder. status::unsupported_format: the service is from before 1.1.
   [[nodiscard]] result<bool> can_write();
+  // Whether the service takes several writes from this phone at once (serve::kWritesAtOnceOp).
+  [[nodiscard]] result<bool> writes_at_once();
   // Clips this phone can't play (docs/plans/phone-clip-convert.md): whether the service offers
   // `convert`, a clip's plan (status::unsupported_format: not offered, or not a clip), and one
   // segment's MPEG-TS. A segment's first bytes wait for the server's encoder (kConvertStallMs).

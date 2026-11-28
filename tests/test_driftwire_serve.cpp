@@ -12,6 +12,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include <fstream>
 
 #include "driftwire_fixture.h"
 
@@ -1537,6 +1538,26 @@ TEST_CASE("serve backup: a write left half way goes on from where it stopped", "
   done = c->write(kRootC, "x.mov", clip.size(), hash_of(clip), 0, reader_of(clip), {}, nullptr, &why);
   REQUIRE(done);  // this device starts its own from 0
   CHECK(parts_under(s.backup) == 1);  // the other's is still there
+}
+
+TEST_CASE("serve backup: an empty unfinished copy is gone on from, not refused", "[driftwire-serve]") {
+  // A phone sending several files at once cancels them all when the app goes: a write whose
+  // open the service took just before the cancel leaves an empty unfinished copy. Before this,
+  // every later write of that file was refused (made anew, the copy's name was in use).
+  service_fixture s;
+  const std::string photo = marker(13, 200 * 1000);
+  fs::create_directories(s.backup / "2026" / "10");
+  const auto part = s.backup / "2026" / "10" /
+                    serve::backup::part_name("IMG_0500.HEIC", serve::device_folder_id(public_of(s.device)));
+  { std::ofstream(part, std::ios::binary); }
+  REQUIRE(parts_under(s.backup) == 1);
+  auto c = s.open_client();
+  serve::client::write_refused why;
+  auto done = c->write(kRootC, "2026/10/IMG_0500.HEIC", photo.size(), hash_of(photo), 0, reader_of(photo), {},
+                       nullptr, &why);
+  REQUIRE(done);
+  CHECK(slurp(s.backup / "2026" / "10" / "IMG_0500.HEIC") == photo);
+  CHECK(parts_under(s.backup) == 0);
 }
 
 TEST_CASE("serve backup: the storage limit and the free-space reserve refuse a write", "[driftwire-serve]") {

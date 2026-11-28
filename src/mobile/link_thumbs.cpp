@@ -79,8 +79,7 @@ thumb_cache::thumb_cache(std::string dir, std::uint64_t capacity_bytes, remote_f
     : dir_(std::move(dir)), capacity_(capacity_bytes), remote_(remote) {
   std::error_code ec;
   fs::create_directories(dir_, ec);
-  worker_a_ = std::thread([this] { worker(); });
-  worker_b_ = std::thread([this] { worker(); });
+  for (int i = 0; i < kWorkers; ++i) workers_.emplace_back([this] { worker(); });
 }
 
 thumb_cache::~thumb_cache() {
@@ -89,8 +88,7 @@ thumb_cache::~thumb_cache() {
     stop_ = true;
   }
   cv_.notify_all();
-  worker_a_.join();
-  worker_b_.join();
+  for (auto& t : workers_) t.join();
   // Whatever was still queued hears that it will not come.
   for (auto& w : queue_) {
     for (auto& [flag, done] : w->waiters) done(err(status::cancelled));
@@ -144,7 +142,9 @@ std::shared_ptr<cancel_flag> thumb_cache::request(const ai::catalog::thumb_locat
 }
 
 void thumb_cache::worker() {
-  scan();
+  // Once, and the others wait for it: a scan removes .part files, which would be another
+  // worker's tile being written if it ran after that worker began.
+  std::call_once(scan_once_, [this] { scan(); });
   for (;;) {
     std::vector<std::shared_ptr<want>> batch;
     std::vector<done_fn> dropped;  // told "cancelled" outside the lock: every request hears once
