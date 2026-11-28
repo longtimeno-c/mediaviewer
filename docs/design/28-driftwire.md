@@ -574,6 +574,8 @@ driftwire serve disown
 5. `serve_pair` with a code (hash + expiry) → added, `serve_paired`; else `{"why":"bad-code"}`.
 6. `peer_key` must be paired (read per connection), else `{"why":"not-paired"}`; re-checked every
    2 s, cut with `{"why":"revoked"}`.
+7. Sessions at once: ≤ 32 in all and ≤ 8 per paired device (a phone's copy opens several lanes),
+   else `{"why":"busy"}`.
 
 Keys and lists in `secrets::file_store` (0600 files, renamed in, refused if group/world-readable or a
 link; folder 0700, this user's). An unreadable value is an error, never regenerated. **As root, or

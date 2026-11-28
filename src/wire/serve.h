@@ -123,8 +123,11 @@ class server {
     config cfg;
     secrets::store* store = nullptr;  // borrowed; outlives the server
     bool loopback_only = false;       // the tests and the test build
-    int max_sessions = 8;
-    int max_pending = 16;             // handshakes in progress; when full, the oldest hello still waiting goes
+    // Sessions at once, in all and per paired device: a phone's copy opens several (sync's
+    // lanes), and one phone must not take every slot from the others.
+    int max_sessions = 32;
+    int max_per_device = 8;
+    int max_pending = 16;            // handshakes in progress; when full, the oldest hello still waiting goes
     int per_minute = 30;              // connections per address (a /64 for IPv6); a /48 gets four times this
     int per_source_pending = 2;       // handshakes in progress per address (a /64 for IPv6)
     int per_block_pending = 4;        // and per IPv6 /48

@@ -664,7 +664,7 @@ are read only when the stat changed; the start-at-login entry every minute. The 
 hosts' items, hear only a changed model. Nothing presents: the viewer is hidden as for any
 background. The verbs run on that thread through `io::child_process` (rule 1), up to 30 s; the app's
 quit does not wait for one. In the service, one relaxed atomic add per chunk sent or written; in the
-host, `usage()` walks at most eight sessions at each 2 s pass. Not measured against the PR 1 gates on
+host, `usage()` walks at most 32 sessions at each 2 s pass. Not measured against the PR 1 gates on
 this branch (nothing on the render path changed).
 
 ### Later, and not done
