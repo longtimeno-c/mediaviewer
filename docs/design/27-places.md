@@ -23,7 +23,7 @@ package-time data build downloads, from pinned URLs.
 | `fold.h` | Case/diacritic fold: `core/fold.h`'s rule (table `src/core/fold_table.inc`, from `tools/fold/gen_fold_table.py`) |
 | `open.h` / `open.cpp` | `open_database(path)` via `io/mapped_file`; `set_data_path` / `shared()` (one per process) |
 
-`mv_geo` (`geo.cpp`, `fold.cpp`) uses only header-only core pieces, is position-independent and
+`mv_geo` (`geo.cpp`, `fold.h`) uses only header-only core pieces, is position-independent and
 links nothing of the core, so an add-on can link it ([18](18-import.md)). `mv_geo_open` adds
 `open.cpp` on `mv_io`. `tools/check-module-graph.ps1`: `geo` → `{geo, io, core}`; `addons` may
 include it; **`meta`, `abi` and `shell` may not**. `io/mapped_file`: `mapped_file_posix.cpp`

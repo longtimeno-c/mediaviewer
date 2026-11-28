@@ -1,74 +1,104 @@
 # MediaViewer
 
-A fast photo + video viewer for camera dumps. Windows and macOS (Linux in progress), one C++ core.
+A fast, keyboard-first photo and video viewer for camera dumps: stills, camera RAW, HEIC, video,
+audio, PDF and Office documents in one window, with on-device search, editing and add-ons.
 
-**Stack:** C++20 core behind a flat C ABI (`src/abi`) · chrome: C# WinUI 3 (`src.managed`),
-SwiftUI (`src.swift`), Qt/QML planned for Linux · canvas: D3D11 / Metal / EGL, owned by C++ ·
-FFmpeg for video · CMake + vcpkg.
+## Platforms
 
-The design changes often. Docs describe the current state, not rules — if a better approach
-fits the task, take it and update the doc it touches.
+| Platform | State | Where |
+|---|---|---|
+| Windows | Shipping | Win32 host + C# WinUI 3 chrome (`src.managed`), Direct3D 11 |
+| macOS | Shipping | AppKit host + SwiftUI chrome (`src.swift`), Metal |
+| iPhone / iPad | TestFlight | `src.ios`: searches the library on the phone, streams from a home server |
+| Linux | Early | The present lab (Wayland, EGL/OpenGL) and the `driftwire` CLI; Qt/QML chrome planned |
+
+## Stack
+
+- C++20 core behind a flat C ABI (`src/abi`); the hosts and chromes call only the ABI.
+- The canvas (D3D11 / Metal / EGL) is owned by C++; the chrome draws around it.
+- FFmpeg (LGPL build) for video, LibRaw and libheif for stills, Exiv2 for metadata, ONNX Runtime
+  for the AI add-ons, SQLite for the thumbnail cache and search index.
+- CMake + vcpkg; Catch2 tests; Swift packages and an Xcode project for the Apple chromes.
 
 ## Layout
 
 ```
-src/core src/io src/codec src/gfx   low-level: jobs, I/O, decoders, GPU backends
+src/core src/io src/codec src/gfx   low-level: jobs, I/O, decoders, GPU backends (D3D11/Metal/GL)
 src/image src/player src/meta src/edit src/canvas   features
-src/abi    C ABI the hosts call       src/shell  native hosts (Win32, *_mac.mm, *_linux.cpp)
-src/addons add-ons (talk to the core only via mediaviewer_addon.h)
-src.managed / src.swift / src.ios    chrome      tests/  tools/  docs/
+src/addon  add-on host      src/infer  ONNX Runtime wrapper      src/geo  offline place names
+src/wire src/catalogue src/mobile src/remote   phone protocol, catalogue, phone core, remote folders
+src/nle    Final Cut Pro search        src/shellext  Explorer thumbnails / Quick Look
+src/abi    C ABI the hosts call        src/shell  native hosts (Win32, *_mac.mm, *_linux.cpp)
+src/addons add-ons: ai driftwire enhance import phone places vpn (core only via mediaviewer_addon.h)
+src.managed / src.swift   desktop chrome      src.ios  iPhone/iPad app (MobilePackage, App, UITests)
+tests/  tools/  docs/  examples/  packaging/  third_party/
 ```
 
-Dependencies point downward (`shell → abi → features → codec/gfx/io → core`);
-`tools/check-module-graph.ps1` enforces it.
+Dependencies point downward: `shell → abi → features → codec/gfx/io → core`. The allowed
+includes per module are a map in `tools/check-module-graph.ps1`.
+
+## How it works, briefly
+
+- **Threads.** The UI and render threads do no decode or I/O; work runs on the job system and
+  results come back as completions. Cancellation is by generation.
+- **Stills.** An embedded preview goes on screen first, then the full decode cross-fades in;
+  neighbours are decoded ahead into a byte-budgeted GPU cache.
+- **Video.** FFmpeg demux, hardware decode (D3D11VA / VideoToolbox) into a frame ring, an audio
+  clock, presented on the same surface as stills.
+- **Files.** Rotating a JPEG and writing its metadata rewrite the file in place, losslessly and
+  through an atomic replace; RAW and other formats get XMP sidecars; edits and exports write new
+  files.
+- **Add-ons.** Signed packages loaded by the host in `src/addon`; native ones (Local search,
+  Import, Driftwire, Enhance, Phone access, Places, VPN) and open ones (themes, keymaps, settings
+  pages, sandboxed Lua scripts with no network access).
+- **Platform code.** Win32/D3D11 and Cocoa/Metal code lives in `src/shell` and the `gfx/` backends;
+  the rest of the core builds on every OS.
+- **Privacy.** Crash reports and telemetry carry no paths, filenames, pixels or EXIF.
+- **WinUI island.** Some stock controls (`ProgressBar`, `TextBox`, …) fail-fast inside the island
+  host; the chrome uses its own replacements, listed in `tools/check-winui-controls.ps1`.
 
 ## Build and test
 
+Windows:
+
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 dotnet test src.managed\MediaViewer.Chrome.Tests\MediaViewer.Chrome.Tests.csproj -c Release
 ```
 
-macOS, Linux, iOS, packaging and the perf harnesses: search `docs/DEVELOPMENT.md` for the
-section you need — it is large, don't read it whole. Use your own build dir if another
-session may share the checkout.
+macOS, Linux, iOS, packaging and the performance harnesses are in `docs/DEVELOPMENT.md`
+(2,500 lines; search it for the section). The iPhone app builds from
+`src.ios/MediaViewerMobile.xcodeproj`.
 
-## Standards
+## CI
 
-- **Tests:** every change comes with tests that would fail without it. Test behaviour, not
-  implementation; no sleeps or flaky timing; keep them fast. Fix or delete a flaky test,
-  don't retry it.
-- **CI stays green** (`.github/workflows/ci.yml`). Run the relevant local checks before
-  pushing; if a policy script in `tools/` fails, fix the cause.
-- **Clean UI:** consistent spacing, type and colour with the rest of the chrome; every
-  command reachable from the keyboard; check light and dark. Match both chromes when a
-  feature exists on both.
-- **Keep it simple:** smallest change that does the job, no speculative abstractions, no
-  drive-by refactors.
+`.github/workflows/ci.yml`: Windows (MSVC Release and Debug, clang-cl, ASan), macOS, a portable
+Linux core under ASan/UBSan, the Linux present lab, the iPhone engines (`ios-core`; the app in
+`src.ios` is not built or tested in CI), both chromes, fuzzers, and frame-time gates on
+self-hosted GPU runners. The `policy` job runs the scripts in `tools/`:
 
-## Hard technical constraints (these break things if ignored)
+| Script | Checks |
+|---|---|
+| `check-module-graph.ps1` | Module include directions |
+| `check-hostable-core.ps1` | No platform headers outside the platform ports |
+| `check-winui-controls.ps1` | No fail-fast WinUI controls in the chrome |
+| `check-vcpkg-baseline.ps1` | One vcpkg baseline everywhere |
+| `licence-check.ps1` | FFmpeg stays LGPL (no GPL/nonfree, no x264/x265) |
+| `telemetry-schema-check.ps1` | No free-text telemetry fields |
 
-- Never block the UI or render thread (no decode, I/O or waiting on a worker's lock).
-- Never modify a user's original file — write new files or sidecars.
-- No user paths, filenames, pixels or EXIF in crash reports or telemetry.
-- FFmpeg stays LGPL (no `--enable-gpl`/`nonfree`, no x264/x265); `tools/licence-check.ps1`.
-- Keep Win32/D3D11 and Cocoa/Metal code in `src/shell` and the `gfx/` backends so the core
-  builds on every OS (`tools/check-hostable-core.ps1`).
-- In the WinUI island host, controls like `ProgressBar`/`TextBox` fail-fast; see
-  `tools/check-winui-controls.ps1` for the list and the replacements.
-- For speed-sensitive changes (open, navigate, pan, playback), measure before/after.
+## Performance
+
+The README's numbers come from the app's own harnesses; raw reports are in `docs/perf/`, and
+`python tools/perf/regenerate.py` re-measures and redraws every chart.
 
 ## Docs
 
-- `docs/design/NN-*.md` — how each subsystem works; read only the one you are touching
-  (index: `docs/design/README.md`). Update it if your change makes it wrong.
-- `docs/plans/` — ideas not built yet.
-- `README.md` is the product page: no status logs or dev notes there.
-- `docs/design/12-decision-log.md` is history. Don't read it unless you need the reason for
-  something; don't add to it for routine changes.
-
-## PRs
-
-Open a draft PR if the work is incomplete. Describe what changed and how it was tested.
+- `README.md` — the product page.
+- `docs/DEVELOPMENT.md` — build, run and test recipes for every platform.
+- `docs/design/NN-*.md` — how each subsystem works today (index: `docs/design/README.md`).
+  `12-decision-log.md` is the history of why.
+- `docs/plans/` — forward plans; many are partly built.
+- `docs/ADDONS.md` — making an add-on.
+- `docs/review/2026-11-audit/` — the November 2026 code audit: issues, improvements, work packages.
