@@ -505,6 +505,7 @@ struct held_checks {
   std::uint32_t rejoins = 0;     // either side's
   std::uint64_t send_ns = 0;     // the sender's time in its socket writes
   std::uint64_t room_ns = 0;     // and waiting for room in its replay
+  std::uint64_t still_ns = 0;    // with `quiet`: the longest gap between two of its sends
 };
 held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& files, const fs::path& dest,
                                       int limit_ms, std::chrono::milliseconds hold, int stall_ms = 0,
@@ -552,7 +553,10 @@ held_checks transfer_with_held_checks(const std::vector<sp::outgoing_file>& file
   if (quiet.count() > 0) {
     sending.progress = [&](std::uint64_t, std::uint32_t) {
       std::lock_guard lock(m);
-      last_moved = clock::now();
+      const auto now = clock::now();
+      const auto gap = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_moved).count());
+      out.still_ns = std::max(out.still_ns, gap);
+      last_moved = now;
     };
   }
   out.sent = sp::send_files(*a, files, sending, {});
@@ -621,11 +625,13 @@ TEST_CASE("driftwire: a sender whose socket stays full while the receiver checks
                                            std::chrono::milliseconds(5 * kStallMs / 4));
   CHECK(r.held);
   constexpr std::uint64_t kStallNs = std::uint64_t{kStallMs} * 1000000;
-#if defined(_WIN32)
-  // Windows' loopback buffers can grow past kReplayBytes; the sender then
-  // waits for replay room instead, which must also hold.
-  CHECK(r.send_ns + r.room_ns >= kStallNs);
-#else
+  // The stall as the sender sees it: no data moved, between two sends, for
+  // longer than the limit. The gap after the last send (the wait for the
+  // receiver's done) is not one.
+  CHECK(r.still_ns >= kStallNs);
+#if !defined(_WIN32)
+  // On Windows part of that wait is outside the send and replay-room stages
+  // (CI measured 1.0-1.5 s there while the sender was still for 2.5 s).
   CHECK(r.send_ns >= kStallNs);  // a write did wait past the limit
 #endif
   CHECK(r.got.how == sp::outcome::delivered);
