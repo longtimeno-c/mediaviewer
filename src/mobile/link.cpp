@@ -31,13 +31,11 @@ namespace {
 constexpr int kConnectEachMs = 2500;  // a dead address, at most
 constexpr int kStallMs = 15000;       // a read that has stopped moving
 constexpr int kConvertStallMs = 60000;  // a converted segment's first bytes: behind the server's queue
-// The relay starts this long after the direct routes (Driftwire's own race
-// delay), so a working direct path always wins and costs the relay nothing.
+// The relay starts service_config::relay_delay_ms (1.5 s) after the direct routes (Driftwire's
+// own race delay), so a working direct path always wins and costs the relay nothing; once this
+// session's link was relayed (direct SYNs dropped where the phone is now), relay_again_ms
+// (300 ms), still long enough for a direct route that now works (home again) to win first.
 constexpr int kRelayDelayMs = 1500;
-// ...unless the last link was relayed (direct SYNs dropped where the phone is now): then a
-// reconnect waits only this, still long enough for a direct route that now works (home again)
-// to win first.
-constexpr int kRelayAgainMs = 300;
 // A read's window: what the service may send before the phone's credit comes back. A viewer or a
 // seek keeps it small, so a seek's bytes are never far behind; a whole-file pull takes the most
 // the service allows, since a window covers at most one round trip (1 MB is ~30 MB/s at 20 ms).
@@ -372,7 +370,7 @@ expected link_session::race_locked(route_report& report, const cancel_flag* canc
         if (!opened) return err(opened.error());
         return std::shared_ptr<serve::client>(std::move(*opened));
       },
-      was_relayed ? kRelayAgainMs : kRelayDelayMs);
+      was_relayed ? config_.relay_again_ms : config_.relay_delay_ms);
   if (!c) {
     for (const auto& f : report.failures) {
       if (f.problem == route_problem::wrong_service || f.problem == route_problem::not_paired ||

@@ -34,10 +34,26 @@ struct swarm_node {
   std::map<std::string, stored> items;  // by target
   bool forge = false;
   std::atomic<bool> silent{false};  // gone: answers nothing (a node that left the DHT)
+  std::atomic<int> delay_ms{0};     // answers this late (a far or slow path)
+  std::vector<dht::node> find_node_reply;  // set: the nodes every find_node is told (a client's start)
   std::atomic<int> gets{0};
+  std::mutex later_m;
+  std::vector<std::thread> later;   // delayed answers, joined by the swarm
 
   void on(std::span<const std::uint8_t> d, const sp::net::endpoint& from) {
     if (silent.load()) return;
+    if (const int ms = delay_ms.load(); ms > 0) {
+      std::vector<std::uint8_t> copy(d.begin(), d.end());
+      std::lock_guard lock(later_m);
+      later.emplace_back([this, copy = std::move(copy), from, ms] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        answer(copy, from);
+      });
+      return;
+    }
+    answer(d, from);
+  }
+  void answer(std::span<const std::uint8_t> d, const sp::net::endpoint& from) {
     auto v = bc::decode({reinterpret_cast<const char*>(d.data()), d.size()});
     if (!v || !v->str("y") || *v->str("y") != "q" || !v->str("t") || !v->str("q")) return;
     const bc::value* a = v->get("a");
@@ -45,7 +61,9 @@ struct swarm_node {
     const std::string q = *v->str("q");
     bc::value r = bc::value::dict({{"id", bc::value::bytes(std::string(reinterpret_cast<const char*>(self.id.data()), 20))}});
     const std::string* target = a->str("target");
-    if (q == "find_node" || q == "get") {
+    if (q == "find_node" && !find_node_reply.empty()) {
+      r.d.emplace_back("nodes", bc::value::bytes(dht::compact_nodes(find_node_reply)));
+    } else if (q == "find_node" || q == "get") {
       std::vector<dht::node> close = *everyone;
       if (target && target->size() == 20) {
         dht::node_id t;
@@ -129,6 +147,10 @@ struct swarm {
   }
   ~swarm() {
     for (auto& s : nodes) s->hub->on_dht(nullptr);
+    for (auto& s : nodes) {
+      std::lock_guard lock(s->later_m);
+      for (auto& t : s->later) t.join();
+    }
   }
   sp::net::endpoint seed() const { return list.front().at; }
 };

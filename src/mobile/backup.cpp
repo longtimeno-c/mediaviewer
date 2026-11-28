@@ -1068,6 +1068,24 @@ state engine::run(const cancel_flag* cancel, const std::function<void(const stat
       }
       const std::string dir = subdir(ymd[0], ymd[1], ymd[2], o_.folders);
       u->rel = in_dest(dir.empty() ? res.name : dir + "/" + res.name);
+      // One of this name in this folder already on its way (a duplicated photo, two IMG_0001.JPG
+      // in a month): the service holds that name until it is done, so this one waits for it,
+      // then is either the same file (in the ledger now) or the service's " (2)", as one at a
+      // time.
+      const auto same_place = [&] {
+        return std::any_of(sending.begin(), sending.end(), [&](const auto& x) { return x->rel == u->rel; });
+      };
+      if (same_place()) {
+        reap_while(same_place);
+        if (halt) break;
+        if (const auto same = l_.find_same(o_.root, res.name, u->size, u->hash)) {
+          if (l_.add({it.key, res.kind, res.name, u->size, u->hash, o_.root, same->rel, now_unix()})) {
+            ++st_.files_done;
+            dirty = true;
+          }
+          continue;
+        }
+      }
       u->item = idx;
       u->key = it.key;
       u->kind = res.kind;

@@ -13,6 +13,7 @@
 
 #include "catch_compat.h"
 
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -1401,7 +1402,11 @@ TEST_CASE("change: what arrives is never kept unless it is what was hashed", "[m
 struct counting_target final : bk::target {
   bk::target& t;
   std::mutex m;
+  std::condition_variable cv;
   int now = 0, most = 0;
+  bool hold_first = false;  // the first write waits until another is on its way (10 s at most)
+  int writes = 0;
+  std::map<std::string, int> at_once_by_rel;  // the most writes of one name at once
   explicit counting_target(bk::target& x) : t(x) {}
   mv::result<std::vector<bk::folder>> folders() override { return t.folders(); }
   mv::result<serve::stat_info> space(const std::string& root) override { return t.space(root); }
@@ -1415,12 +1420,19 @@ struct counting_target final : bk::target {
                                               const mob::cancel_flag* cancel, serve::client::write_refused* why,
                                               bool meta) override {
     {
-      std::lock_guard lock(m);
+      std::unique_lock lock(m);
       most = std::max(most, ++now);
+      const int first = ++writes == 1;
+      auto& here = at_once_by_rel[rel + "#" + std::to_string(meta)];
+      ++here;
+      at_once_by_rel["most:" + rel] = std::max(at_once_by_rel["most:" + rel], here);
+      cv.notify_all();
+      if (hold_first && first) cv.wait_for(lock, std::chrono::seconds(10), [&] { return now >= 2; });
     }
     auto r = t.write(root, rel, size, hash, at, read, progress, cancel, why, meta);
     std::lock_guard lock(m);
     --now;
+    --at_once_by_rel[rel + "#" + std::to_string(meta)];
     return r;
   }
   mv::result<std::vector<std::string>> ledger_ids(const std::string& root) override { return t.ledger_ids(root); }
@@ -1493,6 +1505,58 @@ TEST_CASE("backup: several files are on their way at once, within the phone's sc
     run([](bk::options& o) { o.parallel_bytes = kBudget; }, most, peak, largest);
     CHECK(peak <= largest + static_cast<std::uint64_t>(kBudget));
   }
+}
+
+TEST_CASE("backup: two photos of one name in one folder never send at once, and both land as one at a time did",
+          "[mobile-link]") {
+  // The service holds a name until its write is done: a second of that name sent beside it was
+  // refused (busy), and the run ended with a failure, where one at a time it was the same file
+  // already there, or the service's " (2)".
+  const auto run = [](bool same_bytes) {
+    nas n;
+    n.start();
+    const key32 device = random_key();
+    n.pair(device);
+    temp_root phone;
+    const fs::path scratch = phone.root / "scratch";
+    fs::create_directories(scratch);
+    camera_roll roll(phone.root / "roll", scratch, 8, 99);
+    // Items 0 and 1: one name, one day (photo 0 kept; 1 made a plain photo of the same name).
+    roll.items[1].resources = {roll.items[0].resources[0]};
+    roll.items[1].year = roll.items[0].year;
+    roll.items[1].month = roll.items[0].month;
+    roll.items[1].day = roll.items[0].day;
+    for (auto it = roll.files.begin(); it != roll.files.end();) {
+      it = it->first.rfind(roll.items[1].key + "/", 0) == 0 ? roll.files.erase(it) : std::next(it);
+    }
+    roll.files[roll.items[1].key + "/0"] =
+        same_bytes ? roll.files[roll.items[0].key + "/0"] : std::string(5000, 'z');
+    auto ledger = bk::ledger::open((phone.root / "ledger.db").string());
+    REQUIRE(ledger);
+    mob::link_session link(n.config(device));
+    mob::route_report report;
+    REQUIRE(link.connect(report));
+    auto inner = bk::link_target(link);
+    counting_target counted(*inner);
+    counted.hold_first = true;  // the first is still on its way when the next would go
+    const auto last = run_once(counted, roll, **ledger, scratch, 0);
+    CHECK(last.now == bk::state::done);
+    CHECK(last.failures.empty());
+    CHECK(last.backed_up == roll.items.size());
+    for (const auto& [k, v] : counted.at_once_by_rel) {
+      if (k.rfind("most:", 0) == 0) CHECK(v == 1);
+    }
+    const auto on_nas = files_under(n.backup);
+    const std::string name = roll.items[0].resources[0].name;
+    const std::string stem = name.substr(0, name.rfind('.'));
+    int of_name = 0;
+    for (const auto& [rel, bytes] : on_nas) {
+      if (fs::path(rel).filename().string().rfind(stem, 0) == 0) ++of_name;
+    }
+    CHECK(of_name == (same_bytes ? 1 : 2));  // the same file once; another as " (2)"
+  };
+  SECTION("the same photo twice") { run(true); }
+  SECTION("another photo of the same name") { run(false); }
 }
 
 // The backup's pace over a phone's path to the NAS (tests/emulated_path.h), one JSON line:

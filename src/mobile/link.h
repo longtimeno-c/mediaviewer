@@ -79,6 +79,10 @@ struct service_config {
   // Ask for a direct path once on the relay (docs/plans/nas-relay.md §9).
   bool upgrade = false;
   bool loopback_only = false;  // the tests: punch on 127.0.0.1 only
+  // When the relay starts after the direct routes, and after them again once this session's link
+  // was relayed (link.cpp kRelayDelayMs, kRelayAgainMs; the tests set their own).
+  int relay_delay_ms = 1500;
+  int relay_again_ms = 300;
 };
 
 enum class route_problem : std::uint8_t {

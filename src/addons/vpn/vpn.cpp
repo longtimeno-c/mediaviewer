@@ -460,6 +460,7 @@ void runner::serve_dns() {
           d[0] = static_cast<std::uint8_t>(it->second.id >> 8);
           d[1] = static_cast<std::uint8_t>(it->second.id);
           p.out.erase(it);
+          p.cv.notify_all();  // room for one more asked
         }
         touch();
         if (stop_.load()) break;
@@ -473,7 +474,10 @@ void runner::serve_dns() {
       std::pair<flow, std::vector<std::uint8_t>> q;
       {
         std::unique_lock g(p.m);
-        p.cv.wait_for(g, std::chrono::milliseconds(250), [&] { return ended() || over.load() || !p.queue.empty(); });
+        // A lookup to send, and room for its answer (full, an answer or the expiry below makes
+        // room: waiting on the queue alone, it spun).
+        p.cv.wait_for(g, std::chrono::milliseconds(250),
+                      [&] { return ended() || over.load() || (!p.queue.empty() && p.out.size() < kDnsAsked); });
         if (ended() || over.load()) break;
         const auto now = clock::now();
         for (auto it = p.out.begin(); it != p.out.end();) {

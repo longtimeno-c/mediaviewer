@@ -476,46 +476,98 @@ TEST_CASE("driftwire dht: an item put by one client is found by another, and a f
   CHECK_FALSE(b.get(k->public_key, dht::salt_of(*k, dht::role::sender, 3), {}));
 }
 
-TEST_CASE("driftwire dht: a lookup goes past the nodes nearest its target when they have gone silent",
-          "[driftwire]") {
-  // The public DHT is full of nodes that left. A lookup asked in rounds of three and waited for
-  // all three, so the nearest three silent held it for a whole query time before it went on.
-  swarm s(24);
-  auto ha = sp::udp_hub::open(0, true);
-  auto hb = sp::udp_hub::open(0, true);
-  REQUIRE(ha);
-  REQUIRE(hb);
-  auto o = test_options(s);
-  o.query_ms = 2000;
-  dht::client a(*ha, o), b(*hb, o);
-  REQUIRE(a.start({}));
-  REQUIRE(b.start({}));
-  auto k = dht::derive({4, 3, 2, 1}, true);
-  REQUIRE(k);
-  const std::string salt = dht::salt_of(*k, dht::role::receiver, 0);
-  dht::contents c;
-  c.candidates = {{"81.2.69.160", 41000}};
-  c.written_ms = 1'760'000'000'000;
-  REQUIRE(a.put(*k, salt, 1, dht::seal(*k, salt, c), {}) >= 4);
-  // The three nearest the item go silent; the rest of its holders still answer.
-  std::string kt(reinterpret_cast<const char*>(k->public_key.data()), k->public_key.size());
+namespace {
+// The swarm's nodes, nearest an item's target first.
+std::vector<swarm_node*> nearest(swarm& s, const dht::keys& k, const std::string& salt) {
+  std::string kt(reinterpret_cast<const char*>(k.public_key.data()), k.public_key.size());
   kt += salt;
   const auto target = mv::driftwire::sha1({reinterpret_cast<const std::uint8_t*>(kt.data()), kt.size()});
-  std::vector<swarm_node*> by_distance;
-  for (auto& n : s.nodes) by_distance.push_back(n.get());
+  std::vector<swarm_node*> out;
+  for (auto& n : s.nodes) out.push_back(n.get());
   const auto far = [&](const swarm_node* n) {
     dht::node_id d;
     for (int i = 0; i < 20; ++i) d[i] = n->self.id[i] ^ target[i];
     return d;
   };
-  std::sort(by_distance.begin(), by_distance.end(), [&](auto* x, auto* y) { return far(x) < far(y); });
-  for (int i = 0; i < 3; ++i) by_distance[static_cast<std::size_t>(i)]->silent = true;
+  std::sort(out.begin(), out.end(), [&](auto* x, auto* y) { return far(x) < far(y); });
+  return out;
+}
+}  // namespace
+
+TEST_CASE("driftwire dht: a lookup goes past nodes that have gone on its way", "[driftwire]") {
+  // The public DHT is full of nodes that left. A lookup asked in rounds of three and waited for
+  // all three, so a round of gone ones held the lookup a whole query time each.
+  swarm s(32);
+  swarm_node* seed = s.nodes.front().get();
+  // An item whose 14 nearest leave the seed out (the seed is where the way on is).
+  std::unique_ptr<dht::keys> k;
+  std::string salt;
+  std::vector<swarm_node*> near;
+  for (std::uint16_t i = 0; i < 200; ++i) {
+    auto kk = dht::derive({i, 4, 3, 2}, true);
+    REQUIRE(kk);
+    const std::string sl = dht::salt_of(*kk, dht::role::receiver, 0);
+    auto n = nearest(s, *kk, sl);
+    if (std::find(n.begin(), n.begin() + 14, seed) == n.begin() + 14) {
+      k = std::make_unique<dht::keys>(std::move(*kk));
+      salt = sl;
+      near = std::move(n);
+      break;
+    }
+  }
+  REQUIRE(k);
+  auto ha = sp::udp_hub::open(0, true);
+  auto hb = sp::udp_hub::open(0, true);
+  REQUIRE(ha);
+  REQUIRE(hb);
+  auto o = test_options(s);
+  o.query_ms = 10000;  // far above the bound below: a loaded machine cannot blur the two
+  o.lookup_ms = 60000;
+  dht::client a(*ha, o);
+  REQUIRE(a.start({}));
+  dht::contents c;
+  c.candidates = {{"81.2.69.160", 41000}};
+  c.written_ms = 1'760'000'000'000;
+  REQUIRE(a.put(*k, salt, 1, dht::seal(*k, salt, c), {}) >= 4);  // on the 8 nearest
+  // b starts knowing the seed and the next six out from the item; then those six go.
+  for (std::size_t i = 8; i < 14; ++i) seed->find_node_reply.push_back(near[i]->self);
+  dht::client b(*hb, o);
+  REQUIRE(b.start({}));
+  seed->find_node_reply.clear();
+  for (std::size_t i = 8; i < 14; ++i) near[i]->silent = true;
   const auto t0 = std::chrono::steady_clock::now();
   const auto got = b.get(k->public_key, salt, {});
   const auto took = std::chrono::steady_clock::now() - t0;
   REQUIRE(got);
   CHECK(got->seq == 1);
-  CHECK(took < std::chrono::milliseconds(1500));  // well under one query time (2 s)
+  CHECK(took < std::chrono::milliseconds(5000));  // in rounds: two of 10 s each before the seed
+}
+
+TEST_CASE("driftwire dht: the nearest nodes answering slowly are still heard", "[driftwire]") {
+  // A query unanswered for 500 ms steps aside, so a gone node does not hold the lookup up; but
+  // the nodes nearest the item, which hold it, are waited for even when slow (farther ones fast).
+  swarm s(32);
+  auto ha = sp::udp_hub::open(0, true);
+  auto hb = sp::udp_hub::open(0, true);
+  REQUIRE(ha);
+  REQUIRE(hb);
+  auto o = test_options(s);
+  o.query_ms = 6000;
+  o.lookup_ms = 30000;
+  dht::client a(*ha, o), b(*hb, o);
+  REQUIRE(a.start({}));
+  REQUIRE(b.start({}));
+  auto k = dht::derive({9, 9, 9, 1}, true);
+  REQUIRE(k);
+  const std::string salt = dht::salt_of(*k, dht::role::receiver, 0);
+  dht::contents c;
+  c.written_ms = 1'760'000'000'000;
+  REQUIRE(a.put(*k, salt, 3, dht::seal(*k, salt, c), {}) >= 4);  // on the 8 nearest
+  const auto near = nearest(s, *k, salt);
+  for (std::size_t i = 0; i < 8; ++i) near[i]->delay_ms = 2500;  // they, and only they, answer late
+  const auto got = b.get(k->public_key, salt, {});
+  REQUIRE(got);
+  CHECK(got->seq == 3);
 }
 
 TEST_CASE("driftwire dht: start is not held up by saved nodes that have gone", "[driftwire]") {
@@ -526,13 +578,13 @@ TEST_CASE("driftwire dht: start is not held up by saved nodes that have gone", "
   auto h = sp::udp_hub::open(0, true);
   REQUIRE(h);
   auto o = test_options(s);
-  o.query_ms = 2000;
+  o.query_ms = 10000;  // far above the bound below
   o.extra.clear();
   for (const auto& n : s.list) o.extra.push_back(n.at);
   dht::client c(*h, o);
   const auto t0 = std::chrono::steady_clock::now();
   REQUIRE(c.start({}));
-  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1500));  // under one query time
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(5000));  // under half a query time
   CHECK(c.known() >= 8);
 }
 

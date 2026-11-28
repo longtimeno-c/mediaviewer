@@ -2239,6 +2239,50 @@ TEST_CASE("vpn tls: a look code's port that does not answer is tried again on 44
   CHECK(tried == ports{443});  // straight to the one that answered
 }
 
+TEST_CASE("vpn tls: a port that takes TCP but is not the relay is passed over, and never kept", "[vpn]") {
+  // The router's 443 is something else (a web server), so the keeper mapped the look on 8443,
+  // but the code says 443. The dialer took 443 for the relay because TCP connected, kept it, and
+  // never tried 8443.
+  using ports = std::vector<std::uint16_t>;
+  if (!tls::available()) SKIP("this build has no BoringSSL");
+  echo_server echo;          // the site the forward goes to
+  echo_server not_relay;     // what answers on the router's 443: takes TCP, speaks no relay
+  auto s = relay::server::start(tls_options(echo.port()));
+  REQUIRE(s);
+  std::mutex m;
+  ports tried;
+  tunnel::dialer::options o;
+  o.relay = "127.0.0.1:" + std::to_string((*s)->port()) + "#" + kKey;
+  o.tls = true;
+  o.tls_port = 443;  // the code's
+  o.connect = [&](const mv::driftwire::net::endpoint& e, int ms) {
+    {
+      std::lock_guard lock(m);
+      tried.push_back(e.port);
+    }
+    auto to = e;
+    if (e.port == 443) to.port = not_relay.port();
+    if (e.port == 8443) to.port = (*s)->tls_port();
+    return mv::driftwire::net::connect(to, ms);
+  };
+  auto d = tunnel::dialer::make(std::move(o));
+  REQUIRE(d);
+  relay::forward_answer said{};
+  auto f = (*d)->open("127.0.0.1", echo.port(), said);
+  REQUIRE(f);
+  say(**f, "past");
+  CHECK(hear(**f, 4) == "PAST");
+  {
+    std::lock_guard lock(m);
+    CHECK(tried == ports{443, 8443});
+    tried.clear();
+  }
+  auto again = (*d)->open("127.0.0.1", echo.port(), said);
+  REQUIRE(again);
+  std::lock_guard lock(m);
+  CHECK(tried == ports{8443});  // the relay's port, not the one that only took TCP
+}
+
 TEST_CASE("vpn tls: the Tunnel's Look like a web site switch goes through the TLS port", "[vpn]") {
   if (!tls::available()) SKIP("this build has no BoringSSL");
   scratch_dir dir("driftwire_tunnel_tls");

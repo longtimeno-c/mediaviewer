@@ -357,20 +357,23 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
   };
   const auto until = clock::now() + std::chrono::milliseconds(opts_.lookup_ms);
   // kAlpha queries in flight all along: the next goes as soon as one answers (asked in rounds,
-  // one dead node held the whole round for query_ms). A query silent for kSlowMs no longer
-  // counts against kAlpha; it may still answer.
+  // one dead node held the whole round for query_ms). A query unanswered for kSlowMs no longer
+  // counts against kAlpha, so a gone node holds nothing up on the way. At the end, a query still
+  // out to a node nearer than the kK-th that answered is waited for (query_ms at most): those
+  // hold the item, and a slow one's answer is not cut off; one farther out is not waited for.
   std::condition_variable ccv;
   std::atomic<bool> finished{false};
   const auto ended = [&] { return (stop && stop()) || finished.load(); };
-  std::vector<clock::time_point> live;  // under cm: when each query still counted went out
+  // Under cm: each query still out, by its node, and when it went.
+  std::vector<std::pair<node, clock::time_point>> pending;
   std::vector<std::thread> flight;
+  const auto same_node = [](const node& a, const node& b) { return a.id == b.id && a.at.address == b.at.address; };
   const auto ask_one = [&](std::size_t i) {
     // Under cm.
     c[i].asked = true;
     const node n = c[i].n;
-    const auto sent = clock::now();
-    live.push_back(sent);
-    flight.emplace_back([&, n, sent] {
+    pending.emplace_back(n, clock::now());
+    flight.emplace_back([&, n] {
       auto r = query(n.at, ask, bencode::value::dict({{"target", bencode::value::bytes(as_string(target))}}), ended);
       std::vector<node> more;
       if (r) {
@@ -382,11 +385,11 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
         learn(more);
       }
       std::lock_guard lock(cm);
-      if (const auto it = std::find(live.begin(), live.end(), sent); it != live.end()) live.erase(it);
+      std::erase_if(pending, [&](const auto& p) { return same_node(p.first, n); });
       if (r) {
         // Found again by id: the vector may have been sorted meanwhile.
         for (auto& x : c) {
-          if (x.n.id == n.id && x.n.at.address == n.at.address) {
+          if (same_node(x.n, n)) {
             x.answered = true;
             if (const std::string* tok = r->str("token"); tok && tok->size() <= 64) x.token = *tok;
             if (on_reply) on_reply(x, *r);
@@ -402,30 +405,39 @@ std::vector<client::contact> client::lookup(const node_id& target, const std::st
   };
   {
     std::unique_lock lock(cm);
+    const auto slow = std::chrono::milliseconds(kSlowMs);
+    const auto query_time = std::chrono::milliseconds(opts_.query_ms);
     for (;;) {
       if ((stop && stop()) || clock::now() >= until) break;
-      // Slow ones step aside.
       const auto now = clock::now();
-      std::erase_if(live, [&](clock::time_point t) { return now - t >= std::chrono::milliseconds(kSlowMs); });
+      const int counted = static_cast<int>(
+          std::count_if(pending.begin(), pending.end(), [&](const auto& p) { return now - p.second < slow; }));
       std::sort(c.begin(), c.end(), closer);
       if (c.size() > 256) c.resize(256);
-      // Done when the k closest that answered have all been asked, and nothing is out but slow
-      // ones (cut off then: what a gone node would have said is not waited for).
+      // The window: up to the kK-th that answered. Done when every one in it was asked, and no
+      // query in it is still out (younger than query_ms).
       std::size_t answered = 0;
       std::vector<std::size_t> next;
+      bool near_out = false;
       for (std::size_t i = 0; i < c.size() && answered < kK; ++i) {
         if (c[i].answered) {
           ++answered;
         } else if (!c[i].asked) {
           next.push_back(i);
+        } else if (std::any_of(pending.begin(), pending.end(),
+                               [&](const auto& p) { return same_node(p.first, c[i].n) && now - p.second < query_time; })) {
+          near_out = true;
         }
       }
-      if (next.empty() && live.empty()) break;
+      if (next.empty() && !near_out) break;
       std::size_t launched = 0;
-      while (launched < next.size() && static_cast<int>(live.size()) < kAlpha) ask_one(next[launched++]);
-      // Until one answers or fails, the next of those still counted turns slow, or the end.
+      for (int room = kAlpha - counted; launched < next.size() && room > 0; --room) ask_one(next[launched++]);
+      // Until one answers or fails, one out turns slow or old, or the end.
       auto wake = until;
-      for (const auto t : live) wake = std::min(wake, t + std::chrono::milliseconds(kSlowMs));
+      for (const auto& p : pending) {
+        if (now - p.second < slow) wake = std::min(wake, p.second + std::chrono::duration_cast<clock::duration>(slow));
+        if (now - p.second < query_time) wake = std::min(wake, p.second + std::chrono::duration_cast<clock::duration>(query_time));
+      }
       ccv.wait_until(lock, std::min(wake, clock::now() + std::chrono::milliseconds(50)));
     }
     finished.store(true);

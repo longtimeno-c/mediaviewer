@@ -464,53 +464,66 @@ result<std::unique_ptr<link>> dialer::open_turn(const std::string& host, std::ui
   }
   net::endpoint to_server = *at;
   std::vector<std::uint16_t> ports{to_server.port};
+  std::uint16_t confirmed = 0;  // the port the relay answered on before: a failure past TCP there is the relay's
   if (opts_.tls) {
     std::lock_guard lock(m_);
     ports = tls_ports_to_try(opts_.tls_port, tls_answered_);
+    confirmed = tls_answered_;
   }
-  result<std::unique_ptr<link>> c = err(status::io);
-  for (const std::uint16_t p : ports) {
+  // Each port in turn, through TLS and the forward's ask: a port that takes TCP (something else
+  // of the router's on 443) but is not the relay goes on to the next, and only a port the relay
+  // answered on (said not failed) is kept for the next opens.
+  status last = status::io;
+  bool connected_any = false;
+  for (std::size_t i = 0; i < ports.size(); ++i) {
+    const bool more = i + 1 < ports.size() && ports[i] != confirmed;
     {
       std::lock_guard lock(m_);
       if (stopped_) return err(status::cancelled);
     }
-    to_server.port = p;
-    c = opts_.connect ? opts_.connect(to_server, kReachConnectMs) : net::connect(to_server, kReachConnectMs);
-    if (c) {
-      if (opts_.tls) {
-        std::lock_guard lock(m_);
-        tls_answered_ = p;  // the next opens go straight to it
-      }
-      break;
+    to_server.port = ports[i];
+    auto c = opts_.connect ? opts_.connect(to_server, kReachConnectMs) : net::connect(to_server, kReachConnectMs);
+    if (!c) {
+      last = c.error();
+      continue;
     }
+    connected_any = true;
+    std::shared_ptr<link> raw(std::move(*c));
+    if (remote && !remote->set(raw)) return err(status::cancelled);
+    {
+      std::lock_guard lock(m_);
+      if (stopped_) {
+        raw->shutdown();
+        return err(status::cancelled);
+      }
+    }
+    std::unique_ptr<link> hop = std::make_unique<shared_link>(raw);
+    if (opts_.tls) {
+      // Slice 4: TLS with Chrome's ClientHello, and the knock, first.
+      auto t = tls::client(std::move(hop), sni_, &knock_);
+      if (!t) {
+        if (t.error() == status::cancelled) return err(t.error());
+        if (more) continue;  // not the look's port after all
+        early(t.error());
+        return err(t.error());
+      }
+      hop = std::move(*t);
+    }
+    said = relay::forward_answer::failed;
+    auto f = relay::forward(std::move(hop), server_.key, host, port, relay::kForwardWaitMs, said, kind);
+    if (said != relay::forward_answer::failed && opts_.tls) {
+      std::lock_guard lock(m_);
+      tls_answered_ = ports[i];  // the relay answered here: the next opens go straight to it
+    }
+    if (!f && said == relay::forward_answer::failed && f.error() != status::cancelled && more) continue;
+    if (!f) early(f.error());
+    return f;
   }
-  if (!c) {
+  if (!connected_any) {
     std::lock_guard lock(m_);
     resolved_.reset();  // its address may have changed
-    return err(c.error());
   }
-  std::shared_ptr<link> raw(std::move(*c));
-  if (remote && !remote->set(raw)) return err(status::cancelled);
-  {
-    std::lock_guard lock(m_);
-    if (stopped_) {
-      raw->shutdown();
-      return err(status::cancelled);
-    }
-  }
-  std::unique_ptr<link> hop = std::make_unique<shared_link>(raw);
-  if (opts_.tls) {
-    // Slice 4: TLS with Chrome's ClientHello, and the knock, first.
-    auto t = tls::client(std::move(hop), sni_, &knock_);
-    if (!t) {
-      early(t.error());
-      return err(t.error());
-    }
-    hop = std::move(*t);
-  }
-  auto f = relay::forward(std::move(hop), server_.key, host, port, relay::kForwardWaitMs, said, kind);
-  if (!f) early(f.error());
-  return f;
+  return err(last);
 }
 
 void proxy::serve(std::shared_ptr<link> local, const std::shared_ptr<remote_slot>& remote) {

@@ -2586,6 +2586,9 @@ TEST_CASE("link race: once in through the relay, a reconnect does not wait out t
   c.local = "127.0.0.1:" + std::to_string((*silent)->port());
   c.public_name = c.local;
   c.relay = relay;
+  // Far apart, so a loaded machine cannot blur them: the relay's usual turn, and once relayed.
+  c.relay_delay_ms = 4000;
+  c.relay_again_ms = 0;
   // The service's waiter at the relay (registered a moment after it starts, again after each use).
   const auto waiter_there = [&] {
     for (int i = 0; i < 500; ++i) {
@@ -2600,13 +2603,13 @@ TEST_CASE("link race: once in through the relay, a reconnect does not wait out t
   auto t0 = std::chrono::steady_clock::now();
   REQUIRE(s.connect(report, nullptr, 6000));
   CHECK(report.relayed);
-  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(1500));  // the relay waited its turn
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(4000));  // the relay waited its turn
   // The service registers its waiter again; the link is lost and made again.
   REQUIRE(waiter_there());
   t0 = std::chrono::steady_clock::now();
   REQUIRE(s.reconnect(report, nullptr, 6000));
   CHECK(report.relayed);
-  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1200));
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(2000));  // not its 4 s again
   REQUIRE(s.roots());
 }
 

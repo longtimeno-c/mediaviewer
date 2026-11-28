@@ -14,6 +14,7 @@
 #include <cctype>
 #include <condition_variable>
 #include <chrono>
+#include <ctime>
 #include <deque>
 #include <thread>
 
@@ -713,6 +714,38 @@ TEST_CASE("vpn: every app's lookups share one DNS flow, each answer back to its 
   CHECK(r->get()->state().dns_flows == 1);
   CHECK((*server)->snapshot().forwarded == 1);  // one flow for all 20
   CHECK(r->get()->state().udp_flows == 1);  // the DNS flow is the only one
+  r->reset();
+}
+
+TEST_CASE("vpn: with the most lookups asked and none answered, the DNS flow waits, not spins", "[vpn]") {
+  // Before this, 1024 lookups unanswered left the flow's thread spinning on its lock until they
+  // expired (10 s): the wait's condition (a lookup queued) was already true.
+  tcp_echo te;
+  auto deaf = sp::net::open_udp(false, 1, true);  // a resolver that never answers
+  REQUIRE(deaf);
+  auto o = relay_options(te.port(), te.port());
+  o.dns_upstream = sp::net::endpoint{"127.0.0.1", (*deaf)->port()};
+  auto server = relay::server::start(o);
+  REQUIRE(server);
+  auto [ours, os_side] = loopback_pair();
+  auto os = vpn::framed_device(std::move(os_side));
+  vpn::runner::options ro;
+  ro.dial.relay = "127.0.0.1:" + std::to_string((*server)->port()) + "#" + kKey;
+  ro.dev = vpn::framed_device(std::move(ours));
+  auto r = vpn::runner::start(std::move(ro));
+  REQUIRE(r);
+  // In batches the flow takes in turn (its queue holds 256), past the 1024 it may ask at once.
+  for (int i = 0; i < 1100; ++i) {
+    const auto q = v4_flow("198.18.0.1", static_cast<std::uint16_t>(10000 + i), "198.18.0.2", 53, vpn::kUdp);
+    REQUIRE(os->write(vpn::make_udp(reversed(q), bytes("..lookup number " + std::to_string(i)))));  // a DNS header's 12 bytes at least
+    if (i % 100 == 99) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  REQUIRE(eventually([&] { return r->get()->state().dns_flows == 1; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the flow sends what it may
+  const std::clock_t c0 = std::clock();
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  const double cpu_s = static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+  CHECK(cpu_s < 0.5);  // spinning, one core: about 1 s of the second
   r->reset();
 }
 
