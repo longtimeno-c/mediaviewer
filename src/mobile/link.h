@@ -167,6 +167,9 @@ class link_session final : public remote_file {
   // The caps' "role" for this device (serve_wire.h kCapsRole): "view", "change" or "admin"; "" from
   // a service older than roles. -1 (as grant) with no live link.
   [[nodiscard]] int role(std::string& word) const;
+  // A computer at home: its own login to the server's LAN SMB share, from the live link's caps
+  // (serve_wire.h kCapsShare). False with no live link or none given. The caller wipes `password`.
+  [[nodiscard]] bool share_login(std::string& user, std::string& password) const;
   // Where the service is (serve_wire.h kCapsAddresses): the addresses it was set up with, each
   // replaced by the one the latest connect's caps gave; one the caps left out stays. The next
   // race uses them, and a host keeps them so the next run does. Never blocks on a connect.

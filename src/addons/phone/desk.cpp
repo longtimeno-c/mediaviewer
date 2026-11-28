@@ -172,6 +172,7 @@ struct desk::state {
   bool loaded = false;
   std::unique_ptr<serve::client> admin;  // kept through a pairing, so polling is one connection
   bool waiting = false;                   // the last code is still on the service
+  std::int64_t shares_leaving = 0;        // removed computers' accounts the host's step has yet to take away
   // The owner's unlock (§3.4): the key the passphrase made, in memory only and
   // only this long (call C2), with the salt and cost it was made for.
   std::optional<serve::owner::signer> signer;
@@ -615,6 +616,11 @@ bool desk::pairing_waiting() {
   return st_->waiting;
 }
 
+std::int64_t desk::shares_leaving() {
+  std::lock_guard lock(st_->m);
+  return st_->shares_leaving;
+}
+
 std::size_t desk::revokes_pending() {
   std::lock_guard lock(st_->m);
   return st_->pending().size();
@@ -645,6 +651,7 @@ result<std::vector<device_row>> desk::refresh_devices() {
   const json::value* list = doc ? doc->find("devices") : nullptr;
   if (!list || list->k != json::kind::array) return err(status::corrupt);
   st_->waiting = doc->boolean("code_waiting").value_or(false);
+  st_->shares_leaving = std::clamp<std::int64_t>(doc->integer("shares_leaving").value_or(0), 0, 64);
   std::vector<device_row> rows;
   for (const auto& v : list->a) {
     const std::string* name = v.str("name");
@@ -654,6 +661,9 @@ result<std::vector<device_row>> desk::refresh_devices() {
     device_row r;
     r.name = *name;
     r.key = *parsed;
+    r.desktop = v.boolean("desktop").value_or(false);
+    if (const std::string* sh = v.str("share")) r.share = *sh;
+    if (const std::string* pe = v.str("person")) r.person = *pe;
     rows.push_back(std::move(r));
   }
   // The timed and scoped phones (§5), from a NAS that has them: `devices`
@@ -678,6 +688,9 @@ result<std::vector<device_row>> desk::refresh_devices() {
       r.guest = v.boolean("guest").value_or(false);
       // A service from before backup says nothing: a guest has it off, anyone else on.
       r.backup = v.boolean("backup").value_or(!r.guest);
+      r.desktop = v.boolean("desktop").value_or(false);
+      if (const std::string* sh = v.str("share")) r.share = *sh;
+      if (const std::string* pe = v.str("person")) r.person = *pe;
       if (const json::value* roots = v.find("roots"); roots && roots->k == json::kind::array) {
         r.scoped = true;
         std::vector<std::string> ids;
@@ -945,6 +958,33 @@ expected desk::set_phone_backup(const key32& key, bool on) {
   return {};
 }
 
+expected desk::rename(const key32& key, const std::string& name) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("rename").key("key").string(key_hex(key)).key("name").string(name).end_object();
+  MV_TRY(const std::string done, st_->ask(w.str()));
+  (void)done;
+  return {};
+}
+
+result<std::string> desk::people(std::string_view verb, const std::string& request_json) {
+  if (verb != "people" && verb != "person_set" && verb != "person_remove" && verb != "device_person") {
+    return err(status::invalid_arg);
+  }
+  const auto doc = json::parse(request_json.empty() ? std::string_view("{}") : std::string_view(request_json), 3);
+  if (!doc || doc->k != json::kind::object) return err(status::invalid_arg);
+  json::writer w;
+  w.begin_object().key("do").string(verb);
+  for (const char* k : {"name", "role", "key", "person"}) {
+    if (const std::string* v = doc->str(k)) w.key(k).string(*v);
+  }
+  w.end_object();
+  std::lock_guard lock(st_->m);
+  st_->load();
+  return st_->ask(w.str());
+}
+
 std::string desk::last_refusal() {
   std::lock_guard lock(st_->m);
   return st_->refusal;
@@ -1042,9 +1082,10 @@ std::string desk::library_tag(std::string_view library_id) {
 
 namespace {
 
-std::string devices_json(const std::vector<device_row>& rows, bool reachable, bool waiting) {
+std::string devices_json(const std::vector<device_row>& rows, bool reachable, bool waiting, std::int64_t shares_leaving) {
   json::writer w;
-  w.begin_object().key("reachable").boolean(reachable).key("code_waiting").boolean(waiting).key("devices").begin_array();
+  w.begin_object().key("reachable").boolean(reachable).key("code_waiting").boolean(waiting);
+  w.key("shares_leaving").integer(shares_leaving).key("devices").begin_array();
   for (const auto& r : rows) {
     w.begin_object().key("name").string(r.name).key("key").string(key_hex(r.key));
     if (r.limited) {
@@ -1052,6 +1093,8 @@ std::string devices_json(const std::vector<device_row>& rows, bool reachable, bo
       w.key("guest").boolean(r.guest).key("scoped").boolean(r.scoped);
     }
     w.key("backup").boolean(r.backup);
+    if (r.desktop) w.key("desktop").boolean(true).key("share").string(r.share);
+    if (!r.person.empty()) w.key("person").string(r.person);
     w.end_object();
   }
   w.end_array().end_object();
@@ -1119,9 +1162,9 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
   }
   if (method == "devices") {
     auto rows = d.refresh_devices();
-    if (rows) return devices_json(*rows, true, d.pairing_waiting());
+    if (rows) return devices_json(*rows, true, d.pairing_waiting(), d.shares_leaving());
     if (rows.error() != status::io && rows.error() != status::timeout) return err(rows.error());
-    return devices_json(d.devices(), false, d.pairing_waiting());
+    return devices_json(d.devices(), false, d.pairing_waiting(), d.shares_leaving());
   }
   if (method == "revoke") {
     const auto key = parse_key_hex(text("key"));
@@ -1233,6 +1276,15 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     const auto key = parse_key_hex(text("key"));
     if (!key) return err(status::invalid_arg);
     MV_TRY_VOID(d.grant(*key, doc->integer("for_s").value_or(0)));
+    return std::string("{}");
+  }
+  if (method == "people" || method == "person_set" || method == "person_remove" || method == "device_person") {
+    return d.people(method, std::string(request_json));
+  }
+  if (method == "rename") {
+    const auto key = parse_key_hex(text("key"));
+    if (!key || text("name").empty()) return err(status::invalid_arg);
+    MV_TRY_VOID(d.rename(*key, text("name")));
     return std::string("{}");
   }
   if (method == "phone_backup") {

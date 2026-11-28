@@ -1,5 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+#define __STDC_WANT_LIB_EXT1__ 1  // memset_s, before any header pulls in <string.h>
 #include "shell/lan_share_mac.h"
 
 #import <Foundation/Foundation.h>
@@ -9,6 +10,8 @@
 #include <sys/mount.h>
 #include <sys/param.h>
 #include <sys/ucred.h>
+
+#include <string.h>  // memset_s: a wipe the compiler keeps
 
 #include <cstring>
 #include <memory>
@@ -49,7 +52,9 @@ struct run {
   std::vector<std::string> urls;
   std::size_t next = 0;
   bool allow_ui = false;
+  std::string user, password;
   ls::outcome got;
+  ~run() { (void)memset_s(password.data(), password.size(), 0, password.size()); }
   std::function<void(ls::outcome)> done;
 };
 
@@ -85,8 +90,11 @@ void step(const std::shared_ptr<run>& r) {
   NSMutableDictionary* mount = [NSMutableDictionary dictionary];
   AsyncRequestID request = nullptr;
   std::shared_ptr<run> keep = r;
+  NSString* user = r->user.empty() ? nil : [NSString stringWithUTF8String:r->user.c_str()];
+  NSString* password = r->password.empty() ? nil : [NSString stringWithUTF8String:r->password.c_str()];
   const int started = NetFSMountURLAsync(
-      (__bridge CFURLRef)url, nullptr, nullptr, nullptr, (__bridge CFMutableDictionaryRef)open,
+      (__bridge CFURLRef)url, nullptr, (__bridge CFStringRef)user, (__bridge CFStringRef)password,
+      (__bridge CFMutableDictionaryRef)open,
       (__bridge CFMutableDictionaryRef)mount, &request, mount_queue(), ^(int st, AsyncRequestID, CFArrayRef) {
         if (st == 0 || st == EEXIST) {
           ++keep->got.mounted;
@@ -110,10 +118,14 @@ void step(const std::shared_ptr<run>& r) {
 
 }  // namespace
 
-void mount(std::vector<std::string> urls, bool allow_ui, std::function<void(ls::outcome)> done) {
+void mount(std::vector<std::string> urls, bool allow_ui, std::string user, std::string password,
+           std::function<void(ls::outcome)> done) {
   auto r = std::make_shared<run>();
   r->urls = std::move(urls);
   r->allow_ui = allow_ui;
+  r->user = std::move(user);
+  r->password = std::move(password);
+  (void)memset_s(password.data(), password.size(), 0, password.size());
   r->got.asked = allow_ui;
   r->done = std::move(done);
   dispatch_async(mount_queue(), ^{

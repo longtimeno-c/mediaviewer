@@ -31,6 +31,7 @@
 #include "wire/pair_check.h"
 #include "wire/serve.h"
 #include "wire/serve_client.h"
+#include "wire/device_shares.h"
 #include "wire/share_users.h"
 #include "io/content_hash.h"
 
@@ -3010,4 +3011,234 @@ TEST_CASE("phone pairing: a device's role is in its caps; a desktop starts view-
   // Wire form: kind only "desktop"; anything else is a phone.
   CHECK(serve::parse_pair(serve::pair_json(std::string(32, 'c'), "X", "desktop"))->kind == "desktop");
   CHECK(serve::parse_pair(R"({"code":")" + std::string(32, 'c') + R"(","kind":"fridge"})")->kind.empty());
+}
+
+// self-host-users-smb.md §12 (owner, 2026-11-27): each paired computer is a user of the host's
+// share. Its pairing lists it for an account, the card renames it and sets its role, and once
+// the host's step made its account the service hands the login to that computer alone, at home.
+TEST_CASE("phone pairing: a paired computer is a user: renamed, its role set, its share login at home only",
+          "[phone-pairing]") {
+  namespace ds = mv::driftwire::serve::device_shares;
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 laptop = random_key();
+  const auto open_as_computer = [&](const std::string& code) {
+    serve::client::options o;
+    o.access_key = n.access;
+    o.device_key = laptop;
+    o.service_key = n.identity;
+    o.id = "cccccccccccccccc";
+    o.name = "desktop";
+    o.pair_code = code;
+    o.device_name = "MacBook Pro";
+    o.device_kind = serve::kDeviceDesktop;
+    return serve::client::open(n.connect(), o);
+  };
+  {
+    auto c = open_as_computer(p->code);
+    REQUIRE(c);
+    CHECK((*c)->caps().share_user.empty());  // no account made yet
+  }
+  const key32 pub = public_of(laptop);
+  // Listed as a computer whose account waits for the host's step.
+  auto list = mac.d->refresh_devices();
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].desktop);
+  CHECK((*list)[0].share == "waiting");
+  CHECK_FALSE((*list)[0].backup);  // a computer starts as "can view files"
+  std::vector<ds::desk> desks;
+  REQUIRE(ds::load(*n.store, desks));
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].account == ds::account_for(pub));
+
+  // Renamed on the card: the lists say the new name, and nothing else about it changed.
+  REQUIRE(mac.d->rename(pub, "Tristan's MacBook"));
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].name == "Tristan's MacBook");
+  CHECK_FALSE((*list)[0].backup);
+  CHECK_FALSE(mac.d->rename(pub, "   "));
+  CHECK_FALSE(mac.d->rename(random_key(), "Nobody"));
+
+  // The host's step made the account as its pairing says (what `driftwire host users apply` saves).
+  desks[0].password = "a-password-nobody-types-0123456789";
+  desks[0].role = "view";
+  desks[0].applied = 1;
+  REQUIRE(ds::save(*n.store, desks));
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  CHECK((*list)[0].share == "ready");
+  {
+    auto c = open_as_computer({});
+    REQUIRE(c);
+    CHECK((*c)->caps().share_user == ds::account_for(pub));
+    CHECK((*c)->caps().share_password == "a-password-nobody-types-0123456789");
+  }
+  // Away from home: never.
+  n.own = false;
+  {
+    auto c = open_as_computer({});
+    REQUIRE(c);
+    CHECK((*c)->caps().share_user.empty());
+  }
+  n.own = true;
+
+  // Its role changes on the card: its account waits for the step again, and until then no
+  // login is handed out (the account still has the old rights).
+  REQUIRE(mac.d->set_phone_backup(pub, true));
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  CHECK((*list)[0].backup);
+  CHECK((*list)[0].share == "waiting");
+  {
+    auto c = open_as_computer({});
+    REQUIRE(c);
+    CHECK((*c)->caps().share_user.empty());
+  }
+
+  // Unpaired: its account is marked to go at the next step. It is on no list any more, so the
+  // service counts it for the card until the step has taken it away.
+  CHECK(mac.d->shares_leaving() == 0);
+  REQUIRE(mac.d->revoke(pub));
+  REQUIRE(ds::load(*n.store, desks));
+  REQUIRE(desks.size() == 1);
+  CHECK(desks[0].gone);
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  CHECK(list->empty());
+  CHECK(mac.d->shares_leaving() == 1);
+  desks.clear();  // as `driftwire host users apply` leaves it
+  REQUIRE(ds::save(*n.store, desks));
+  REQUIRE(mac.d->refresh_devices());
+  CHECK(mac.d->shares_leaving() == 0);
+}
+
+// self-host-users-smb.md §13 (owner, 2026-11-28): "link a user to a device, then set that user's
+// permission". A person's role reaches each of their devices, phone and computer alike; a device
+// moved to nobody keeps what it had; unpaired, it belongs to no one.
+TEST_CASE("phone pairing: a person's role is every device of theirs' role", "[phone-pairing]") {
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  const auto pair = [&](const key32& k, bool computer, const std::string& name) {
+    auto p = mac.d->start_pairing();
+    REQUIRE(p);
+    serve::client::options o;
+    o.access_key = n.access;
+    o.device_key = k;
+    o.service_key = n.identity;
+    o.id = "dddddddddddddddd";
+    o.name = "device";
+    o.pair_code = p->code;
+    o.device_name = name;
+    if (computer) o.device_kind = serve::kDeviceDesktop;
+    REQUIRE(serve::client::open(n.connect(), o));
+  };
+  const key32 phone = random_key(), laptop = random_key();
+  pair(phone, false, "iPhone");
+  pair(laptop, true, "MacBook Pro");
+  const auto row_of = [&](const key32& k) {
+    auto list = mac.d->refresh_devices();
+    REQUIRE(list);
+    const auto it = std::find_if(list->begin(), list->end(), [&](const desk::device_row& r) { return r.key == public_of(k); });
+    REQUIRE(it != list->end());
+    return *it;
+  };
+  CHECK_FALSE(row_of(laptop).backup);  // a computer starts as "can view files"
+
+  // Tristan can view files; both devices are his: both view.
+  auto r = mac.d->people("person_set", R"({"name":"Tristan","role":"view"})");
+  REQUIRE(r);
+  for (const key32* k : {&phone, &laptop}) {
+    REQUIRE(mac.d->people("device_person", "{\"key\":\"" + mv::driftwire::key_hex(public_of(*k)) + "\",\"person\":\"Tristan\"}"));
+  }
+  CHECK(row_of(phone).person == "Tristan");
+  CHECK(row_of(laptop).person == "Tristan");
+  CHECK_FALSE(row_of(phone).backup);
+  CHECK_FALSE(row_of(laptop).backup);
+  // One change on the person: both can change files, in the app and (the computer) on its share.
+  REQUIRE(mac.d->people("person_set", R"({"name":"Tristan","role":"change"})"));
+  CHECK(row_of(phone).backup);
+  CHECK(row_of(laptop).backup);
+  CHECK(row_of(laptop).share == "waiting");  // its account changes at the next step
+  auto listed = mac.d->people("people", "{}");
+  REQUIRE(listed);
+  CHECK(listed->find("\"name\":\"Tristan\",\"role\":\"change\"") != std::string::npos);
+  // A person who isn't there is refused; a device to nobody keeps its access.
+  CHECK_FALSE(mac.d->people("device_person", "{\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\",\"person\":\"Anna\"}"));
+  REQUIRE(mac.d->people("device_person", "{\"key\":\"" + mv::driftwire::key_hex(public_of(phone)) + "\",\"person\":\"\"}"));
+  CHECK(row_of(phone).person.empty());
+  CHECK(row_of(phone).backup);
+  // Unpaired: it belongs to no one.
+  REQUIRE(mac.d->revoke(public_of(laptop)));
+  listed = mac.d->people("people", "{}");
+  REQUIRE(listed);
+  CHECK(listed->find("\"devices\":[]") != std::string::npos);
+}
+
+TEST_CASE("phone pairing: a computer whose time ran out waits for its account to be taken away", "[phone-pairing]") {
+  namespace ds = mv::driftwire::serve::device_shares;
+  namespace grants = mv::driftwire::serve::grants;
+  nas n;
+  desktop mac;
+  REQUIRE(mac.d->claim(utf8(n.share), n.local(), ""));
+  auto p = mac.d->start_pairing();
+  REQUIRE(p);
+  const key32 laptop = random_key();
+  {
+    serve::client::options o;
+    o.access_key = n.access;
+    o.device_key = laptop;
+    o.service_key = n.identity;
+    o.id = "cccccccccccccccc";
+    o.name = "desktop";
+    o.pair_code = p->code;
+    o.device_name = "Guest's laptop";
+    o.device_kind = serve::kDeviceDesktop;
+    REQUIRE(serve::client::open(n.connect(), o));
+  }
+  // The step made its account; its access is timed.
+  std::vector<ds::desk> desks;
+  REQUIRE(ds::load(*n.store, desks));
+  REQUIRE(desks.size() == 1);
+  desks[0].password = "a-password-nobody-types-0123456789";
+  desks[0].role = "view";
+  desks[0].applied = 1;
+  REQUIRE(ds::save(*n.store, desks));
+  std::vector<grants::grant> limited;
+  REQUIRE(grants::load(*n.store, limited));
+  REQUIRE(limited.size() == 1);
+  const std::int64_t t0 = 1'763'130'000;
+  limited[0].expires = t0 + 3600;
+  REQUIRE(grants::save(*n.store, limited));
+  n.fake_now = t0;
+  auto list = mac.d->refresh_devices();
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].share == "ready");
+
+  // Ended: the account (and the password the computer holds) is still on the server until the
+  // step takes it away, so the card's "Finish…" row shows.
+  n.fake_now = t0 + 3601;
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].expired);
+  CHECK((*list)[0].desktop);
+  CHECK((*list)[0].share == "waiting");
+
+  // Taken away (as `driftwire host users apply` leaves it): nothing waits until it is extended.
+  desks[0].password.clear();
+  desks[0].role.clear();
+  desks[0].applied = 0;
+  REQUIRE(ds::save(*n.store, desks));
+  list = mac.d->refresh_devices();
+  REQUIRE(list);
+  CHECK((*list)[0].desktop);
+  CHECK((*list)[0].share == "ended");
 }

@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "addons/driftwire/cli/data_dir.h"
+#include "addons/driftwire/cli/host_users.h"
 #include "addons/driftwire/cli/nas_update.h"
 #include "addons/driftwire/cli/serve_tty.h"
 #include "addons/driftwire/cli/update.h"
@@ -549,8 +550,17 @@ int run_revoke(const args& a, secrets::store& store, const std::string& data) {
   if (!serve::grants::load(store, limited)) return fail("the timed device list cannot be read; not changing it.", 1);
   const auto key = parse_key_hex(a.serve_key);
   const auto before = devices.size() + limited.size();
-  std::erase_if(devices, [&](const known::device& d) { return (key && d.key == *key) || d.name == a.serve_key; });
-  std::erase_if(limited, [&](const serve::grants::grant& g) { return (key && g.key == *key) || g.name == a.serve_key; });
+  std::vector<std::array<std::uint8_t, 32>> revoked;
+  std::erase_if(devices, [&](const known::device& d) {
+    const bool it = (key && d.key == *key) || d.name == a.serve_key;
+    if (it) revoked.push_back(d.key);
+    return it;
+  });
+  std::erase_if(limited, [&](const serve::grants::grant& g) {
+    const bool it = (key && g.key == *key) || g.name == a.serve_key;
+    if (it) revoked.push_back(g.key);
+    return it;
+  });
   if (devices.size() + limited.size() == before) return fail("no such device.", 1);
   // save() does not report a last entry it could not erase: read it back.
   std::vector<known::device> kept;
@@ -558,7 +568,9 @@ int run_revoke(const args& a, secrets::store& store, const std::string& data) {
       kept.size() != devices.size()) {
     return fail("could not save the device list; the device may still be paired.", 1);
   }
+  const bool account_waits = note_revoked(store, revoked);
   print("revoked\n");
+  if (account_waits) print("its share account is taken away by: driftwire host users apply\n");
   return 0;
 }
 

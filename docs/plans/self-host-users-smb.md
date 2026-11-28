@@ -277,3 +277,86 @@ change this Mac's sharing settings, and use loopback only.
 - **Windows firewall:** File and Printer Sharing on the Private profile is the person's own call.
   The step only says when the network is marked Public.
 - **Linux:** Samba, with the Linux host.
+
+## 12. Each paired computer is a user (owner's call, 2026-11-27) — built
+
+The owner found a second list of people with passwords confusing: "each device is a user, and
+each device can be nicknamed and their permissions set". So a **paired computer** is its own user
+of the share, and the card's one list is **Phones and computers**.
+
+- **The list:** every paired device as it already was (grants and the paired list), with a
+  nickname anyone signed in as admin can change (`serve_admin rename {key, name}`; no unlock,
+  since it adds no access). A computer's row picks **Can view files / Can change files**. That is the
+  `grant {backup}` flag a desktop already had (§9), so changing it to "change" still needs the
+  unlock. A phone keeps its Backs up switch.
+- **Its account:** a computer that pairs (`pair_msg::kind = desktop`) is listed in the store item
+  `device_shares` (`wire/device_shares.h`), with an OS account named `mv-` plus the first 4 bytes of its key in hex,
+  a 32-character random password nobody types, and the role and folders last applied. A computer
+  unpaired is marked `gone` (by the card's Remove and by `driftwire serve revoke`). A second
+  computer whose key starts with the same 4 bytes gets no account: two computers never share one.
+- **An account never outlives its pairing:** the step also takes away the account of a computer
+  that is no longer on either device list (whatever dropped it), and of one whose timed access
+  has ended. The ended one stays listed as never made, so extending it makes a new account with
+  a new password; until the step has run, its row says `"share":"waiting"` (then `"ended"`), so
+  the card offers **Finish…**. A computer removed outright is on no row any more, so the service's
+  `devices` answer counts such accounts (`"shares_leaving"`) and the card shows "A removed
+  computer's sign-in is still on this PC" with **Finish…** (`driftwire serve revoke` says so too).
+- **Made by the same step:** `driftwire host users apply` adds the computers to the request as
+  users (`cli::desk_users`). It generates the password for a new account, sends none for one
+  already made, and removes a gone one's account. After the step, it saves the password and what was
+  applied. The card shows "A computer's share waits for this PC's administrator" with
+  **Finish…** (the UAC prompt or the Mac's authorization dialog), as the people's users did.
+- **Handed to that computer alone:** when the computer connects **from the host's own network**
+  (`usage_via::home`) and its account matches its pairing now, the service's caps carry
+  `"share":{"user","password"}` (`kCapsShare`), inside that session's Noise channel. The Mac
+  mounts with it through NetFS (`desktop-client.md` §6a) and keeps it nowhere: it is asked again
+  at each connect. Never to the owner's session, never away from home, never while the account
+  waits for a change.
+- **People's accounts** made with the CLI (`host users add`) still work. The card shows them
+  under **People** only when one exists.
+- **This changes §3's rule:** the service's store now holds the computers' passwords.
+  They are machine-made, one per computer, in the owner-only store beside the pairing keys, and
+  never logged or listed. A person's password is still never kept.
+
+**Not built yet:** admin from another computer. A paired computer given **admin** gets the owner's
+admin verbs, behind the same passphrase unlock, so it can rename and set roles from its own card.
+Today the card that edits the list is the host's own.
+
+**Tests:** `[device-shares]` (the store, names, when the step runs, a pairing's role and folders),
+`[host-users]` "a paired computer gets its own account…" (made, kept, changed, taken away),
+"a computer's account goes when its access ends…" and "a device revoked from the command line…",
+`[phone-pairing]` "a paired computer is a user…" (listed, renamed, its login at home only, a
+role change makes it wait, unpaired), and `[phone-addon]` "a computer is a user…" (the card).
+
+## 13. People own devices (owner's call, 2026-11-28) — built
+
+The owner wants their phone and laptop to change files both in the app and in Finder on the
+auto-mounted share. They asked for this as "link a user to a connected device, then set that user's permission". So
+a **person** is a name and a role, and each paired device **belongs to** at most one person. A device
+that belongs to someone has that person's role. It is set once, on the person's row, and reaches:
+
+- **the app:** every device's grant (`grant {role}`; "change" may write, move and delete);
+- **the share at home:** a computer's own account (§12) follows its grant, so the next
+  Finish… gives it the new rights.
+
+A device that belongs to nobody keeps a role of its own, as in §12. No password and no OS account:
+a person is a name on the server's lists (`people` in the store, `wire/people.h`). People who
+need their own sign-in are still the CLI's share users.
+
+- **Wire:** `serve_admin people` (read), `person_set {name, role}`, `person_remove {name}` and
+  `device_person {key, person}` ("" for nobody). Each answers the list. A role reaches the
+  devices through `grant {role}`, so "change" needs the unlock exactly as a device's own would.
+  A person removed leaves their devices with the access they had. An unpaired device belongs to
+  no one. The `devices` and `grants` listings say each device's `person`.
+- **Card** (Phone access → Phones and computers): a **People** row with **Add person…** (a name, and
+  what their devices can do, Can change files by default). Each person's row has their device
+  count, a role picker and Remove. Each device has a **Belongs to** picker (Nobody or a person).
+  A device that belongs to someone shows "Tristan's · Can change files" and has no role
+  control of its own.
+- **Setting up the owner's case:** Add person "Tristan" (Can change files), then choose Tristan
+  under Belongs to on the phone and on the laptop. If a computer's share waits, press Finish…
+  once on this PC.
+
+**Tests:** `[device-shares]` "people…" (the store), `[phone-pairing]` "a person's role is every
+device of theirs' role" (a phone and a computer, one change reaching both, nobody, unpaired),
+and `[phone-addon]` "people own devices…" (the card).

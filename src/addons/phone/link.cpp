@@ -682,13 +682,30 @@ void link::refresh(bool phones_only) {
           r.guest = v.boolean("guest").value_or(false);
           r.scoped = v.boolean("scoped").value_or(false);
           r.backup = v.boolean("backup").value_or(!r.guest);
+          r.desktop = v.boolean("desktop").value_or(false);
+          if (const std::string* sh = v.str("share")) r.share = *sh;
+          if (const std::string* pe = v.str("person")) r.person = *pe;
           rows.push_back(std::move(r));
         }
       }
+      // Whom they belong to (§13): a service from before people answers nothing, so none.
+      std::vector<person_row> folk;
+      if (auto pe = route("people", "{}")) {
+        const auto pdoc = json::parse(*pe, 5);
+        if (const json::value* pl = pdoc ? pdoc->find("people") : nullptr; pl && pl->k == json::kind::array) {
+          for (const json::value& v : pl->a) {
+            const std::string* name = v.str("name");
+            const std::string* role = v.str("role");
+            if (name && role) folk.push_back({*name, *role});
+          }
+        }
+      }
       std::lock_guard lock(m_);
+      v_.people = std::move(folk);
       v_.devices = std::move(rows);
       v_.reachable = doc && doc->boolean("reachable").value_or(false);
       v_.code_waiting = doc && doc->boolean("code_waiting").value_or(false);
+      v_.shares_leaving = doc ? doc->integer("shares_leaving").value_or(0) : 0;
     }
     if (phones_only) return;  // the two-second poll under a showing code
     if (auto o = route("owner_status", "{}")) {
@@ -1091,6 +1108,7 @@ void link::run(const std::string& request) {
   }
   if (what == "users_apply") {
     users_apply({});
+    refresh();  // the computers' share accounts it made (self-host-users-smb.md §12)
     return;
   }
   if (what == "host_drives" || what == "host_drives_choices" || what == "host_drives_combine" ||
@@ -1421,6 +1439,24 @@ void link::run(const std::string& request) {
     w.end_object();
     const char* verb = what == "add_folder" ? "add_root" : what == "remove_folder" ? "remove_root" : "set_backup";
     if (auto r = route(verb, w.str()); !r) return fail_status(r.error());
+    refresh();
+    return;
+  }
+  if (what == "person_set" || what == "person_remove" || what == "device_person") {
+    json::writer w;
+    w.begin_object();
+    for (const char* k : {"name", "role", "key", "person"}) {
+      if (doc->str(k)) w.key(k).string(text(k));
+    }
+    w.end_object();
+    if (auto r = route(what.c_str(), w.str()); !r) return fail_status(r.error());
+    refresh();
+    return;
+  }
+  if (what == "rename") {
+    json::writer w;
+    w.begin_object().key("key").string(text("key")).key("name").string(text("name")).end_object();
+    if (auto r = route("rename", w.str()); !r) return fail_status(r.error());
     refresh();
     return;
   }
@@ -1976,6 +2012,7 @@ std::string link::state_json() const {
   // Local search's own answer (phone_json), as it gave it: the catalogue rows.
   if (!pub_.source_json.empty()) w.key("catalogue").raw(pub_.source_json);
   w.key("claimed").boolean(v_.claimed);
+  w.key("shares_leaving").integer(v_.shares_leaving);
   w.key("reachable").boolean(v_.reachable);
   w.key("local").string(v_.local);
   w.key("public").string(v_.public_name);
@@ -1987,8 +2024,13 @@ std::string link::state_json() const {
     w.key("limited").boolean(d.limited).key("expires").integer(d.expires).key("expired").boolean(d.expired);
     w.key("guest").boolean(d.guest).key("scoped").boolean(d.scoped);
     w.key("backup").boolean(d.backup);
+    if (d.desktop) w.key("desktop").boolean(true).key("share").string(d.share);
+    if (!d.person.empty()) w.key("person").string(d.person);
     w.end_object();
   }
+  w.end_array();
+  w.key("people").begin_array();
+  for (const auto& p : v_.people) w.begin_object().key("name").string(p.name).key("role").string(p.role).end_object();
   w.end_array();
   // The NAS owner's side: its passphrase ("set", "none", "broken"; "" from a NAS
   // too old to say), what it can do, this desktop's unlock and any lockout.

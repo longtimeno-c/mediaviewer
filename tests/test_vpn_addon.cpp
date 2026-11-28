@@ -239,6 +239,15 @@ TEST_CASE("vpn: this computer's own domain is set from the Host section, through
   REQUIRE(eventually([&] { return host.settings().find(R"("id":"domain_name")") != std::string::npos; }));
   svc.on_event("domain_save", 1, "");  // nothing typed: said so, nothing asked
   CHECK(svc.snapshot().host_error.find("Type your domain") != std::string::npos);
+  // It stays over Phone access's answers (they carry no error of the form's): two more polls.
+  const auto polls = [&] {
+    std::size_t n = 0;
+    for (const auto& [method, json] : host.asked()) n += method == "vpn_state" ? 1 : 0;
+    return n;
+  };
+  const std::size_t before = polls();
+  REQUIRE(eventually([&] { return polls() >= before + 2; }));
+  CHECK(svc.snapshot().host_error.find("Type your domain") != std::string::npos);
   svc.on_event("domain_name", 2, "\" vpn.example.com \"");
   svc.on_event("domain_save", 1, "");
   REQUIRE(eventually([&] { return svc.snapshot().host_domain == "vpn.example.com"; }));
