@@ -117,6 +117,7 @@ struct view {
   std::string relay_line, relay_code;  // the VPN's line for the laptop and its code, while shown
   std::int64_t nas_vpn_port = 0;       // the NAS as a VPN host: the port asked for (0: off)
   bool nas_vpn_running = false;
+  bool nas_phone_lock = false;  // phones must lock the app (docs/plans/mobile.md §12)
   std::string host_step, host_said;
   std::optional<std::vector<user_row>> users;
   std::vector<std::string> share_addresses;
@@ -264,6 +265,7 @@ view parse(std::string_view text) {
   s.relay_code = s_of(o, "relay_code");
   s.nas_vpn_port = i_of(o, "nas_vpn_port");
   s.nas_vpn_running = b_of(o, "nas_vpn_running");
+  s.nas_phone_lock = b_of(o, "nas_phone_lock");
   if (const json::value* v = o.find("users"); v && v->k == json::kind::array) {
     std::vector<user_row> list;
     for (const json::value& u : v->a) {
@@ -1201,6 +1203,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
   else if (s.busy == "unlock") busy_text = "Unlocking";
   else if (s.busy == "set_passphrase") busy_text = "Setting the passphrase";
   else if (s.busy == "grant") busy_text = "Changing the phone's access";
+  else if (s.busy == "phone_lock") busy_text = "Changing the phones' lock";
   else if (s.busy == "host_start") busy_text = "Starting the server";
   else if (s.busy == "host_convert") busy_text = "Changing the server's setting";
   else if (s.busy == "host_stop") busy_text = "Stopping the server";
@@ -1515,6 +1518,17 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     if (!s.reachable) text(w, "unreachable", "Couldn't reach your server. These are the phones it knew about last.", "secondary");
   };
 
+  // Phones must lock the app (docs/plans/mobile.md §12): Face ID, or the phone's passcode, each
+  // time it is opened. Without it a phone's owner may still turn the lock on for themselves.
+  const auto phone_lock_rows = [&] {
+    if (!s.has("phone_lock")) return;
+    row(w, "phone_lock_row", "Require Face ID or a passcode",
+        s.nas_phone_lock ? "Phones ask for Face ID or their passcode each time MediaViewer is opened. Turning it off needs the server passphrase."
+                         : "Each phone's owner can still turn the lock on in MediaViewer's settings on the phone.");
+    toggle(w, "phone_lock", "Phones must lock MediaViewer", s.nas_phone_lock, busy);
+    end_row(w);
+  };
+
   const auto relay_rows = [&] {
     const bool available = s.has("relay");
     std::string detail;
@@ -1678,6 +1692,7 @@ std::string screen::build(std::string_view state_json, std::int64_t now) {
     section(w, "sec_phones", "phone", "Phones and computers");
     code_rows();
     phone_rows();
+    phone_lock_rows();
     end_section(w);
 
     section(w, "sec_folders", "folder", "Folders and backup");
@@ -1985,6 +2000,8 @@ std::vector<std::string> screen::handle(std::string_view node, std::uint32_t kin
       edit_limit_ = v;
     } else if (node == "edit_reserve") {
       edit_reserve_ = v;
+    } else if (node == "phone_lock") {
+      out.push_back(req("phone_lock").b("on", value_bool(value_json)).done());
     } else if (node == "host_convert") {
       out.push_back(req("host_convert").b("on", value_bool(value_json)).done());
     } else if (node == "new_no_limit") {

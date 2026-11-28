@@ -431,6 +431,14 @@ namespace {
 constexpr const char* kStorageWords[] = {"", "rebuilding", "degraded", "offline", "failing"};
 }  // namespace
 
+int32_t mv_link_lock_required(mv_mobile_link* l) {
+  return catch_all([&]() -> int32_t {
+    if (!l) return -1;
+    if (l->fixed || !l->session) return 0;  // the sample library: no owner to ask
+    return l->session->lock_required();
+  });
+}
+
 int32_t mv_link_storage(mv_mobile_link* l) {
   return catch_all([&]() -> int32_t {
     if (!l) return -1;

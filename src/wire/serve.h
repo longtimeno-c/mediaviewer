@@ -81,6 +81,8 @@ inline constexpr const char* kFeatureUsers = "users";
 // The service keeps where paired devices find it (serve_admin set_addresses) and tells them in
 // their caps (kCapsAddresses).
 inline constexpr const char* kFeatureAddresses = "addresses";
+// The owner can require phones to lock the app (serve_admin set_phone_lock; kCapsLock).
+inline constexpr const char* kFeaturePhoneLock = "phone_lock";
 // The relay server's key, in the service's secret store (never serve.json).
 inline constexpr const char* kRelayKeyName = "relay_key";
 // The VPN (docs/design/28 "The NAS as a VPN host"): offered by `driftwire serve`

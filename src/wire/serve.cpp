@@ -1918,6 +1918,14 @@ void server::state::session(conn& c, std::optional<message> first_message) {
       extra += (extra.empty() ? "" : ",") + sw.substr(1, sw.size() - 2);
     }
   }
+  if (cfg()->phone_lock) {
+    // Every paired session's: the owner asks phones to lock the app (kCapsLock). A phone keeps
+    // what it was last told, so a phone kept offline still locks.
+    json::writer w;
+    w.begin_object().key(kCapsLock).boolean(true).end_object();
+    const std::string lw = w.take();
+    extra += (extra.empty() ? "" : ",") + lw.substr(1, lw.size() - 2);
+  }
   {
     // Every paired session's: where the service is now (kCapsAddresses), so a device paired
     // before a DuckDNS name, a relay or a new LAN address learns it without pairing again.
@@ -2440,7 +2448,7 @@ std::string server::state::owner_fields() {
   const auto s = owner::load(*store, v);
   json::writer w;
   w.begin_object().key("features").begin_array().string(kFeaturePassphrase).string(kFeatureRelay).string(kFeatureBackup).string(kFeatureUsers);
-  w.string(kFeatureAddresses);
+  w.string(kFeatureAddresses).string(kFeaturePhoneLock);
   if (vpn_offered) w.string(kFeatureVpn);
   w.end_array();
   w.key("relay").string(cfg()->relay);  // the address only: the key never leaves the store
@@ -2827,6 +2835,7 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
         unlocked ? std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(c.unlocked_until - steady()).count()) : 0);
     w.key("locked_until").integer(locked_until(owner_counter));
     w.key("relay").string(cfg()->relay);  // the address only, as in the caps
+    w.key("phone_lock").boolean(cfg()->phone_lock);
     if (vpn_offered) {
       std::lock_guard vl(vpn_m);
       w.key("vpn_port").integer(cfg()->vpn_port).key("vpn_running").boolean(vpn_relay != nullptr);
@@ -3292,6 +3301,23 @@ std::pair<end_code, std::string> server::state::admin(conn& c, std::string_view 
       relay_poke = true;
     }
     relay_cv.notify_all();
+    return {end_code::ok, "{}"};
+  }
+  if (*what == "set_phone_lock") {
+    // Phones must lock the app (kCapsLock): {"on": bool}. On asks more of phones and adds no
+    // access; off takes a protection away, so it needs the unlock once there is a passphrase.
+    const auto on = doc->boolean("on");
+    if (!on) return {end_code::bad_request, {}};
+    if (!*on) {
+      if (auto refused = needs_unlock(c)) return *refused;
+    }
+    {
+      std::lock_guard lock(claim_m);  // one change of serve.json at a time
+      config next = *cfg();
+      next.phone_lock = *on;
+      if (!publish_config(std::move(next))) return {end_code::error, {}};
+    }
+    // Phones learn it at their next session's caps (each return to the app starts one).
     return {end_code::ok, "{}"};
   }
   if (*what == "set_addresses") {

@@ -103,6 +103,7 @@ class link {
   //   unlock {passphrase}, lock, set_passphrase {passphrase}, grant {key, for_s (0: no limit)}.
   // Phone backup (docs/plans/mobile.md §10b.1): add_folder also takes {backup:"1", limit, reserve}
   //   (decimal bytes); set_backup {id, limit, reserve}; phone_backup {key, on} (a phone's grant).
+  // Phones must lock the app (docs/plans/mobile.md §12): phone_lock {on}; off needs the unlock.
   // This computer as the server (docs/plans/self-hosted.md slice 6), through the
   // installed driftwire program (phone/self_host.h):
   //   host_status          read the host's files again (the card's status row)
@@ -197,6 +198,7 @@ class link {
     // The NAS as a VPN host (owner_status): the port asked for (0: off), and whether it listens.
     std::int64_t nas_vpn_port = 0;
     bool nas_vpn_running = false;
+    bool nas_phone_lock = false;  // phones must lock the app (owner_status "phone_lock")
     std::int64_t unlocked_s = 0, locked_until = 0;
     // When the unlock read as unlocked_s runs out: the card's countdown is the
     // time left from now, not the snapshot (state_json).

@@ -51,7 +51,7 @@ public struct RootView: View {
              : "Once the new library is paired, everything MediaViewer keeps on this phone for the current one is removed. Nothing on your server changes.")
       }
     }
-    .background(LockCover(lock: model.lock))
+    .background(LockCover(lock: model.lock) { model.forgetLibrary() })
     .task { await model.run() }
   }
 }

@@ -18,8 +18,8 @@ final class AppLockTests: XCTestCase {
 
   override func tearDown() { defaults.removePersistentDomain(forName: suite) }
 
-  private func makeLock(_ owner: FakeOwner, hasLibrary: Bool = true) -> AppLock {
-    AppLock(owner: owner, defaults: defaults, hasLibrary: hasLibrary)
+  private func makeLock(_ owner: FakeOwner, hasLibrary: Bool = true, required: Bool = false) -> AppLock {
+    AppLock(owner: owner, defaults: defaults, hasLibrary: hasLibrary, required: required)
   }
 
   func testOffItNeverLocksOrCovers() {
@@ -133,12 +133,91 @@ final class AppLockTests: XCTestCase {
     XCTAssertFalse(makeLock(FakeOwner()).isOn)
   }
 
+  // MARK: Required by the library's owner
+
+  func testTheOwnersLockIsOnAtLaunchAndCannotBeTurnedOff() {
+    let lock = makeLock(FakeOwner(), required: true)
+    XCTAssertTrue(lock.isOn)
+    XCTAssertFalse(lock.isChosen)
+    XCTAssertTrue(lock.isLocked, "A phone kept offline still locks: the pairing kept the owner's word.")
+    lock.turnOff()
+    XCTAssertTrue(lock.isOn)
+    XCTAssertTrue(lock.isLocked)
+  }
+
+  func testNewlyRequiredItLocksOnLeavingNotUnderThePerson() async {
+    let lock = makeLock(FakeOwner(passes: false))
+    lock.setRequired(true)
+    XCTAssertTrue(lock.isOn)
+    XCTAssertFalse(lock.covers)
+    lock.sceneChanged(to: .background)
+    XCTAssertTrue(lock.isLocked)
+    await lock.sceneChanged(to: .active)?.value
+    XCTAssertTrue(lock.isLocked)
+  }
+
+  func testNoLongerRequiredItOpensUnlessThePersonChoseIt() async {
+    let lock = makeLock(FakeOwner(), required: true)
+    lock.setRequired(false)
+    XCTAssertFalse(lock.isOn)
+    XCTAssertFalse(lock.covers)
+
+    let chosen = makeLock(FakeOwner())
+    await chosen.turnOn()
+    chosen.setRequired(true)
+    chosen.sceneChanged(to: .background)
+    chosen.setRequired(false)
+    XCTAssertTrue(chosen.isOn)
+    XCTAssertTrue(chosen.isLocked, "The person's own lock stays.")
+  }
+
+  func testTheOwnersWordIsNotTheStoredChoice() async {
+    let lock = makeLock(FakeOwner(), required: true)
+    // Opting in on top of a required lock is still the person's own choice, kept for later.
+    let chose = await lock.turnOn()
+    XCTAssertTrue(chose)
+    XCTAssertTrue(makeLock(FakeOwner()).isChosen)
+    lock.forget()
+    XCTAssertFalse(lock.isOn)
+    XCTAssertFalse(lock.covers)
+    XCTAssertFalse(makeLock(FakeOwner()).isOn)
+  }
+
+  func testWithNoLibraryTheOwnersWordIsIgnored() {
+    XCTAssertFalse(makeLock(FakeOwner(), hasLibrary: false, required: true).isOn)
+  }
+
+  /// The owner's word reaches the lock through the connection, and Forget drops it.
+  func testTheConnectionCarriesTheOwnersWord() async {
+    var required = ConnectionSnapshot(hasLibrary: true, synology: .unreachable([]), macNearby: false, catalogue: nil, cacheBytes: 0)
+    required.lockRequired = true
+    let connection = SwitchingConnection(required)
+    let lock = makeLock(FakeOwner(), required: required.lockRequired)
+    let model = AppModel(services: StubServices.make(connection: connection), scanner: NoScan(), lock: lock)
+    let run = Task { await model.run() }
+    defer { run.cancel() }
+    XCTAssertTrue(lock.isRequired)
+    var free = required
+    free.lockRequired = false
+    connection.publish(free)
+    for _ in 0..<20_000 where lock.isRequired { await Task.yield() }
+    XCTAssertFalse(lock.isRequired)
+    connection.publish(required)
+    for _ in 0..<20_000 where !lock.isRequired { await Task.yield() }
+    XCTAssertTrue(lock.isRequired)
+    model.forgetLibrary()
+    for _ in 0..<20_000 where model.stage != .welcome { await Task.yield() }
+    XCTAssertFalse(lock.isOn)
+  }
+
   func testTheWordsNameTheCheck() {
     XCTAssertEqual(LockCopy.toggle(.faceID), "Require Face ID")
     XCTAssertEqual(LockCopy.toggle(.passcode), "Require passcode")
     XCTAssertEqual(LockCopy.unlock(.touchID), "Unlock with Touch ID")
     XCTAssertEqual(LockCopy.unlock(.passcode), "Unlock")
     XCTAssertEqual(LockCopy.unlock(nil), "Unlock")
+    XCTAssertTrue(LockCopy.required.contains("owner"))
+    XCTAssertTrue(LockCopy.requiredNoPasscode.contains("passcode"))
   }
 }
 

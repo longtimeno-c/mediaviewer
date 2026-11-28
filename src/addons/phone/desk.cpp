@@ -862,6 +862,7 @@ result<owner_state> desk::owner_status() {
   if (const std::string* r = doc->str("relay")) out.relay = *r;
   out.vpn_port = doc->integer("vpn_port").value_or(0);
   out.vpn_running = doc->boolean("vpn_running").value_or(false);
+  out.phone_lock = doc->boolean("phone_lock").value_or(false);
   // This desktop's own kept key decides whether it can act without asking.
   if (!st_->signer || std::chrono::steady_clock::now() >= st_->signer_until) {
     out.unlocked_s = 0;
@@ -876,6 +877,16 @@ expected desk::set_relay(const std::string& address, const std::string& key) {
   st_->load();
   json::writer w;
   w.begin_object().key("do").string("set_relay").key("address").string(address).key("key").string(key).end_object();
+  MV_TRY(const std::string text, st_->ask(w.str()));
+  (void)text;
+  return {};
+}
+
+expected desk::set_phone_lock(bool on) {
+  std::lock_guard lock(st_->m);
+  st_->load();
+  json::writer w;
+  w.begin_object().key("do").string("set_phone_lock").key("on").boolean(on).end_object();
   MV_TRY(const std::string text, st_->ask(w.str()));
   (void)text;
   return {};
@@ -1210,8 +1221,15 @@ result<std::string> route_request(desk& d, std::string_view caller, std::string_
     for (const auto& f : s.features) w.string(f);
     w.end_array().key("unlocked_s").integer(s.unlocked_s).key("locked_until").integer(s.locked_until);
     w.key("relay").string(s.relay).key("vpn_port").integer(s.vpn_port).key("vpn_running").boolean(s.vpn_running);
+    w.key("phone_lock").boolean(s.phone_lock);
     w.end_object();
     return w.take();
+  }
+  if (method == "set_phone_lock") {
+    const auto on = doc->boolean("on");
+    if (!on) return err(status::invalid_arg);
+    MV_TRY_VOID(d.set_phone_lock(*on));
+    return std::string("{}");
   }
   if (method == "set_vpn") {
     const auto on = doc->boolean("on");

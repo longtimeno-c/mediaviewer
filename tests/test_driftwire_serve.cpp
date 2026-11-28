@@ -2299,6 +2299,27 @@ TEST_CASE("serve: serve.json keeps the addresses, and one from before has none",
   CHECK(serve::config_json(before.value()).find("public") == std::string::npos);
 }
 
+TEST_CASE("serve: serve.json keeps the owner's phone lock, and caps carry it", "[driftwire-serve]") {
+  serve::config c;
+  c.port = 7878;
+  c.roots = {{"0123456789abcdef", "Photos", "/photos"}};
+  CHECK(serve::config_json(c).find("phone_lock") == std::string::npos);  // off: left out, as before it existed
+  c.phone_lock = true;
+  const auto back = serve::parse_config(serve::config_json(c));
+  REQUIRE(back);
+  CHECK(back->phone_lock);
+  CHECK_FALSE(serve::parse_config(R"({"port":1,"roots":[{"id":"0123456789abcdef","label":"a","path":"/a"}],"phone_lock":1})"));
+  const auto locked = serve::parse_caps(serve::caps_json(1, serve::kAllOps, R"("lock":true)"));
+  REQUIRE(locked);
+  CHECK(locked->lock);
+  const auto old = serve::parse_caps(serve::caps_json(1, serve::kAllOps));
+  REQUIRE(old);
+  CHECK_FALSE(old->lock);  // a service from before it: no lock asked
+  const auto odd = serve::parse_caps(serve::caps_json(1, serve::kAllOps, R"("lock":"yes")"));
+  REQUIRE(odd);
+  CHECK_FALSE(odd->lock);
+}
+
 // ---- changing the shared folders (serve_wire.h "changing", kChangeOps) --------------------
 
 namespace {

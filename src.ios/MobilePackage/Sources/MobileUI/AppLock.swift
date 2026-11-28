@@ -57,10 +57,15 @@ enum LockCopy {
   static let section = "Lock"
   static func toggle(_ kind: OwnerCheckKind) -> String { kind == .passcode ? "Require passcode" : "Require \(kind.name)" }
   static let detail = "MediaViewer locks each time you leave it, and hides your photos in the app switcher."
+  static let required = "The owner of this library requires it. MediaViewer locks each time you leave it."
   static let noPasscode = "Set a passcode for this iPhone in the Settings app to lock MediaViewer."
+  static let requiredNoPasscode =
+    "The owner of this library requires a passcode on this iPhone. Set one in the Settings app, then try again."
   static let turnOnReason = "Turn on the lock for MediaViewer."
   static let unlockReason = "Unlock MediaViewer."
   static let locked = "MediaViewer is locked"
+  static let tryAgain = "Try again"
+  static let forget = "Forget this library"
   static func unlock(_ kind: OwnerCheckKind?) -> String {
     guard let kind, kind != .passcode else { return "Unlock" }
     return "Unlock with \(kind.name)"
@@ -70,8 +75,13 @@ enum LockCopy {
 @MainActor
 @Observable
 public final class AppLock {
-  /// The person turned the lock on.
-  public private(set) var isOn: Bool
+  /// The person turned the lock on (Settings), for a library that does not require it.
+  public private(set) var isChosen: Bool
+  /// The library's owner requires it (the service's caps, kept with the pairing). Not the
+  /// person's to turn off.
+  public private(set) var isRequired: Bool
+  /// The app locks when it leaves the screen.
+  public var isOn: Bool { isChosen || isRequired }
   /// The app needs the owner before it shows anything.
   public private(set) var isLocked: Bool
   /// Not in front: covered so the app switcher's picture shows nothing, though not locked yet.
@@ -88,37 +98,60 @@ public final class AppLock {
   private let defaults: UserDefaults
   static let key = "appLock"
 
-  /// `hasLibrary` false turns a stored lock off: there is nothing to lock.
-  public init(owner: OwnerCheck = DeviceOwnerCheck(), defaults: UserDefaults = .standard, hasLibrary: Bool) {
+  /// `hasLibrary` false turns a stored lock off: there is nothing to lock. `required`: the owner's
+  /// word as the pairing kept it, so a phone kept offline still locks at launch.
+  public init(owner: OwnerCheck = DeviceOwnerCheck(), defaults: UserDefaults = .standard, hasLibrary: Bool,
+              required: Bool = false) {
     self.owner = owner
     self.defaults = defaults
     if !hasLibrary { defaults.removeObject(forKey: Self.key) }
-    isOn = hasLibrary && defaults.bool(forKey: Self.key)
-    isLocked = isOn
+    isChosen = hasLibrary && defaults.bool(forKey: Self.key)
+    isRequired = hasLibrary && required
+    isLocked = isChosen || isRequired
   }
 
   /// What the check is on this phone, nil when it has no passcode.
   public func kind() -> OwnerCheckKind? { owner.kind() }
 
+  /// The owner's word, as each connect hears it. Newly required, the app locks the next time it
+  /// leaves the screen, not under the person using it; no longer required, it opens unless the
+  /// person chose the lock themselves.
+  public func setRequired(_ required: Bool) {
+    guard required != isRequired else { return }
+    isRequired = required
+    if !isOn {
+      isLocked = false
+      isHidden = false
+    }
+  }
+
   /// Turns the lock on once the owner passes the check, so it is known to work before it is needed.
   @discardableResult
   public func turnOn() async -> Bool {
-    guard !isOn, !isChecking, owner.kind() != nil else { return isOn }
+    guard !isChosen, !isChecking, owner.kind() != nil else { return isChosen }
     isChecking = true
     let passed = await owner.check(reason: LockCopy.turnOnReason)
     isChecking = false
     guard passed else { return false }
-    isOn = true
+    isChosen = true
     defaults.set(true, forKey: Self.key)
     return true
   }
 
-  /// Off, and open. Settings is reached only unlocked; Forget calls it with the library.
+  /// The person's own lock off. Settings is reached only unlocked; one the owner requires stays.
   public func turnOff() {
-    isOn = false
-    isLocked = false
-    isHidden = false
+    isChosen = false
     defaults.removeObject(forKey: Self.key)
+    if !isOn {
+      isLocked = false
+      isHidden = false
+    }
+  }
+
+  /// The library is gone (Forget): nothing left to lock, the owner's word with it.
+  public func forget() {
+    isRequired = false
+    turnOff()
   }
 
   /// Asks the owner, then opens.
@@ -160,10 +193,12 @@ public final class AppLock {
 /// of its own above the app's. Reads the lock itself, so only this view redraws with it.
 struct LockCover: View {
   let lock: AppLock
+  /// Forget, from the lock screen of a library whose owner requires a passcode this phone lacks.
+  let forget: @MainActor () -> Void
   @Environment(\.scenePhase) private var phase
 
   var body: some View {
-    LockWindowHost(lock: lock, shown: lock.covers)
+    LockWindowHost(lock: lock, forget: forget, shown: lock.covers)
       .frame(width: 0, height: 0)
       .onChange(of: phase, initial: true) { _, new in _ = lock.sceneChanged(to: new) }
   }
@@ -181,6 +216,7 @@ struct LockGround: View {
 
 private struct LockWindowHost: UIViewRepresentable {
   let lock: AppLock
+  let forget: @MainActor () -> Void
   let shown: Bool
 
   final class Coordinator {
@@ -193,6 +229,7 @@ private struct LockWindowHost: UIViewRepresentable {
   func updateUIView(_ view: UIView, context: Context) {
     let coordinator = context.coordinator
     let lock = lock
+    let forget = forget
     let shown = shown
     // The view has its window (and scene) only once it is in the hierarchy.
     DispatchQueue.main.async {
@@ -201,7 +238,7 @@ private struct LockWindowHost: UIViewRepresentable {
         let window = coordinator.window ?? {
           let window = UIWindow(windowScene: scene)
           window.windowLevel = .alert
-          let host = UIHostingController(rootView: LockScreen(lock: lock))
+          let host = UIHostingController(rootView: LockScreen(lock: lock, forget: forget))
           host.view.backgroundColor = .clear
           host.view.accessibilityViewIsModal = true
           window.rootViewController = host
@@ -224,8 +261,13 @@ private struct LockWindowHost: UIViewRepresentable {
 
 struct LockScreen: View {
   let lock: AppLock
+  let forget: @MainActor () -> Void
   @AppStorage(Preferences.appearance) private var appearance = "dark"
   @State private var kind: OwnerCheckKind?
+  @State private var confirmingForget = false
+
+  /// The owner requires a lock this phone cannot give: it has no passcode.
+  private var needsPasscode: Bool { lock.isRequired && kind == nil }
 
   var body: some View {
     ZStack {
@@ -242,12 +284,31 @@ struct LockScreen: View {
             .foregroundStyle(Theme.title)
             .multilineTextAlignment(.center)
             .accessibilityAddTraits(.isHeader)
-          Button(LockCopy.unlock(kind)) { Task { await lock.unlock() } }
+          if needsPasscode {
+            Text(LockCopy.requiredNoPasscode)
+              .font(.footnote)
+              .foregroundStyle(Theme.body)
+              .multilineTextAlignment(.center)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Button(needsPasscode ? LockCopy.tryAgain : LockCopy.unlock(kind)) {
+            kind = lock.kind()
+            Task { await lock.unlock() }
+          }
             .buttonStyle(PrimaryButtonStyle())
             .disabled(lock.isChecking)
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("lock.unlock")
             .padding(.top, 8)
+          if needsPasscode {
+            Button(LockCopy.forget, role: .destructive) { confirmingForget = true }
+              .buttonStyle(QuietButtonStyle(color: Theme.danger))
+              .confirmationDialog("Forget this library?", isPresented: $confirmingForget, titleVisibility: .visible) {
+                Button("Forget", role: .destructive) { forget() }
+              } message: {
+                Text("Everything MediaViewer keeps on this phone is removed. Nothing on your server changes. You'll need a new code from MediaViewer to connect again.")
+              }
+          }
         }
       }
       .frame(maxWidth: Theme.readableWidth)
@@ -256,5 +317,7 @@ struct LockScreen: View {
     .preferredColorScheme(chosenScheme(appearance))
     .tint(Theme.accent)
     .onAppear { kind = lock.kind() }
+    // A passcode set in the Settings app meanwhile.
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in kind = lock.kind() }
   }
 }

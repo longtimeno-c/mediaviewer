@@ -409,6 +409,9 @@ public struct ConnectionSnapshot: Hashable, Sendable {
   public var serverStorage: Int32 = 0
   /// The sentence for `serverStorage` ("Your server's mirror lost a drive. …"); "" when healthy.
   public var serverStorageWords = ""
+  /// The library's owner requires the app locked with Face ID or the passcode (docs/plans/mobile.md
+  /// §12), as the service last said; kept with the pairing, so it holds offline too.
+  public var lockRequired = false
 
   public init(hasLibrary: Bool, synology: SynologyState, macNearby: Bool, catalogue: CatalogueInfo?,
               cacheBytes: Int64) {

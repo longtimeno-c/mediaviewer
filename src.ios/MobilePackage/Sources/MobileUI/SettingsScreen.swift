@@ -199,12 +199,15 @@ struct SettingsScreen: View {
   }
 
   /// docs/plans/mobile.md §12: turning it on asks for Face ID (or the passcode) first, so it is
-  /// known to work before it is needed.
+  /// known to work before it is needed. One the library's owner requires is on, and not the
+  /// person's to turn off.
   @ViewBuilder
   private var lockToggle: some View {
     let lock = model.lock
     let name = LockCopy.toggle(lockKind ?? .passcode)
-    let detail = lockKind == nil && !lock.isOn ? LockCopy.noPasscode : LockCopy.detail
+    let detail = lock.isRequired ? (lockKind == nil ? LockCopy.requiredNoPasscode : LockCopy.required)
+      : lockKind == nil && !lock.isChosen ? LockCopy.noPasscode : LockCopy.detail
+    let fixed = lock.isRequired || (lockKind == nil && !lock.isChosen) || lock.isChecking
     Toggle(isOn: Binding(get: { lock.isOn }, set: { on in
       if on { Task { await lock.turnOn() } } else { lock.turnOff() }
     })) {
@@ -217,13 +220,16 @@ struct SettingsScreen: View {
       }
     }
     .tint(Theme.accent)
-    .disabled((lockKind == nil && !lock.isOn) || lock.isChecking)
+    .disabled(fixed)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(name)
     .accessibilityValue(lock.isOn ? "On" : "Off")
     .accessibilityHint(detail)
     .accessibilityAddTraits(.isToggle)
-    .accessibilityAction { if lock.isOn { lock.turnOff() } else { Task { await lock.turnOn() } } }
+    .accessibilityAction {
+      guard !fixed else { return }
+      if lock.isChosen { lock.turnOff() } else { Task { await lock.turnOn() } }
+    }
     .accessibilityIdentifier("settings.lock")
   }
 

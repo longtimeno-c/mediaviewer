@@ -172,6 +172,11 @@ int32_t mv_link_storage(mv_mobile_link* link);
  * static; "" for 0 or an unknown code. */
 const char* mv_link_storage_words(int32_t code);
 
+/* Whether the library's owner requires the app locked with Face ID or the phone's passcode
+ * (docs/plans/mobile.md 12), as the live connection's caps said: 1 yes, 0 no (the sample library
+ * too), -1 no live connection (keep what was said last). Never blocks. */
+int32_t mv_link_lock_required(mv_mobile_link* link);
+
 /* A direct path after the relay (docs/plans/nas-relay.md 9): once the link is through the person's
  * own relay, the core tries to punch a direct one and moves to it. On Wi-Fi always; on mobile data
  * only when `allowed_on_cellular` (Settings, "Faster direct connection on mobile data", default on).

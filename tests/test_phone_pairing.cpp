@@ -752,6 +752,58 @@ TEST_CASE("phone pairing: set_addresses takes host:port or nothing, and leaves o
   CHECK(n.saved.back().local == "192.168.1.31:7878");
 }
 
+TEST_CASE("phone pairing: the owner can require phones to lock the app; taking it off needs the unlock", "[phone-pairing]") {
+  // docs/plans/mobile.md §12: every paired phone hears it in its caps, and locks with Face ID or its passcode.
+  nas n;
+  init_passphrase(n);
+  claimer m(n);
+  const auto pass = with_passphrase(kPass);
+  REQUIRE(m.claim(&pass));
+  const key32 phone = random_key();
+  REQUIRE(known::save(*n.store, {known::device{"iPhone", public_of(phone), {}, false}}));
+  auto s = m.session();
+  REQUIRE(s);
+  const auto& features = (*s)->caps().features;
+  CHECK(std::find(features.begin(), features.end(), serve::kFeaturePhoneLock) != features.end());
+  {
+    auto before = n.phone(phone);
+    REQUIRE(before);
+    CHECK_FALSE((*before)->caps().lock);  // not asked for yet
+  }
+  CHECK_FALSE((*s)->admin(R"({"do":"set_phone_lock"})"));
+  CHECK_FALSE((*s)->admin(R"({"do":"set_phone_lock","on":"yes"})"));
+  // On asks more of phones and adds no access: the device key is enough.
+  auto status = (*s)->admin(R"({"do":"set_phone_lock","on":true})");
+  REQUIRE(status);
+  {
+    std::lock_guard lock(n.saved_m);
+    REQUIRE_FALSE(n.saved.empty());
+    CHECK(n.saved.back().phone_lock);
+  }
+  {
+    auto after = n.phone(phone);
+    REQUIRE(after);
+    CHECK((*after)->caps().lock);
+  }
+  auto o = (*s)->admin(R"({"do":"owner_status"})");
+  REQUIRE(o);
+  CHECK(o->find("\"phone_lock\":true") != std::string::npos);
+  // Off takes a protection away: not without the unlock.
+  std::string refusal;
+  CHECK_FALSE((*s)->admin(R"({"do":"set_phone_lock","on":false})", nullptr, &refusal));
+  CHECK(why_in(refusal) == "needs-unlock");
+  {
+    auto still = n.phone(phone);
+    REQUIRE(still);
+    CHECK((*still)->caps().lock);
+  }
+  REQUIRE((*s)->unlock(pass.sign, nullptr, owner::kMinOps, owner::kMinMem));
+  REQUIRE((*s)->admin(R"({"do":"set_phone_lock","on":false})"));
+  auto off = n.phone(phone);
+  REQUIRE(off);
+  CHECK_FALSE((*off)->caps().lock);
+}
+
 TEST_CASE("phone pairing: a guest code pairs a phone for a time, then it is cut and refused as expired", "[phone-pairing]") {
   nas n;
   claimer m(n);
